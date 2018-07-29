@@ -16,7 +16,7 @@ AFRAME.registerComponent('a-fluid', {
     //just drawing out the original particles themselves.
     //Come up with our basic particle color qualities
     this.geometry = new THREE.SphereGeometry( 0.1, 4, 4);
-    this.material = new THREE.MeshBasicMaterial( {color: this.getRandomColor()} );
+    this.material = new THREE.MeshBasicMaterial( {color: '#00AAFF'} );
     this.numberOfParticles = 0;
     this.nextParticleTriggerTime = 0;
 
@@ -34,9 +34,9 @@ AFRAME.registerComponent('a-fluid', {
       this.particleSystem.cullParticles();
       var startPosition = new THREE.Vector3(0.0,10.0,0.0);
       var spreadV = 0.0;
-      var startingVelocity = new THREE.Vector3(Math.random(), 10.0 + Math.random() * 2.0, Math.random());
+      var startingVelocity = new THREE.Vector3(3.0 * (0.5 - Math.random()), 10.0 + (0.5 - Math.random()) * 3.0, 3.0 * (0.5 - Math.random()));
       this.particleSystem.addParticles([startPosition], [startingVelocity]);
-      this.nextParticleTriggerTime += 1000;
+      this.nextParticleTriggerTime += 1;
     }
 
     //
@@ -48,7 +48,7 @@ AFRAME.registerComponent('a-fluid', {
     if(diff > 0){
       for(var i = this.numberOfParticles; i < (this.numberOfParticles + diff); i++){
         //If new particles are added to the system
-        var sphere = new THREE.Mesh(new THREE.SphereGeometry( 0.1, 4, 4), new THREE.MeshBasicMaterial( {color: this.getRandomColor()} ));
+        var sphere = new THREE.Mesh(new THREE.SphereGeometry( 0.1, 4, 4), new THREE.MeshBasicMaterial( {color: '#00AAFF'} ));
         sphere.name = `a-fluid-${i}`;
         var sceneRef = this.el.sceneEl.object3D;
         sceneRef.add(sphere);
@@ -66,7 +66,8 @@ AFRAME.registerComponent('a-fluid', {
     this.numberOfParticles += diff;
 
     //Implement our fluid solver
-    this.particleSystem.updateParticles(timeDelta / 1000.0);
+    this.particleSystem.updateParticles(timeDelta/1000.0);
+    this.particleSystem.resolveCollision();
 
     //Move each of our particles to it's new position
     //NOTE: We might want to do this in the future using a parallel for loop

@@ -43,22 +43,20 @@ function ParticleSystem(particles, forces, constraints){
       var windResistanceForce = particle.velocity.clone().add(particle.localWindVelocity.negate()).multiplyScalar(particle.dragCoefficient);
       var netForces = gravitationalForce.add(windResistanceForce.negate());
 
-      particle.force.add(netForces);
+      particle.force = netForces;
 
       //
       //Time Integration
       //
       particle.updateVelocity(deltaT);
       particle.updatePosition(deltaT);
-      self.logNTimes('particleState', 10, particle);
     }
 
     //
     //TODO: We might want to run this in parrallel, but for now, just run through and update each of our particles.
     //
     for(var i = 0; i < self.particles.length; i++){
-      var particle = self.particles[i];
-      updateParticle(particle);
+      updateParticle(self.particles[i]);
     }
   };
 
@@ -75,12 +73,11 @@ function ParticleSystem(particles, forces, constraints){
       }
     );
 
-    for(var i = 0; i < particlesThatHitFloor; i++){
+    for(var i = 0; i < particlesThatHitFloor.length; i++){
       var particle = particlesThatHitFloor[i];
-      var currentEnergy = 0.5 * particle.mass * particle.velocity.lengthSq();
-      particle.velocity.y = -1.0 * particle.velocity.y * fractionOfVLost;
-       //We're just going to take a chunk of this velocity every time even though this is probably inaccurate.
-      particle.velocity.multiplyScalar(fractionOfVLost);
+      var particleVelocityClone = particle.velocity.clone();
+      var currentEnergy = 0.5 * particle.mass * particleVelocityClone.lengthSq();
+      particle.velocity.y = -1.0 * particleVelocityClone.y * fractionOfVLost;
     }
   };
 
