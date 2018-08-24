@@ -1,70 +1,102 @@
-function Interpolator(origin, searchRadius, bucketGrid, constants){
-  var parentInterpolator = Interpolator;
-  this.origin = origin;
-  this.neighborhoodRadius = searchRadius;
+function InterpolationEngine(searchRadius, bucketGrid, interpolationId, constants){
+  this.searchRadius = searchRadius;
   this.bucketGrid = bucketGrid;
   this.constants = constants;
-  this.parentParticleSystem = bucketGrid.parentParticleSystem;
-  this.particleMass = this.parentParticleSystem.universalParticleProperties.mass;
-  this.neighborhoodOfPoints = this.bucketGrid.findPointsInSphere(this.origin, this.searchRadius);
-  for(var i = 0; i < this.neighborhoodOfPoints.length; i++){
-    var point = this.neighborhoodOfPoints[i];
-    point.distance = Math.sqrt(particle.distanceSquared);
-    point.mullerKernalValue = this.mullerKernal(particle.distance);
-    point.mullerSpikyKernal = this.mullerSpikyKernal(particle.distance);
-  }
+  this.kernalConstants = new KernalConstants(this.constants.influenceRadius);
+  var parentInterpolationEngine = this;
 
-  this.interpolate(nameOfInterpolatedQuantity, useMuller = true, useMullerSpiky = false){
-    var sum = 0.0;
-    if(useMuller){
-      this.neighborhoodOfPoints.particles.each(function(term){
-        //The point here is actually a particle and therefore has access to the inverse density and interpolated quantities
-        sum += term.mullerKernalValue * term.point.inverseDensity * term.point[nameOfInterpolatedQuantity];
+  //Unlike the interpolator, we also need to determine a host of properties for each of our particles
+  //We might as well do these all at once, duplicating information that is re-used on every stage
+  //in order to minimize the number of operations needed.
+  function ParticleInterpolator(particles){
+    this.particles = particles;
+
+    //
+    //NOTE: We are doing twice the calculations we really need to here, because any
+    //particle A in the radius of particle B is symmetrically a particle B in the radius of particle A.
+    //
+    this.updateParticleNeighborhoods = function(){
+      //Find all neighboring particles
+      this.particles.foreach(function(particle){
+        var particlesInSearchRadius = this.bucketGrid.findPointsInSphere(particle.position, this.searchRadius);
+        particle.particlesInNeighborhood;
+        var distancesToParticlesSquared;
+        var distancesToParticles;
+        var densitySum = 0.0;
+        distancesToParticles.foreach(function(d){
+          densitySum += this.mullerKernal(d);
+        });
+        particle.density = this.particle.constants.mass * densitySum;
+        particle.inverseDensity = 1.0 / particle.density;
+
+        //
+        //Not sure what else we want in here yet
+        //
       });
     }
-    else if(useMullerSpiky){
-      for(var i = 0; i < this.neighborhoodOfParticles.length; i++){
-        //The point here is actually a particle and therefore has access to the inverse density and interpolated quantities
-        sum += term.mullerSpikyKernal * term.point.inverseDensity * term.point[nameOfInterpolatedQuantity];
-      }
-    }
-    return this.particleMass * sum;
   }
 
-  this.mullerKernal = function(distance){
-    if(distance <= this.constants.influenceRadius){
-      var variableComponent = (1.0 - ((distance * distance) * this.constants.oneOverInfluenceRadiusSquared))
-      return this.constants.mullerCoefficient * variableComponent * variableComponent * variableComponent;
+  function OperatorAt(origin){
+    var parentInterpolator = this;
+    this.origin = origin;
+    this.interpolatedQuantity = [];
+    this.parentParticleSystem = bucketGrid.parentParticleSystem;
+    this.particleMass = this.parentParticleSystem.universalParticleProperties.mass;
+    this.searchResults = this.bucketGrid.findPointsInSphere(this.origin, this.searchRadius);
+    this.kernalObjects = [];
+    for(var i = 0; i < this.searchResults.length; i++){
+      this.kernalObjects.push(new Kernal(searchResults[i].distance, this.kernalConstants));
     }
 
-    return 0.0;
-  }
+    this.interpolate(nameOfInterpolatedQuantity){
+      var sum = 0.0;
+      for(var i = 0; i < this.searchResults.length; i++){
+        //NOTE: The point here is actually a particle and therefore has access to the inverse density and interpolated quantities
+        var result = this.searchResults[i];
+        sum += this.kernalObjects[i].mullerKernalValue * result.point.inverseDensity * result.point[nameOfInterpolatedQuantity];
+      };
 
-  this.mullerSpikyKernal = function(distance){
-    if(distance <= this.constants.influenceRadius){
-      var variableComponent = (1.0 - (distance * this.constants.oneOverInfluenceRadius))
-      return this.constants.mullerSpikyCoefficient * variableComponent * variableComponent * variableComponent;
+      var returnQuantity = this.particleMass * sum;
+      this.interpolatedQuantity[nameOfInterpolatedQuantity] = returnQuantity;
+      return returnQuantity;
     }
 
-    return 0.0;
+    this.gradientOf(nameOfInterpolatedQuantity){
+      var densityAtOrigin = this.interpolatedQuantity['density'];
+      var inverseOfDensityAtOriginSquared = 1.0  / (densityAtOrigin * densityAtOrigin);
+      var interpolatedQuantityAtOrigin = this.interpolatedQuantity[nameOfInterpolatedQuantity];
+      var iQDivBySqOfInvDens = interpolatedQuantityAtOrigin * inverseOfDensityAtOriginSquared;
+      var sum = 0.0;
+      for(var i = 0; i < this.searchResults.length; i++){
+        //Gradient Parameters
+        var kernalObject = this.kernalObjects[i];
+        var searchResult = this.searchResults[i];
+        var distance = searchResult.distance;
+        var directionToCenter = searchResult.vect2Point;
+
+        //Coeficient parameters
+        var particle = this.searchResults[i].point;
+        var inverseOfParticleDensitySquared = particle.inverseDensity * particle.inverseDensity;
+
+        sum += (iQDivBySqOfInvDens + inverseOfParticleDensitySquared * particle[nameOfInterpolatedQuantity]) * kernalObject.gradient(distance, directionToCenter);
+      });
+
+      return densityAtOrigin * this.particleMass * sum;
+    }
+
+    this.laplacianOf(nameOfInterpolatedQuantity){
+      var sum = 0.0;
+      var interpolatedQuantityAtOrigin = this.interpolatedQuantity[nameOfInterpolatedQuantity];
+      for(var i = 0; i < this.searchResults.length; i++){
+        var particle = this.searchResults[i].point;
+        sum += (particle[nameOfInterpolatedQuantity] - interpolatedQuantityAtOrigin) * particle.inverseDensity * this.kernalObjects[i].mullerSpikyKernalSecondDerivative;
+      });
+
+      return this.particleMass * sum;
+    }
   }
 }
 
-//Interpolaters use many of the variables over and over again - no use in doing these calculations for each one
-//when we can just create them once and use them everywhere.
 function InterpolatorConstants(influenceRadius){
-    ////
-    //MUELLER KERNAL CONSTANTS
-    ////
-    this.influenceRadius = influenceRadius;
-    this.influenceRadiusSquared = this.influenceRadius * this.influenceRadius;
-    this.oneOverInfluenceRadiusSquared = 1.0 / this.influenceRadiusSquared;
-    this.influenceRadiusCubed = this.influenceRadiusSquared * this.influenceRadius;
-    this.mullerCoefficient = 315.0 / (64.0 * Math.PI * this.influenceRadiusCubed);
-
-    ////
-    //MUELLER SPIKY KERNAL CONSTANTS
-    ////
-    this.oneOverInfluenceRadius = 1.0 / this.influenceRadius;
-    this.mullerSpikyCoefficient = 15.0 / (Math.PI * this.influenceRadiusCubed);
+  this.influenceRadius = influenceRadius;
 }

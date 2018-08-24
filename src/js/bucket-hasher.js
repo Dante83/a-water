@@ -266,13 +266,22 @@ function BucketGrid(approximateSearchDiameter, bucketGridID, parentParticleSyste
     var foundPoints = [];
     var radiusSquared = radius * radius;
     for(var i = 0; i < potentialPoints.length; i++){
-      var potentialPoint = potentialPoints[i];
-      var xDiff = potentialPoint.x - position.x;
-      var yDiff = potentialPoint.y - position.y;
-      var zDiff = potentialPoint.z - position.z;
-      var sumOfSquares = xDiff * xDiff + yDiff * yDiff + zDiff + zDiff;
-      if(sumOfSquares < radiusSquared){
-        foundPoints.push({point: potentialPoints[i], distanceSquared: sumOfSquares});
+        var potentialPoint = potentialPoints[i];
+        var xDiff = potentialPoint.x - position.x;
+        var yDiff = potentialPoint.y - position.y;
+        var zDiff = potentialPoint.z - position.z;
+        var sumOfSquares = xDiff * xDiff + yDiff * yDiff + zDiff + zDiff;
+        if(sumOfSquares < radiusSquared){
+          var distance = Math.sqrt(sumOfSquares);
+          var inverseDistance = 1.0 / distance;
+          foundPoints.push({
+            point: potentialPoints[i],
+            distance: distance,
+            distanceSquared: sumOfSquares,
+            inverseDistance: inverseDistance,
+            vect2Point: {x: xDiff * inverseDistance, y: yDiff * inverseDistance, z: zDiff * inverseDistance}
+          });
+        }
       }
     }
 

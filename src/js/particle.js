@@ -4,9 +4,11 @@ function Particle(position, velocity, force, windVelocity, id,  bucketGrids, rad
   this.force = force;
   this.id = id;
   this.bucketGrids = bucketGrids;
-  this.particlesInNeighborHood = [];
   this.localWindVelocity = windVelocity;
   this.constants = constants;
+  this.density = null;
+  this.inverseDensity = null;
+  this.particlesInNeighborhood = null;
 
   //
   //TODO: Make a neighborhood predictor that determines the number of time steps before a particle
@@ -28,17 +30,6 @@ function Particle(position, velocity, force, windVelocity, id,  bucketGrids, rad
     var y = this.position.clone();
     this.position = y.add(x.multiplyScalar(deltaT));
   };
-
-  //
-  //Interpolated quantities for SPH
-  //
-  //
-  //TODO: Return here.
-  //
-  this.density = null;
-  this.updateQuantities(){
-
-  }
 }
 
 //Particles are created numerous times, but there's no duplicating code that's just used for stuff
