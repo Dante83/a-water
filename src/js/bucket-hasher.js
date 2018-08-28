@@ -19,6 +19,7 @@ function BucketGrid(approximateSearchDiameter, bucketGridID, parentParticleSyste
   this.gridLowerCoordinates = {x: false, y: false, z: false};
   this.gridLength = {x: false, y: false, z: false};
   var thisBucketGrid = this;
+  this.staticScene;
   this.parentParticleSystem = parentParticleSystem;
 
   this.getHashKeyFromPosition = function(position){
@@ -31,17 +32,22 @@ function BucketGrid(approximateSearchDiameter, bucketGridID, parentParticleSyste
     this.points = [];
     this.pointsMarkedForRemoval = [];
     this.pointsMarkedForAddition = [];
-    this.corners = [];
+    this.upperCorner = upperCorner;
+    this.lowerCorner = lowerCorner;
+    this.faces = [];
     this.connectedBuckets = {};
     this.needsUpdate = false;
     this.parentBucketGrid = parentBucketGrid;
+    this.IntersectsStaticMesh = false;
+    this.staticMeshSearchablePoints = [];
+    this.staticMeshKDTree;
     var thisBucket = this;
 
-    for(var i = 0; i < 8; i++){
+    for(let i = 0; i < 8; i++){
       //Iterate through all permuations/combinations between the upper and lower corner points
-      var useUpperCorner = Array.from((dec >>> 0).toString(2), function(elem){return elem === '1' ? true : false;});
+      var useUpperCorner = Array.from((i >>> 0).toString(2), function(elem){return elem === '1' ? true : false;});
       var newCorner = new PointCoord(0.0, 0.0, 0.0);
-      for(var j = 0; j < 3; j++){
+      for(let j = 0; j < 3; j++){
         if(useUpperCorner){
           newCorner.setCoordByNum(j,  upperCorner[j]);
         }
@@ -50,6 +56,36 @@ function BucketGrid(approximateSearchDiameter, bucketGridID, parentParticleSyste
         }
       }
       this.corners []= newCorner;
+    }
+
+    //Construct all of our faces from these points
+    //Note that a face contains points for which one axis is the same
+    var faceCoordinateSets = [];
+    for(var i = 0; i < 3; i++){
+      //Hold the ith dimension from the upper corner constant...
+      var coordinateSetA = [];
+      var coordinateSetB = [];
+      for(let j = 0; j < 4; j++){
+        var useUpperCoordinateForThisDim = Array.from((j >>> 0).toString(1), function(elem){return elem === '1' ? true : false;});
+        var upperCoordI = 0;
+        for(let dim = 0; dim < 3; dim++){
+          if(dim !== i){
+            coordinateSetA.push(useUpperCoordinateForThisDim[upperCoordI] ? upperCorner[dim] : lowerCorner[dim]);
+            coordinateSetB.push(useUpperCoordinateForThisDim[lowerCoordI] ? upperCorner[dim] : lowerCorner[dim]);
+            upperAndLowerCoordI++;
+          }
+          else{
+            coordinateSetA.push(upperCorner[dim]);
+            coordinateSetB.push(lowerCorner[dim]);
+          }
+        }
+      }
+      faceCoordinateSets.push(coordinateSetA);
+      faceCoordinateSets.push(coordinateSetB);
+    }
+    this.faces = [];
+    for(let i = 0; i < 6; i++){
+      this.faces.push(new Face(faceCoordinateSets));
     }
 
     var center = [];
@@ -151,6 +187,167 @@ function BucketGrid(approximateSearchDiameter, bucketGridID, parentParticleSyste
       this.pointsMarkedForRemoval = [];
       this.pointsMarkedForAddition = [];
       this.needsUpdate = false;
+    }
+
+    this.constructStaticMeshKDTree(){
+      //If the number of points is non-zero...
+      if(this.staticMeshSearchablePoints.length > 0){
+        bucket.IntersectsStaticMesh = true;
+
+        //Create a KD Tree from all points in this bucket.
+        //https://github.com/ubilabs/kd-tree-javascript
+        function distance2PointSquared(a, b){
+          let diff1 = a[0] - b[0];
+          let diff2 = a[1] - b[1];
+          let diff3 = a[2] - b[2];
+          return (diff1 * diff1) + (diff2 * diff2) + (diff3 * diff3);
+        }
+        this.staticMeshKDTree = new kdTree(this.staticMeshSearchablePoints, }, [0, 1, 2]);
+      }
+    }
+
+    this.findPointsInsideStaticMesh(points, searchRadius){
+      var pointsInsideOfMesh = [];
+      if(this.IntersectsStaticMesh){
+        for(let i = 0; i < points.length; i++){}
+          //Do the Static Mesh KD tree search for the nearest point to this particle.
+          var point = points[i];
+          let nearestCoordinates = this.staticMeshKDTree.nearest([point.position.x, point.position.y, point.position.z], 1, [searchRadius]);
+
+          //Hash this value to get the searchable point in the static scene.
+          let p = nearestCoordinates[0][0];
+          let hash = [p.x.toFixed(this.staticScene.hashDigitsCount), p.y.toFixed(this.staticScene.hashDigitsCount), p.z.toFixed(this.staticScene.hashDigitsCount)]
+          var hashedNearestPoint = this.staticScene.hashedPoints[hash];
+          var pointVector = new THREE.Vector3(point[0], point[1], point[2]);
+
+          //Use the method described here:
+          //https://blender.stackexchange.com/questions/31693/how-to-find-if-a-point-is-inside-a-mesh
+          //to determine if each particle is inside of the mesh.
+          //Start by going all the nearest candidate faces...
+          var nearestFace = false;
+          var nearestPointOnFace;
+          var nearestFaceDistance;
+          for(let j = 0; j < hashedNearestPoint.faces; j++){
+            let face = hashedNearestPoint.faces[j];
+            var triangle = face.triangle;
+            var nearestPointOnTriangle = new THREE.Vector3();
+            triangle.closestPointToPoint(new THREE.Vector3(), nearestPointOnTriangle);
+            let distance = pointVector.distanceToSquared(nearestPointOnTriangle);
+            if(j === 0 || nearestFaceDistance > distance){
+              nearestFace = face;
+              nearestPointOnFace = nearestPointOnTriangle;
+              nearestFaceDistance = distance;
+            }
+          }
+
+          //Now use the normal of the mesh face to decide if the particle is inside or outside.
+          nearestPointOnFace.sub(pointVector);
+          let isInsideOfMesh = nearestPointOnFace.dot(nearestFace.normal);
+
+          //If point is inside of the mesh, add to the list of points that need returning
+          if(isInsideOfMesh){
+            pointsInsideOfMesh.push(point);
+          }
+        }
+        return pointsInsideOfMesh;
+      }
+    }
+
+    function Face(points){
+      this.points = points;
+      this.plane;
+      this.isPointOnFace;
+      this.normalVector;
+      this.offset;
+      var parentFace = this;
+
+      this.constructPlane(){
+        //Two of our lines off the same point should produce a perpendicular cross product equal to the normal vector (ignoring the sign)
+        var point1 = this.points[0],  point2 = this.points[1], point3 = this.points[2], point4 = this.points[3];
+        let vect1 = new THREE.Vector3(...this.constructDiff(point1, point2));
+        let vect2 = new THREE.Vector3(...this.constructDiff(point1, point3));
+
+        //And then crossing them to calculate the normal vector.
+        parentFace.normalVector = new THREE.Vector3();
+        normalVector.cross(vect1, vect2);
+        normalVector.normalize();
+
+        //The offset from the origin, because we're parallel to one of the axis - is
+        //just the value in the one axis that does not change.
+        parentFace.offset = this.recursiveOffsetFinder(dimension = 0)
+
+        //Now create a three js plane...
+        parentFace.plane = new THREE.plane(parentFace.normalVector, parentFace.offset);
+
+        this.constructDiff(point1, point2){
+          let diffX = point1[0] - point2[0];
+          let diffY = point1[1] - point2[1];
+          let diffZ = point1[2] - point2[2];
+
+          return [diffX, diffY, diffZ];
+        }
+
+        this.recursiveOffsetFinder(dimension = 0){
+          if(point1[dimension] === point2[dimension] && point1[dimension] === point3[dimension]){
+            let returnVar = [0.0,0.0,0.0];
+            returnVar[dimension] = point1[dimension];
+            return returnVar;
+          }
+          else if(dimension > 3){
+            return this.recursiveOffsetFinder(dimension + 1);
+          }
+          else{
+            this.errorOnce('recursiveOffsetFinderError', 'We have gone beyond the maximum number of dimensions.');
+          }
+        }
+      }
+
+      this.isPointOnFace = function(point){
+        //Center our plane and the point above at the origin, by removing the minimum coordinates;
+        var offset = {
+          x: Math.min(...this.points.map((x) => x[0])),
+          y: Math.min(...this.points.map((x) => x[1])),
+          z: Math.min(...this.points.map((x) => x[2]))
+        };
+        var offsetCoordinates = points.map((point) => [point[0] - offset.x, point[1] - offset.x, point[2] - offset.x]);
+        var offsetPoint = [point.x - offset.x, point.y - offset.y, point.z - offset.z]
+
+        //Reduce our system to two dimensions
+        var zeroDimension = offsetPoint.findIndex((point) => point === 0.0);
+        pointInXYCoordinates = this.flattenToXY(offsetPoint);
+
+        //check if our point is less than zero in either dimension. If either is false, return false.
+        if(pointInXYCoordinates[0] < 0.0 || pointInXYCoordinates[1] < 0.0){
+          return false;
+        }
+
+        //Get the maximum x-y coordinates while reducing the rest of our points to two dimensions as well.
+        var xyPoints = offsetCoordinates.map((x) => this.flattenToXY(x));
+        var maxXCoordinate = Math.max(...xyPoints.map((point) => point[0]));
+        var maxYCoordinate = Math.max(...xyPoints.map((point) => point[0]));
+
+        //Check if our point is less than the maximum values in either dimension. If either is false, return false.
+        if(pointInXYCoordinates[0] > maxXCoordinate || pointInXYCoordinates[1] > maxYCoordinate){
+          return false;
+        }
+
+        return true;
+      }
+
+      this.flattenToXY = function(point, ignoreDimension){
+        var xyOut = [];
+        for(let i = 0; i < 3; i++){
+          if(i !== ignoreDimension){
+            xyOut.push(point[i]);
+          }
+        }
+
+        return xyOut;
+      }
+    }
+
+    this.toBox3(){
+      return new THREE.Box3(new THREE.Vect3(this.upperCorner[0], this.upperCorner[1], this.upperCorner[2]), new THREE.Vect3(this.lowerCorner[0], this.lowerCorner[1], this.lowerCorner[2]));
     }
   }
 
@@ -315,6 +512,13 @@ function BucketGrid(approximateSearchDiameter, bucketGridID, parentParticleSyste
       bucket.flush();
     });
     this.bucketsNeedingUpdates = [];
+  }
+
+  this.updateStaticMeshKDTrees(){
+    for(let i = 0; i < this.buckets.length; i++){
+      let bucket = this.buckets[i];
+      bucket.constructStaticMeshKDTree();
+    }
   }
 
   function PointCoord(x, y, z){

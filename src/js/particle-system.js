@@ -1,6 +1,8 @@
 function ParticleSystem(particles, forces, constraints, upperGridCoord, lowerGridCoord){
   var parentParticleSystem = this;
   this.particles = [];
+  this.staticMesh = [];
+  this.dynamicMesh = [];
   this.numberOfParticles = 0;
   this.maxParticleID = 0;
   const gravity = new THREE.Vector3(0.0, -9.81, 0.0);
@@ -38,14 +40,6 @@ function ParticleSystem(particles, forces, constraints, upperGridCoord, lowerGri
     //TODO: Remove particles from all of our bucket hashes
 
     parentParticleSystem.numberOfParticles = parentParticleSystem.particles.length;
-  };
-
-  this.particleSolver = function(){
-    //TODO: Complete this.
-  };
-
-  this.updateSolver = function(){
-    //TODO: Complete this.
   };
 
   this.updateParticles = function(deltaT){

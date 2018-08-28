@@ -1,4 +1,4 @@
-function InterpolationEngine(searchRadius, bucketGrid, interpolationId, constants){
+function InterpolationEngine(searchRadius, bucketGrid, interpolationId, constants){3
   this.searchRadius = searchRadius;
   this.bucketGrid = bucketGrid;
   this.constants = constants;
@@ -17,32 +17,36 @@ function InterpolationEngine(searchRadius, bucketGrid, interpolationId, constant
     //
     this.updateParticleNeighborhoods = function(){
       //Find all neighboring particles
-      this.particles.foreach(function(particle){
+      for(let i = 0; i < this.particles.length; i++){
+        let particle = this.particles[i];
         var particlesInSearchRadius = this.bucketGrid.findPointsInSphere(particle.position, this.searchRadius);
-        particle.particlesInNeighborhood;
-        var distancesToParticlesSquared;
-        var distancesToParticles;
-        var densitySum = 0.0;
-        distancesToParticles.foreach(function(d){
+        particle.particlesInNeighborhood = particlesInSearchRadius;
+        let densitySum = 0.0;
+        for(let j = 0; j < distancesToParticles.length; j++){
+          let distance = distancesToParticles
           densitySum += this.mullerKernal(d);
-        });
+        }
         particle.density = this.particle.constants.mass * densitySum;
         particle.inverseDensity = 1.0 / particle.density;
+      }
+    }
 
-        //
-        //Not sure what else we want in here yet
-        //
-      });
+    this.particleMullerKernal(distance, distanceSquared){
+      if(distance <= this.kernalConstants.influenceRadius){
+        var mullerVariableComponent = (1.0 - (distanceSquared * this.kernalConstants.oneOverInfluenceRadiusSquared));
+        return this.kernalConstants.mullerCoefficient * mullerVariableComponent * mullerVariableComponent * mullerVariableComponent;
+      }
+      return 0.0;
     }
   }
 
-  function OperatorAt(origin){
+  function OperatorAt(origin, particleNeighborhood = false){
     var parentInterpolator = this;
     this.origin = origin;
     this.interpolatedQuantity = [];
     this.parentParticleSystem = bucketGrid.parentParticleSystem;
     this.particleMass = this.parentParticleSystem.universalParticleProperties.mass;
-    this.searchResults = this.bucketGrid.findPointsInSphere(this.origin, this.searchRadius);
+    this.searchResults = particleNeighborhood !== false ? this.bucketGrid.findPointsInSphere(this.origin, this.searchRadius) : particleNeighborhood;
     this.kernalObjects = [];
     for(var i = 0; i < this.searchResults.length; i++){
       this.kernalObjects.push(new Kernal(searchResults[i].distance, this.kernalConstants));
@@ -62,21 +66,21 @@ function InterpolationEngine(searchRadius, bucketGrid, interpolationId, constant
     }
 
     this.gradientOf(nameOfInterpolatedQuantity){
-      var densityAtOrigin = this.interpolatedQuantity['density'];
-      var inverseOfDensityAtOriginSquared = 1.0  / (densityAtOrigin * densityAtOrigin);
-      var interpolatedQuantityAtOrigin = this.interpolatedQuantity[nameOfInterpolatedQuantity];
+      let densityAtOrigin = this.interpolatedQuantity['density'];
+      let inverseOfDensityAtOriginSquared = 1.0  / (densityAtOrigin * densityAtOrigin);
+      let interpolatedQuantityAtOrigin = this.interpolatedQuantity[nameOfInterpolatedQuantity];
       var iQDivBySqOfInvDens = interpolatedQuantityAtOrigin * inverseOfDensityAtOriginSquared;
       var sum = 0.0;
       for(var i = 0; i < this.searchResults.length; i++){
         //Gradient Parameters
-        var kernalObject = this.kernalObjects[i];
-        var searchResult = this.searchResults[i];
-        var distance = searchResult.distance;
-        var directionToCenter = searchResult.vect2Point;
+        let kernalObject = this.kernalObjects[i];
+        let searchResult = this.searchResults[i];
+        let distance = searchResult.distance;
+        let directionToCenter = searchResult.vect2Point;
 
         //Coeficient parameters
-        var particle = this.searchResults[i].point;
-        var inverseOfParticleDensitySquared = particle.inverseDensity * particle.inverseDensity;
+        let particle = this.searchResults[i].point;
+        let inverseOfParticleDensitySquared = particle.inverseDensity * particle.inverseDensity;
 
         sum += (iQDivBySqOfInvDens + inverseOfParticleDensitySquared * particle[nameOfInterpolatedQuantity]) * kernalObject.gradient(distance, directionToCenter);
       });

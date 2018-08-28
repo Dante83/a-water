@@ -41,5 +41,6 @@ function ParticleConstants(radius, dragCoefficient, mass){
   this.radius = radius;
   this.dragCoefficient = dragCoefficient;
   this.mass = mass;
+  this.negativeMass = -1.0 * mass;
   this.inverseOfMass = 1.0 / this.mass;
 }
