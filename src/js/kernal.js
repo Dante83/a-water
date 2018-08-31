@@ -1,7 +1,6 @@
 function Kernal(distance, constants){
   //NOTE: We presume that our origin to particle vector is pre-normalized to reduce duplicate computations
   var parentKernal = this;
-  this.constants = constants;
   this.distance = distance;
   this.distanceSquared = distance * distance;
   this.originToParticleVect = originToParticleVect;
@@ -12,12 +11,25 @@ function Kernal(distance, constants){
   this.gradient = 0.0;
   this.laplacian = 0.0;
 
+  ////
+  //Redefine constants locally for one less lookup per constant
+  ////
+  this.influenceRadius = constants.influenceRadius
+  this.influenceRadiusSquared = constants.influenceRadiusSquared
+  this.oneOverInfluenceRadiusSquared = constants.oneOverInfluenceRadiusSquared
+  this.influenceRadiusCubed = constants.influenceRadiusCubed
+  this.mullerCoefficient = constants.mullerCoefficient
+  this.oneOverInfluenceRadius = constants.oneOverInfluenceRadius
+  this.mullerSpikyCoefficient = constants.mullerSpikyCoefficient
+  this.mullerSpikyFirstDerivativeCoeficient = constants.mullerSpikyFirstDerivativeCoeficient
+  this.mullerSpikySecondDerivativeCoeficient = constants.mullerSpikySecondDerivativeCoeficient
+
   MullerKernal();
   MullerSpikyKernal();
 
   function MullerKernal(){
     if(this.distance <= this.constants.influenceRadius){
-      var mullerVariableComponent = (1.0 - (this.distanceSquared * this.constants.oneOverInfluenceRadiusSquared));
+      let mullerVariableComponent = (1.0 - (this.distanceSquared * this.constants.oneOverInfluenceRadiusSquared));
       parentKernal.mullerKernalValue = this.constants.mullerCoefficient * mullerVariableComponent * mullerVariableComponent * mullerVariableComponent;
     }
   }
@@ -25,9 +37,9 @@ function Kernal(distance, constants){
   function MullerSpikyKernal(){
     if(distance <= this.constants.influenceRadius){
       //(1 - r/h) values
-      var variableComponent = (1.0 - (distance * this.constants.oneOverInfluenceRadius));
-      var variableComponentSquared = variableComponent * variableComponent;
-      var variableComponentCubed = variableComponentSquared * variableComponent;
+      let variableComponent = (1.0 - (distance * this.constants.oneOverInfluenceRadius));
+      let variableComponentSquared = variableComponent * variableComponent;
+      let variableComponentCubed = variableComponentSquared * variableComponent;
 
       this.mullerSpikyKernalValue = this.constants.mullerSpikyCoefficient * variableComponentCubed;
       parentKernal.mullerSpikyKernalFirstDerivative = this.constants.mullerSpikyFirstDerivativeCoeficient * variableComponentSquared;
@@ -35,7 +47,7 @@ function Kernal(distance, constants){
     }
   }
 
-  this.gradient(distance, directionToCenter){
+  this.gradient = function(distance, directionToCenter){
     if(distance <= h){
       return {
         x: this.mullerSpikyKernalFirstDerivative * directionToCenter.x,

@@ -5,10 +5,18 @@ function Particle(position, velocity, force, windVelocity, id,  bucketGrids, rad
   this.id = id;
   this.bucketGrids = bucketGrids;
   this.localWindVelocity = windVelocity;
-  this.constants = constants;
   this.density = null;
   this.inverseDensity = null;
   this.particlesInNeighborhood = null;
+
+  ////
+  //Redefine constants locally for one less lookup per constant
+  ////
+  this.radius = constants.radius
+  this.dragCoefficient = constants.dragCoefficient
+  this.mass = constants.mass
+  this.negativeMass = constants.negativeMass
+  this.inverseOfMass = constants.inverseOfMass
 
   //
   //TODO: Make a neighborhood predictor that determines the number of time steps before a particle
@@ -21,7 +29,7 @@ function Particle(position, velocity, force, windVelocity, id,  bucketGrids, rad
   //than this using RK4 or perhaps even FEM or SEM.
   this.updateVelocity = function(deltaT){
     var x = this.force.clone();
-    x.multiplyScalar(deltaT * this.constants.inverseOfMass);
+    x.multiplyScalar(deltaT * this.inverseOfMass);
     this.velocity.add(x);
   };
 

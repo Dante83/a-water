@@ -1,4 +1,4 @@
-function ParticleSystem(particles, forces, constraints, upperGridCoord, lowerGridCoord){
+function ParticleSystem(radius, dragCoefficient, mass){
   var parentParticleSystem = this;
   this.particles = [];
   this.staticMesh = [];
@@ -14,7 +14,7 @@ function ParticleSystem(particles, forces, constraints, upperGridCoord, lowerGri
   this.universalParticleProperties = ParticleConstants(radius, dragCoefficient, mass);
 
   this.addParticles = function(positions, velocities){
-    for(var i = 0; i < positions.length; i++){
+    for(let i = 0, particlesLen = positions.length; i < particlesLen; i++){
       //Right now this starts off with no forces and no wind...
       //TODO: In the future, we might want to consider the impact of wind on our fluid.
       //NOTE: The default value for THREE.Vector3() is actually [0,0,0]
@@ -66,7 +66,7 @@ function ParticleSystem(particles, forces, constraints, upperGridCoord, lowerGri
       //
     }
 
-    for(var i = 0; i < parentParticleSystem.particles.length; i++){
+    for(let i = 0, particlesLen = this.particles.length; i < particlesLen; i++){
       updateParticle(parentParticleSystem.particles[i]);
     }
   };
@@ -77,17 +77,18 @@ function ParticleSystem(particles, forces, constraints, upperGridCoord, lowerGri
     //TODO: to obsorb energy. In the future, we require a more robust collision engine.
     //
     const fractionOfVLost = 0.5;
-    var particlesThatHitFloor = parentParticleSystem.particles.filter(
+    let particlesThatHitFloor = parentParticleSystem.particles.filter(
       function(particle){
         //Hit the floor and going down? Time to bounce.
         return (particle.position.y <= 0.0 && particle.velocity.y < 0.0);
       }
     );
 
-    for(var i = 0; i < particlesThatHitFloor.length; i++){
-      var particle = particlesThatHitFloor[i];
-      var particleVelocityClone = particle.velocity.clone();
-      var currentEnergy = 0.5 * particle.mass * particleVelocityClone.lengthSq();
+    const particleMass = particle.mass;
+    for(let i = 0, particlesThatHitTheFloorLen = particlesThatHitFloor.length; i < particlesThatHitTheFloorLen; i++){
+      let particle = particlesThatHitFloor[i];
+      let particleVelocityClone = particle.velocity.clone();
+      let currentEnergy = 0.5 * particleMass * particleVelocityClone.lengthSq();
       particle.velocity.y = -1.0 * particleVelocityClone.y * fractionOfVLost;
     }
   };
