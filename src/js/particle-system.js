@@ -10,28 +10,96 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
   this.maxParticleID = 0;
   const gravity = new THREE.Vector3(0.0, -9.81, 0.0);
 
-  //Construct the bucket grid system to attach to this particle system so that we can track our particles,
-  //as they're added, subtracted or moved. Not that we want our grid size equal to our particle radius.
-  this.bucketGrid = new BucketGrid(particleConstants.radius, parentFluidParams.el.id, thisParticleSystem);
-
   //Basically, all of our particles are identical, so we calculate their universal values here and
   //then add this to every particle, allow it to reference the values through a point without redoing
   //the calculations, potentially a whole a bunch of times - even for internal functions that are called
   //countless times on every single particle.
-  this.universalParticleProperties = particleConstants;
+  this.particleConstants = particleConstants;
+
+  //Construct the bucket grid system to attach to this particle system so that we can track our particles,
+  //as they're added, subtracted or moved. Not that we want our grid size equal to our particle radius.
+  this.bucketGrid = new BucketGrid(upperCorner, lowerCorner, particleConstants.radius, parentFluidParams.el.id, thisParticleSystem);
+
+  //TODO: In the future, we might automatically construct an optimal grid from a gltf mesh.
+  //Or allow for several choices. For now, we're just providing an upper and lower corner and building the optimal grid from that.
+  let lowerCornerX = lowerCorner[0];
+  let lowerCornerY = lowerCorner[1];
+  let lowerCornerZ = lowerCorner[2];
+  let xDiff = upperCorner[0] - lowerCorner[0];
+  let yDiff = upperCorner[1] - lowerCorner[1];
+  let zDiff = upperCorner[2] - lowerCorner[2];
+  //NOTE: We're choosing a bucket grid radius equal to the radius.
+  let radius = particleConstants.radius;
+  let boxesAlongX = Math.ceil(xDiff / radius);
+  let boxesAlongY = Math.ceil(yDiff / radius);
+  let boxesAlongZ = Math.ceil(zDiff / radius);
+
+  //Main bucket construction loop.
+  let upperBucketCornerX = lowerCornerX;
+  for(let x = 1; x <= boxesAlongX; x++){
+    upperBucketCornerX += radius;
+    let upperBucketCornerY = lowerCornerY;
+    for(let y = 1; y <= boxesAlongY; y++){
+      upperBucketCornerY += radius;
+      let upperBucketCornerZ = lowerCornerZ;
+      for(let z = 1; z <= boxesAlongZ; z++){
+        upperBucketCornerZ += radius;
+        let upperBucketCorner = [lowerCornerX + upperBucketCornerX, lowerCornerY + upperBucketCornerY, lowerCornerZ + upperBucketCornerZ];
+        console.log(upperCorner);
+        this.bucketGrid.addBucket(upperCorner, radius);
+      }
+    }
+  }
+  this.bucketGrid.connectBuckets();
+
+  //Trigger an alert that our bucket system is now completed for our debugger. We can comment this out in the final release
+  //once everything works.
+  parentFluidParams.el.emit('bucket-grid-constructed', {finished: true});
 
   this.addParticles = function(positions, velocities){
+    let pointsByHash = [];
+    let particlesByHash = [];
+
+    //Sort our particles being added by hash
     for(let i = 0, particlesLen = positions.length; i < particlesLen; i++){
       //Right now this starts off with no forces and no wind...
       //TODO: In the future, we might want to consider the impact of wind on our fluid.
       //NOTE: The default value for THREE.Vector3() is actually [0,0,0]
-      var newParticle = new Particle(positions[i], velocities[i], new THREE.Vector3(), new THREE.Vector3(), this.maxParticleID, thisParticleSystem.universalParticleProperties);
+      let position = positions[i];
+      let newParticle = new Particle(position, velocities[i], new THREE.Vector3(), new THREE.Vector3(), this.maxParticleID, thisParticleSystem.particleConstants);
 
       //Find the bucket associated with this particle and add the particle to bucket
-      this.bucketGrid.addPoint(newParticle, 'position');
+      let hash = this.bucketGrid.getHashKeyFromPosition(position);
+      if(bucketsWithPoints.includes(hash)){
+        pointsByHash[hash].push(position);
+        particlesByHash[hash].push(newParticle);
+      }
+      else{
+        pointsByHash[hash] = [];
+        particlesByHash[hash] = [];
+        pointsByHash[hash].push(position);
+        particlesByHash[hash].push(newParticle);
+      }
+
       thisParticleSystem.particles.push(newParticle);
       this.maxParticleID += 1;
     }
+
+    //Add all of these points to the buckets
+    //
+    //NOTE: Not adding in links ot each of our particles for our point detector seems a bit
+    //odd. It would seem to me, both for mid-section tracking and to update our particles,
+    //We would either need to rebuild our hash from scratch, or we would need to pass a pointer,
+    //to the particle inside so that each hash could be updated as needed.
+    //
+    for(let hash in bucketsWithPoints){
+      let bucket = this.bucketGrid.hashedBuckets[hash];
+      bucket.addPoints(pointsByHash[hash]);
+    }
+
+    //Flush all grids
+    this.bucketGrid.flush();
+
     thisParticleSystem.numberOfParticles += positions.length;
   };
 

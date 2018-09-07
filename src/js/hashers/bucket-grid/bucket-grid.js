@@ -8,7 +8,7 @@
 //instead estimate it's time of departure and check back and recalculate
 //the departure time at X% of the departure time. (try different values to see how it works)
 
-function BucketGrid(approximateSearchDiameter, bucketGridID, parentParticleSystem){
+function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketGridID, parentParticleSystem){
   this.buckets = [];
   this.hashedBuckets = {};
   this.bucketGridID = bucketGridID;
@@ -51,11 +51,13 @@ function BucketGrid(approximateSearchDiameter, bucketGridID, parentParticleSyste
 
   function Bucket(upperCorner, lowerCorner, parentBucketGrid){
     this.points = [];
+    this.particles = [];
     this.pointsMarkedForRemoval = [];
     this.pointsMarkedForAddition = [];
     this.upperCorner = upperCorner;
     this.lowerCorner = lowerCorner;
     this.faces = [];
+    this.corners = [];
     this.connectedBuckets = {};
     this.needsUpdate = false;
     this.parentBucketGrid = parentBucketGrid;
@@ -64,12 +66,17 @@ function BucketGrid(approximateSearchDiameter, bucketGridID, parentParticleSyste
     this.staticMeshKDTree;
     var thisBucket = this;
 
+    function pad(n, width) {
+      n = n + '';
+      return n.length >= width ? n : new Array(width - n.length + 1).join('0') + n;
+    }
+
     for(let i = 0; i < 8; i++){
       //Iterate through all permuations/combinations between the upper and lower corner points
-      var useUpperCorner = Array.from((i >>> 0).toString(2), function(elem){return elem === '1' ? true : false;});
+      var useUpperCorner = Array.from(pad((i >>> 0).toString(2), 3), function(elem){return elem === '1' ? true : false;});
       var newCorner = new PointCoord(0.0, 0.0, 0.0);
       for(let j = 0; j < 3; j++){
-        if(useUpperCorner){
+        if(useUpperCorner[j]){
           newCorner.setCoordByNum(j,  upperCorner[j]);
         }
         else{
@@ -78,6 +85,12 @@ function BucketGrid(approximateSearchDiameter, bucketGridID, parentParticleSyste
       }
       this.corners.push(newCorner);
     }
+
+    console.log(this.corners);
+
+    //
+    //TODO: RETURN HERE.
+    //
 
     //Construct all of our faces from these points
     //Note that a face contains points for which one axis is the same
@@ -119,8 +132,8 @@ function BucketGrid(approximateSearchDiameter, bucketGridID, parentParticleSyste
     this.addPoint = function(point){
       //Time to request an object update
       thisBucket.needsUpdate = true;
-      if(!this.bucketsNeedingUpdates.includes(thisBucket)){
-        thisBucket.bucketsNeedingUpdates.push(thisBucket);
+      if(!thisBucketGrid.bucketsNeedingUpdates.includes(thisBucket)){
+        thisBucketGrid.bucketsNeedingUpdates.push(thisBucket);
       }
 
       //Add this point to the bucket
@@ -139,10 +152,10 @@ function BucketGrid(approximateSearchDiameter, bucketGridID, parentParticleSyste
       //
     };
 
-    this.addPoints = function(points){
+    this.addPoints = function(points, particles = false){
       thisBucket.needsUpdate = true;
-      if(!this.bucketsNeedingUpdates.includes(thisBucket)){
-        thisBucket.bucketsNeedingUpdates.push(thisBucket);
+      if(!thisBucketGrid.bucketsNeedingUpdates.includes(thisBucket)){
+        thisBucketGrid.bucketsNeedingUpdates.push(thisBucket);
       }
 
       //Add all of these points to the bucket
@@ -375,8 +388,8 @@ function BucketGrid(approximateSearchDiameter, bucketGridID, parentParticleSyste
     };
   }
 
-  this.addBucket = function(upperCorner){
-    var lowerCorner = upperCorner.map((x) => x - this.approximateSearchDiameter);
+  this.addBucket = function(upperCorner, radius){
+    var lowerCorner = upperCorner.map((x) => x - radius);
     this.buckets.push(new Bucket(upperCorner, lowerCorner, thisBucketGrid));
     this.hashedBuckets[this.buckets[this.buckets.length - 1].hashKey] = this.buckets[this.buckets.length - 1];
 
@@ -398,7 +411,7 @@ function BucketGrid(approximateSearchDiameter, bucketGridID, parentParticleSyste
   };
 
   this.connectBuckets = function(){
-    this.buckets.foreach(function(bucket){
+    for(let i = 0, numBuckets = this.buckets.length; i < numBuckets; i++){
       var center = bucket.center;
       //Yes, there ARE a whole bunch of corner buckets, but we don't actually require them for our purposes and the suffering
       //of naming things (Genesis 2:19... it never ends O_O) is real. Like, what necessarily defines forward, back, up, down, or right or left.
@@ -436,7 +449,7 @@ function BucketGrid(approximateSearchDiameter, bucketGridID, parentParticleSyste
       }
 
       bucket.connectedBuckets = connections;
-    });
+    };
   };
 
   this.getPotentialPointsForSearch = function(position, radius){

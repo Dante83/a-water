@@ -20,7 +20,7 @@ AFRAME.registerComponent('debug-fluid', {
     let intG = Math.floor(255.0 * colorVect.y);
     let intB = Math.floor(255.0 * colorVect.z);
     let hexCodes = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'];
-    let function = int2Hex(intColor){
+    function int2Hex(intColor){
       return `${hexCodes[Math.floor(intColor / 16)]}${hexCodes[Math.floor(intColor % 16)]}`;
     }
     let hexR = int2Hex(intR);
@@ -28,8 +28,8 @@ AFRAME.registerComponent('debug-fluid', {
     let hexB = int2Hex(intB);
 
     return `0x${hexR}${hexG}${hexB}`;
-  }
-  constructParticleSystem: function(){
+  },
+  drawParticleSystemContainer: function(){
     if(this.data['draw-particle-system']){
       //Grab the width depth and height of our box, as well as it's position, so we can draw it in the world view
       this.particleSystem
@@ -61,12 +61,14 @@ AFRAME.registerComponent('debug-fluid', {
     this.particleSystem = this.fluidParamsEl.components['fluid-params'].particleSystem;
     let thisDebugger = this;
 
-    staticCollider.addEventListener('model-loaded', function (gltf) {
-      thisDebugger.constructParticleSystem();
+    staticCollider.addEventListener('bucket-grid-constructed', function (result) {
+      //We actually don't do anything with the result, this is just used to trigger
+      //the drawing of our our particle system box.
+      thisDebugger.drawParticleSystemContainer();
     });
   },
   tick: function (time, timeDelta) {
     //Update our particle positions and surface mesh.
-    
+
   }
-}
+});

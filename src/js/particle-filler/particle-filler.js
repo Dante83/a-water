@@ -13,7 +13,7 @@ function ParticleFiller(bucketHasher){
   this.bucketHasherDimensions;
   this.intersectionMesh;
 
-  this.constructInstersectionMesh(){
+  this.constructInstersectionMesh = function(){
     //Clone the static scene
 
     //Add the outer faces of the bucket grid to this static scene
@@ -23,7 +23,7 @@ function ParticleFiller(bucketHasher){
     this.fillMesh();
   }
 
-  this.fillMesh(){
+  this.fillMesh = function(){
     //Use the density function to add particles to the mesh using a hexagonal packing structure.
     //this should be fairly stable, but the instabilities of the system might need to be worked out.
 
@@ -32,7 +32,7 @@ function ParticleFiller(bucketHasher){
     this.zeroOutForces();
   }
 
-  this.zeroOutForces(){
+  this.zeroOutForces = function(){
     //
     //NOTE: We'll worry about this later.
     //

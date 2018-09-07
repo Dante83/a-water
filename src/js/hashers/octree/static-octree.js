@@ -4,7 +4,7 @@ function StaticOctree(){
   //If none of the corners have a differing closest point, we leave this as a branch.
   //Otherwise, we create eight new sub elements, each with a new set of closest points.
   //
-  this.createHashTree(objects, coordinateProperty, upperSearchCorner, lowerSearchCorner,  maxDepth){
+  this.createHashTree = function(objects, coordinateProperty, upperSearchCorner, lowerSearchCorner,  maxDepth){
     //
     //TODO: Populate this later.
     //
@@ -17,7 +17,7 @@ function StaticOctree(){
   //changing data, but doesn't require multiple searches down the tree in order to hunt for the
   //"Best branch" as all of the branches are top level. This makes an exchange of shorter lookup
   //times in exhange for significantly more memory usage for all of those pointers.
-  this.flattenOctree(){
+  this.flattenOctree = function(){
     //
     //TODO: Populate this later.
     //

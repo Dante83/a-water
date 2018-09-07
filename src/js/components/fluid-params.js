@@ -20,8 +20,6 @@ AFRAME.registerComponent('fluid-params', {
     this.runProgram = false;
     this.drawParticles = this.data['draw-style'] === 'particles';
     this.drawSurface = this.data['draw-style'] === 'surface';
-    this.particleSystem = new ParticleSystem(this.data['particle-radius'], this.data['drag-coeficient'], this.data['particle-mass']);
-    this.staticScene = new StaticScene(this.data['static-scene-accuracy']);
     this.loaded = false;
     this.initialized = false;
     this.staticMeshes = {
@@ -30,14 +28,7 @@ AFRAME.registerComponent('fluid-params', {
     };
     let thisFluidParams = this;
 
-    //Throw an event for our debugger - we can comment this out later once everything is working.
-
-
-    //Get all static assets attached to this fluid system and attach them to our static scene
-    //
-    //NOTE: For web workers, we probably want to create a combined mesh in this thread, and then pass the collection of
-    //vertices, and nodes into a a web worker intializer.
-    //
+    //Get all static assets loaded so we can attach them to the upcoming static scene that we will attach them all to
     const fluidSystemId = this.el.id;
     const staticColliders = document.querySelectorAll(`.static-fluid-collider.${fluidSystemId}`);
     this.staticCollidersAwaitingLoading = [];
@@ -84,6 +75,13 @@ AFRAME.registerComponent('fluid-params', {
     }
   },
   postLoadInit: function(){
+    //We might as well construct our buckets and things all the way down here, after the models have loaded.
+    //Most of this stuff could probably be done inside of a web worker for increased speed.
+    this.particleConstants = new ParticleConstants(this.data['particle-radius'], this.data['drag-coeficient'], this.data['particle-mass']);
+    this.particleSystem = new ParticleSystem([10.0, 10.0, 10.0], [-10.0, -10.0, -10.0], this.particleConstants, this);
+    this.el.emit('particle-system-constructed', {finished: true});
+    this.staticScene = new StaticScene(this.data['static-scene-accuracy']);
+
     //Trigger the partitioning of our mesh into a set of intersectable point for easy searching
     //in each bucket.
     let staticGeometries = this.staticMeshes.geometries;
@@ -93,6 +91,7 @@ AFRAME.registerComponent('fluid-params', {
     }
     console.log(this.particleSystem);
     this.staticScene.attachMeshToBucketGrid(this.particleSystem.bucketGrid);
+    this.el.emit('static-mesh-constructed', {finished: true});
 
     //Solve the particle system for the situation that minimizes the forces on
     //all particles. That is, the sum of the magnitude of all forces, using
