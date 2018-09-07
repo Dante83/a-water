@@ -8,26 +8,32 @@
 
     <!--Meta-->
     <meta name="viewport" content="width=device-width,initial-scale=1,shrink-to-fit=no,user-scalable=no,maximum-scale=1">
-
-    <script src="https://aframe.io/releases/0.7.0/aframe.min.js"></script>
-    <script src="../../external_js/kd-tree/kd-tree.min.js"></script>
-    <script src="../../external_js/vp-tree/vp-tree.min.js"></script>
-    <script src="../../src/js/bucket-hasher.js"></script>
+    <script src="https://aframe.io/releases/0.8.0/aframe.min.js"></script>
+    <script src="../../src/js/hashers/bucket-grid/bucket-grid.js"></script>
+    <script src="../../src/js/hashers/octree/static-octree.js"></script>
+    <script src="../../src/js/hashers/octree/flattened-statistical-octree.js"></script>
     <script src="../../src/js/interpolator.js"></script>
     <script src="../../src/js/kernal.js"></script>
     <script src="../../src/js/particle-solver.js"></script>
     <script src="../../src/js/particle-system.js"></script>
     <script src="../../src/js/particle.js"></script>
-    <script src="../../src/js/static-scene.js"></script>
+    <script src="../../src/js/collision-systems/static-scene.js"></script>
+    <script src="../../src/js/particle-filler/particle-filler.js"></script>
     <script src="../../src/js/components/fluid-params.js"></script>
+    <script src="../../src/js/components/debug-fluid.js"></script>
     <script src="../../src/js/primitives/a-fluid-system.js"></script>
 
-    <!--Scene Scripts-->
+  <!--Scene Scripts-->
   </head>
   <body>
     <a-scene physics>
-      <!-- Particle System -->
+      <a-assets>
+        <a-asset-item id="containment-box" src="3d-models/containment-box.gltf">
+      </a-assets>
+
       <!-- The id for the particle system is used by all child elements belonging to it-->
+      <!-- NOTE: this must be at the end, so that previous model data is loaded into the system -->
+      <!-- Particle System -->
       <a-fluid-system id="my-particle-system"></a-fluid-system>
 
       <!-- A Wall of Particles That Lives in This System -->
@@ -39,7 +45,7 @@
       <!-- static-fluid-obstacle tells us that this obstacle is unlikely to move, and that's a good thing. -->
       <!-- We don't have dynamic obstacles yet. That will probably implement AABB istead of a KD-Tree.-->
       <!-- Once again, the class my-particle system says who the parent particle system is. -->
-      <a-entity class="static-fluid-collider my-particle-system" gltf-model="url(3d-models/containment-box.gltf)"></a-entity>
+      <a-gltf-model src="#containment-box" class="static-fluid-collider my-particle-system"></a-gltf-model>
     </a-scene>
   </body>
 </html>

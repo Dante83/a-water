@@ -9,14 +9,15 @@
 *  the bucket rapidly (by constructing their own KD-Tree).
 */
 function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
-  this.vertices;
-  this.faces;
-  this.searchablePoints;
+  this.vertices = [];
+  this.faces = [];
+  this.searchablePoints = [];
   this.bucketGrid;
-  this.hashedVertices;
-  this.hashedFaces;
-  this.hashedPoints;
+  this.hashedVertices = [];
+  this.hashedFaces = [];
+  this.hashedPoints = [];
   this.hashDigitsCount = numberOfDigitsBeforeMergingVertices;
+  var thisStaticScene = this;
 
   function Face(vertices, normal){
     this.vertices = vertices;
@@ -43,10 +44,9 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
   }
 
   //Automatically merges geometries together into our singular searchable mesh.
-  this.addMesh = function(meshObject){
+  this.addMesh = function(meshObject, worldMatrix){
     //Create a new geometry object if necessary
     let geometry;
-    isBufferedGeometry = false;
     if(meshObject instanceof THREE.Geometry){
       geometry = meshObject.clone();
     }
@@ -55,14 +55,9 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
       geometry.fromBufferGeometry(meshObject);
     }
 
-    console.log('testing');
-    console.log(geometry);
-
     //get all faces
     let geometryFaces = geometry.faces;
     for(let i = 0, geometryFacesLength = geometryFaces.length; i < geometryFacesLength; i++){
-      console.log("BINGO!");
-
       //get vertices for each of the faces attached to each face
       let geometryFace = geometryFaces[i];
       let vertices = [];
@@ -71,7 +66,8 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
         //The geometry object has all of our vertices, but the face stores the indices
         let geometryVertexIndex = geometryFace[faceVertexIndex];
         let v = geometry.vertices[geometryVertexIndex];
-        let newVertex = new Vertex(v.x.toFixed(this.hashDigitsCount), v.y.toFixed(this.hashDigitsCount), v.z.toFixed(this.hashDigitsCount));
+        let vInW = v.clone().applyMatrix4(worldMatrix);
+        let newVertex = new Vertex(vInW.x.toFixed(this.hashDigitsCount), vInW.y.toFixed(this.hashDigitsCount), vInW.z.toFixed(this.hashDigitsCount));
         vertices.push(newVertex);
         vertexHashes.push(newVertex.coordinates.join('-'));
       }
@@ -82,8 +78,8 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
 
       if(isNotDuplicateFace){
         //Congrats, you have been accepted.
-        this.hashedFaces[faceHash] = new Face(vertices);
-        facePoint.normalVector = geometryFace.normal;
+        thisStaticScene.hashedFaces[faceHash] = new Face(vertices);
+        facePoint.normalVector = geometryFace.normal.clone().applyMatrix4(worldMatrix);
 
         for(let j = 0; j < 3; j++){
           //Connect all of our vertices together
@@ -95,24 +91,23 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
 
           //Check if there are any duplicate vertices inside of our hash though before adding our vertices to the list.
           //if they already exist, just attach the new faces and new vertices.
-          if(this.hashedVertices.hasKey(hash)){
+          if(thisStaticScene.hashedVertices.hasKey(hash)){
             //It already exists? Add a new face and connected vertices to these other
             //vertices (these should not be duplicates because otherwise the face would be a duplicate)
-            this.hashedVertices[hash].connectedVertices.push(vertex.connectedVertices[0]);
-            this.hashedVertices[hash].connectedVertices.push(vertex.connectedVertices[1]);
-            this.hashedVertices[hash].faces.push(facePoint);
+            thisStaticScene.hashedVertices[hash].connectedVertices.push(vertex.connectedVertices[0]);
+            thisStaticScene.hashedVertices[hash].connectedVertices.push(vertex.connectedVertices[1]);
+            thisStaticScene.hashedVertices[hash].faces.push(facePoint);
           }
           else{
             //Not found? Add it.
-            this.hashedVertices[hash] = vertex;
-            this.vertices.push(vertex);
+            thisStaticScene.hashedVertices[hash] = vertex;
+            thisStaticScene.vertices.push(vertex);
           }
         }
       }
     }
 
-    //Clean up if we passed in buffered geometry as we no longer need it.
-    geometry.dispose();
+    //Finished addMesh Method.
   }
 
   //Turns out that we might also have triangles that simply intersect our buckets
@@ -121,42 +116,40 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
   this.attachMeshToBucketGrid = function(bucketGrid){
     //Clear out points in case this oddly gets run a second time
     //and add all our intial vertices by default - as every vertice is searchable
-    //
-    //TODO: We're building searchable points wrong. We need to construct the actual objects and not just pass over vectors
-    //
-    this.searchablePoints = [...this.vertices];
-    this.bucketGrid = bucketGrid;
-    bucketGrid.staticScene = this;
+    thisStaticScene.searchablePoints = [...thisStaticScene.vertices];
+    thisStaticScene.bucketGrid = bucketGrid;
+    bucketGrid.staticScene = thisStaticScene;
 
     //Construct all connectors between each points all associated planes (the intersection of both points planes).
-    for(let i = 0, verticesLength = this.vertices.length; i < verticesLength; i++){
-      let originVertex = this.vertices[i];
+    for(let i = 0, verticesLength = thisStaticScene.vertices.length; i < verticesLength; i++){
+      let originVertex = thisStaticScene.vertices[i];
       for(let j = 0, connectedVerticesLength = originVertex.connectedVertices.length; j < connectedVerticesLength; j++){
         let connectedVertex = originVertex.connectedVertices[j];
 
         //Determine which connectors intersect the planes of our buckets. At each intersection point, create a new searchablePoint,
         //which has attached faces associated with the parent connector.
         let lineFormedByVectors = THREE.Line3(originVertex.toVect3(), connectedVertex.toVect3());
-        for(let k = 0, bucketsLength = this.bucketGrid.buckets.length; k < bucketsLength; k++){
-          let bucket = this.bucketGrid.buckets[k];
+        for(let k = 0, bucketsLength = thisStaticScene.bucketGrid.buckets.length; k < bucketsLength; k++){
+          let bucket = thisStaticScene.bucketGrid.buckets[k];
 
           //Now check for intersections between our line and our planes
           for(let faceIndex = 0; faceIndex < 6; faceIndex++){
             //Get the plane of the face
             let face = bucket.faces[faceIndex];
-            if(face.intersectsLine(lineFormedByVectors)){
+
+            if(face.plane.intersectsLine(lineFormedByVectors)){
               let p = new THREE.Vect3();
-              face.intersectLine(lineFormedByVectors, p);
+              face.plane.intersectLine(lineFormedByVectors, p);
 
               //If any intersections are found in the range of the plane, then add these to our list of searchable points
               let pointIsOnFace = face.isPointOnFace([p.x, p.y, p.z]);
               if(pointIsOnFace){
                 let newPoint = new SearchablePoint(p.x, p.y, p.z, face);
-                let newPointForHash = new SearchablePoint(p.x.toFixed(this.hashDigitsCount), p.y.toFixed(this.hashDigitsCount), p.z.toFixed(this.hashDigitsCount), face);
+                let newPointForHash = new SearchablePoint(p.x.toFixed(thisStaticScene.hashDigitsCount), p.y.toFixed(thisStaticScene.hashDigitsCount), p.z.toFixed(thisStaticScene.hashDigitsCount), face);
                 let hash = newPointForHash.coordinates.join('-');
-                if(!this.hashedPoints.hasKey(hash)){
-                  this.searchablePoints.push(newPoint);
-                  this.hashedPoints[hash] = newPoint;
+                if(!thisStaticScene.hashedPoints.hasKey(hash)){
+                  thisStaticScene.searchablePoints.push(newPoint);
+                  thisStaticScene.hashedPoints[hash] = newPoint;
                   bucket.staticMeshSearchablePoints.push(newPoint);
                 }
               }
@@ -168,8 +161,9 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
 
     //When we're finished, call back and update our bucket hashes with searchable
     //KD Trees which we can query whenever we want to find all the nearest points,
-    //their faces, and normals.
-    this.bucketGrid.updateStaticMeshKDTrees();
+    //their faces, and normals.case
+    console.log("If we made it this far, we're nearly finished with the construction of our static mesh system. :)");
+    thisStaticScene.bucketGrid.constructStaticMeshOctree();
   }
 
   this.findFacesFromVertices = function(vertices){

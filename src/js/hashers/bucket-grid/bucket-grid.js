@@ -28,6 +28,27 @@ function BucketGrid(approximateSearchDiameter, bucketGridID, parentParticleSyste
     return (gridAxialIndexCoordinates[0] * 3) + (gridAxialIndexCoordinates[1] * 3 + 1) + (gridAxialIndexCoordinates[2] * 3 + 2);
   }
 
+  function PointCoord(x, y, z){
+    this.x = x;
+    this.y = y;
+    this.z = z;
+
+    this.setCoordByNum = function(coordNum,  value){
+      if(coordNum === 0){
+        this.x = value;
+      }
+      else if(coordNum === 1){
+        this.y = value;
+      }
+      else if(coordNum === 2){
+        this.z = value;
+      }
+      else{
+        this.errorOnce('serCoordByNumError', 'Invalid number entered into setCoordByNum.');
+      }
+    }
+  }
+
   function Bucket(upperCorner, lowerCorner, parentBucketGrid){
     this.points = [];
     this.pointsMarkedForRemoval = [];
@@ -92,26 +113,26 @@ function BucketGrid(approximateSearchDiameter, bucketGridID, parentParticleSyste
     for(var i = 0; i < 3; i++){
       center.push((upperCorner[i] + lowerCorner[i]) * 0.5);
     }
-    this.hashKey = this.getHashKeyFromPosition(center);
+    this.hashKey = thisBucket.getHashKeyFromPosition(center);
     this.center = {x: center[0], y: center[1], z: center[2]};
 
     this.addPoint = function(point){
       //Time to request an object update
-      this.needsUpdate = true;
+      thisBucket.needsUpdate = true;
       if(!this.bucketsNeedingUpdates.includes(thisBucket)){
-        this.bucketsNeedingUpdates.push(thisBucket);
+        thisBucket.bucketsNeedingUpdates.push(thisBucket);
       }
 
       //Add this point to the bucket
-      this.markPointForAddition(point);
+      thisBucket.markPointForAddition(point);
 
       //Detach this point from the original bucket if such a bucket exists
-      if(point.bucketGrids[this.bucketGridID].bucket !== false){
-        point.bucketGrids[this.bucketGridID].bucket.markPointForRemoval(point);
+      if(point.bucketGrids[thisBucket.bucketGridID].bucket !== false){
+        point.bucketGrids[thisBucket.bucketGridID].bucket.markPointForRemoval(point);
       }
 
       //Set this points bucket for this bucket grid to this bucket
-      point.bucketGrids[this.bucketGridID].bucket = thisBucket;
+      point.bucketGrids[thisBucket.bucketGridID].bucket = thisBucket;
 
       //
       //TODO: This would be an excellent stage to predict this particles departure time from this bucket
@@ -119,16 +140,16 @@ function BucketGrid(approximateSearchDiameter, bucketGridID, parentParticleSyste
     };
 
     this.addPoints = function(points){
-      this.needsUpdate = true;
+      thisBucket.needsUpdate = true;
       if(!this.bucketsNeedingUpdates.includes(thisBucket)){
-        this.bucketsNeedingUpdates.push(thisBucket);
+        thisBucket.bucketsNeedingUpdates.push(thisBucket);
       }
 
       //Add all of these points to the bucket
-      this.pointsMarkedForAddition = [...pointsMarkedForAddition, ...points];
+      thisBucket.pointsMarkedForAddition = [...pointsMarkedForAddition, ...points];
 
       //Add this point to the bucket
-      this.markPointsForAddition(points);
+      thisBucket.markPointsForAddition(points);
 
       //Detach this point from the original bucket if such a bucket exists
       var filteredPoints = points.filter((x) => x !== false);
@@ -148,24 +169,24 @@ function BucketGrid(approximateSearchDiameter, bucketGridID, parentParticleSyste
 
     //We don't actualy 'remove points' unless they're being detached from the grid entirely
     this.detachPointFromGrid = function(point){
-      delete point.bucketGrids[this.bucketGridID];
-      this.markPointForRemoval[point];
+      delete point.bucketGrids[thisBucket.bucketGridID];
+      thisBucket.markPointForRemoval[point];
     };
 
     this.markPointsForAddition = function(points){
-      this.pointsMarkedForAddition = [...this.pointsMarkedForAddition, ...points];
+      thisBucket.pointsMarkedForAddition = [...thisBucket.pointsMarkedForAddition, ...points];
     };
 
     this.markPointForAddition = function(point){
-      this.pointsMarkedForAddition.push(point);
+      thisBucket.pointsMarkedForAddition.push(point);
     };
 
     this.markPointForRemoval = function(point){
-      this.pointsMarkedForRemoval.push(point);
+      thisBucket.pointsMarkedForRemoval.push(point);
     };
 
     this.markPointsForRemoval = function(points){
-      this.pointsMarkedForRemoval = [...this.pointsMarkedForRemoval, ...points];
+      thisBucket.pointsMarkedForRemoval = [...thisBucket.pointsMarkedForRemoval, ...points];
     };
 
     this.flushPoints = function(){
@@ -176,22 +197,22 @@ function BucketGrid(approximateSearchDiameter, bucketGridID, parentParticleSyste
       //exchangable (you can't tell one particle from another). Then you'd only have to swap properties
       //instead of reconstructing the entire particle list (as filtering particles can be a bit expensive)
       //But, for now, this should work rather well and is at least a little more optimized then normal.
-      for(var i = 0; i < this.points.length; i++){
-        var point = this.points[i];
-        if(!(this.pointsMarkedForRemoval.includes(point) || this.pointsMarkedForAddition.includes(point))){
-          newPoints.push(this.points[i]);
+      for(var i = 0; i < thisBucket.points.length; i++){
+        var point = thisBucket.points[i];
+        if(!(thisBucket.pointsMarkedForRemoval.includes(point) || thisBucket.pointsMarkedForAddition.includes(point))){
+          newPoints.push(thisBucket.points[i]);
         }
       }
 
-      this.points = newPoints;
-      this.pointsMarkedForRemoval = [];
-      this.pointsMarkedForAddition = [];
-      this.needsUpdate = false;
+      thisBucket.points = newPoints;
+      thisBucket.pointsMarkedForRemoval = [];
+      thisBucket.pointsMarkedForAddition = [];
+      thisBucket.needsUpdate = false;
     };
 
     this.constructStaticMeshKDTree = function(){
       //If the number of points is non-zero...
-      if(this.staticMeshSearchablePoints.length > 0){
+      if(thisBucket.staticMeshSearchablePoints.length > 0){
         bucket.IntersectsStaticMesh = true;
 
         //Create a KD Tree from all points in this bucket.
@@ -202,32 +223,35 @@ function BucketGrid(approximateSearchDiameter, bucketGridID, parentParticleSyste
           let diff3 = a[2] - b[2];
           return (diff1 * diff1) + (diff2 * diff2) + (diff3 * diff3);
         }
-        this.staticMeshKDTree = new kdTree(this.staticMeshSearchablePoints, [0, 1, 2]);
+        thisBucket.staticMeshKDTree = new kdTree(thisBucket.staticMeshSearchablePoints, [0, 1, 2]);
       };
     }
 
     this.findPointsInsideStaticMesh = function(points, searchRadius){
       var pointsInsideOfMesh = [];
-      if(this.IntersectsStaticMesh){
-        for(let i = 0; i < points.length; i++){
+      if(thisBucket.IntersectsStaticMesh){
+        for(let i = 0, pointsLength = points.length; i < pointsLength; i++){
           //Do the Static Mesh KD tree search for the nearest point to this particle.
           var point = points[i];
-          let nearestCoordinates = this.staticMeshKDTree.nearest([point.position.x, point.position.y, point.position.z], 1, [searchRadius]);
+          let pointPosition = point.position;
+          let nearestCoordinates = thisBucket.staticMeshKDTree.nearest([pointPosition.x, pointPosition.y, pointPosition.z], 1, [searchRadius]);
 
           //Hash this value to get the searchable point in the static scene.
           let p = nearestCoordinates[0][0];
-          let hash = [p.x.toFixed(this.staticScene.hashDigitsCount), p.y.toFixed(this.staticScene.hashDigitsCount), p.z.toFixed(this.staticScene.hashDigitsCount)]
-          var hashedNearestPoint = this.staticScene.hashedPoints[hash];
-          var pointVector = new THREE.Vector3(point[0], point[1], point[2]);
+          let staticScene = thisBucket.staticScene;
+          let staticSceneHashDigitsCount = staticScene.hashDigitsCount;
+          let hash = [p.x.toFixed(staticSceneHashDigitsCount), p.y.toFixed(staticSceneHashDigitsCount), p.z.toFixed(staticSceneHashDigitsCount)]
+          let hashedNearestPoint = staticScene.hashedPoints[hash];
+          let pointVector = new THREE.Vector3(point[0], point[1], point[2]);
 
           //Use the method described here:
           //https://blender.stackexchange.com/questions/31693/how-to-find-if-a-point-is-inside-a-mesh
           //to determine if each particle is inside of the mesh.
           //Start by going all the nearest candidate faces...
-          var nearestFace = false;
-          var nearestPointOnFace;
-          var nearestFaceDistance;
-          for(let j = 0; j < hashedNearestPoint.faces; j++){
+          let nearestFace = false;
+          let nearestPointOnFace;
+          let nearestFaceDistance;
+          for(let j = 0, facesLength = hashedNearestPoint.faces.length; j < facesLength; j++){
             let face = hashedNearestPoint.faces[j];
             var triangle = face.triangle;
             var nearestPointOnTriangle = new THREE.Vector3();
@@ -459,18 +483,18 @@ function BucketGrid(approximateSearchDiameter, bucketGridID, parentParticleSyste
   };
 
   this.findPointsInSphere = function(position, radius){
-    var potentialPoints = this.getPotentialPointsForSearch(position, radius);
-    var foundPoints = [];
-    var radiusSquared = radius * radius;
-    for(var i = 0; i < potentialPoints.length; i++){
-      var potentialPoint = potentialPoints[i];
-      var xDiff = potentialPoint.x - position.x;
-      var yDiff = potentialPoint.y - position.y;
-      var zDiff = potentialPoint.z - position.z;
-      var sumOfSquares = xDiff * xDiff + yDiff * yDiff + zDiff + zDiff;
+    let potentialPoints = this.getPotentialPointsForSearch(position, radius);
+    let foundPoints = [];
+    let radiusSquared = radius * radius;
+    for(var i = 0, potentialPointsLength = potentialPoints.length; i < potentialPointsLength; i++){
+      let potentialPoint = potentialPoints[i];
+      let xDiff = potentialPoint.x - position.x;
+      let yDiff = potentialPoint.y - position.y;
+      let zDiff = potentialPoint.z - position.z;
+      let sumOfSquares = xDiff * xDiff + yDiff * yDiff + zDiff + zDiff;
       if(sumOfSquares < radiusSquared){
-        var distance = Math.sqrt(sumOfSquares);
-        var inverseDistance = 1.0 / distance;
+        let distance = Math.sqrt(sumOfSquares);
+        let inverseDistance = 1.0 / distance;
         foundPoints.push({
           point: potentialPoints[i],
           distance: distance,
@@ -491,55 +515,37 @@ function BucketGrid(approximateSearchDiameter, bucketGridID, parentParticleSyste
   };
 
   this.updateParticles = function(particles){
-    var particlesToAddByHash = [];
-    particles.foreach(function(particle){
-      var newHash = this.getHashKeyFromPosition([particle.position.x, particle.position.y, particle.position.z]);
-      if(newHash !== particle.bucketGrids[this.bucketGridID].bucket.hashKey){
+    let particlesToAddByHash = [];
+    for(let i = 0, particlesLength = particles.length; i < particlesLength; particles++){
+      let particle = particles[i];
+      let newHash = thisBucketGrid.getHashKeyFromPosition([particle.position.x, particle.position.y, particle.position.z]);
+      if(newHash !== particle.bucketGrids[thisBucketGrid.bucketGridID].bucket.hashKey){
         if(!particlesToAddByHash.includes(newHash)){
           particlesToAddByHash[newHash] = [];
         }
         particlesToAddByHash[newHash].push(particle);
       }
-    });
+    }
+
     particlesToAddByHash.foreach(function(particleCollection, hashKey){
-      this.hashedBuckets[hashKey].addParticles(particleCollection);
+      thisBucketGrid.hashedBuckets[hashKey].addParticles(particleCollection);
     });
   };
 
   this.flush = function(){
-    this.bucketsNeedingUpdates.foreach(function(bucket){
-      bucket.flush();
-    });
-    this.bucketsNeedingUpdates = [];
+    let buckets = thisBucketGrid.bucketsNeedingUpdates;
+    for(let i = 0, bucketsLength = buckets.length; i < bucketsLength; i++){
+      buckets[i].flush();
+    }
+    thisBucketGrid.bucketsNeedingUpdates = [];
   };
 
-  this.updateStaticMeshKDTrees = function(){
-    for(let i = 0; i < this.buckets.length; i++){
+  this.constructStaticMeshOctree = function(){
+    for(let i = 0, bucketsLength = this.buckets.length; i < bucketsLength; i++){
       let bucket = this.buckets[i];
-      bucket.constructStaticMeshKDTree();
+      bucket.constructStaticMeshOctree();
     }
   };
-
-  function PointCoord(x, y, z){
-    this.x = x;
-    this.y = y;
-    this.z = z;
-
-    this.setCoordByNum = function(coordNum,  value){
-      if(coordNum === 0){
-        this.x = value;
-      }
-      else if(coordNum === 1){
-        this.y = value;
-      }
-      else if(coordNum === 2){
-        this.z = value;
-      }
-      else{
-        this.errorOnce('serCoordByNumError', 'Invalid number entered into setCoordByNum.');
-      }
-    }
-  }
 
   //
   //Logging stuff

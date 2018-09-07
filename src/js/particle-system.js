@@ -1,5 +1,8 @@
-function ParticleSystem(radius, dragCoefficient, mass){
-  var parentParticleSystem = this;
+function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluidParams){
+  var thisParticleSystem = this;
+  var parentFluidParams = parentFluidParams;
+  this.upperCorner = upperCorner;
+  this.lowerCorner = lowerCorner;
   this.particles = [];
   this.staticMesh = [];
   this.dynamicMesh = [];
@@ -7,25 +10,29 @@ function ParticleSystem(radius, dragCoefficient, mass){
   this.maxParticleID = 0;
   const gravity = new THREE.Vector3(0.0, -9.81, 0.0);
 
+  //Construct the bucket grid system to attach to this particle system so that we can track our particles,
+  //as they're added, subtracted or moved. Not that we want our grid size equal to our particle radius.
+  this.bucketGrid = new BucketGrid(particleConstants.radius, parentFluidParams.el.id, thisParticleSystem);
+
   //Basically, all of our particles are identical, so we calculate their universal values here and
   //then add this to every particle, allow it to reference the values through a point without redoing
   //the calculations, potentially a whole a bunch of times - even for internal functions that are called
   //countless times on every single particle.
-  this.universalParticleProperties = ParticleConstants(radius, dragCoefficient, mass);
+  this.universalParticleProperties = particleConstants;
 
   this.addParticles = function(positions, velocities){
     for(let i = 0, particlesLen = positions.length; i < particlesLen; i++){
       //Right now this starts off with no forces and no wind...
       //TODO: In the future, we might want to consider the impact of wind on our fluid.
       //NOTE: The default value for THREE.Vector3() is actually [0,0,0]
-      var newParticle = new Particle(positions[i], velocities[i], new THREE.Vector3(), new THREE.Vector3(), this.maxParticleID, parentParticleSystem.universalParticleProperties);
+      var newParticle = new Particle(positions[i], velocities[i], new THREE.Vector3(), new THREE.Vector3(), this.maxParticleID, thisParticleSystem.universalParticleProperties);
 
       //Find the bucket associated with this particle and add the particle to bucket
       this.bucketGrid.addPoint(newParticle, 'position');
-      parentParticleSystem.particles.push(newParticle);
+      thisParticleSystem.particles.push(newParticle);
       this.maxParticleID += 1;
     }
-    parentParticleSystem.numberOfParticles += positions.length;
+    thisParticleSystem.numberOfParticles += positions.length;
   };
 
   this.cullParticles = function(){
@@ -33,13 +40,13 @@ function ParticleSystem(radius, dragCoefficient, mass){
     //
     //TODO: In the future we will want a more robust "Kill feature."
     //
-    parentParticleSystem.particles = parentParticleSystem.particles.filter(function(particle){
+    thisParticleSystem.particles = thisParticleSystem.particles.filter(function(particle){
       return particle.position.length() < 20.0;
     });
 
     //TODO: Remove particles from all of our bucket hashes
 
-    parentParticleSystem.numberOfParticles = parentParticleSystem.particles.length;
+    thisParticleSystem.numberOfParticles = thisParticleSystem.particles.length;
   };
 
   this.updateParticles = function(deltaT){
@@ -67,7 +74,7 @@ function ParticleSystem(radius, dragCoefficient, mass){
     }
 
     for(let i = 0, particlesLen = this.particles.length; i < particlesLen; i++){
-      updateParticle(parentParticleSystem.particles[i]);
+      updateParticle(thisParticleSystem.particles[i]);
     }
   };
 
@@ -77,7 +84,7 @@ function ParticleSystem(radius, dragCoefficient, mass){
     //TODO: to obsorb energy. In the future, we require a more robust collision engine.
     //
     const fractionOfVLost = 0.5;
-    let particlesThatHitFloor = parentParticleSystem.particles.filter(
+    let particlesThatHitFloor = thisParticleSystem.particles.filter(
       function(particle){
         //Hit the floor and going down? Time to bounce.
         return (particle.position.y <= 0.0 && particle.velocity.y < 0.0);
@@ -94,7 +101,7 @@ function ParticleSystem(radius, dragCoefficient, mass){
   };
 
   this.getNumberOfParticles = function(){
-    return parentParticleSystem.numberOfParticles;
+    return thisParticleSystem.numberOfParticles;
   };
 
   //Debugging methods
@@ -104,19 +111,19 @@ function ParticleSystem(radius, dragCoefficient, mass){
 
   this.logs = {};
   this.logOnce = function(name, msg){
-    if(parentParticleSystem.logs[name] !== 'logged'){
-      parentParticleSystem.logs[name] = 'logged';
+    if(thisParticleSystem.logs[name] !== 'logged'){
+      thisParticleSystem.logs[name] = 'logged';
       console.log(msg);
     }
   };
 
   this.logNTimes = function(name, maxNumLogs, msg){
-    if(parentParticleSystem.logs[name] == null){
-      parentParticleSystem.logs[name] = 1;
+    if(thisParticleSystem.logs[name] == null){
+      thisParticleSystem.logs[name] = 1;
       console.log(msg);
     }
-    if(parentParticleSystem.logs[name] <= maxNumLogs){
-      parentParticleSystem.logs[name] += 1;
+    if(thisParticleSystem.logs[name] <= maxNumLogs){
+      thisParticleSystem.logs[name] += 1;
       console.log(msg);
     }
   };

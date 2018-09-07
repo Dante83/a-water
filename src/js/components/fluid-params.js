@@ -17,10 +17,21 @@ AFRAME.registerComponent('fluid-params', {
     'time-between-sph-iteration-writes': {type: 'number', default: 5*60}
   },
   init: function(){
+    this.runProgram = false;
     this.drawParticles = this.data['draw-style'] === 'particles';
     this.drawSurface = this.data['draw-style'] === 'surface';
     this.particleSystem = new ParticleSystem(this.data['particle-radius'], this.data['drag-coeficient'], this.data['particle-mass']);
     this.staticScene = new StaticScene(this.data['static-scene-accuracy']);
+    this.loaded = false;
+    this.initialized = false;
+    this.staticMeshes = {
+      geometries: [],
+      worldMatrices: []
+    };
+    let thisFluidParams = this;
+
+    //Throw an event for our debugger - we can comment this out later once everything is working.
+
 
     //Get all static assets attached to this fluid system and attach them to our static scene
     //
@@ -28,123 +39,174 @@ AFRAME.registerComponent('fluid-params', {
     //vertices, and nodes into a a web worker intializer.
     //
     const fluidSystemId = this.el.id;
-    const staticColliders = document.querySelectorAll(`.${fluidSystemId} .static-fluid-collider`);
+    const staticColliders = document.querySelectorAll(`.static-fluid-collider.${fluidSystemId}`);
+    this.staticCollidersAwaitingLoading = [];
+    for(let i = 0, staticCollidersLen = staticColliders.length; i < staticCollidersLen; i++){
+      this.staticCollidersAwaitingLoading[staticColliders[i].object3D.uuid] = false;
+    }
 
     //Traverse the mesh objects passed over
     for(let i = 0, staticCollidersLen = staticColliders.length; i < staticCollidersLen; i++){
-      let staticCollider = staticColliders[i].object3D;
-      staticCollider.traverse(function(node){
-        if (node instanceof THREE.Mesh){
-          this.staticScene.addMesh(node.geometry);
+      let staticCollider = staticColliders[i];
+
+      //If not, load it.
+      staticCollider.addEventListener('model-loaded', function (gltf) {
+        let object3D = gltf.target.object3D;
+        thisFluidParams.staticCollidersAwaitingLoading[object3D.uuid] = true;
+        let matrixWorld = object3D.matrixWorld;
+        let model = gltf.detail.model;
+        geometries = [];
+        worldMatrices = [];
+
+        model.traverse(function(child){
+          if (child.isMesh) {
+            worldMatrices.push(child.matrixWorld);
+            geometries.push(child.geometry);
+          }
+        });
+
+        //Add these to our growing list of objects to watch on the next stage of initialization
+        thisFluidParams.staticMeshes.geometries.concat(geometries);
+        thisFluidParams.staticMeshes.worldMatrices.concat(worldMatrices);
+
+        //Check if alls models were added, if so, it's time for this entity to start rocking and rolling
+        let allMeshesParsed = true;
+        for(let status in thisFluidParams.staticCollidersAwaitingLoading){
+          if(status === false){
+            allMeshesParsed = false;
+            break;
+          }
+        }
+        if(allMeshesParsed){
+          thisFluidParams.postLoadInit();
         }
       });
     }
+  },
+  postLoadInit: function(){
+    //Trigger the partitioning of our mesh into a set of intersectable point for easy searching
+    //in each bucket.
+    let staticGeometries = this.staticMeshes.geometries;
+    let staticWorldMatrices = this.staticMeshes.worldMatrices;
+    for(let i = 0, geometriesLength = staticGeometries.length; i < geometriesLength; i++){
+      this.staticScene.addMesh(staticGeometries[i], staticWorldMatrices[i]);
+    }
+    console.log(this.particleSystem);
+    this.staticScene.attachMeshToBucketGrid(this.particleSystem.bucketGrid);
 
-    //Trigger construction of static KD Trees
+    //Solve the particle system for the situation that minimizes the forces on
+    //all particles. That is, the sum of the magnitude of all forces, using
+    //Newton's method. I would normally use BFGS, but past experience suggests that
+    //Newton's method is somewhat more stable. We initialize the system with an estimate
+    //for all particles that assumes a hexagonal packing structure - which actually should
+    //be pretty good for a lot of situations.
+    //
+    //NOTE: For now, we're just going to populate our little boxes with lots of particles.
+    //We can do the fun stuff after we get the fluid system working.
+    //
 
 
-    //Get all particle entities attached to this fluid system
-
-
-    //Add all particles into the grid at periodic positions
-    //that also fall inside of the particle system grid and inside of the colliders.
 
     //
     //NOTE: A future objective is to cover the surface in some super-fast adaptive grid
     //technique
     //
-    this.useHardSpheres = true;
-    this.geometry = new THREE.SphereGeometry( 0.1, 4, 4);
-    this.material = new THREE.MeshBasicMaterial( {color: '#00AAFF'} );
-    this.numberOfParticles = 0;
-
-    //Initialize our time trackers for sub-frame calculations.
-    //TODO: Move to time weighted average
-    let storedDataForSecondsPerFrameEstimate = localStorage.getItem("a-fluid-system.spf.data");
-    const maxPreviousSPFTimeDeltas = 12;
-    this.dataNotUpdated = true;
-    this.dataForSecondsPerFrameEstimate = storedDataForSecondsPerFrameEstimate ? storedDataForSecondsPerFrameEstimate : [].fill(0, maxPreviousSPFTimeDeltas, 0.016);
-    if(this.dataForSecondsPerFrameEstimate > maxPreviousSPFTimeDeltas){
-      //Cut off the oldest values
-      let difference = this.dataForSecondsPerFrameEstimate.length - maxPreviousSPFTimeDeltas;
-      this.dataForSecondsPerFrameEstimate = this.dataForSecondsPerFrameEstimate.splice(maxPreviousSPFTimeDeltas - 1, difference);
-    }
-    else if(this.dataForSecondsPerFrameEstimate < maxPreviousSPFTimeDeltas){
-      //Populate the rest of the data with the average value.
-      let difference = maxPreviousSPFTimeDeltas - this.dataForSecondsPerFrameEstimate;
-      let avg = this.dataForSecondsPerFrameEstimate.reduce((accumulator, currentValue) => currentValue + accumulator) / this.dataForSecondsPerFrameEstimate.length;
-      this.dataForSecondsPerFrameEstimate = [...this.dataForSecondsPerFrameEstimate, ...[].fill(0, difference, avg)];
-    }
-    this.estimatedSecondsPerFrameSum = this.dataForSecondsPerFrameEstimate.reduce((accumulator, currentValue) => currentValue + accumulator);
-    this.inverseDataForSecondsPerFrameEstimateLength = 1.0 / this.dataForSecondsPerFrameEstimate.length;
-    this.estimatedSecondsPerFrame = this.estimatedSecondsPerFrameSum * this.inverseDataForSecondsPerFrameEstimateLength;
-    this.sphWriterTimeTracker = 0.0;
+    // this.useHardSpheres = true;
+    // this.geometry = new THREE.SphereGeometry( 0.1, 4, 4);
+    // this.material = new THREE.MeshBasicMaterial( {color: '#00AAFF'} );
+    // this.numberOfParticles = 0;
+    //
+    // //Initialize our time trackers for sub-frame calculations.
+    // //TODO: Move to time weighted average
+    // let storedDataForSecondsPerFrameEstimate = localStorage.getItem("a-fluid-system.spf.data");
+    // const maxPreviousSPFTimeDeltas = 12;
+    // this.dataNotUpdated = true;
+    // this.dataForSecondsPerFrameEstimate = storedDataForSecondsPerFrameEstimate ? storedDataForSecondsPerFrameEstimate : [].fill(0, maxPreviousSPFTimeDeltas, 0.016);
+    // if(this.dataForSecondsPerFrameEstimate > maxPreviousSPFTimeDeltas){
+    //   //Cut off the oldest values
+    //   let difference = this.dataForSecondsPerFrameEstimate.length - maxPreviousSPFTimeDeltas;
+    //   this.dataForSecondsPerFrameEstimate = this.dataForSecondsPerFrameEstimate.splice(maxPreviousSPFTimeDeltas - 1, difference);
+    // }
+    // else if(this.dataForSecondsPerFrameEstimate < maxPreviousSPFTimeDeltas){
+    //   //Populate the rest of the data with the average value.
+    //   let difference = maxPreviousSPFTimeDeltas - this.dataForSecondsPerFrameEstimate;
+    //   let avg = this.dataForSecondsPerFrameEstimate.reduce((accumulator, currentValue) => currentValue + accumulator) / this.dataForSecondsPerFrameEstimate.length;
+    //   this.dataForSecondsPerFrameEstimate = [...this.dataForSecondsPerFrameEstimate, ...[].fill(0, difference, avg)];
+    // }
+    // this.estimatedSecondsPerFrameSum = this.dataForSecondsPerFrameEstimate.reduce((accumulator, currentValue) => currentValue + accumulator);
+    // this.inverseDataForSecondsPerFrameEstimateLength = 1.0 / this.dataForSecondsPerFrameEstimate.length;
+    // this.estimatedSecondsPerFrame = this.estimatedSecondsPerFrameSum * this.inverseDataForSecondsPerFrameEstimateLength;
+    // this.sphWriterTimeTracker = 0.0;
+    // this.runProgram = true;
   },
   tick: function (time, timeDelta) {
-    //Update our FPS Tracking System
-    this.previousFPSValues.unshift(timeDelta);
-    let lastValue = this.previousFPSValues.pop();
-    this.estimatedSecondsPerFrame = (this.estimatedSecondsPerFrameSum - lastValue + timeDelta) * this.inverseDataForSecondsPerFrameEstimateLength;
-    let sphIterationsPerSecond = this.data['sph-iterations-per-second'];
-    let numberOfSPCIterations = Math.ceil(sphIterationsPerSecond * this.estimatedSecondsPerFrame);
-    let timeStep = timeDelta / numberOfSPCIterations;
+    //Wait until post load is completed before attempting to tick through our system.
+    if(this.initialized){
+      //Update our FPS Tracking System
+      // this.previousFPSValues.unshift(timeDelta);
+      // let lastValue = this.previousFPSValues.pop();
+      // this.estimatedSecondsPerFrame = (this.estimatedSecondsPerFrameSum - lastValue + timeDelta) * this.inverseDataForSecondsPerFrameEstimateLength;
+      // let sphIterationsPerSecond = this.data['sph-iterations-per-second'];
+      // let numberOfSPCIterations = Math.ceil(sphIterationsPerSecond * this.estimatedSecondsPerFrame);
+      // let timeStep = timeDelta / numberOfSPCIterations;
+      //
+      // let previousParticlePositions = [];
+      // let cachedParticlePositions = [];
 
-    let previousParticlePositions = [];
-    let cachedParticlePositions = [];
+      //
+      //NOTE: A lot of these things require a kind of parent over-arching system to handle all sub-systems.
+      //
 
-    //
-    //NOTE: A lot of these things require a kind of parent over-arching system to handle all sub-systems.
-    //
+      //
+      //NOTE: Re-Add Code to add new particles here from sources and remove particles from sinks.
+      //
 
-    //
-    //NOTE: Re-Add Code to add new particles here from sources and remove particles from sinks.
-    //
+      //
+      //NOTE:
+      //unless the user is able to observe the system before it can be updated with information from a heightmap
+      //for another constant of time. Perhaps an adaptive learning mechnism would prove useful here.
+      //
 
-    //
-    //NOTE: We might also wish to keep track of particle system visibility for a certain period of time
-    //unless the user is able to observe the system before it can be updated with information from a heightmap
-    //for another constant of time. Perhaps an adaptive learning mechnism would prove useful here.
-    //
+      //
+      //NOTE: Implement adaptive grid accuracies that reflect less accuracy with greater distance.
+      //
 
-    //
-    //NOTE: Implement adaptive grid accuracies that reflect less accuracy with greater distance.
-    //
+      //
+      //NOTE: Implement a wave solver that attempts to solve certain grids as normal deep ocean systems, possibly with just splash effects at great distances.
+      //
 
-    //
-    //NOTE: Implement a wave solver that attempts to solve certain grids as normal deep ocean systems, possibly with just splash effects at great distances.
-    //
+      //
+      //TODO: Pull this out into it's own solver in the solver that we can just update and call
+      //for each worker thread.
+      //
+      // for(let i = 0; i < numberOfSPCIterations; i++){
+      //   //Implement our fluid solver
+      //   this.particleSystem.updateParticles(timeDelta/1000.0);
+      //   this.particleSystem.resolveCollision();
+      //
+      //   if(){
+      //
+      //   }
+      //   else if(){
+      //
+      //   }
+      // }
 
-    //
-    //TODO: Pull this out into it's own solver in the solver that we can just update and call
-    //for each worker thread.
-    //
-    // for(let i = 0; i < numberOfSPCIterations; i++){
-    //   //Implement our fluid solver
-    //   this.particleSystem.updateParticles(timeDelta/1000.0);
-    //   this.particleSystem.resolveCollision();
-    //
-    //   if(){
-    //
-    //   }
-    //   else if(){
-    //
-    //   }
-    // }
-
-    //Update the draw position or redraw the fluid surface
-    if(this.drawParticles){
-      for(let i = 0; i < this.numberOfParticles; i++){
-        var partPos = this.particleSystem.particles[i].position;
-        var drawPos = this.fluidParticles[i].position.set(partPos.x, partPos.y, partPos.z);
-      }
-    }
-
-    if(this.dataNotUpdated){
-      if(this.sphWriterTimeTracker >= this.data['time-between-sph-iteration-writes']){
-        this.dataNotUpdated = false;
-        localStorage.setItem("a-fluid-system.spf.data", this.previousFPSValues);
-      }
-      this.sphWriterTimeTracker += timeDelta;
+      //Update the draw position or redraw the fluid surface
+      // if(this.drawParticles){
+      //   for(let i = 0; i < this.numberOfParticles; i++){
+      //     var partPos = this.particleSystem.particles[i].position;
+      //     var drawPos = this.fluidParticles[i].position.set(partPos.x, partPos.y, partPos.z);
+      //   }
+      // }
+      //
+      // if(this.dataNotUpdated){
+      //   if(this.sphWriterTimeTracker >= this.data['time-between-sph-iteration-writes']){
+      //     this.dataNotUpdated = false;
+      //     localStorage.setItem("a-fluid-system.spf.data", this.previousFPSValues);
+      //   }
+      //   this.sphWriterTimeTracker += timeDelta;
+      // }
     }
   },
   getRandomColor() {
