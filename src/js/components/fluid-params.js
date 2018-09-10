@@ -78,7 +78,7 @@ AFRAME.registerComponent('fluid-params', {
     //We might as well construct our buckets and things all the way down here, after the models have loaded.
     //Most of this stuff could probably be done inside of a web worker for increased speed.
     this.particleConstants = new ParticleConstants(this.data['particle-radius'], this.data['drag-coeficient'], this.data['particle-mass']);
-    this.particleSystem = new ParticleSystem([10.0, 10.0, 10.0], [-10.0, -10.0, -10.0], this.particleConstants, this);
+    this.particleSystem = new ParticleSystem([3.0, 3.0, 1.5], [0.0, 0.0, 0], this.particleConstants, this);
     this.el.emit('particle-system-constructed', {finished: true});
     this.staticScene = new StaticScene(this.data['static-scene-accuracy']);
 
