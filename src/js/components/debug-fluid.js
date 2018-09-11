@@ -48,7 +48,7 @@ AFRAME.registerComponent('debug-fluid', {
   },
   initDrawBuckets: function(){
     //All the little boxes in the big box - drawn with lines.
-
+    
   },
   initDrawStaticMesh: function(){
     //A series of dots where the vertices of the static mesh are, with lines connecting them.

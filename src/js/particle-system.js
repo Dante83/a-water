@@ -18,9 +18,8 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
 
   //Construct the bucket grid system to attach to this particle system so that we can track our particles,
   //as they're added, subtracted or moved. Not that we want our grid size equal to our particle radius.
-  let performanceDebugger = new PerformanceDebugger();
   let bucketConstants = new BucketConstants();
-  this.bucketGrid = new BucketGrid(upperCorner, lowerCorner, particleConstants.radius, parentFluidParams.el.id, thisParticleSystem, bucketConstants, performanceDebugger);
+  this.bucketGrid = new BucketGrid(upperCorner, lowerCorner, particleConstants.radius, parentFluidParams.el.id, thisParticleSystem, bucketConstants);
 
   //TODO: In the future, we might automatically construct an optimal grid from a gltf mesh.
   //Or allow for several choices. For now, we're just providing an upper and lower corner and building the optimal grid from that.
@@ -48,12 +47,12 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
       for(let z = 1; z <= boxesAlongZ; z++){
         upperBucketCornerZ += radius;
         let upperBucketCorner = [lowerCornerX + upperBucketCornerX, lowerCornerY + upperBucketCornerY, lowerCornerZ + upperBucketCornerZ];
-        this.bucketGrid.addBucket(upperCorner, radius);
+        this.bucketGrid.addBucket(upperBucketCorner, radius);
       }
     }
   }
   this.bucketGrid.connectBuckets();
-  performanceDebugger.outputPerformanceResults();
+  perfDebug.outputPerformanceResults();
 
   //Trigger an alert that our bucket system is now completed for our debugger. We can comment this out in the final release
   //once everything works.
