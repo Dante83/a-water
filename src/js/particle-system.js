@@ -38,7 +38,6 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
   //Main bucket construction loop.
   let upperBucketCornerX = lowerCornerX;
   for(let x = 1; x <= boxesAlongX; x++){
-    console.log(x);
     upperBucketCornerX += radius;
     let upperBucketCornerY = lowerCornerY;
     for(let y = 1; y <= boxesAlongY; y++){
@@ -52,11 +51,11 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
     }
   }
   this.bucketGrid.connectBuckets();
-  perfDebug.outputPerformanceResults();
+  //perfDebug.outputPerformanceResults();
 
   //Trigger an alert that our bucket system is now completed for our debugger. We can comment this out in the final release
   //once everything works.
-  parentFluidParams.el.emit('bucket-grid-constructed', {finished: true});
+  parentFluidParams.el.emit('bucket-grid-constructed', {particleSystem: this});
 
   this.addParticles = function(positions, velocities){
     let pointsByHash = [];
