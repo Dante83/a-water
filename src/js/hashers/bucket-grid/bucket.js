@@ -1,24 +1,43 @@
+//
+//NOTE: Eliminate our big memory hogs, faces and corners.
+//Instead, we should create them on the fly, while running our static mesh collision
+//system on each cell. This should reduce our memory foot-print for each particle system.
+//Our ultimate goal is to let this use a lot of memory, but we also want to use that memory
+//efficiently when we get it.
+//
 function Bucket(upperCorner, lowerCorner, parentBucketGrid){
   perfDebug.spotCheckPerformance('bucket initialization', true);
+  this.upperCorner = upperCorner.slice(0);
+  this.lowerCorner = lowerCorner.slice(0);
   this.points = [];
-  this.particles = [];
   this.pointsMarkedForRemoval = [];
   this.pointsMarkedForAddition = [];
-  this.faces = [];
-  this.corners = [];
   this.connectedBuckets = {};
   this.needsUpdate = false;
-  this.parentBucketGrid = parentBucketGrid;
   this.instersectsStaticMesh = false;
-  this.instersectsDynamicsMesh = false;
   this.isInsideStaticMesh = false;
-  this.staticMeshSearchablePoints = [];
-  this.linearProbabalisticImpulses = [];
-  let bucketConstants = parentBucketGrid.bucketConstants;
+  this.staticMeshPoints;
+  this.parentBucketGrid = parentBucketGrid;
+  this.bucketConstants = parentBucketGrid.bucketConstants;
   perfDebug.spotCheckPerformance('bucket initialization', false);
+}
+
+Bucket.prototype.getCenter = function(){
+  let center = [];
+  for(let i = 0; i < 3; i++){
+    center.push((this.upperCorner[i] + this.lowerCorner[i]) * 0.5);
+  }
+
+  return center;
+}
+
+Bucket.prototype.getCorners = function(){
+  let corners = [];
+  let upperCorner = this.upperCorner;
+  let lowerCorner = this.lowerCorner;
 
   perfDebug.spotCheckPerformance('construct corners', true);
-  let upperCornerIndices = bucketConstants.bucketCornerIndices;
+  let upperCornerIndices = this.bucketConstants.bucketCornerIndices;
   for(let i = 0; i < 8; i++){
     //Iterate through all permuations/combinations between the upper and lower corner points
     var useUpperCorner = upperCornerIndices[i];
@@ -31,21 +50,22 @@ function Bucket(upperCorner, lowerCorner, parentBucketGrid){
         newCorner[j] = lowerCorner[j];
       }
     }
-    this.corners.push(newCorner);
+    corners.push(newCorner);
   }
   perfDebug.spotCheckPerformance('construct corners', false);
 
+  return corners;
+}
+
+Bucket.prototype.getFaces = function(){
   perfDebug.spotCheckPerformance('construct faces', true);
-  let center = [];
-  for(var i = 0; i < 3; i++){
-    center.push((upperCorner[i] + lowerCorner[i]) * 0.5);
-  }
-  this.hashKey = this.parentBucketGrid.getHashKeyFromPosition(center);
-  this.center = center;
   //Construct all of our faces from these points
   //Note that a face contains points for which one axis is the same
-  this.faces = [];
-  let faceIndices = bucketConstants.bucketFaceIndices;
+  let faces = [];
+  let faceIndices = this.bucketConstants.bucketFaceIndices;
+  let upperCorner = this.upperCorner;
+  let lowerCorner = this.lowerCorner;
+  let center = this.getCenter();
   for(let i = 0; i < 3; i++){
     //Hold the ith dimension from the upper corner constant...
     let coordinatesForFaceA = [];
@@ -76,11 +96,13 @@ function Bucket(upperCorner, lowerCorner, parentBucketGrid){
     perfDebug.spotCheckPerformance('construct faces inner loop', false);
     //The face here is internal to buckets and not Face from THREE.JS
     perfDebug.spotCheckPerformance('construct faces trigger face constructors', true);
-    this.faces.push(new BucketFace(coordinatesForFaceA, this.center, i));
-    this.faces.push(new BucketFace(coordinatesForFaceB, this.center, i));
+    this.faces.push(new BucketFace(coordinatesForFaceA, center, i));
+    this.faces.push(new BucketFace(coordinatesForFaceB, center, i));
     perfDebug.spotCheckPerformance('construct faces trigger face constructors', false);
   }
   perfDebug.spotCheckPerformance('construct faces', false);
+
+  return faces;
 }
 
 Bucket.prototype.toBox3 = function(){
@@ -159,20 +181,24 @@ Bucket.prototype.flushPoints = function(){
 };
 
 Bucket.prototype.constructStaticMeshOctree = function(){
-  //If the number of points is non-zero...
-  if(this.staticMeshSearchablePoints.length > 0){
-    this.IntersectsStaticMesh = true;
+  //
+  //TODO: Determine a more effective way of performing collision handling
+  //
 
-    //Create a KD Tree from all points in this bucket.
-    //https://github.com/ubilabs/kd-tree-javascript
-    function distance2PointSquared(a, b){
-      let diff1 = a[0] - b[0];
-      let diff2 = a[1] - b[1];
-      let diff3 = a[2] - b[2];
-      return (diff1 * diff1) + (diff2 * diff2) + (diff3 * diff3);
-    }
-    this.staticMeshKDTree = new kdTree(this.staticMeshSearchablePoints, [0, 1, 2]);
-  };
+  //If the number of points is non-zero...
+  // if(this.staticMeshSearchablePoints.length > 0){
+  //   this.IntersectsStaticMesh = true;
+  //
+  //   //Create a KD Tree from all points in this bucket.
+  //   //https://github.com/ubilabs/kd-tree-javascript
+  //   function distance2PointSquared(a, b){
+  //     let diff1 = a[0] - b[0];
+  //     let diff2 = a[1] - b[1];
+  //     let diff3 = a[2] - b[2];
+  //     return (diff1 * diff1) + (diff2 * diff2) + (diff3 * diff3);
+  //   }
+  //   this.staticMeshKDTree = new kdTree(this.staticMeshSearchablePoints, [0, 1, 2]);
+  // };
 }
 
 Bucket.prototype.findPointsInsideStaticMesh = function(points, searchRadius){

@@ -26,14 +26,17 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
   let lowerCornerX = lowerCorner[0];
   let lowerCornerY = lowerCorner[1];
   let lowerCornerZ = lowerCorner[2];
-  let xDiff = upperCorner[0] - lowerCorner[0];
-  let yDiff = upperCorner[1] - lowerCorner[1];
-  let zDiff = upperCorner[2] - lowerCorner[2];
+  let targetXDiff = upperCorner[0] - lowerCorner[0];
+  let targetYDiff = upperCorner[1] - lowerCorner[1];
+  let targetZDiff = upperCorner[2] - lowerCorner[2];
   //NOTE: We're choosing a bucket grid radius equal to the radius.
   let radius = particleConstants.radius;
-  let boxesAlongX = Math.ceil(xDiff / radius);
-  let boxesAlongY = Math.ceil(yDiff / radius);
-  let boxesAlongZ = Math.ceil(zDiff / radius);
+  let boxesAlongX = Math.ceil(targetXDiff / radius);
+  let boxesAlongY = Math.ceil(targetYDiff / radius);
+  let boxesAlongZ = Math.ceil(targetZDiff / radius);
+  lowerCornerX -= ((boxesAlongX * radius) - targetXDiff) * 0.5;
+  lowerCornerY -= ((boxesAlongY * radius) - targetYDiff) * 0.5;
+  lowerCornerZ -= ((boxesAlongZ * radius) - targetZDiff) * 0.5;
 
   //Main bucket construction loop.
   let upperBucketCornerX = lowerCornerX;
@@ -45,7 +48,7 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
       let upperBucketCornerZ = lowerCornerZ;
       for(let z = 1; z <= boxesAlongZ; z++){
         upperBucketCornerZ += radius;
-        let upperBucketCorner = [lowerCornerX + upperBucketCornerX, lowerCornerY + upperBucketCornerY, lowerCornerZ + upperBucketCornerZ];
+        let upperBucketCorner = [upperBucketCornerX, upperBucketCornerY, upperBucketCornerZ];
         this.bucketGrid.addBucket(upperBucketCorner, radius);
       }
     }
@@ -196,4 +199,15 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
       console.log(msg);
     }
   };
+}
+
+ParticleSystem.prototype.getCenter = function(){
+  let center = [];
+  console.log(this.upperCorner);
+  console.log(this.lowerCorner);
+  for(let i = 0; i < 3; i++){
+    center.push((this.upperCorner[i] + this.lowerCorner[i]) * 0.5);
+  }
+
+  return center;
 }
