@@ -46,19 +46,13 @@ AFRAME.registerComponent('fluid-params', {
         thisFluidParams.staticCollidersAwaitingLoading[object3D.uuid] = true;
         let matrixWorld = object3D.matrixWorld;
         let model = gltf.detail.model;
-        geometries = [];
-        worldMatrices = [];
 
         model.traverse(function(child){
           if (child.isMesh) {
-            worldMatrices.push(child.matrixWorld);
-            geometries.push(child.geometry);
+            thisFluidParams.staticMeshes.worldMatrices.push(child.matrixWorld);
+            thisFluidParams.staticMeshes.geometries.push(child.geometry);
           }
         });
-
-        //Add these to our growing list of objects to watch on the next stage of initialization
-        thisFluidParams.staticMeshes.geometries.concat(geometries);
-        thisFluidParams.staticMeshes.worldMatrices.concat(worldMatrices);
 
         //Check if alls models were added, if so, it's time for this entity to start rocking and rolling
         let allMeshesParsed = true;
@@ -74,7 +68,7 @@ AFRAME.registerComponent('fluid-params', {
       });
     }
   },
-  postLoadInit: function(){
+  postLoadInit: function(thisFluidParams){
     //We might as well construct our buckets and things all the way down here, after the models have loaded.
     //Most of this stuff could probably be done inside of a web worker for increased speed.
     this.particleConstants = new ParticleConstants(this.data['particle-radius'], this.data['drag-coeficient'], this.data['particle-mass']);
@@ -91,7 +85,7 @@ AFRAME.registerComponent('fluid-params', {
     }
     console.log(this.particleSystem);
     this.staticScene.attachMeshToBucketGrid(this.particleSystem.bucketGrid);
-    this.el.emit('static-mesh-constructed', {finished: true});
+    this.el.emit('static-mesh-constructed', {particleSystem: this.particleSystem});
 
     //Solve the particle system for the situation that minimizes the forces on
     //all particles. That is, the sum of the magnitude of all forces, using

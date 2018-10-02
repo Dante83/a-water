@@ -90,8 +90,40 @@ AFRAME.registerComponent('fluid-debugger', {
     }
     console.log('Bucket view constructed.');
   },
-  drawBucketGridStaticMesh: function(){
-    //A series of dots where the vertices of the static mesh are, with lines connecting them.
+  drawBucketGridStaticMesh: function(particleSystem){
+    //All the little boxes in the big box - drawn with lines.
+    let buckets = particleSystem.bucketGrid.buckets;
+
+    //Stuff we use over and over
+    let c = this.data.bucketsColor;
+    let c3 = new THREE.Color(c.x, c.y, c.z);
+    let pointGeometry = new THREE.Geometry();
+    let pointMaterial = new THREE.PointsMaterial( {color: c3, size: 1, sizeAttenuation: false } );
+    for(let i = 0, numBuckets = buckets.length; i < numBuckets; i++){
+      //Get the bucket
+      let bucket = buckets[i];
+
+      //Grab each of the points in the bucket
+      let staticMeshPoints = bucket.staticMeshPoints;
+
+      //Draw all of these points onto the screen.
+      for(let i = 0; i < staticMeshPoints.length; i++){
+        console.log("static point detected.");
+        let staticMeshPoint = staticMeshPoints[i].slice(0);
+        let hold = staticMeshPoint[1];
+        staticMeshPoint[1] = staticMeshPoint[2]; //Because our Z is THREE.JS' Y
+        staticMeshPoint[2] = hold;
+
+        //Basically a point with the given color
+        pointGeometry.vertices.push(new THREE.Vector3(...staticMeshPoint));
+      }
+    }
+    let sceneRef = this.el.sceneEl.object3D;
+
+    //Create the scene from the points
+    let points = new THREE.Points(pointGeometry, pointMaterial);
+    sceneRef.add(points);
+    console.log('Static mesh points view constructed.');
   },
   init: function(){
     console.log(this.data);
@@ -112,6 +144,17 @@ AFRAME.registerComponent('fluid-debugger', {
         if(thisDebugger.data.drawBuckets){
           console.log('Constructing buckets view...');
           thisDebugger.drawBucketGridBuckets(data.detail.particleSystem);
+        }
+      }
+    });
+
+    this.fluidParamsEl.addEventListener('static-mesh-constructed', function (data) {
+      //We actually don't do anything with the result, this is just used to trigger
+      //the drawing of our our particle system box or buckets contained within.
+      if(thisDebugger.data.particleSystemId === data.target.id){
+        if(thisDebugger.data.drawStaticMesh){
+          console.log('Constructing static mesh points view...');
+          thisDebugger.drawBucketGridStaticMesh(data.detail.particleSystem);
         }
       }
     });

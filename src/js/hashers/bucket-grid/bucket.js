@@ -16,7 +16,7 @@ function Bucket(upperCorner, lowerCorner, parentBucketGrid){
   this.needsUpdate = false;
   this.instersectsStaticMesh = false;
   this.isInsideStaticMesh = false;
-  this.staticMeshPoints;
+  this.staticMeshPoints = [];
   this.parentBucketGrid = parentBucketGrid;
   this.bucketConstants = parentBucketGrid.bucketConstants;
   perfDebug.spotCheckPerformance('bucket initialization', false);
@@ -96,8 +96,8 @@ Bucket.prototype.getFaces = function(){
     perfDebug.spotCheckPerformance('construct faces inner loop', false);
     //The face here is internal to buckets and not Face from THREE.JS
     perfDebug.spotCheckPerformance('construct faces trigger face constructors', true);
-    this.faces.push(new BucketFace(coordinatesForFaceA, center, i));
-    this.faces.push(new BucketFace(coordinatesForFaceB, center, i));
+    faces.push(new BucketFace(coordinatesForFaceA, center, i));
+    faces.push(new BucketFace(coordinatesForFaceB, center, i));
     perfDebug.spotCheckPerformance('construct faces trigger face constructors', false);
   }
   perfDebug.spotCheckPerformance('construct faces', false);

@@ -20,10 +20,12 @@ function BucketFace(points, cubeCenter, constantAxis){
 
 BucketFace.prototype.flattenToXY = function(point, ignoreDimension){
   var xyOut = [];
+  let i = 0;
   while(xyOut.length < 2){
     if(i !== this.constantAxis){
       xyOut.push(this.points[i]);
     }
+    i++;
   }
 
   return xyOut;
