@@ -98,7 +98,7 @@ AFRAME.registerComponent('fluid-debugger', {
     let c = this.data.bucketsColor;
     let c3 = new THREE.Color(c.x, c.y, c.z);
     let pointGeometry = new THREE.Geometry();
-    let pointMaterial = new THREE.PointsMaterial( {color: c3, size: 1, sizeAttenuation: false } );
+    let pointMaterial = new THREE.PointsMaterial( {color: c3, size: 10.0, sizeAttenuation: false } );
     for(let i = 0, numBuckets = buckets.length; i < numBuckets; i++){
       //Get the bucket
       let bucket = buckets[i];
@@ -108,11 +108,14 @@ AFRAME.registerComponent('fluid-debugger', {
 
       //Draw all of these points onto the screen.
       for(let i = 0; i < staticMeshPoints.length; i++){
-        console.log("static point detected.");
-        let staticMeshPoint = staticMeshPoints[i].slice(0);
-        let hold = staticMeshPoint[1];
-        staticMeshPoint[1] = staticMeshPoint[2]; //Because our Z is THREE.JS' Y
-        staticMeshPoint[2] = hold;
+        let staticMeshPoint = staticMeshPoints[i].position.slice(0);
+
+        //
+        //NOTE: For some reason this might be unecessary? We might have accidently swapped things around.
+        //
+        // let hold = staticMeshPoint[1];
+        // staticMeshPoint[1] = staticMeshPoint[2]; //Because our Z is THREE.JS' Y
+        // staticMeshPoint[2] = hold;
 
         //Basically a point with the given color
         pointGeometry.vertices.push(new THREE.Vector3(...staticMeshPoint));
@@ -123,6 +126,7 @@ AFRAME.registerComponent('fluid-debugger', {
     //Create the scene from the points
     let points = new THREE.Points(pointGeometry, pointMaterial);
     sceneRef.add(points);
+    pointGeometry.position.set(0.0,0.0,0.0);
     console.log('Static mesh points view constructed.');
   },
   init: function(){

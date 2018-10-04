@@ -38,7 +38,7 @@
       </a-assets>
 
       <!--While we slowly build this out, it's helpful to see what the basic components look like underneath.-->
-      <a-fluid-debugger fluid-debugger="particleSystemId: my-particle-system; drawBuckets: true; drawStaticMesh: true;"></a-fluid-debugger>
+      <a-fluid-debugger fluid-debugger="particleSystemId: my-particle-system; drawStaticMesh: true;"></a-fluid-debugger>
 
       <!-- The id for the particle system is used by all child elements belonging to it-->
       <!-- NOTE: this must be at the end, so that previous model data is loaded into the system -->
@@ -48,7 +48,7 @@
       <!-- A Wall of Particles That Lives in This System -->
       <!-- HEY! We take our units in metric over here like the rest of the world! -->
       <!-- Any shape can be filled with uniform density with a fluid, the class says who the parent particle system is -->
-      <a-box class="fluid my-particle-system">
+      <!-- <a-box class="fluid my-particle-system"> -->
 
       <!-- Obstacle box -->
       <!-- static-fluid-obstacle tells us that this obstacle is unlikely to move, and that's a good thing. -->

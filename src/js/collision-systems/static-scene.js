@@ -32,8 +32,8 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
     this.faceHashes = [];
     this.connectedVertices = [];
     this.connectedVerticeHashes = [];
-    this.coorindateStrings = this.faces.map(x => x.toFixed(this.hashDigitsCount));
-    this.hash = this.coordinates.join(',');
+    this.coordinateStrings = [];
+    this.hash = this.coordinates.map(x => x.toFixed(this.hashDigitsCount)).join(',');
     this.vertexCount = 0;
 
     this.connectToVertex = function(vertex){
@@ -145,7 +145,15 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
     }
 
     //Finished addMesh Method.
-    console.log(thisStaticScene.vertices);
+    console.log("Finished add mesh method.");
+  }
+
+  this.makeHashString = function(values, deliminator){
+    let strings = []
+    for(let i = 0, valuesLength = values.length; i < valuesLength; i++){
+      strings.push(`${values[i].toFixed(thisStaticScene.hashDigitsCount)}${deliminator}`);
+    }
+    return strings.join('');
   }
 
   //Turns out that we might also have triangles that simply intersect our buckets
@@ -161,10 +169,8 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
     let hashedLines = [];
 
     //Construct all connectors between each points all associated planes (the intersection of both points planes).
-    console.log('working harder');
     for(let i = 0, verticesLength = thisStaticScene.vertices.length; i < verticesLength; i++){
       let originVertex = thisStaticScene.vertices[i];
-      console.log('going faster');
       for(let j = 0, connectedVerticesLength = originVertex.connectedVertices.length; j < connectedVerticesLength; j++){
         let connectedVertex = originVertex.connectedVertices[j];
 
@@ -182,42 +188,31 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
         //which has attached faces associated with the parent connector.
         let originVertexVect3 = originVertex.toVect3();
         let connectedVertexVect3 = connectedVertex.toVect3();
-        console.log("Does our problem start here?");
-        console.log(originVertex);
         let lineFormedByVectors = new THREE.Line3(originVertexVect3, connectedVertexVect3);
         let lineHash = originVertex.hash + '<->' + connectedVertexVect3.hash;
         hashedLines[lineHash] = [];
         for(let k = 0, bucketsLength = thisStaticScene.bucketGrid.buckets.length; k < bucketsLength; k++){
-          console.log('Our work...');
           let bucket = thisStaticScene.bucketGrid.buckets[k];
 
           //Now check for intersections between our line and our planes
           let bucketFaces = bucket.getFaces();
           for(let faceIndex = 0; faceIndex < 6; faceIndex++){
-            console.log('Is never');
             //Get the plane of the face
             let face = bucketFaces[faceIndex];
 
             if(face.plane.intersectsLine(lineFormedByVectors)){
-              console.log('over');
-              console.log(lineFormedByVectors);
-              console.log('test');
               let p = new THREE.Vector3();
               face.plane.intersectLine(lineFormedByVectors, p);
 
               //If any intersections are found in the range of the plane, then add these to our list of searchable points
-              console.log(p);
-              console.break();
               let pointIsOnFace = face.isPointOnFace([p.x, p.y, p.z]);
               if(pointIsOnFace){
                 let newPoint = {
                   position: [p.x, p.y, p.z],
                   faces: sharedFaces
                 };
-                console.log("Checking p");
-                console.log(p);
                 let newPointForHash = {
-                  position: [p.x.toFixed(thisStaticScene.hashDigitsCount), p.y.toFixed(thisStaticScene.hashDigitsCount), p.z.toFixed(thisStaticScene.hashDigitsCount)],
+                  position: [p.x, p.y, p.z],
                   faces: sharedFaces
                 };
                 //Check for the special case that we are at either end point
@@ -228,10 +223,8 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
                 else if(p.distanceToSquared(connectedVertexVect3) <= minDistanceToBeSamePointSquared){
                   newPoint.sharedFaces = originVertex.connectedVertexVect3;
                 }
-                console.log(newPoint);
-
-                let hash = newPointForHash.coordinates.join('-');
-                if(!thisStaticScene.hashedPoints.hasKey(hash)){
+                let hash = this.makeHashString(newPointForHash.position, '-');
+                if(!(hash in thisStaticScene.hashedPoints)){
                   thisStaticScene.searchablePoints.push(newPoint);
                   thisStaticScene.hashedPoints[hash] = newPoint;
                   bucket.staticMeshPoints.push(newPoint);
@@ -239,6 +232,7 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
                   //While we're here, let's also store these points up in the hash because we will likely
                   //create all centers from the results.
                   hashedLines[lineHash].push([p.x, p.y, p.z]);
+                  console.log("PING!");
                 }
               }
             }
