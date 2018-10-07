@@ -176,6 +176,27 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
     //Trigger an alert that our geometry points are parsed and ready to be displayed for debugging
     this.bucketGrid.parentParticleSystem.parentFluidParams.el.emit('static-mesh-geometry-constructed', {vertices: thisStaticScene.vertices});
 
+    //Add all of our vertices so long as they're inside of a bucket
+    //These points have all of their faces attached.
+    for(let i = 0, verticesLength = thisStaticScene.vertices.length; i < verticesLength; i++){
+      let vertex = thisStaticScene.vertices[i];
+      let bucketGrid = thisStaticScene.bucketGrid;
+      let vertexBucketHash = bucketGrid.getHashKeyFromPosition(vertex.coordinates);
+      if(vertexBucketHash in bucketGrid.hashedBuckets){
+        let hash = this.makeHashString(vertex.coordinates, '-');
+        let newPoint = {
+          position: [...vertex.coordinates],
+          faces: [...vertex.faces]
+        };
+        thisStaticScene.searchablePoints.push(newPoint);
+        thisStaticScene.hashedPoints[hash] = newPoint;
+        bucketGrid.hashedBuckets[vertexBucketHash].staticMeshPoints.push(newPoint);
+      }
+      else{
+        console.log("We're outside?!");
+      }
+    }
+
     //Construct all connectors between each points all associated planes (the intersection of both points planes).
     for(let i = 0, verticesLength = thisStaticScene.vertices.length; i < verticesLength; i++){
       let originVertex = thisStaticScene.vertices[i];
@@ -204,7 +225,6 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
 
           //Now check for intersections between our line and our planes
           let bucketFaces = bucket.getFaces();
-          console.log(bucketFaces);
           for(let faceIndex = 0; faceIndex < 6; faceIndex++){
             //Get the plane of the face
             let bucketFace = bucketFaces[faceIndex];
@@ -224,14 +244,6 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
                   position: [p.x, p.y, p.z],
                   faces: sharedFaces
                 };
-                //Check for the special case that we are at either end point
-                //in which case include all the faces specific to that vertex.
-                if(p.distanceToSquared(originVertex) <  bucketRadiusOver2Squared){
-                  newPoint.faces = originVertex.faces;
-                }
-                else if(p.distanceToSquared(connectedVertexVect3) < bucketRadiusOver2Squared){
-                  newPoint.faces = originVertex.connectedVertexVect3;
-                }
                 let hash = this.makeHashString(newPointForHash.position, '-');
 
                 if(!(hash in thisStaticScene.hashedPoints)){

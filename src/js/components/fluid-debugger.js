@@ -106,7 +106,6 @@ AFRAME.registerComponent('fluid-debugger', {
     for(let i = 0, numBuckets = buckets.length; i < numBuckets; i++){
       let bucket = buckets[i];
       let bucketFaces = bucket.getFaces();
-
       for(let j = 0, numFaces = bucketFaces.length; j < numFaces; j++){
         let bucketFace = bucketFaces[j];
         let bucketPoints = bucketFace.points;
@@ -192,8 +191,6 @@ AFRAME.registerComponent('fluid-debugger', {
         test += 1;
       }
     }
-    console.log("TESTING");
-    console.log(test);
     let sceneRef = this.el.sceneEl.object3D;
 
     //Create the scene from the points
@@ -202,7 +199,6 @@ AFRAME.registerComponent('fluid-debugger', {
     console.log('Static mesh points view constructed.');
   },
   init: function(){
-    console.log(this.data);
     //Set up events that are triggered from our particle system each time a critical
     //process is completed.
     this.fluidParamsEl = document.querySelector(`#${this.data.particleSystemId}`);

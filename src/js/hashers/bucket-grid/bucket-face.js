@@ -9,8 +9,7 @@ function BucketFace(points, cubeCenter, constantAxis){
 
   //The offset from the origin, because we're parallel to one of the axis - is
   //just the value in the one axis that does not change.
-  let point4 = points[3];
-  let offset = point4[0] * normalVector[0] + point4[1] * normalVector[0] + point4[2] * normalVector[0];
+  let offset = points[0][constantAxis];
 
   //Now create a three js plane...
   //NOTE: We might just be able to copy over the three js code and update it to our needs,
