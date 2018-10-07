@@ -17,14 +17,14 @@
             "componentType" : 5126,
             "count" : 20,
             "max" : [
-                1.0,
-                -0.2806069850921631,
-                1.0
+                1.9999998807907104,
+                2.158308506011963,
+                1.9999998807907104
             ],
             "min" : [
-                -1.0,
-                -1.0,
-                -1.0
+                -1.9999998807907104,
+                0.020308613777160645,
+                -1.9999998807907104
             ],
             "type" : "VEC3"
         },
@@ -72,7 +72,7 @@
     "buffers" : [
         {
             "byteLength" : 512,
-            "uri" : "data:application/octet-stream;base64,AAECAwQFBgcICQoLDA0OAA8BAxAEBhEHCRIKDBMNAAAAAIC/AACAvwAAgL8AAIC/uKuPvgAAgD8AAIC/AACAvwAAgD8AAIA/AACAvwAAgL8AAIC/uKuPvgAAgL8AAIC/AACAvwAAgL8AAIA/AACAvwAAgD8AAIA/uKuPvgAAgL8AAIA/AACAvwAAgL8AAIC/AACAvwAAgD8AAIA/uKuPvgAAgD8AAIA/AACAvwAAgD8AAIC/AACAvwAAgD8AAIA/AACAvwAAgL8AAIC/AACAvwAAgL8AAIC/uKuPvgAAgL8AAIA/uKuPvgAAgL8AAIA/uKuPvgAAgD8AAIC/uKuPvgAAgD8AAIA/AACAvwAAgD8AAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAAAAAAAAgAAAgL8AAAAAAAAAgAAAgL8AAAAAAAAAgAAAgL8AAACAAACAPwAAAIAAAACAAACAPwAAAIAAAACAAACAPwAAAIAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAIC/AAAAgAAAAAAAAAAAAAAAAAAAgL8AAAAAAACAPwAAAIA="
+            "uri" : "data:application/octet-stream;base64,AAECAwQFBgcICQoLDA0OAA8BAxAEBhEHCRIKDBMNAAD///+/QF6mPP///7////+/uiEKQP///z////+/QF6mPP///z////8/QF6mPP///7////+/uiEKQP///7////+/QF6mPP///7////8/QF6mPP///z////8/uiEKQP///7////8/QF6mPP///7////+/QF6mPP///z////8/uiEKQP///z////8/QF6mPP///z////+/QF6mPP///z////8/QF6mPP///7////+/QF6mPP///7////+/uiEKQP///7////8/uiEKQP///7////8/uiEKQP///z////+/uiEKQP///z////8/QF6mPP///z8AAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAAAAAAAAgAAAgL8AAAAAAAAAgAAAgL8AAAAAAAAAgAAAgL8AAACAAACAPwAAAIAAAACAAACAPwAAAIAAAACAAACAPwAAAIAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAIC/AAAAgAAAAAAAAAAAAAAAAAAAgL8AAAAAAACAPwAAAIA="
         }
     ],
     "meshes" : [
@@ -92,17 +92,7 @@
     "nodes" : [
         {
             "mesh" : 0,
-            "name" : "Cube",
-            "scale" : [
-                2.0,
-                3.475151777267456,
-                2.0
-            ],
-            "translation" : [
-                0.0,
-                3.469675302505493,
-                -0.0
-            ]
+            "name" : "Cube"
         }
     ],
     "scene" : 0,

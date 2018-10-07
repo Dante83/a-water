@@ -9,9 +9,13 @@ AFRAME.registerComponent('fluid-debugger', {
     drawParticleSystem: {type: 'boolean', default: false},
     particleSystemColor: {type: 'vec4', default: {x: 1.0, y: 0.0, z: 0.0, w: 0.2}},
     drawBuckets: {type: 'boolean', default: false},
-    bucketsColor: {type: 'vec4', default: {x: 0.0, y: 0.0, z: 1.0, w: 0.4}},
+    bucketsColor: {type: 'vec4', default: {x: 0.0, y: 0.0, z: 1.0, w: 0.1}},
+    drawBucketFaces: {type: 'boolean', default: false},
+    bucketsColor: {type: 'vec4', default: {x: 0.0, y: 1.0, z: 1.0, w: 0.1}},
     drawStaticMesh: {type: 'boolean', default: false},
-    staticMeshColor: {type: 'vec4', default: {x: 1.0, y: 1.0, z: 1.0, w: 1.0}},
+    staticMeshColor: {type: 'vec4', default: {x: 0.0, y: 1.0, z: 0.0, w: 1.0}},
+    drawStaticMeshVertexLines: {type: 'boolean', default: false},
+    staticMeshVertexLinColor: {type: 'vec4', default: {x: 1.0, y: 0.0, z: 1.0, w: 1.0}},
     drawPoints: {type: 'boolean', default: false},
     drawSurfaceMesh: {type: 'boolean', default: false}
   },
@@ -90,15 +94,85 @@ AFRAME.registerComponent('fluid-debugger', {
     }
     console.log('Bucket view constructed.');
   },
-  drawBucketGridStaticMesh: function(particleSystem){
+  drawBucketFaces: function(particleSystem){
     //All the little boxes in the big box - drawn with lines.
     let buckets = particleSystem.bucketGrid.buckets;
 
     //Stuff we use over and over
     let c = this.data.bucketsColor;
     let c3 = new THREE.Color(c.x, c.y, c.z);
+    let material = new THREE.MeshLambertMaterial({color: c3, transparent: true, opacity: c.w, side: THREE.DoubleSide});
+
+    for(let i = 0, numBuckets = buckets.length; i < numBuckets; i++){
+      let bucket = buckets[i];
+      let bucketFaces = bucket.getFaces();
+
+      for(let j = 0, numFaces = bucketFaces.length; j < numFaces; j++){
+        let bucketFace = bucketFaces[j];
+        let bucketPoints = bucketFace.points;
+
+        //Grab the width depth and height of our box, as well as it's position, so we can draw it in the world view
+        let faceGeom = new THREE.Geometry();
+        let v1 = new THREE.Vector3(bucketPoints[0][0], bucketPoints[0][2], bucketPoints[0][1]);
+        let v2 = new THREE.Vector3(bucketPoints[1][0], bucketPoints[1][2], bucketPoints[1][1]);
+        let v3 = new THREE.Vector3(bucketPoints[2][0], bucketPoints[2][2], bucketPoints[2][1]);
+        let v4 = new THREE.Vector4(bucketPoints[3][0], bucketPoints[3][2], bucketPoints[3][1]);
+
+        faceGeom.vertices.push(v1);
+        faceGeom.vertices.push(v2);
+        faceGeom.vertices.push(v3);
+        faceGeom.vertices.push(v4);
+
+        faceGeom.faces.push( new THREE.Face3( 0, 1, 2 ) );
+        faceGeom.faces.push( new THREE.Face3( 1, 2, 3 ) );
+
+        //Basically a box with the given colors.
+        let faceMesh = new THREE.Mesh(faceGeom, material);
+        let sceneRef = this.el.sceneEl.object3D;
+
+        //Add the box
+        sceneRef.add(faceMesh);
+
+        //Move it to the appropriate location.
+        faceMesh.position.set(...[0.0,0.0,0.0]);
+      }
+    }
+    console.log('Bucket Face view constructed.');
+  },
+  drawStaticMeshVertexLines: function(originVertices){
+    //Stuff we use over and over
+    let c = this.data.staticMeshColor;
+    let c3 = new THREE.Color(c.x, c.y, c.z);
+    let lineGeometry = new THREE.Geometry();
+    let lineMaterial = new THREE.PointsMaterial( {color: c3, size: 100.0, sizeAttenuation: false } );
+
+    for(let i = 0, numConnectedVertices = originVertices.length; i < numConnectedVertices; i++){
+        let originVertex = originVertices[i];
+        let originVertexVect3 = new THREE.Vector3(originVertex.coordinates[0], originVertex.coordinates[2], originVertex.coordinates[1]);
+        for(let j = 0, connectedVerticesLength = originVertex.connectedVertices.length; j < connectedVerticesLength; j++){
+          let connectedVertex = originVertex.connectedVertices[j];
+          let connectedVertexVect3 = new THREE.Vector3(connectedVertex.coordinates[0], connectedVertex.coordinates[2], connectedVertex.coordinates[1]);
+          lineGeometry.vertices.push(originVertexVect3);
+          lineGeometry.vertices.push(connectedVertexVect3);
+        }
+    }
+    let sceneRef = this.el.sceneEl.object3D;
+
+    //Create the scene from the points
+    let lines = new THREE.Line(lineGeometry, lineMaterial);
+    sceneRef.add(lines);
+    console.log('Static mesh points view constructed.');
+  },
+  drawBucketGridStaticMesh: function(particleSystem){
+    //All the little boxes in the big box - drawn with lines.
+    let buckets = particleSystem.bucketGrid.buckets;
+
+    //Stuff we use over and over
+    let c = this.data.staticMeshColor;
+    let c3 = new THREE.Color(c.x, c.y, c.z);
     let pointGeometry = new THREE.Geometry();
     let pointMaterial = new THREE.PointsMaterial( {color: c3, size: 10.0, sizeAttenuation: false } );
+    let test = 0;
     for(let i = 0, numBuckets = buckets.length; i < numBuckets; i++){
       //Get the bucket
       let bucket = buckets[i];
@@ -109,24 +183,22 @@ AFRAME.registerComponent('fluid-debugger', {
       //Draw all of these points onto the screen.
       for(let i = 0; i < staticMeshPoints.length; i++){
         let staticMeshPoint = staticMeshPoints[i].position.slice(0);
-
-        //
-        //NOTE: For some reason this might be unecessary? We might have accidently swapped things around.
-        //
-        // let hold = staticMeshPoint[1];
-        // staticMeshPoint[1] = staticMeshPoint[2]; //Because our Z is THREE.JS' Y
-        // staticMeshPoint[2] = hold;
+        let hold = staticMeshPoint[1];
+        staticMeshPoint[1] = staticMeshPoint[2]; //Because our Z is THREE.JS' Y
+        staticMeshPoint[2] = hold;
 
         //Basically a point with the given color
         pointGeometry.vertices.push(new THREE.Vector3(...staticMeshPoint));
+        test += 1;
       }
     }
+    console.log("TESTING");
+    console.log(test);
     let sceneRef = this.el.sceneEl.object3D;
 
     //Create the scene from the points
     let points = new THREE.Points(pointGeometry, pointMaterial);
     sceneRef.add(points);
-    pointGeometry.position.set(0.0,0.0,0.0);
     console.log('Static mesh points view constructed.');
   },
   init: function(){
@@ -148,6 +220,21 @@ AFRAME.registerComponent('fluid-debugger', {
         if(thisDebugger.data.drawBuckets){
           console.log('Constructing buckets view...');
           thisDebugger.drawBucketGridBuckets(data.detail.particleSystem);
+        }
+        if(thisDebugger.data.drawBucketFaces){
+          console.log('Constructing bucket faces view...');
+          thisDebugger.drawBucketFaces(data.detail.particleSystem);
+        }
+      }
+    });
+
+    this.fluidParamsEl.addEventListener('static-mesh-geometry-constructed', function (data) {
+      //We actually don't do anything with the result, this is just used to trigger
+      //the drawing of our our particle system box or buckets contained within.
+      if(thisDebugger.data.particleSystemId === data.target.id){
+        if(thisDebugger.data.drawStaticMesh){
+          console.log('Constructing static mesh lines view...');
+          thisDebugger.drawStaticMeshVertexLines(data.detail.vertices);
         }
       }
     });

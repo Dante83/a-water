@@ -18,47 +18,53 @@ function BucketFace(points, cubeCenter, constantAxis){
   this.plane = new THREE.Plane(new THREE.Vector3(...normalVector), offset);
 };
 
-BucketFace.prototype.flattenToXY = function(point, ignoreDimension){
-  var xyOut = [];
-  let i = 0;
-  while(xyOut.length < 2){
-    if(i !== this.constantAxis){
-      xyOut.push(this.points[i]);
-    }
-    i++;
-  }
-
-  return xyOut;
-}
-
 BucketFace.prototype.isPointOnFace = function(point){
-  //Center our plane and the point above at the origin, by removing the minimum coordinates;
-  var offset = {
-    x: Math.min(...this.points.map((x) => x[0])),
-    y: Math.min(...this.points.map((x) => x[1])),
-    z: Math.min(...this.points.map((x) => x[2]))
-  };
-  var offsetCoordinates = this.points.map((point) => [point[0] - offset.x, point[1] - offset.x, point[2] - offset.x]);
-  var offsetPoint = [point.x - offset.x, point.y - offset.y, point.z - offset.z]
-
-  //Reduce our system to two dimensions
-  var zeroDimension = offsetPoint.findIndex((point) => point === 0.0);
-  pointInXYCoordinates = this.flattenToXY(offsetPoint);
-
-  //check if our point is less than zero in either dimension. If either is false, return false.
-  if(pointInXYCoordinates[0] < 0.0 || pointInXYCoordinates[1] < 0.0){
-    return false;
+  //Get the two axis for our plane.
+  let axis1 = 1;
+  let axis2 = 2;
+  let point1 = this.points[0];
+  let point2 = this.points[2];
+  let diff1 = Math.abs(point1[0] - point2[0]);
+  let diff2 = Math.abs(point1[1] - point2[1]);
+  if(diff2 < diff1){
+    axis1 = 0;
+    axis2 = 2;
+  }
+  point2 = this.points[3];
+  diff1 = diff2;
+  diff2 = Math.abs(point1[2] - point2[2]);
+  if(diff2 < diff1){
+    axis1 = 0;
+    axis2 = 1;
   }
 
-  //Get the maximum x-y coordinates while reducing the rest of our points to two dimensions as well.
-  var xyPoints = offsetCoordinates.map((x) => this.flattenToXY(x));
-  var maxXCoordinate = Math.max(...xyPoints.map((point) => point[0]));
-  var maxYCoordinate = Math.max(...xyPoints.map((point) => point[0]));
+  let lowestAxis1 = this.points[0][axis1];
+  let highestAxis1 = this.points[0][axis1];
+  let lowestAxis2 = this.points[0][axis2];
+  let highestAxis2 = this.points[0][axis2];
+  for(let i = 1; i < 3; i++){
+    let testPointOnAxis1 = this.points[i][axis1];
+    let testPointOnAxis2 = this.points[i][axis2];
+    if(testPointOnAxis1 < lowestAxis1){
+      lowestAxis1 = testPointOnAxis1;
+    }
+    else if(testPointOnAxis1 > highestAxis1){
+      highestAxis1 = testPointOnAxis1;
+    }
 
-  //Check if our point is less than the maximum values in either dimension. If either is false, return false.
-  if(pointInXYCoordinates[0] > maxXCoordinate || pointInXYCoordinates[1] > maxYCoordinate){
-    return false;
+    if(testPointOnAxis2 < lowestAxis2){
+      lowestAxis2 = testPointOnAxis2;
+    }
+    else if(testPointOnAxis2 > highestAxis2){
+      highestAxis2 = testPointOnAxis2;
+    }
+  }
+  let axis1Val = point[axis1];
+  let axis2Val = point[axis2];
+
+  if(axis1Val >= lowestAxis1 && axis1Val <= highestAxis1 && axis2Val >= lowestAxis2 && axis2Val <= highestAxis2){
+    return true;
   }
 
-  return true;
+  return false;
 };

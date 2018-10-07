@@ -1,6 +1,7 @@
 function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluidParams){
   var thisParticleSystem = this;
   var parentFluidParams = parentFluidParams;
+  this.parentFluidParams = parentFluidParams;
   this.upperCorner = upperCorner;
   this.lowerCorner = lowerCorner;
   this.particles = [];

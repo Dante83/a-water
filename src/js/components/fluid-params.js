@@ -8,7 +8,7 @@ AFRAME.registerComponent('fluid-params', {
     'upper-corner': {type: 'vec3', default: {x: 0.0, y: 0.0, z: 0.0}},
     'lower-corner': {type: 'vec3', default: {x: 0.0, y: 0.0, z: 0.0}},
     'target-density': {type: 'number', default: 997.0},
-    'particle-radius': {type: 'number', default: 0.5},
+    'particle-radius': {type: 'number', default: 4.0},
     'drag-coeficient': {type: 'number', default: 1.0},
     'particle-mass': {type: 'number', default: 1.0},
     'static-scene-accuracy': {type: 'number', default: 2},
@@ -72,7 +72,7 @@ AFRAME.registerComponent('fluid-params', {
     //We might as well construct our buckets and things all the way down here, after the models have loaded.
     //Most of this stuff could probably be done inside of a web worker for increased speed.
     this.particleConstants = new ParticleConstants(this.data['particle-radius'], this.data['drag-coeficient'], this.data['particle-mass']);
-    this.particleSystem = new ParticleSystem([2.1, 2.1, 1.5], [-2.1, -2.1, -0.1], this.particleConstants, this);
+    this.particleSystem = new ParticleSystem([2.1, 2.1, 2.0], [-2.1, -2.1, -0.1], this.particleConstants, this);
     this.el.emit('particle-system-constructed', {finished: true});
     this.staticScene = new StaticScene(this.data['static-scene-accuracy']);
 

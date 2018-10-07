@@ -86,9 +86,11 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
         //The geometry object has all of our vertices, but the face stores the indices
         let faceVertexIndex = vertexNames[i];
         let geometryVertexIndex = geometryFace[faceVertexIndex];
-        let v = geometry.vertices[geometryVertexIndex];
-        let vInW = v.clone().applyMatrix4(worldMatrix);
-        let newVertex = new Vertex(vInW.x, vInW.y, vInW.z);
+        let v = geometry.vertices[geometryVertexIndex].clone();
+        let vInW = v.applyMatrix4(worldMatrix);
+
+        //NOTE: We flip x and y here because our system treats z as up, not y.
+        let newVertex = new Vertex(vInW.x, vInW.z, vInW.y);
         vertices.push(newVertex);
         vertexHashes.push(newVertex.hash);
       }
@@ -101,7 +103,8 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
       //Make sure we don't add any duplicate faces
       if(!(faceHash in this.hashedFaces)){
         //Congrats, you have been accepted as a face in our collection
-        let faceNormalVector = geometryFace.normal.clone().applyMatrix4(worldMatrix);
+        let faceNormalVectorInW = geometryFace.normal.clone().applyMatrix4(worldMatrix);
+        let faceNormalVector= new THREE.Vector3(faceNormalVectorInW.x, faceNormalVectorInW.z, faceNormalVectorInW.y);
         let newFace = new Face(vertices, faceNormalVector, faceHash);
         thisStaticScene.hashedFaces[faceHash] = newFace;
 
@@ -149,7 +152,7 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
   }
 
   this.makeHashString = function(values, deliminator){
-    let strings = []
+    let strings = [];
     for(let i = 0, valuesLength = values.length; i < valuesLength; i++){
       strings.push(`${values[i].toFixed(thisStaticScene.hashDigitsCount)}${deliminator}`);
     }
@@ -167,6 +170,11 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
     let minDistanceToBeSamePoint = 10**(-1.0 * thisStaticScene.hashDigitsCount);
     let minDistanceToBeSamePointSquared = minDistanceToBeSamePoint * minDistanceToBeSamePoint;
     let hashedLines = [];
+    let bucketRadiusOver2 = bucketGrid.approximateSearchDiameter * 0.5;
+    let bucketRadiusOver2Squared = bucketRadiusOver2 * bucketRadiusOver2;
+
+    //Trigger an alert that our geometry points are parsed and ready to be displayed for debugging
+    this.bucketGrid.parentParticleSystem.parentFluidParams.el.emit('static-mesh-geometry-constructed', {vertices: thisStaticScene.vertices});
 
     //Construct all connectors between each points all associated planes (the intersection of both points planes).
     for(let i = 0, verticesLength = thisStaticScene.vertices.length; i < verticesLength; i++){
@@ -196,16 +204,17 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
 
           //Now check for intersections between our line and our planes
           let bucketFaces = bucket.getFaces();
+          console.log(bucketFaces);
           for(let faceIndex = 0; faceIndex < 6; faceIndex++){
             //Get the plane of the face
-            let face = bucketFaces[faceIndex];
+            let bucketFace = bucketFaces[faceIndex];
 
-            if(face.plane.intersectsLine(lineFormedByVectors)){
+            if(bucketFace.plane.intersectsLine(lineFormedByVectors)){
               let p = new THREE.Vector3();
-              face.plane.intersectLine(lineFormedByVectors, p);
+              bucketFace.plane.intersectLine(lineFormedByVectors, p);
 
               //If any intersections are found in the range of the plane, then add these to our list of searchable points
-              let pointIsOnFace = face.isPointOnFace([p.x, p.y, p.z]);
+              let pointIsOnFace = bucketFace.isPointOnFace([p.x, p.y, p.z]);
               if(pointIsOnFace){
                 let newPoint = {
                   position: [p.x, p.y, p.z],
@@ -217,13 +226,14 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
                 };
                 //Check for the special case that we are at either end point
                 //in which case include all the faces specific to that vertex.
-                if(p.distanceToSquared(originVertex) <= minDistanceToBeSamePointSquared){
-                  newPoint.sharedFaces = originVertex.faces;
+                if(p.distanceToSquared(originVertex) <  bucketRadiusOver2Squared){
+                  newPoint.faces = originVertex.faces;
                 }
-                else if(p.distanceToSquared(connectedVertexVect3) <= minDistanceToBeSamePointSquared){
-                  newPoint.sharedFaces = originVertex.connectedVertexVect3;
+                else if(p.distanceToSquared(connectedVertexVect3) < bucketRadiusOver2Squared){
+                  newPoint.faces = originVertex.connectedVertexVect3;
                 }
                 let hash = this.makeHashString(newPointForHash.position, '-');
+
                 if(!(hash in thisStaticScene.hashedPoints)){
                   thisStaticScene.searchablePoints.push(newPoint);
                   thisStaticScene.hashedPoints[hash] = newPoint;
@@ -232,7 +242,6 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
                   //While we're here, let's also store these points up in the hash because we will likely
                   //create all centers from the results.
                   hashedLines[lineHash].push([p.x, p.y, p.z]);
-                  console.log("PING!");
                 }
               }
             }
