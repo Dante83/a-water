@@ -75,7 +75,7 @@ AFRAME.registerComponent('fluid-params', {
     //
     //NOTE: Play with this to determine the last bugs with the system.
     //
-    this.particleSystem = new ParticleSystem([0.6, 2.1, 1.5], [0.0, -2.1, -0.1], this.particleConstants, this);
+    this.particleSystem = new ParticleSystem([1.0, 2.1, 2.0], [-1.0, -2.1, -0.0], this.particleConstants, this);
     this.el.emit('particle-system-constructed', {finished: true});
     this.staticScene = new StaticScene(this.data['static-scene-accuracy']);
 

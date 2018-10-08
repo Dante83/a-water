@@ -178,11 +178,13 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
 
     //Add all of our vertices so long as they're inside of a bucket
     //These points have all of their faces attached.
+    console.log(bucketGrid.hashedBuckets);
     for(let i = 0, verticesLength = thisStaticScene.vertices.length; i < verticesLength; i++){
       let vertex = thisStaticScene.vertices[i];
       let bucketGrid = thisStaticScene.bucketGrid;
       let vertexBucketHash = bucketGrid.getHashKeyFromPosition(vertex.coordinates);
       if(vertexBucketHash in bucketGrid.hashedBuckets){
+        console.log(vertexBucketHash);
         let hash = this.makeHashString(vertex.coordinates, '-');
         let newPoint = {
           position: [...vertex.coordinates],
@@ -292,11 +294,99 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
     //   }
     // }
 
-    //When we're finished, call back and update our bucket hashes with searchable
-    //KD Trees which we can query whenever we want to find all the nearest points,
-    //their faces, and normals.case
+    //When we're finished, now we should just be able to search out our faces whenever we want in our buckets
+    //using the results to find when a collision has occured.
     console.log("If we made it this far, we're nearly finished with the construction of our static mesh system. :)");
     thisStaticScene.bucketGrid.constructStaticMeshOctree();
+  }
+
+  this.findRelevantBucketsToLine(line){
+    //Get the interpolations for the line
+    let p0 = line.start
+    let bucketGrid = this.bucketGrid;
+    let interpolations = Math.ceil(line.distance);
+    let inverseTotalInterpolations = 1.0 / interpolations;
+    let hashedFilteredBuckets = [];
+
+    //We don't include the start or ending intpolation.
+    let previousBucketHash = bucketGrid.getHashKeyFromPosition([p0.x, p0.y, p0.z]);
+    let previousBucket = false;
+    let previousBucketCenter = false;
+    if(vertexBucketHash in bucketGrid.hashedBuckets){
+      previousBucket = bucketGrid.hashedBuckets[previousBucketHash];
+      previousBucketCenter = previousBucket.getCenter();
+    }
+    //Add the hashed interpolations of our line to the function.
+    let pointOnLine = new THREE.Vector3();
+    let interpolationsMinus1 = interpolations - 1;
+    let OneTenthApproximateSearchDiameter = bucketGrid.approximateSearchDiameter * 0.1;
+
+    for(let i = 1; i < interpolations; i++){
+      line.at(inverseTotalInterpolations * i, pointOnLine);
+      let bucketHash = bucketGrid.getHashKeyFromPosition([pointOnLine.x, pointOnLine.y, pointOnLine.z]);
+      if(bucketHash in bucketGrid.hashedBuckets){
+        //Do not add the final bucket, this is just for checking buckets behind it for
+        //total cover.
+        let newBucket = bucketGrid.hashedBuckets[bucketHash];
+        if(i !== interpolationsMinus1){
+          hashedFilteredBuckets[bucketHash] = newBucket;
+        }
+
+        //This step is only if there was a previous bucket on the grid
+        if(previousBucket !=== false){
+          //Check if this bucket is off-axis to the previous bucket along x, y or z.
+          let bucketCenter = bucket.getCenter();
+
+          let xDiffers = Math.abs(bucketCenter[0] - previousBucketCenter[0]) > OneTenthApproximateSearchDiameter;
+          let yDiffers = Math.abs(bucketCenter[1] - previousBucketCenter[1]) > OneTenthApproximateSearchDiameter;
+          let zDiffers = Math.abs(bucketCenter[2] - previousBucketCenter[2]) > OneTenthApproximateSearchDiameter;
+
+          //Add the other buckets necessary to achieve super cover
+          if(xDiffers && yDiffers && zDiffers){
+            let coverBucketHash = bucketGrid.getHashKeyFromPosition([bucketCenter.x, previousBucketCenter.y, previousBucketCenter.z]);
+            hashedFilteredBuckets[coverBucketHash] = bucketGrid.hashedBuckets[coverBucketHash];
+            coverBucketHash = bucketGrid.getHashKeyFromPosition([previousBucketCenter.x, bucketCenter.y, previousBucketCenter.z]);
+            hashedFilteredBuckets[coverBucketHash] = bucketGrid.hashedBuckets[coverBucketHash];
+            coverBucketHash = bucketGrid.getHashKeyFromPosition([previousBucketCenter.x, previousBucketCenter.y, bucketCenter.z]);
+            hashedFilteredBuckets[coverBucketHash] = bucketGrid.hashedBuckets[coverBucketHash];
+            coverBucketHash = bucketGrid.getHashKeyFromPosition([bucketCenter.x, bucketCenter.y, previousBucketCenter.z]);
+            hashedFilteredBuckets[coverBucketHash] = bucketGrid.hashedBuckets[coverBucketHash];
+            coverBucketHash = bucketGrid.getHashKeyFromPosition([bucketCenter.x, previousBucketCenter.y, bucketCenter.z]);
+            hashedFilteredBuckets[coverBucketHash] = bucketGrid.hashedBuckets[coverBucketHash];
+            coverBucketHash = bucketGrid.getHashKeyFromPosition([previousBucketCenter.x, bucketCenter.y, bucketCenter.z]);
+            hashedFilteredBuckets[coverBucketHash] = bucketGrid.hashedBuckets[coverBucketHash];
+          }
+          else if(xDiffers && yDiffers){
+            let coverBucketHash = bucketGrid.getHashKeyFromPosition([bucketCenter.x, previousBucketCenter.y, previousBucketCenter.z]);
+            hashedFilteredBuckets[coverBucketHash] = bucketGrid.hashedBuckets[coverBucketHash];
+            coverBucketHash = bucketGrid.getHashKeyFromPosition([previousBucketCenter.x, bucketCenter.y, previousBucketCenter.z]);
+            hashedFilteredBuckets[coverBucketHash] = bucketGrid.hashedBuckets[coverBucketHash];
+          }
+          else if(xDiffers && zDiffers){
+            let coverBucketHash = bucketGrid.getHashKeyFromPosition([bucketCenter.x, previousBucketCenter.y, previousBucketCenter.z]);
+            hashedFilteredBuckets[coverBucketHash] = bucketGrid.hashedBuckets[coverBucketHash];
+            coverBucketHash = bucketGrid.getHashKeyFromPosition([previousBucketCenter.x, previousBucketCenter.y, bucketCenter.z]);
+            hashedFilteredBuckets[coverBucketHash] = bucketGrid.hashedBuckets[coverBucketHash];
+          }
+          else if(yDiffers && zDiffers){
+            let coverBucketHash = bucketGrid.getHashKeyFromPosition([previousBucketCenter.x, bucketCenter.y, previousBucketCenter.z]);
+            hashedFilteredBuckets[coverBucketHash] = bucketGrid.hashedBuckets[coverBucketHash];
+            coverBucketHash = bucketGrid.getHashKeyFromPosition([previousBucketCenter.x, previousBucketCenter.y, bucketCenter.z]);
+            hashedFilteredBuckets[coverBucketHash] = bucketGrid.hashedBuckets[coverBucketHash];
+          }
+          //If only one of the three has changed, we are moving orthorgonal from one cube to the next and do not need to worry
+          //about the cover being lost.
+        }
+
+        //When we're all said and done, refresh the previous bucket value
+        previousBucket = bucketGrid.hashedBuckets[previousBucketHash];
+        previousBucketCenter = previousBucket.getCenter();
+      }
+    }
+
+    //Use map to quickly remove all of our keys. We only used the keys to avoid duplicate buckets.
+    let filteredBuckets = hashedFilteredBuckets.map(x => x);
+    return filteredBuckets;
   }
 
   this.findFacesFromVertices = function(vertices){

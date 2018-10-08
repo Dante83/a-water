@@ -19,6 +19,7 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
   this.gridUpperCoordinates = [upperCorner[0], upperCorner[1], upperCorner[2]];
   this.gridLowerCoordinates = [lowerCorner[0], lowerCorner[1], lowerCorner[2]];
   this.gridLength = [0.0,0.0,0.0];
+  this.halfMaxInteger = Math.floor(Number.MAX_SAFE_INTEGER * 0.5);
   let inverseRadius = parentParticleSystem.particleConstants.inverseRadius;
   for(let i = 0; i < 3; i++){
     this.gridLength[i] = Math.ceil((this.gridUpperCoordinates[i] - this.gridLowerCoordinates[i]) * inverseRadius);
@@ -40,10 +41,12 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
     bucketGridLocalCoordinates[2] = position[2] - thisBucketGrid.gridUpperCoordinates[2];
 
     let inverseRadius = this.particleConstants.inverseRadius;
-    let subCalculation1 = Math.floor(bucketGridLocalCoordinates[0] * inverseRadius) + Math.floor(bucketGridLocalCoordinates[1] * inverseRadius) + Math.floor(bucketGridLocalCoordinates[2] * inverseRadius);
-    subCalculation1++;
+    //Choosing a prime of 97 via https://planetmath.org/goodhashtableprimes
+    let hashSection1 = Math.floor(bucketGridLocalCoordinates[0] * inverseRadius) * 97;
+    let hashSection2 = (hashSection1 + (Math.floor(bucketGridLocalCoordinates[1] * inverseRadius) * 9409) % thisBucketGrid.halfMaxInteger);
+    let finalHash = (hashSection2 + (Math.floor(bucketGridLocalCoordinates[2] * inverseRadius) * 912673) % thisBucketGrid.halfMaxInteger);
     perfDebug.spotCheckPerformance('get hash key', false);
-    return 3.0 * subCalculation1;
+    return finalHash;
   }
 
   this.addBucket = function(upperCorner, radius){
