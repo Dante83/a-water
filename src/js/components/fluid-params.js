@@ -86,7 +86,6 @@ AFRAME.registerComponent('fluid-params', {
     for(let i = 0, geometriesLength = staticGeometries.length; i < geometriesLength; i++){
       this.staticScene.addMesh(staticGeometries[i], staticWorldMatrices[i]);
     }
-    console.log(this.particleSystem);
     this.staticScene.attachMeshToBucketGrid(this.particleSystem.bucketGrid);
     this.el.emit('static-mesh-constructed', {particleSystem: this.particleSystem});
 

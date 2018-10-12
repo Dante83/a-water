@@ -14,6 +14,8 @@ AFRAME.registerComponent('fluid-debugger', {
     bucketsColor: {type: 'vec4', default: {x: 0.0, y: 1.0, z: 1.0, w: 0.1}},
     drawStaticMesh: {type: 'boolean', default: false},
     staticMeshColor: {type: 'vec4', default: {x: 0.0, y: 1.0, z: 0.0, w: 1.0}},
+    drawStaticInnerPoints: {type: 'boolean', default: false},
+    staticInnerPointsColor: {type: 'vec4', default: {x: 1.0, y: 0.0, z: 1.0, w: 1.0}},
     drawStaticMeshVertexLines: {type: 'boolean', default: false},
     staticMeshVertexLinColor: {type: 'vec4', default: {x: 1.0, y: 0.0, z: 1.0, w: 1.0}},
     drawPoints: {type: 'boolean', default: false},
@@ -198,6 +200,26 @@ AFRAME.registerComponent('fluid-debugger', {
     sceneRef.add(points);
     console.log('Static mesh points view constructed.');
   },
+  drawPoints: function(points, c){
+    //Stuff we use over and over
+    let c3 = new THREE.Color(c.x, c.y, c.z);
+    let pointGeometry = new THREE.Geometry();
+    let pointMaterial = new THREE.PointsMaterial( {color: c3, size: 10.0, sizeAttenuation: false } );
+    let test = 0;
+    for(let i = 0, numPoints = points.length; i < numPoints; i++){
+      //Draw all of these points onto the screen.
+      let point = points[i];
+
+      //Basically a point with the given color
+      pointGeometry.vertices.push(new THREE.Vector3(point.x, point.z, point.y));
+    }
+    let sceneRef = this.el.sceneEl.object3D;
+
+    //Create the scene from the points
+    let pointsGeom = new THREE.Points(pointGeometry, pointMaterial);
+    sceneRef.add(pointsGeom);
+    console.log('Static mesh points view constructed.');
+  },
   init: function(){
     //Set up events that are triggered from our particle system each time a critical
     //process is completed.
@@ -245,6 +267,16 @@ AFRAME.registerComponent('fluid-debugger', {
         }
       }
     });
+
+    this.fluidParamsEl.addEventListener('static-mesh-inner-lines-constructed', function(data){
+      if(thisDebugger.data.particleSystemId === data.target.id){
+        if(thisDebugger.data.drawStaticInnerPoints){
+          console.log('Constructing static inner points view...');
+          thisDebugger.drawPoints(data.detail.vertices, thisDebugger.data.staticMeshVertexLinColor);
+          console.log('Finished constructing static innner points view...');
+        }
+      }
+    })
   },
   tick: function (time, timeDelta) {
     //Update our particle positions and visible surface mesh once they're added.
