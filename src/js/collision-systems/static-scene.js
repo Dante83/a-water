@@ -262,7 +262,8 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
     //
     //For testing purposes only.
     //
-    let begginingAndEndingPoints = [];
+    let begginingPoints = [];
+    let endingPoints = [];
 
     //For each face on our geometry.
     let meshFaces = Object.keys(thisStaticScene.hashedFaces).map(x => thisStaticScene.hashedFaces[x]);
@@ -299,10 +300,7 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
       //these interpolations result in a spacing equivalent to our bucket grid spacing.
       //Then, we will take the highest frequency interpolation from these and use it
       //as our point spacing.
-      let vectDiff = vect1.clone().sub(vect2);
-      let xAxis = new THREE.Vector3(1.0,0.0,0.0);
-      let yAxis = new THREE.Vector3(0.0,1.0,0.0);
-      let zAxis = new THREE.Vector3(0.0,0.0,1.0);
+      let vectDiff = longestLegVect1.clone().sub(longestLegVect2);
       let inverseApproximateSearchDiameter = 1.0 / bucketGrid.approximateSearchDiameter;
       let x = vectDiff.x;
       let y = vectDiff.y;
@@ -316,65 +314,60 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
 
       //For some odd reason, my brain says we need to grab all the primes in the abov and multiply them. But..
       //it probably just wants to go on an adventure that will cause us grief. Instead, let's just use the biggest number of them all.
-      let largestNumInterpolations = Math.max(...[xInterpolations, yInterpolations, zInterpolations]);
+      let largestNumInterpolations = Math.max(xInterpolations, yInterpolations, zInterpolations);
 
       //
       //Subcalculations useful for speeding up our interpolations
       //
       //Convert our triangle into 2D
-      let vectDiffSq = longestLegVect1.distanceToSquared(longestLegVect1);
+      let vectDiffSq = longestLegVect1.distanceToSquared(longestLegVect2);
       let vectDiffDistance = Math.sqrt(vectDiffSq);
       let triangleHalf1 = unusedVector.clone().sub(longestLegVect1);
-      let triangleLine1 = new THREE.Line3(longestLegVect1, unusedVector);
       let triangleHalfDist1Sq = unusedVector.distanceToSquared(longestLegVect1);
       let inverseTriangleHalfDist1Sq = 1.0 / triangleHalfDist1Sq;
       let inverseHalfDistance1 = Math.sqrt(inverseTriangleHalfDist1Sq);
       let triangleHalf2 = unusedVector.clone().sub(longestLegVect2);
-      let triangleLine2 = new THREE.Line3(longestLegVect2, unusedVector);
       let triangleHalfDist2Sq = unusedVector.distanceToSquared(longestLegVect2);
       let inverseTriangleHalfDist2Sq = 1.0 / triangleHalfDist2Sq;
       let inverseHalfDistance2 = Math.sqrt(inverseTriangleHalfDist2Sq);
-      let midPointX = (triangleHalfDist1Sq + vectDiffSq - triangleHalfDist2Sq) / (2.0 * vectDiffDistance);
-      let midPointXSq = midPointX * midPointX;
-      let xRemainder = vectDiffDistance - midPointX;
-      let theta = Math.acos(midPointX * inverseHalfDistance1);
+      let midPointDist = (triangleHalfDist1Sq + vectDiffSq - triangleHalfDist2Sq) / (2.0 * vectDiffDistance);
+      let midPointDistSq = midPointDist * midPointDist;
+      let xRemainder = vectDiffDistance - midPointDist;
+      let theta = Math.acos(midPointDist * inverseHalfDistance1);
       let gamma = Math.acos(xRemainder * inverseHalfDistance2);
-      let heightToApexVertexSq = triangleHalfDist1Sq - midPointX * midPointX;
+      let heightToApexVertexSq = triangleHalfDist1Sq - midPointDistSq;
       let heightToApexVertex = Math.sqrt(heightToApexVertexSq);
-      let tanTheta = Math.tan(theta);
-      let tanGamma = Math.tan(gamma);
+      let cosecantTheta = 1.0 / Math.cos(theta);
+      let cosecantGamma = 1.0 / Math.cos(gamma);
 
       //Now create lines perpendicular to this leg along those spacings.
       let line = new THREE.Line3(longestLegVect1, longestLegVect2);
+      let triangleLine1 = new THREE.Line3(longestLegVect1, unusedVector);
+      let triangleLine2 = new THREE.Line3(longestLegVect2, unusedVector);
       let diffT = 1.0 / largestNumInterpolations;
-      let posOnLine = 0.0;
 
       //Now for the internal stuff!
-      for(let j = 1; j < largestNumInterpolations; j++){
-        posOnLine = diffT;
-        let x0 = line.at(posOnLine);
+      for(let j = 0; j < largestNumInterpolations; j++){
+        let x0 = new THREE.Vector3();
+        let t0 = j * diffT;
+        line.at(t0, x0);
         let vectorToOrigin = x0.clone().sub(longestLegVect1);
 
+        //
+        //NOTE: This is probably not what we think it is. We are just getting the x vector, and then the y height.
+        //What we need is that actual vertex position, which probbaly requires a tad bit more trig.
+        //
         //Grab the appropriate coefficient dependent upon which side of the triangle we're on.
-        let xf;
+        let xf = new THREE.Vector3();
         let endPointT;
-        if(longestLegVect1.distanceToSquared(x0) <= midPointXSq){
-          let x = posOnLine;
-          let y = x * tanTheta;
-          let d = Math.sqrt(x * x + y * y);
-          xf = triangleLine1.at(d * inverseHalfDistance1);
+        if(longestLegVect1.distanceToSquared(x0) <= midPointDistSq){
+          let tf = x0.distanceTo(longestLegVect1) * cosecantTheta * inverseHalfDistance1;
+          triangleLine1.at(tf, xf);
         }
         else{
-          let x = vectDiffDistance - posOnLine;
-          let y = x * tanGamma;
-          let d = Math.sqrt(x * x + y * y);
-          xf = triangleLine2.at(d * inverseHalfDistance1);
+          let tf = x0.distanceTo(longestLegVect2) * cosecantGamma * inverseHalfDistance2;
+          triangleLine2.at(tf, xf);
         }
-        //
-        //For testing purposes only.
-        //
-        begginingAndEndingPoints.push(x0);
-        begginingAndEndingPoints.push(xf);
 
         //Draw a line in the plane with the unused line, until the intersection of that unused line.
         //This line will be used to find our bucket intercepts.
@@ -389,6 +382,7 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
         let originVertex = new Vertex(x0.x, x0.y, x0.z);
         let connectedVertexVect3 = new Vertex(xf.x, xf.y, xf.z);
         let lineHash = originVertex.hash + '<->' + connectedVertexVect3.hash;
+        hashedLines[lineHash] = []
         for(let k = 0, bucketsLength = thisStaticScene.bucketGrid.buckets.length; k < bucketsLength; k++){
           let bucket = thisStaticScene.bucketGrid.buckets[k];
 
@@ -417,7 +411,6 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
                 let hash = this.makeHashString(newPointForHash.position, '-');
 
                 if(!(hash in thisStaticScene.hashedPoints)){
-                  console.log("SQUEAK!");
                   thisStaticScene.searchablePoints.push(newPoint);
                   thisStaticScene.hashedPoints[hash] = newPoint;
                   bucket.staticMeshPoints.push(newPoint);
@@ -438,19 +431,13 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
       //END OF LINE LOOP
       //
     }
-
-    console.log("Relevant Results");
-    console.log(begginingAndEndingPoints);
-    //Trigger an alert that our geometry points are parsed and ready to be displayed for debugging
-    this.bucketGrid.parentParticleSystem.parentFluidParams.el.emit('static-mesh-inner-lines-constructed', {vertices: begginingAndEndingPoints});
     //
     //END OF ADDING CENTER POINTS
     //
 
     //When we're finished, now we should just be able to search out our faces whenever we want in our buckets
     //using the results to find when a collision has occured.
-    console.log("If we made it this far, we're nearly finished with the construction of our static mesh system. :)");
-    thisStaticScene.bucketGrid.constructStaticMeshOctree();
+    console.log("Static mesh system constructed.");
   };
 
   this.findRelevantBucketsToLine = function(line){

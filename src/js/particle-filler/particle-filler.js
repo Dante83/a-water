@@ -1,4 +1,4 @@
-function ParticleFiller(bucketHasher){
+function ParticleFiller(bucketHasher, staticMesh){
   //
   //NOTE: We want to construct this after we have both the particle system,
   //and the static environment set up. Particles will then be added into the system,
@@ -13,33 +13,14 @@ function ParticleFiller(bucketHasher){
   this.bucketHasherDimensions;
   this.intersectionMesh;
 
-  this.constructInstersectionMesh = function(){
-    //Clone the static scene
-
-    //Add the outer faces of the bucket grid to this static scene
-    //Anything that falls within this static scene is fair game, anything outside is not.
-
-    //Callback...
-    this.fillMesh();
-  }
-
   this.fillMesh = function(){
-    //Use the density function to add particles to the mesh using a hexagonal packing structure.
-    //this should be fairly stable, but the instabilities of the system might need to be worked out.
+    //TODO: Get the intersection of the two meshes in order to reduce the amount of space spent creating fluids.
 
+    //Create a new static mesh from this mesh.
 
-    //Callback...
-    this.zeroOutForces();
-  }
+    //In the future, we probably want a random walk method, but for now...
+    //Just walk through each bucket. If colliding with the static mesh for this object, but
+    //is also inside the other static mesh, then keep the particle. Otherwise, dispose of it.
 
-  this.zeroOutForces = function(){
-    //
-    //NOTE: We'll worry about this later.
-    //
-    //Iterate our particles multiple times through a solver, with variable positions,
-    //with the objective of minimizing the forces while staying inside of the box.
-
-    //Flush all the particles to the system.
-    this.particleSystem.addParticles();
   }
 }

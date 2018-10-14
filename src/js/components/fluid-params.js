@@ -75,7 +75,7 @@ AFRAME.registerComponent('fluid-params', {
     //
     //NOTE: Play with this to determine the last bugs with the system.
     //
-    this.particleSystem = new ParticleSystem([1.0, 2.1, 2.0], [-1.0, -2.1, -0.0], this.particleConstants, this);
+    this.particleSystem = new ParticleSystem([2.0, 2.1, 2.0], [-2.0, -2.1, -0.0], this.particleConstants, this);
     this.el.emit('particle-system-constructed', {finished: true});
     this.staticScene = new StaticScene(this.data['static-scene-accuracy']);
 
@@ -89,18 +89,25 @@ AFRAME.registerComponent('fluid-params', {
     this.staticScene.attachMeshToBucketGrid(this.particleSystem.bucketGrid);
     this.el.emit('static-mesh-constructed', {particleSystem: this.particleSystem});
 
-    //Solve the particle system for the situation that minimizes the forces on
-    //all particles. That is, the sum of the magnitude of all forces, using
-    //Newton's method. I would normally use BFGS, but past experience suggests that
-    //Newton's method is somewhat more stable. We initialize the system with an estimate
-    //for all particles that assumes a hexagonal packing structure - which actually should
-    //be pretty good for a lot of situations.
     //
-    //NOTE: For now, we're just going to populate our little boxes with lots of particles.
-    //We can do the fun stuff after we get the fluid system working.
+    //TODO: Replace this. For now, I'm just grabbing the curren box geometry, but I probably want
+    //something a bit more dynamic in the future.
     //
+    const fluidSystemId = this.el.id;
+    this.currentFluidGeometries = document.querySelectorAll(`.fluid.${fluidSystemId}`);
 
+    //Populate our initial particles
+    //TODO: In the future this should be done by AI approximation to estimate what
+    //we expect the system to look like.
+    for(let i = 0, numOfFluidGeometries = this.currentFluidGeometries.length; i < numOfFluidGeometries; i++){
+      let fluidBufferGeometry = this.currentFluidGeometries[i].components.geometry.geometry;
+      console.log(fluidBufferGeometry);
+      let fluidGeometry = new StaticScene(this.data['static-scene-accuracy']);
+      this.particleFillter = new ParticleFiller(this.particleSystem.bucketGrid, this.staticScene);
+    }
 
+    //NOTE: Unlike our static geometry above, we want to remove our geometries from the screen
+    //just as soon as we've finished populating all of those particles.
 
     //
     //NOTE: A future objective is to cover the surface in some super-fast adaptive grid

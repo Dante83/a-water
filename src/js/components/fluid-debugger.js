@@ -14,8 +14,6 @@ AFRAME.registerComponent('fluid-debugger', {
     bucketsColor: {type: 'vec4', default: {x: 0.0, y: 1.0, z: 1.0, w: 0.1}},
     drawStaticMesh: {type: 'boolean', default: false},
     staticMeshColor: {type: 'vec4', default: {x: 0.0, y: 1.0, z: 0.0, w: 1.0}},
-    drawStaticInnerPoints: {type: 'boolean', default: false},
-    staticInnerPointsColor: {type: 'vec4', default: {x: 1.0, y: 0.0, z: 1.0, w: 1.0}},
     drawStaticMeshVertexLines: {type: 'boolean', default: false},
     staticMeshVertexLinColor: {type: 'vec4', default: {x: 1.0, y: 0.0, z: 1.0, w: 1.0}},
     drawPoints: {type: 'boolean', default: false},
@@ -268,15 +266,11 @@ AFRAME.registerComponent('fluid-debugger', {
       }
     });
 
-    this.fluidParamsEl.addEventListener('static-mesh-inner-lines-constructed', function(data){
+    this.fluidParamsEl.addEventListener('draw-points', function(data){
       if(thisDebugger.data.particleSystemId === data.target.id){
-        if(thisDebugger.data.drawStaticInnerPoints){
-          console.log('Constructing static inner points view...');
-          thisDebugger.drawPoints(data.detail.vertices, thisDebugger.data.staticMeshVertexLinColor);
-          console.log('Finished constructing static innner points view...');
-        }
+        thisDebugger.drawPoints(data.detail.vertices, data.detail.color);
       }
-    })
+    });
   },
   tick: function (time, timeDelta) {
     //Update our particle positions and visible surface mesh once they're added.
