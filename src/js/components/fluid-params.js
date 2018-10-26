@@ -4,17 +4,17 @@ AFRAME.registerComponent('fluid-params', {
   dependencies: [],
   fluidParticles: [],
   schema: {
-    'search-bucket-diameter': {type: 'number', default: 10.0},
-    'upper-corner': {type: 'vec3', default: {x: 0.0, y: 0.0, z: 0.0}},
-    'lower-corner': {type: 'vec3', default: {x: 0.0, y: 0.0, z: 0.0}},
-    'target-density': {type: 'number', default: 997.0},
-    'particle-radius': {type: 'number', default: 0.5},
-    'drag-coeficient': {type: 'number', default: 1.0},
-    'particle-mass': {type: 'number', default: 1.0},
-    'static-scene-accuracy': {type: 'number', default: 2},
-    'draw-style': {type: 'string', default: 'particles'},
-    'sph-iterations-per-second': {type: 'number', default: 60.0},
-    'time-between-sph-iteration-writes': {type: 'number', default: 5*60}
+    'searchBucketDiameter': {type: 'number', default: 10.0},
+    'upperCorner': {type: 'vec3', default: {x: 0.0, y: 0.0, z: 0.0}},
+    'lowerCorner': {type: 'vec3', default: {x: 0.0, y: 0.0, z: 0.0}},
+    'targetDensity': {type: 'number', default: 997.0},
+    'particleRadius': {type: 'number', default: 0.5},
+    'dragCoeficient': {type: 'number', default: 1.0},
+    'particleMass': {type: 'number', default: 1.0},
+    'staticSceneAccuracy': {type: 'number', default: 2},
+    'drawStyle': {type: 'string', default: 'particles'},
+    'sphIterationsPerSecond': {type: 'number', default: 60.0},
+    'stepsPerSPHIteration': {type: 'number', default: 5}
   },
   init: function(){
     this.runProgram = false;
@@ -71,13 +71,13 @@ AFRAME.registerComponent('fluid-params', {
   postLoadInit: function(thisFluidParams){
     //We might as well construct our buckets and things all the way down here, after the models have loaded.
     //Most of this stuff could probably be done inside of a web worker for increased speed.
-    this.particleConstants = new ParticleConstants(this.data['particle-radius'], this.data['drag-coeficient'], this.data['particle-mass']);
+    this.particleConstants = new ParticleConstants(this.data.particleRadius, this.data.dragCoeficient, this.data.particleMass);
     //
     //NOTE: Play with this to determine the last bugs with the system.
     //
     this.particleSystem = new ParticleSystem([2.0, 2.1, 2.0], [-2.0, -2.1, -0.0], this.particleConstants, this);
     this.el.emit('particle-system-constructed', {finished: true});
-    this.staticScene = new StaticScene(this.data['static-scene-accuracy']);
+    this.staticScene = new StaticScene(this.data.staticSceneAccuracy);
 
     //Trigger the partitioning of our mesh into a set of intersectable point for easy searching
     //in each bucket.
@@ -99,12 +99,13 @@ AFRAME.registerComponent('fluid-params', {
     //Populate our initial particles
     //TODO: In the future this should be done by AI approximation to estimate what
     //we expect the system to look like.
+    let fluidCollisionBound = new StaticScene(this.data.staticSceneAccuracy);
     for(let i = 0, numOfFluidGeometries = this.currentFluidGeometries.length; i < numOfFluidGeometries; i++){
       let fluidBufferGeometry = this.currentFluidGeometries[i].components.geometry.geometry;
-      console.log(fluidBufferGeometry);
-      let fluidGeometry = new StaticScene(this.data['static-scene-accuracy']);
-      this.particleFillter = new ParticleFiller(this.particleSystem.bucketGrid, this.staticScene);
+      fluidCollisionBound.addMesh(fluidBufferGeometry);
     }
+    let particleFiller = new ParticleFiller(this.particleSystem.bucketGrid, this.staticScene, fluidCollisionBound);
+    particleFiller.fillMesh();
 
     //NOTE: Unlike our static geometry above, we want to remove our geometries from the screen
     //just as soon as we've finished populating all of those particles.

@@ -9,14 +9,19 @@ function Bucket(upperCorner, lowerCorner, parentBucketGrid){
   perfDebug.spotCheckPerformance('bucket initialization', true);
   this.upperCorner = upperCorner.slice(0);
   this.lowerCorner = lowerCorner.slice(0);
+  this.hash;
   this.points = [];
   this.pointsMarkedForRemoval = [];
   this.pointsMarkedForAddition = [];
   this.connectedBuckets = {};
   this.needsUpdate = false;
+
+  //Intersection components associated with static meshes.
   this.instersectsStaticMesh = false;
   this.isInsideStaticMesh = false;
+  this.nearestStaticPointBucket = null;
   this.staticMeshPoints = [];
+
   this.parentBucketGrid = parentBucketGrid;
   this.bucketConstants = parentBucketGrid.bucketConstants;
   perfDebug.spotCheckPerformance('bucket initialization', false);
@@ -180,35 +185,100 @@ Bucket.prototype.flushPoints = function(){
   this.needsUpdate = false;
 };
 
-Bucket.prototype.constructStaticMeshOctree = function(){
-  //
-  //TODO: Determine a more effective way of performing collision handling
-  //
+Bucket.prototype.isPointInStaticMesh = function(position, staticMeshPoints = null){
+  //In the event that nothing is provided, we're probably talking about the default static mesh attached to this
+  //bucket grid and used for bouncing particles. This does not determine where the collision takes place however,
+  //only that a collision exists. in these divided boxes.
+  if(staticMeshPoints === null){
+    staticMeshPoints = this.staticMeshPoints;
+  }
 
-  //If the number of points is non-zero...
-  // if(this.staticMeshSearchablePoints.length > 0){
-  //   this.IntersectsStaticMesh = true;
-  //
-  //   //Create a KD Tree from all points in this bucket.
-  //   //https://github.com/ubilabs/kd-tree-javascript
-  //   function distance2PointSquared(a, b){
-  //     let diff1 = a[0] - b[0];
-  //     let diff2 = a[1] - b[1];
-  //     let diff3 = a[2] - b[2];
-  //     return (diff1 * diff1) + (diff2 * diff2) + (diff3 * diff3);
-  //   }
-  //   this.staticMeshKDTree = new kdTree(this.staticMeshSearchablePoints, [0, 1, 2]);
-  // };
+  if(this.instersectsStaticMesh){
+    //Determine the closest point to our position from those listed
+    let closestStaticMeshPoint = staticMeshPoints[0];
+    let xDist = closestStaticMeshPoint[0] - position[0];
+    let yDist = closestStaticMeshPoint[1] - position[1];
+    let zDist = closestStaticMeshPoint[2] - position[2];
+    let distCalc = xDist * xDist + yDist * yDist + zDist * zDist;
+    let pointsForFaces = [];
+    for(let i = 1, numStaticMeshPoints = staticMeshPoints.length; i < numStaticMeshPoints; i++){
+      let staticMeshPoint = staticMeshPoints[i];
+      let xDist = closestStaticMeshPoint[0] - position[0];
+      let yDist = closestStaticMeshPoint[1] - position[1];
+      let zDist = closestStaticMeshPoint[2] - position[2];
+      let distCalcNew = xDist * xDist + yDist * yDist + zDist * zDist;
+      if(distCalNew < distCal){
+        closestStaticMeshPoint = staticMeshPoint;
+        distCalc = distCalcNew;
+        pointsForFaces = [];
+      }
+      else if(distCalNew == distCal){
+        if(pointsForFaces.length > 0){
+          pointsForFaces.push(staticMeshPoint);
+        }
+        else{
+          pointsForFaces.push(staticMeshPoint);
+          pointsForFaces.push(closestStaticMeshPoint);
+        }
+      }
+    }
+
+    //Get all the mesh faces associated with each of these points and determine the closest point on each face.
+    let meshFaces = [];
+    if(pointsForFaces.length > 0){
+      for(let i = 0, numPointsForFaces = pointsForFaces.length; i < numPointsForFaces; i++){
+        let point = pointsForFaces[i];
+        meshFaces = [...meshFaces, ...point.faces];
+      }
+    }
+    else{
+      meshFaces = point.faces;
+    }
+    let closestFace;
+    //Get the closest point on the first mesh face and the distance to that point
+    for(let i = 1, numMeshFaces = meshFaces.length; i < numMeshFaces; i++){
+      //Get the closest point on the plane that is within the mesh triangle.
+
+
+      //Is the distnace to this point less than the distance to the previous point
+
+
+      //If it's closer, replace the previous face
+
+    }
+
+    //Use the method described here:
+    //https://blender.stackexchange.com/questions/31693/how-to-find-if-a-point-is-inside-a-mesh
+    //to determine if each particle is inside of the mesh.
+
+  }
+  else if(staticMeshPoints === null){
+    return this.isInsideStaticMesh;
+  }
+
+  //Default to false.
+  console.warning("The method, Bucket.prototype.isPointInStaticMesh, does not work on this bucket.");
+  return false;
 }
 
+//
+//TODO: This needs re-doing according to our current setup.
+//
+//NOTE: This method presumes that each of our buckets, and the movement of our particles
+//in a single frame is small compared to the size of a given section of mesh. High speed particles,
+//might accidently start moving through walls. To handle this, we may want to expand the searh radius for
+//our impact sites.
 Bucket.prototype.findPointsInsideStaticMesh = function(points, searchRadius){
   var pointsInsideOfMesh = [];
+
+  //Determine all buckets
+
+
   if(this.IntersectsStaticMesh){
     for(let i = 0, pointsLength = this.points.length; i < pointsLength; i++){
       //Do the Static Mesh KD tree search for the nearest point to this particle.
       var point = this.points[i];
       let pointPosition = point.position;
-      let nearestCoordinates = this.staticMeshKDTree.nearest([pointPosition.x, pointPosition.y, pointPosition.z], 1, [searchRadius]);
 
       //Hash this value to get the searchable point in the static scene.
       let p = nearestCoordinates[0][0];

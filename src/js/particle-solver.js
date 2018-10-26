@@ -19,7 +19,6 @@ function PCISPHSystemSolver(interpolator, constants, parentParticleSystem){
   this._eosScale = constants.eosScale;
   this._negativePressureScale = constants.negativePressureScale;
 
-
   // this.onBeginTimeStep(){
   //   //Update all particle densities
   //

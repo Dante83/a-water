@@ -15,7 +15,9 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
   this.bucketGrid;
   this.hashedVertices = [];
   this.hashedFaces = [];
+  this.collidedBuckets = [];
   this.hashedPoints = [];
+  this.bucketCollisionPoints = [];
   this.hashDigitsCount = numberOfDigitsBeforeMergingVertices;
   var thisStaticScene = this;
 
@@ -159,19 +161,16 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
     return strings.join('');
   };
 
-  //Turns out that we might also have triangles that simply intersect our buckets
-  //and don't have valid vertices inside of them. While all vertices should be searchable points
-  //(to include faces completely within a hashed bucket) any intersections should also be points.
-  this.attachMeshToBucketGrid = function(bucketGrid){
-    //Clear out points in case this oddly gets run a second time
-    //and add all our intial vertices by default - as every vertice is searchable
+  this.getFaceCollisionPoints  = function(bucketGrid){
     this.bucketGrid = bucketGrid;
-    bucketGrid.staticScene = thisStaticScene;
     let minDistanceToBeSamePoint = 10**(-1.0 * thisStaticScene.hashDigitsCount);
     let minDistanceToBeSamePointSquared = minDistanceToBeSamePoint * minDistanceToBeSamePoint;
     let hashedLines = [];
     let bucketRadiusOver2 = bucketGrid.approximateSearchDiameter * 0.5;
     let bucketRadiusOver2Squared = bucketRadiusOver2 * bucketRadiusOver2;
+
+    //This is the key value we're looking for...
+    let thisStaticScene.bucketCollisionPoints = [];
 
     //Trigger an alert that our geometry points are parsed and ready to be displayed for debugging
     this.bucketGrid.parentParticleSystem.parentFluidParams.el.emit('static-mesh-geometry-constructed', {vertices: thisStaticScene.vertices});
@@ -190,7 +189,12 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
         };
         thisStaticScene.searchablePoints.push(newPoint);
         thisStaticScene.hashedPoints[hash] = newPoint;
-        bucketGrid.hashedBuckets[vertexBucketHash].staticMeshPoints.push(newPoint);
+
+        if(!bucketHash in thisStaticScene.bucketCollisionPoints){
+          thisStaticScene.bucketCollisionPoints[bucketHash] = [];
+        }
+        thisStaticScene.collidedBuckets[bucketHash] = bucketGrid.hashedBuckets[bucketHash];
+        thisStaticScene.bucketCollisionPoints[bucketHash] = newPoint;
       }
     }
 
@@ -227,6 +231,7 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
             let bucketFace = bucketFaces[faceIndex];
 
             if(bucketFace.plane.intersectsLine(lineFormedByVectors)){
+              //Now to get down to business and track where this hits
               let p = new THREE.Vector3();
               bucketFace.plane.intersectLine(lineFormedByVectors, p);
 
@@ -246,7 +251,11 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
                 if(!(hash in thisStaticScene.hashedPoints)){
                   thisStaticScene.searchablePoints.push(newPoint);
                   thisStaticScene.hashedPoints[hash] = newPoint;
-                  bucket.staticMeshPoints.push(newPoint);
+                  if(!bucketHash in thisStaticScene.bucketCollisionPoints){
+                    thisStaticScene.bucketCollisionPoints[bucketHash] = [];
+                  }
+                  thisStaticScene.collidedBuckets[bucketHash] = bucketGrid.hashedBuckets[bucketHash];
+                  thisStaticScene.bucketCollisionPoints[bucketHash].push(newPoint);
 
                   //While we're here, let's also store these points up in the hash because we will likely
                   //create all centers from the results.
@@ -258,12 +267,6 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
         }
       }
     }
-
-    //
-    //For testing purposes only.
-    //
-    let begginingPoints = [];
-    let endingPoints = [];
 
     //For each face on our geometry.
     let meshFaces = Object.keys(thisStaticScene.hashedFaces).map(x => thisStaticScene.hashedFaces[x]);
@@ -413,7 +416,11 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
                 if(!(hash in thisStaticScene.hashedPoints)){
                   thisStaticScene.searchablePoints.push(newPoint);
                   thisStaticScene.hashedPoints[hash] = newPoint;
-                  bucket.staticMeshPoints.push(newPoint);
+                  if(!bucketHash in thisStaticScene.bucketCollisionPoints){
+                    thisStaticScene.bucketCollisionPoints[bucketHash] = [];
+                  }
+                  thisStaticScene.collidedBuckets[bucketHash] = bucketGrid.hashedBuckets[bucketHash];
+                  thisStaticScene.bucketCollisionPoints[bucketHash].push(newPoint);
 
                   //While we're here, let's also store these points up in the hash because we will likely
                   //create all centers from the results.
@@ -434,10 +441,219 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
     //
     //END OF ADDING CENTER POINTS
     //
+  };
 
-    //When we're finished, now we should just be able to search out our faces whenever we want in our buckets
-    //using the results to find when a collision has occured.
-    console.log("Static mesh system constructed.");
+  //This is just when we want to get the buckets inside verses outside
+  this.filterBucketsInsideVersesOutside = function(){
+    //Grab all buckets that presently collide with the mesh.
+    let listOfTrackedBuckets = this.collidedBuckets.splice(0);
+    let lastLayerOfBuckets = listOfTrackedBuckets.splice(0);
+    let nextLayerOfBuckets = [];
+    let listOfPreviouslyTrackedBucketHashes = listOfTrackedBuckets.map(x => x.hash);
+    let terminationLength = thisStaticScene.bucketGrid.buckets.length;
+    let hashedBucketDistances = [];
+
+    //While buckets yet remain that are not yet tagged...
+    while(listOfTrackedBuckets.length < terminationLength){
+      for(let i = 0, numOriginBuckets = lastLayerOfBuckets.length; i < numOriginBuckets; i++){
+        let bucket = lastLayerOfBuckets[i];
+        let smallSetOfNextLayersBuckets = bucket.listOfConnectedBuckets;
+
+        for(let j = 0, numConnectedBuckets = smallSetOfNextLayersBuckets.length; j < numConnectedBuckets; j++){
+          //For each bucket adjacent to our last layer, but not in the system already.
+          let potentiallyUntrackedBucket = smallSetOfNextLayersBuckets[j];
+          let bucketCenter = potentiallyUntrackedBucket.getCenter();
+          //Note: Because we started off with all buckets associated with a face - we pre-filter
+          //out these results below by just checking if they're in our list of bucket hashes.
+          if(!potentiallyUntrackedBucket.hash in listOfPreviouslyTrackedBucketHashes){
+            //Change your thought context to this new bucket, at this point we know we're not tracking the bucket
+            //and we just want to find out if the bucket is inside or outisde of the mesh based on the nearest points,
+            //or other nearby buckets.
+            let untrackedBucket = potentiallyUntrackedBucket; //Syntactic sugar for making our code easier to read
+            let nearbyBuckets = untrackedBucket.listOfConnectedBuckets;
+            //Check if any of our neighbors have collision points. If so, store them up
+            //and then find the closest point among them. Use this bucket as our
+            //closest bucket set our value to one and then search for the closest point
+            //to our center among the faces. The normal relative to this face will decide whether we are inside or outside.
+            let noBucketCollisionPointsFound = true;
+            let closestCollisionPointDistSq =  false;
+            let closestCollisionPoint;
+            for(let k = 0, numOfNearbyBuckets = nearbyBuckets.length; k < numOfNearbyBuckets; k++){
+              let nearbyBucket = nearbyBuckets[k];
+              let nearbyBucketCollisionPoints = thisStaticScene.hashedPoints[nearbyBucket.hash];
+
+              if(nearbyBucketCollisionPoints.length > 0){
+                //Looks like we're directly adjacent to some mesh. So we can determine whether
+                //we're inside or outside from the closest normal (once we find the closest face).
+                noBucketCollisionPointsFound = false;
+                let numClosestCollisionPoints = 1;
+                for(let l = 0, numCollisionPoints = nearbyBucketCollisionPoints.length; l < numCollisionPoints; l++){
+                  //Now to find the closest Ccollision point.
+                  let collisionPoint = nearbyBucketCollisionPoints[l];
+                  let collisionPointPosition = collisionPoint.coordinates;
+                  let distSq = 0.0;
+                  for(let m = 0; m < 3; m++){
+                    let diff = collisionPointPosition[m] - bucketCenter[m];
+                    diffSq = diff * diff;
+                    distSq += diffSq;
+                  }
+
+                  //Check if the distance between each collisionPoint and the center of our bucket
+                  //the closest collisionPoint wins...
+                  //NOTE: We should probably do a range calculation instead for this.
+                  if(distSq === closestCollisionPointDistSq && numClosestCollisionPoints > 0){
+                    if(numClosestCollisionPoints === 1){
+                      let holdPoint = closestCollisionPoint;
+                      closestCollisionPoint = [holdPoint, closestCollisionPoint];
+                      numCollisionPoints = 2;
+                    }
+                    else{
+                      closestCollisionPoint.push(collisionPoint);
+                      numClosestCollisionPoints++;
+                    }
+                  }
+                  else if(closestCollisionPointDistSq === false || closestCollisionPointDistSq > distSq){
+                    closestCollisionPointDistSq = distSq;
+                    closestCollisionPoint = collisionPoint;
+
+                    //Reset our variables used for multiple collisionPoints
+                    numClosestCollisionPoints = 1;
+                  }
+                }
+              }
+            }
+
+            //If none of our neighbors have points on the face, just use the data from
+            //the neighbor closest to a side and set our counter to one plus the depth of this neighbor.
+            //we are going to presume the manhattan distance is a good approximation for deciding the
+            //closest point on the surface of our surface.
+            if(noBucketCollisionPointsFound){
+              let closestBucketDistanceData;
+              let closestBucketScore  = false;
+              let isInMesh = false;
+              for(let k = 0, numOfNearbyBuckets = nearbyBuckets.length; k < numOfNearbyBuckets; k++){
+                let nearbyBucket = nearbyBuckets[0];
+                let otherPotentiallyClosestBucketDistance = nearbyBucket.hash in hashedBucketDistances ? hashedBucketDistances[hashedBucket.hash] : false;
+                if(otherPotentiallyClosestBucketDistance !== false &&
+                  (closestBucketScore === false || potentiallyClosestBucketDistanceToMeshStats.score < closestBucketScore)
+                ){
+                  let closerBucketDistance = hashedBucketDistances[hashedBucket.hash];
+                  closestBucketScore = closerBucketDistance.score;
+                  isInMesh = closerBucketDistance.isInMesh;
+                }
+              }
+              let closestBucketDistance = {
+                score: closestBucketScore + 1,
+                isInMesh: isInMesh,
+                associatedBucket: untrackedBucket
+              };
+              hashedBucketDistances[untrackedBucket.hash] = closestBucketDistance;
+            }
+            else{
+              //If a collision point is found, however, we use that to determine what our closest bucket is.
+              //Only once we've grabbed the closest collision point from all neighboring points can we decide whether
+              //or not we're inside the box or not - first by getting the face closest associated with these points.
+              //---------------------
+              //Get all the mesh faces associated with each of these collisionPoints and determine the closest collisionPoint on each face.
+              let closestFaces = [];
+              if(numClosestCollisionPoints === 1){
+                //Just get all faces associated with this collisionPoint
+                closestFaces = closestPoint.faces.splice(0);
+              }
+              else{
+                //We have multiple collisionPoints? Add all the faces together into one list
+                for(let i = 0; i < numClosestCollisionPoints; i++){
+                  closestFaces = [...closestFaces, ...closestPoint[i].faces.splice(0)];
+                }
+              }
+
+              //Now figure out the closest face to our collisionPoint
+              let closestFace = closestFaces[0];
+              let nearbyFace = closestFaces[0];
+              let originPoint = new THREE.Vector3(...bucketCenter);
+              let closestPointOnFace = new THREE.Vector3();
+              nearbyFace.triangle.closestPointToPoint(originPoint, closestPointOnFace);
+              if(meshFaces.length > 1){
+                let distToPointSq = originPoint.distanceToSquared(closestPointOnFace);
+                //Get the closest collisionPoint on the first mesh face and the distance to that collisionPoint
+                for(let i = 1, numMeshFaces = meshFaces.length; i < numMeshFaces; i++){
+                  //Create a triangle from our mesh and then use the built in closest collisionPoint to collisionPoint method
+                  //from THREE JS in order to find the closest collisionPoint
+                  nearbyFace = meshFaces[i];
+                  originPoint = new THREE.Vector3(...bucketCenter);
+                  closestPointOnFace = new THREE.Vector3();
+                  nearbyFace.triangle.closestPointToPoint(originPoint, closestPointOnFace);
+
+                  //Check if the distance to this collisionPoint is less than the previous distance
+                  let newDistanceToPointSq = originPoint.distanceToSquared(closestPointOnFace);
+                  if(distToPointSq < newDistanceToPointSq){
+                    //If it's closer, replace the previous face
+                    distToPointSq = newDistanceToPointSq;
+                    closestFace = nearbyFace;
+                  }
+                }
+              }
+
+              //Use the method described here:
+              //https://blender.stackexchange.com/questions/31693/how-to-find-if-a-point-is-inside-a-mesh
+              //to determine if each particle is inside of the mesh.
+              let isInsideMesh = originPoint.dot(face.normal);
+              let closestBucketDistance = {
+                score: 1,
+                isInMesh: isInsideMesh,
+                associatedBucket: untrackedBucket
+              };
+              hashedBucketDistances[untrackedBucket.hash] = closestBucketDistance;
+            }
+
+            //Either way, add this new bucket to our list of hashed buckets so we don't run through these calculations again.
+            listOfPreviouslyTrackedBucketHashes.push(untrackedBucket.hash);
+            nextLayerOfBuckets.push(untrackedBucket);
+            listOfTrackedBuckets.push(untrackedBucket);
+          }
+        }
+      }
+
+      //Reset our last layer of buckets so we can find everything connected to this bucket.
+      lastLayerOfBuckets = nextLayerOfBuckets;
+      nextLayerOfBuckets = [];
+    }
+
+    return hashedBucketDistances;
+  };
+
+  //
+  //TODO: Make a specific function to determine if a specific point is inside or outside of this mesh.
+  //
+
+  //
+  //TODO: Make a specific function to determine if a point collided with our mesh, and if so, where.
+  //
+
+  //Turns out that we might also have triangles that simply intersect our buckets
+  //and don't have valid vertices inside of them. While all vertices should be searchable points
+  //(to include faces completely within a hashed bucket) any intersections should also be points.
+  this.attachMeshToBucketGrid = function(bucketGrid){
+    //For our intersecting points
+    let points = thisStaticScene.bucketPoints;
+    let hashedBuckets = bucketGrid.hashedBuckets;
+    let bucketMarkings = this.filterBucketsInsideVersesOutside();
+    foreach(hash in hashedPoints){
+      let points = hash in hashedPoints[hash] ? hashPoints[hash] : false;
+      let bucket = hashedBuckets[hash];
+      let bucketMarking = bucketMarkings[hash];
+
+      if(points !== false){
+        bucket.instersectsStaticMesh = true;
+        bucket.isInStaticMesh = bucketMarking.isInMesh;
+        bucket.staticMeshPoints.push(point);
+      }
+      else{
+        bucket.instersectsStaticMesh = false;
+        bucket.isInStaticMesh = bucketMarking.isInMesh;
+        bucket.staticMeshPoints.push(point);
+      }
+    }
   };
 
   this.findRelevantBucketsToLine = function(line){

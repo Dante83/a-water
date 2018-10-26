@@ -19,14 +19,18 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
   this.gridUpperCoordinates = [upperCorner[0], upperCorner[1], upperCorner[2]];
   this.gridLowerCoordinates = [lowerCorner[0], lowerCorner[1], lowerCorner[2]];
   this.gridLength = [0.0,0.0,0.0];
+  this.gridLengthInMeters = [0.0,0.0,.0.0];
   this.halfMaxInteger = Math.floor(Number.MAX_SAFE_INTEGER * 0.5);
   let inverseRadius = parentParticleSystem.particleConstants.inverseRadius;
   for(let i = 0; i < 3; i++){
-    this.gridLength[i] = Math.ceil((this.gridUpperCoordinates[i] - this.gridLowerCoordinates[i]) * inverseRadius);
+    let gridDimensions = this.gridUpperCoordinates[i] - this.gridLowerCoordinates[i];
+    this.gridLengthInMeters[i] = gridDimensions;
+    this.gridLength[i] = Math.ceil(gridDimention * inverseRadius);
   }
 
   var thisBucketGrid = this;
   this.staticScene;
+  this.tempColliders;
   this.parentParticleSystem = parentParticleSystem;
   this.bucketConstants = bucketConstants;
   this.particleConstants = parentParticleSystem.particleConstants;
@@ -54,6 +58,7 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
     let newBucket = new Bucket(upperCorner, lowerCorner, thisBucketGrid);
     let center = newBucket.getCenter();
     let bucketHash = this.getHashKeyFromPosition(center);
+    newBucket.hash = bucketHash;
     this.buckets.push(newBucket);
     this.hashedBuckets[bucketHash] = newBucket;
   };
@@ -99,6 +104,8 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
       }
 
       bucket.connectedBuckets = connections;
+      let listOfPossibleConnectedBuckets = [xMinus1, xPlus1, yMinus1, yPlus1, zMinus1, zPlus1];
+      bucket.listOfConnectedBuckets = listOfPossibleConnectedBuckets.filter(x => x !== false);
     };
     perfDebug.spotCheckPerformance('connect buckets', false);
   };
