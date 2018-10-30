@@ -19,7 +19,7 @@ function ParticleFiller(particleSystem, bucketGrid, collidableScene, fluidCollis
     let xPoints = Math.ceil(cubedRootOfDensity * bucketGridLengthInMeters[0]);
     let yPoints = Math.ceil(cubedRootOfDensity * bucketGridLengthInMeters[1]);
     let zPoints = Math.ceil(cubedRootOfDensity * bucketGridLengthInMeters[2]);
-    let startingPosition = thisParticleFiller.bucketGrid.gridLowerCoordinates.splice(0);
+    let startingPosition = thisParticleFiller.bucketGrid.gridLowerCoordinates.slice(0);
 
     //For our particle system to add the particles
     let newPositions = [];

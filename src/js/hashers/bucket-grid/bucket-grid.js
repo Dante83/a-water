@@ -1,4 +1,4 @@
-/**
+[0]/**
 * Bucket Grid
 *
 * Provides us with a hashed grid that we can use to accelerate the search for all
@@ -19,13 +19,13 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
   this.gridUpperCoordinates = [upperCorner[0], upperCorner[1], upperCorner[2]];
   this.gridLowerCoordinates = [lowerCorner[0], lowerCorner[1], lowerCorner[2]];
   this.gridLength = [0.0,0.0,0.0];
-  this.gridLengthInMeters = [0.0,0.0,.0.0];
+  this.gridLengthInMeters = [0.0,0.0,0.0];
   this.halfMaxInteger = Math.floor(Number.MAX_SAFE_INTEGER * 0.5);
   let inverseRadius = parentParticleSystem.particleConstants.inverseRadius;
   for(let i = 0; i < 3; i++){
     let gridDimensions = this.gridUpperCoordinates[i] - this.gridLowerCoordinates[i];
     this.gridLengthInMeters[i] = gridDimensions;
-    this.gridLength[i] = Math.ceil(gridDimention * inverseRadius);
+    this.gridLength[i] = Math.ceil(gridDimensions * inverseRadius);
   }
 
   var thisBucketGrid = this;
@@ -65,6 +65,8 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
 
   this.connectBuckets = function(){
     perfDebug.spotCheckPerformance('connect buckets', true);
+    let offset = this.approximateSearchDiameter;
+    let bucketHashes = Object.keys(this.hashedBuckets).map(x => parseInt(x));
     for(let i = 0, numBuckets = this.buckets.length; i < numBuckets; i++){
       let bucket = this.buckets[i];
       let center = bucket.getCenter();
@@ -73,18 +75,18 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
       //Z seems like a fine coordinate to make my 'up', but I think Three JS actually thinks Y is up. Weird little program...
       //In the event that we need those, I have also made these 'axial' so that I can include the 'corner' cases later -
       //that is, probably when we need to predict when particles are leaving a given grid.
-      let currentHash = thisBucketGrid.getHashKeyFromPosition([center.x - 1, center.y, center.z]);
-      let xMinus1 = this.hashedBuckets.hasOwnProperty(this.hashedBuckets) ? this.hashedBuckets[currentHash] : false;
-      currentHash = thisBucketGrid.getHashKeyFromPosition([center.x + 1, center.y, center.z]);
-      let xPlus1 = this.hashedBuckets.hasOwnProperty(this.hashedBuckets) ? this.hashedBuckets[currentHash] : false;
-      currentHash = thisBucketGrid.getHashKeyFromPosition([center.x, center.y - 1, center.z]);
-      let yMinus1 = this.hashedBuckets.hasOwnProperty(this.hashedBuckets) ? this.hashedBuckets[currentHash] : false;
-      currentHash = thisBucketGrid.getHashKeyFromPosition([center.x, center.y + 1, center.z]);
-      let yPlus1 = this.hashedBuckets.hasOwnProperty(this.hashedBuckets) ? this.hashedBuckets[currentHash] : false;
-      currentHash = thisBucketGrid.getHashKeyFromPosition([center.x, center.y, center.z - 1]);
-      let zMinus1 = this.hashedBuckets.hasOwnProperty(this.hashedBuckets) ? this.hashedBuckets[currentHash] : false;
-      currentHash = thisBucketGrid.getHashKeyFromPosition([center.x, center.y, center.z + 1]);
-      let zPlus1 = this.hashedBuckets.hasOwnProperty(this.hashedBuckets) ? this.hashedBuckets[currentHash] : false;
+      let currentHash = thisBucketGrid.getHashKeyFromPosition([center[0] - offset, center[1], center[2]]);
+      let xMinus1 = currentHash in this.hashedBuckets ? this.hashedBuckets[currentHash] : false;
+      currentHash = thisBucketGrid.getHashKeyFromPosition([center[0] + offset, center[1], center[2]]);
+      let xPlus1 = currentHash in this.hashedBuckets ? this.hashedBuckets[currentHash] : false;
+      currentHash = thisBucketGrid.getHashKeyFromPosition([center[0], center[1] - offset, center[2]]);
+      let yMinus1 = currentHash in this.hashedBuckets ? this.hashedBuckets[currentHash] : false;
+      currentHash = thisBucketGrid.getHashKeyFromPosition([center[0], center[1] + offset, center[2]]);
+      let yPlus1 = currentHash in this.hashedBuckets ? this.hashedBuckets[currentHash] : false;
+      currentHash = thisBucketGrid.getHashKeyFromPosition([center[0], center[1], center[2] - offset]);
+      let zMinus1 = currentHash in this.hashedBuckets ? this.hashedBuckets[currentHash] : false;
+      currentHash = thisBucketGrid.getHashKeyFromPosition([center[0], center[1], center[2] + offset]);
+      let zPlus1 = currentHash in this.hashedBuckets ? this.hashedBuckets[currentHash] : false;
 
       var connections ={
         axial:{

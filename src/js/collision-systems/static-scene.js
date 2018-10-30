@@ -8,11 +8,11 @@
 *  any particles contained are interacting with the static environment, if that environment intersects
 *  the bucket rapidly (by constructing their own KD-Tree).
 */
-function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
+function StaticScene(bucketGrid, numberOfDigitsBeforeMergingVertices = 2){
   this.vertices = [];
   this.faces = [];
   this.searchablePoints = [];
-  this.bucketGrid;
+  this.bucketGrid = bucketGrid;
   this.hashedVertices = [];
   this.hashedFaces = [];
   this.collidedBuckets = [];
@@ -161,8 +161,8 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
     return strings.join('');
   };
 
-  this.getFaceCollisionPoints  = function(bucketGrid){
-    this.bucketGrid = bucketGrid;
+  this.getFaceCollisionPoints  = function(){
+    let bucketGrid = thisStaticScene.bucketGrid;
     let minDistanceToBeSamePoint = 10**(-1.0 * thisStaticScene.hashDigitsCount);
     let minDistanceToBeSamePointSquared = minDistanceToBeSamePoint * minDistanceToBeSamePoint;
     let hashedLines = [];
@@ -170,10 +170,10 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
     let bucketRadiusOver2Squared = bucketRadiusOver2 * bucketRadiusOver2;
 
     //This is the key value we're looking for...
-    let thisStaticScene.bucketCollisionPoints = [];
+    thisStaticScene.bucketCollisionPoints = [];
 
     //Trigger an alert that our geometry points are parsed and ready to be displayed for debugging
-    this.bucketGrid.parentParticleSystem.parentFluidParams.el.emit('static-mesh-geometry-constructed', {vertices: thisStaticScene.vertices});
+    thisStaticScene.bucketGrid.parentParticleSystem.parentFluidParams.el.emit('static-mesh-geometry-constructed', {vertices: thisStaticScene.vertices});
 
     //Add all of our vertices so long as they're inside of a bucket
     //These points have all of their faces attached.
@@ -190,11 +190,11 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
         thisStaticScene.searchablePoints.push(newPoint);
         thisStaticScene.hashedPoints[hash] = newPoint;
 
-        if(!bucketHash in thisStaticScene.bucketCollisionPoints){
-          thisStaticScene.bucketCollisionPoints[bucketHash] = [];
+        if(!(vertexBucketHash in thisStaticScene.bucketCollisionPoints)){
+          thisStaticScene.bucketCollisionPoints[vertexBucketHash] = [];
         }
-        thisStaticScene.collidedBuckets[bucketHash] = bucketGrid.hashedBuckets[bucketHash];
-        thisStaticScene.bucketCollisionPoints[bucketHash] = newPoint;
+        thisStaticScene.collidedBuckets[vertexBucketHash] = bucketGrid.hashedBuckets[vertexBucketHash];
+        thisStaticScene.bucketCollisionPoints[vertexBucketHash].push(newPoint);
       }
     }
 
@@ -247,11 +247,14 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
                   faces: sharedFaces
                 };
                 let hash = this.makeHashString(newPointForHash.position, '-');
-
-                if(!(hash in thisStaticScene.hashedPoints)){
+                let bucketHash = bucketGrid.getHashKeyFromPosition(newPoint.position);
+                if(!(hash in thisStaticScene.hashedPoints) &&
+                  (bucketHash in bucketGrid.hashedBuckets)
+                ){
                   thisStaticScene.searchablePoints.push(newPoint);
                   thisStaticScene.hashedPoints[hash] = newPoint;
-                  if(!bucketHash in thisStaticScene.bucketCollisionPoints){
+
+                  if(!(bucketHash in thisStaticScene.bucketCollisionPoints)){
                     thisStaticScene.bucketCollisionPoints[bucketHash] = [];
                   }
                   thisStaticScene.collidedBuckets[bucketHash] = bucketGrid.hashedBuckets[bucketHash];
@@ -412,11 +415,14 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
                   faces: [meshFace]
                 };
                 let hash = this.makeHashString(newPointForHash.position, '-');
-
-                if(!(hash in thisStaticScene.hashedPoints)){
+                let bucketHash = bucketGrid.getHashKeyFromPosition(newPoint.position);
+                if(!(hash in thisStaticScene.hashedPoints) &&
+                  (bucketHash in bucketGrid.hashedBuckets)
+                ){
                   thisStaticScene.searchablePoints.push(newPoint);
                   thisStaticScene.hashedPoints[hash] = newPoint;
-                  if(!bucketHash in thisStaticScene.bucketCollisionPoints){
+
+                  if(!(bucketHash in thisStaticScene.bucketCollisionPoints)){
                     thisStaticScene.bucketCollisionPoints[bucketHash] = [];
                   }
                   thisStaticScene.collidedBuckets[bucketHash] = bucketGrid.hashedBuckets[bucketHash];
@@ -446,26 +452,26 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
   //This is just when we want to get the buckets inside verses outside
   this.filterBucketsInsideVersesOutside = function(){
     //Grab all buckets that presently collide with the mesh.
-    let listOfTrackedBuckets = this.collidedBuckets.splice(0);
-    let lastLayerOfBuckets = listOfTrackedBuckets.splice(0);
-    let nextLayerOfBuckets = [];
-    let listOfPreviouslyTrackedBucketHashes = listOfTrackedBuckets.map(x => x.hash);
+    let listOfPreviouslyTrackedBucketHashes = Object.keys(thisStaticScene.collidedBuckets);
+    let listOfTrackedBuckets = listOfPreviouslyTrackedBucketHashes.map(x => thisStaticScene.collidedBuckets[x]);
+    let lastLayerOfBuckets = listOfTrackedBuckets.slice(0);
     let terminationLength = thisStaticScene.bucketGrid.buckets.length;
     let hashedBucketDistances = [];
 
     //While buckets yet remain that are not yet tagged...
     while(listOfTrackedBuckets.length < terminationLength){
+      //Reset our next layer of buckets for populating.
+      nextLayerOfBuckets = [];
       for(let i = 0, numOriginBuckets = lastLayerOfBuckets.length; i < numOriginBuckets; i++){
         let bucket = lastLayerOfBuckets[i];
         let smallSetOfNextLayersBuckets = bucket.listOfConnectedBuckets;
-
         for(let j = 0, numConnectedBuckets = smallSetOfNextLayersBuckets.length; j < numConnectedBuckets; j++){
           //For each bucket adjacent to our last layer, but not in the system already.
           let potentiallyUntrackedBucket = smallSetOfNextLayersBuckets[j];
           let bucketCenter = potentiallyUntrackedBucket.getCenter();
           //Note: Because we started off with all buckets associated with a face - we pre-filter
           //out these results below by just checking if they're in our list of bucket hashes.
-          if(!potentiallyUntrackedBucket.hash in listOfPreviouslyTrackedBucketHashes){
+          if(!(potentiallyUntrackedBucket.hash in listOfPreviouslyTrackedBucketHashes)){
             //Change your thought context to this new bucket, at this point we know we're not tracking the bucket
             //and we just want to find out if the bucket is inside or outisde of the mesh based on the nearest points,
             //or other nearby buckets.
@@ -482,7 +488,7 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
               let nearbyBucket = nearbyBuckets[k];
               let nearbyBucketCollisionPoints = thisStaticScene.hashedPoints[nearbyBucket.hash];
 
-              if(nearbyBucketCollisionPoints.length > 0){
+              if(nearbyBucketCollisionPoints !== undefined){
                 //Looks like we're directly adjacent to some mesh. So we can determine whether
                 //we're inside or outside from the closest normal (once we find the closest face).
                 noBucketCollisionPointsFound = false;
@@ -533,11 +539,11 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
               let isInMesh = false;
               for(let k = 0, numOfNearbyBuckets = nearbyBuckets.length; k < numOfNearbyBuckets; k++){
                 let nearbyBucket = nearbyBuckets[0];
-                let otherPotentiallyClosestBucketDistance = nearbyBucket.hash in hashedBucketDistances ? hashedBucketDistances[hashedBucket.hash] : false;
+                let otherPotentiallyClosestBucketDistance = nearbyBucket.hash in hashedBucketDistances ? hashedBucketDistances[nearbyBucket.hash] : false;
                 if(otherPotentiallyClosestBucketDistance !== false &&
-                  (closestBucketScore === false || potentiallyClosestBucketDistanceToMeshStats.score < closestBucketScore)
+                  (closestBucketScore === false || otherPotentiallyClosestBucketDistance < closestBucketScore)
                 ){
-                  let closerBucketDistance = hashedBucketDistances[hashedBucket.hash];
+                  let closerBucketDistance = hashedBucketDistances[nearbyBucket.hash];
                   closestBucketScore = closerBucketDistance.score;
                   isInMesh = closerBucketDistance.isInMesh;
                 }
@@ -558,12 +564,12 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
               let closestFaces = [];
               if(numClosestCollisionPoints === 1){
                 //Just get all faces associated with this collisionPoint
-                closestFaces = closestPoint.faces.splice(0);
+                closestFaces = closestPoint.faces.slice(0);
               }
               else{
                 //We have multiple collisionPoints? Add all the faces together into one list
                 for(let i = 0; i < numClosestCollisionPoints; i++){
-                  closestFaces = [...closestFaces, ...closestPoint[i].faces.splice(0)];
+                  closestFaces = [...closestFaces, ...closestPoint[i].faces.slice(0)];
                 }
               }
 
@@ -616,7 +622,6 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
 
       //Reset our last layer of buckets so we can find everything connected to this bucket.
       lastLayerOfBuckets = nextLayerOfBuckets;
-      nextLayerOfBuckets = [];
     }
 
     return hashedBucketDistances;
@@ -633,33 +638,36 @@ function StaticScene(numberOfDigitsBeforeMergingVertices = 2){
   //Turns out that we might also have triangles that simply intersect our buckets
   //and don't have valid vertices inside of them. While all vertices should be searchable points
   //(to include faces completely within a hashed bucket) any intersections should also be points.
-  this.attachMeshToBucketGrid = function(bucketGrid){
+  this.attachMeshToBucketGrid = function(){
     //For our intersecting points
-    let points = thisStaticScene.bucketPoints;
+    let bucketGrid = thisStaticScene.bucketGrid;
+    let points = thisStaticScene.bucketCollisionPoints;
     let hashedBuckets = bucketGrid.hashedBuckets;
+    let buckets = bucketGrid.buckets;
+    console.log(buckets);
     let bucketMarkings = this.filterBucketsInsideVersesOutside();
-    foreach(hash in hashedPoints){
-      let points = hash in hashedPoints[hash] ? hashPoints[hash] : false;
-      let bucket = hashedBuckets[hash];
-      let bucketMarking = bucketMarkings[hash];
+    console.log(Object.keys(bucketMarkings));
+    let pointBucketHashes = [];
+    for(let i = 0, numPoints = points.length; i < numPoints; i++){
+      let point = points[i];
+      let pointBucketHash = bucketGrid.getHashKeyFromPosition(point.position);
+      hashedBuckets[pointBucketHash].instersectsStaticMesh = true;
+      bucket.staticMeshPoints.push(point);
+    }
+    //We don't need to worry about the other statement because these are false by default
 
-      if(points !== false){
-        bucket.instersectsStaticMesh = true;
-        bucket.isInStaticMesh = bucketMarking.isInMesh;
-        bucket.staticMeshPoints.push(point);
-      }
-      else{
-        bucket.instersectsStaticMesh = false;
-        bucket.isInStaticMesh = bucketMarking.isInMesh;
-        bucket.staticMeshPoints.push(point);
-      }
+    //Now use our markings to record whether we're inside or out.
+    for(let i = 0, numBuckets = buckets.length; i < numBuckets; i++){
+      let bucket = buckets[i];
+      let bucketMarking = bucketMarkings[bucket.hash];
+      bucket.isInStaticMesh = bucketMarking.isInMesh;
     }
   };
 
   this.findRelevantBucketsToLine = function(line){
     //Get the interpolations for the line
     let p0 = line.start
-    let bucketGrid = this.bucketGrid;
+    let bucketGrid = thisStaticScene.bucketGrid;
     let interpolations = Math.ceil(line.distance);
     let inverseTotalInterpolations = 1.0 / interpolations;
     let hashedFilteredBuckets = [];

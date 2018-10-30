@@ -13,6 +13,7 @@ function Bucket(upperCorner, lowerCorner, parentBucketGrid){
   this.points = [];
   this.pointsMarkedForRemoval = [];
   this.pointsMarkedForAddition = [];
+  this.listOfConnectedBuckets = [];
   this.connectedBuckets = {};
   this.needsUpdate = false;
 
