@@ -8,15 +8,18 @@ AFRAME.registerComponent('fluid-debugger', {
     particleSystemId: {type: 'string', default: 'my-particle-system'},
     drawParticleSystem: {type: 'boolean', default: false},
     particleSystemColor: {type: 'vec4', default: {x: 1.0, y: 0.0, z: 0.0, w: 0.2}},
-    drawBuckets: {type: 'boolean', default: false},
-    bucketsColor: {type: 'vec4', default: {x: 0.0, y: 0.0, z: 1.0, w: 0.1}},
+    drawBucketsGrid: {type: 'boolean', default: false},
+    bucketGridColor: {type: 'vec4', default: {x: 0.0, y: 0.0, z: 1.0, w: 0.1}},
     drawBucketFaces: {type: 'boolean', default: false},
     bucketsColor: {type: 'vec4', default: {x: 0.0, y: 1.0, z: 1.0, w: 0.1}},
     drawStaticMesh: {type: 'boolean', default: false},
     staticMeshColor: {type: 'vec4', default: {x: 0.0, y: 1.0, z: 0.0, w: 1.0}},
+    drawCollidedBuckets: {type: 'boolean', default: false},
+    insideBucketColor: {type: 'vec4', default: {x: 1.0, y: 0.0, z: 0.0, w: 0.01}},
+    outsideBucketColor: {type: 'vec4', default: {x: 0.0, y: 1.0, z: 0.0, w: 0.01}},
+    collidedBucketColor: {type: 'vec4', default: {x: 0.0, y: 0.0, z: 1.0, w: 0.1}},
     drawStaticMeshVertexLines: {type: 'boolean', default: false},
     staticMeshVertexLinColor: {type: 'vec4', default: {x: 1.0, y: 0.0, z: 1.0, w: 1.0}},
-    drawPoints: {type: 'boolean', default: false},
     drawSurfaceMesh: {type: 'boolean', default: false}
   },
   drawParticleSystemContainer: function(particleSystem){
@@ -93,6 +96,67 @@ AFRAME.registerComponent('fluid-debugger', {
       box.position.set(...offset);
     }
     console.log('Bucket view constructed.');
+  },
+  drawBucketCollidedBuckets: function(bucketCollisionData, bucketGrid){
+    //All the little boxes in the big box - drawn with lines.
+    let buckets = bucketGrid.buckets;
+
+    //Stuff we use over and over
+    let cIn = this.data.insideBucketColor;
+    let c3In = new THREE.Color(cIn.x, cIn.y, cIn.z);
+    let materialIn = new THREE.MeshLambertMaterial({color: c3In, transparent: true, opacity: cIn.w, side: THREE.DoubleSide});
+
+    let cOut = this.data.outsideBucketColor;
+    let c3Out = new THREE.Color(cOut.x, cOut.y, cOut.z);
+    let materialOut = new THREE.MeshLambertMaterial({color: c3Out, transparent: true, opacity: cOut.w, side: THREE.DoubleSide});
+
+    let cColliding = this.data.collidedBucketColor;
+    let c3Colliding = new THREE.Color(cColliding.x, cColliding.y, cColliding.z);
+    let materialColliding = new THREE.MeshLambertMaterial({color: c3Colliding, transparent: true, opacity: cColliding.w, side: THREE.DoubleSide});
+
+    for(let i = 0, numBuckets = buckets.length; i < numBuckets; i++){
+      let bucket = buckets[i];
+      let isInStaticMesh = bucketCollisionData[bucket.hash].isInMesh;
+
+      //Grab the width depth and height of our box, as well as it's position, so we can draw it in the world view
+      let blc = bucket.lowerCorner.slice(0);
+      let hold = blc[1];
+      blc[1] = blc[2]; //Because our Z is THREE.JS' Y
+      blc[2] = hold;
+      let buc = bucket.upperCorner.slice(0);
+      hold = buc[1];
+      buc[1] = buc[2]; //Because our Z is THREE.JS' Y
+      buc[2] = hold;
+      let dim = [];
+      for(let i = 0; i < 3; i++){
+        dim[i] = buc[i] - blc[i];
+      }
+      let offset = bucket.getCenter();
+      hold = offset[1];
+      offset[1] = offset[2]; //Because our Z is THREE.JS' Y
+      offset[2] = hold;
+
+      //Basically a box with a color dependent upon whether it is inside, outside or colliding with the mesh.
+      let box;
+      if(isInStaticMesh === true){
+        box = new THREE.Mesh(new THREE.BoxGeometry(...dim), materialIn);
+      }
+      else if(isInStaticMesh === false){
+        box = new THREE.Mesh(new THREE.BoxGeometry(...dim), materialOut);
+      }
+      else{
+        box = new THREE.Mesh(new THREE.BoxGeometry(...dim), materialColliding);
+      }
+
+      let sceneRef = this.el.sceneEl.object3D;
+
+      //Add the box
+      sceneRef.add(box);
+
+      //Move it to the appropriate location.
+      box.position.set(...offset);
+    }
+    console.log('Collided bucket view constructed.');
   },
   drawBucketFaces: function(particleSystem){
     //All the little boxes in the big box - drawn with lines.
@@ -218,6 +282,45 @@ AFRAME.registerComponent('fluid-debugger', {
     sceneRef.add(pointsGeom);
     console.log('Static mesh points view constructed.');
   },
+  drawBuckets: function(buckets, c){
+    //Stuff we use over and over
+    let c3 = new THREE.Color(c.x, c.y, c.z);
+    let material = new THREE.MeshLambertMaterial({color: c3, transparent: true, opacity: c.w, side: THREE.DoubleSide});
+
+    for(let i = 0, numBuckets = buckets.length; i < numBuckets; i++){
+      let bucket = buckets[i];
+
+      //Grab the width depth and height of our box, as well as it's position, so we can draw it in the world view
+      let blc = bucket.lowerCorner.slice(0);
+      let hold = blc[1];
+      blc[1] = blc[2]; //Because our Z is THREE.JS' Y
+      blc[2] = hold;
+      let buc = bucket.upperCorner.slice(0);
+      hold = buc[1];
+      buc[1] = buc[2]; //Because our Z is THREE.JS' Y
+      buc[2] = hold;
+      let dim = [];
+      for(let i = 0; i < 3; i++){
+        dim[i] = buc[i] - blc[i];
+      }
+      let offset = bucket.getCenter();
+      hold = offset[1];
+      offset[1] = offset[2]; //Because our Z is THREE.JS' Y
+      offset[2] = hold;
+
+      //Basically a box with a color dependent upon whether it is inside, outside or colliding with the mesh.
+      let box = new THREE.Mesh(new THREE.BoxGeometry(...dim), material);
+
+      let sceneRef = this.el.sceneEl.object3D;
+
+      //Add the box
+      sceneRef.add(box);
+
+      //Move it to the appropriate location.
+      box.position.set(...offset);
+    }
+    console.log('Collided bucket view constructed.');
+  },
   init: function(){
     //Set up events that are triggered from our particle system each time a critical
     //process is completed.
@@ -233,7 +336,7 @@ AFRAME.registerComponent('fluid-debugger', {
           console.log('Constructing particle system view...');
           thisDebugger.drawParticleSystemContainer(data.detail.particleSystem);
         }
-        if(thisDebugger.data.drawBuckets){
+        if(thisDebugger.data.drawBucketsGrid){
           console.log('Constructing buckets view...');
           thisDebugger.drawBucketGridBuckets(data.detail.particleSystem);
         }
@@ -268,7 +371,22 @@ AFRAME.registerComponent('fluid-debugger', {
 
     this.fluidParamsEl.addEventListener('draw-points', function(data){
       if(thisDebugger.data.particleSystemId === data.target.id){
-        thisDebugger.drawPoints(data.detail.vertices, data.detail.color);
+        thisDebugger.drawPoints(data.detail.points, data.detail.color);
+      }
+    });
+
+    this.fluidParamsEl.addEventListener('draw-buckets', function(data){
+      if(thisDebugger.data.particleSystemId === data.target.id){
+        thisDebugger.drawBuckets(data.detail.buckets, data.detail.color);
+      }
+    });
+
+    this.fluidParamsEl.addEventListener('draw-collided-buckets', function(data){
+      if(thisDebugger.data.particleSystemId === data.target.id){
+        if(thisDebugger.data.drawCollidedBuckets){
+          console.log("Beginning to draw collided buckets...");
+          thisDebugger.drawBucketCollidedBuckets(data.detail.bucketCollisionData, data.detail.bucketGrid);
+        }
       }
     });
   },

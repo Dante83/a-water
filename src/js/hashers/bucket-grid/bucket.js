@@ -102,8 +102,8 @@ Bucket.prototype.getFaces = function(){
     perfDebug.spotCheckPerformance('construct faces inner loop', false);
     //The face here is internal to buckets and not Face from THREE.JS
     perfDebug.spotCheckPerformance('construct faces trigger face constructors', true);
-    faces.push(new BucketFace(coordinatesForFaceA, center, i));
-    faces.push(new BucketFace(coordinatesForFaceB, center, i));
+    faces.push(new BucketFace(coordinatesForFaceA, center, i, this));
+    faces.push(new BucketFace(coordinatesForFaceB, center, i, this));
     perfDebug.spotCheckPerformance('construct faces trigger face constructors', false);
   }
   perfDebug.spotCheckPerformance('construct faces', false);
@@ -273,8 +273,6 @@ Bucket.prototype.findPointsInsideStaticMesh = function(points, searchRadius){
   var pointsInsideOfMesh = [];
 
   //Determine all buckets
-
-
   if(this.IntersectsStaticMesh){
     for(let i = 0, pointsLength = this.points.length; i < pointsLength; i++){
       //Do the Static Mesh KD tree search for the nearest point to this particle.
