@@ -524,11 +524,11 @@ function StaticScene(bucketGrid, staticSceneConstants, numberOfDigitsBeforeMergi
 
     //For debugging purposes let's find out where everything starts
     let initialbucketList = listOfTrackedBuckets.slice(0);
-    thisStaticScene.bucketGrid.parentParticleSystem.parentFluidParams.el.emit('draw-buckets',
-    {
-      buckets: initialbucketList,
-      color: new THREE.Vector4(1.0,0.0,0.0,1.0)
-    });
+    // thisStaticScene.bucketGrid.parentParticleSystem.parentFluidParams.el.emit('draw-buckets',
+    // {
+    //   buckets: initialbucketList,
+    //   color: new THREE.Vector4(1.0,0.0,0.0,1.0)
+    // });
 
     //These buckets ACTUALLY collide with the mesh - so we cannot really call them inside or outside.
     for(let i = 0, numBuckets = lastLayerOfBuckets.length; i < numBuckets; i++){
@@ -565,21 +565,22 @@ function StaticScene(bucketGrid, staticSceneConstants, numberOfDigitsBeforeMergi
             //closest bucket set our value to one and then search for the closest point
             //to our center among the faces. The normal relative to this face will decide whether we are inside or outside.
             let noBucketCollisionPointsFound = true;
+            let numClosestCollisionPoints = 1;
             let closestCollisionPointDistSq =  false;
             let closestCollisionPoint;
             for(let k = 0, numOfNearbyBuckets = nearbyBuckets.length; k < numOfNearbyBuckets; k++){
               let nearbyBucket = nearbyBuckets[k];
-              let nearbyBucketCollisionPoints = thisStaticScene.hashedPoints[nearbyBucket.hash];
+              let nearbyBucketCollisionPoints = thisStaticScene.bucketCollisionPoints[nearbyBucket.hash];
 
               if(nearbyBucketCollisionPoints !== undefined){
                 //Looks like we're directly adjacent to some mesh. So we can determine whether
                 //we're inside or outside from the closest normal (once we find the closest face).
                 noBucketCollisionPointsFound = false;
-                let numClosestCollisionPoints = 1;
                 for(let l = 0, numCollisionPoints = nearbyBucketCollisionPoints.length; l < numCollisionPoints; l++){
-                  //Now to find the closest Ccollision point.
+                  //Now to find the closest collision point.
                   let collisionPoint = nearbyBucketCollisionPoints[l];
-                  let collisionPointPosition = collisionPoint.coordinates;
+                  let collisionPointPosition = collisionPoint.position;
+
                   let distSq = 0.0;
                   for(let m = 0; m < 3; m++){
                     let diff = collisionPointPosition[m] - bucketCenter[m];
@@ -594,7 +595,7 @@ function StaticScene(bucketGrid, staticSceneConstants, numberOfDigitsBeforeMergi
                     if(numClosestCollisionPoints === 1){
                       let holdPoint = closestCollisionPoint;
                       closestCollisionPoint = [holdPoint, closestCollisionPoint];
-                      numCollisionPoints = 2;
+                      numClosestCollisionPoints = 2;
                     }
                     else{
                       closestCollisionPoint.push(collisionPoint);
@@ -647,12 +648,12 @@ function StaticScene(bucketGrid, staticSceneConstants, numberOfDigitsBeforeMergi
               let closestFaces = [];
               if(numClosestCollisionPoints === 1){
                 //Just get all faces associated with this collisionPoint
-                closestFaces = closestPoint.faces.slice(0);
+                closestFaces = closestCollisionPoint.faces.slice(0);
               }
               else{
                 //We have multiple collisionPoints? Add all the faces together into one list
                 for(let i = 0; i < numClosestCollisionPoints; i++){
-                  closestFaces = [...closestFaces, ...closestPoint[i].faces.slice(0)];
+                  closestFaces = [...closestFaces, ...closestCollisionPoint[i].faces.slice(0)];
                 }
               }
 
@@ -662,13 +663,13 @@ function StaticScene(bucketGrid, staticSceneConstants, numberOfDigitsBeforeMergi
               let originPoint = new THREE.Vector3(...bucketCenter);
               let closestPointOnFace = new THREE.Vector3();
               nearbyFace.triangle.closestPointToPoint(originPoint, closestPointOnFace);
-              if(meshFaces.length > 1){
+              if(closestFaces.length > 1){
                 let distToPointSq = originPoint.distanceToSquared(closestPointOnFace);
                 //Get the closest collisionPoint on the first mesh face and the distance to that collisionPoint
-                for(let i = 1, numMeshFaces = meshFaces.length; i < numMeshFaces; i++){
+                for(let i = 1, numMeshFaces = closestFaces.length; i < numMeshFaces; i++){
                   //Create a triangle from our mesh and then use the built in closest collisionPoint to collisionPoint method
                   //from THREE JS in order to find the closest collisionPoint
-                  nearbyFace = meshFaces[i];
+                  nearbyFace = closestFaces[i];
                   originPoint = new THREE.Vector3(...bucketCenter);
                   closestPointOnFace = new THREE.Vector3();
                   nearbyFace.triangle.closestPointToPoint(originPoint, closestPointOnFace);
@@ -686,7 +687,7 @@ function StaticScene(bucketGrid, staticSceneConstants, numberOfDigitsBeforeMergi
               //Use the method described here:
               //https://blender.stackexchange.com/questions/31693/how-to-find-if-a-point-is-inside-a-mesh
               //to determine if each particle is inside of the mesh.
-              let isInsideMesh = originPoint.dot(face.normal);
+              let isInsideMesh = originPoint.dot(closestFace.normal) < 0.0;
               let closestBucketDistance = {
                 score: 1,
                 isInMesh: isInsideMesh,
