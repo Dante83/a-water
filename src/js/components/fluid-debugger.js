@@ -15,9 +15,9 @@ AFRAME.registerComponent('fluid-debugger', {
     drawStaticMesh: {type: 'boolean', default: false},
     staticMeshColor: {type: 'vec4', default: {x: 0.0, y: 1.0, z: 0.0, w: 1.0}},
     drawCollidedBuckets: {type: 'boolean', default: false},
-    insideBucketColor: {type: 'vec4', default: {x: 1.0, y: 0.0, z: 0.0, w: 0.000}},
-    outsideBucketColor: {type: 'vec4', default: {x: 0.0, y: 1.0, z: 0.0, w: 0.0}},
-    collidedBucketColor: {type: 'vec4', default: {x: 0.0, y: 0.0, z: 1.0, w: 1.0}},
+    insideBucketColor: {type: 'vec4', default: {x: 1.0, y: 0.0, z: 0.0, w: 0.5}},
+    outsideBucketColor: {type: 'vec4', default: {x: 0.0, y: 1.0, z: 0.0, w: 0.5}},
+    collidedBucketColor: {type: 'vec4', default: {x: 0.0, y: 0.0, z: 1.0, w: 0.5}},
     drawStaticMeshVertexLines: {type: 'boolean', default: false},
     staticMeshVertexLinColor: {type: 'vec4', default: {x: 1.0, y: 0.0, z: 1.0, w: 1.0}},
     drawSurfaceMesh: {type: 'boolean', default: false}
@@ -44,7 +44,7 @@ AFRAME.registerComponent('fluid-debugger', {
     //Basically a box with the given colors.
     let c = this.data.particleSystemColor;
     let c3 = new THREE.Color(c.x, c.y, c.z);
-    let material = new THREE.MeshLambertMaterial( {color: c3, transparent: true, opacity: c.w});
+    let material = new THREE.MeshLambertMaterial( {color: c3, transparent: true, opacity: c.w, side: THREE.DoubleSide});
     let box = new THREE.Mesh(new THREE.BoxGeometry(...dim), material);
     let sceneRef = this.el.sceneEl.object3D;
 
@@ -62,7 +62,7 @@ AFRAME.registerComponent('fluid-debugger', {
     //Stuff we use over and over
     let c = this.data.bucketsColor;
     let c3 = new THREE.Color(c.x, c.y, c.z);
-    let material = new THREE.MeshLambertMaterial({color: c3, transparent: true, opacity: c.w});
+    let material = new THREE.MeshLambertMaterial({color: c3, transparent: true, opacity: c.w, side: THREE.DoubleSide});
 
     for(let i = 0, numBuckets = buckets.length; i < numBuckets; i++){
       let bucket = buckets[i];
@@ -140,23 +140,29 @@ AFRAME.registerComponent('fluid-debugger', {
 
       //Basically a box with a color dependent upon whether it is inside, outside or colliding with the mesh.
       let box;
+      let addBox = false;
       if(isInStaticMesh === true){
         box = new THREE.Mesh(new THREE.BoxGeometry(...dim), materialIn);
+        addBox = true;
       }
       else if(isInStaticMesh === false){
         box = new THREE.Mesh(new THREE.BoxGeometry(...dim), materialOut);
+        addBox = true;
       }
       else{
         box = new THREE.Mesh(new THREE.BoxGeometry(...dim), materialColliding);
+        addBox = false;
       }
 
-      let sceneRef = this.el.sceneEl.object3D;
+      if(addBox){
+        let sceneRef = this.el.sceneEl.object3D;
 
-      //Add the box
-      sceneRef.add(box);
+        //Add the box
+        sceneRef.add(box);
 
-      //Move it to the appropriate location.
-      box.position.set(...offset);
+        //Move it to the appropriate location.
+        box.position.set(...offset);
+      }
     }
     console.log('Collided bucket view constructed.');
   },
