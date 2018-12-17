@@ -64,6 +64,7 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
   this.addParticles = function(positions, velocities){
     let pointsByHash = [];
     let particlesByHash = [];
+    let bucketsWithPoints = [];
 
     //Sort our particles being added by hash
     for(let i = 0, particlesLen = positions.length; i < particlesLen; i++){
@@ -71,7 +72,7 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
       //TODO: In the future, we might want to consider the impact of wind on our fluid.
       //NOTE: The default value for THREE.Vector3() is actually [0,0,0]
       let position = positions[i];
-      let newParticle = new Particle(position, velocities[i], new THREE.Vector3(), new THREE.Vector3(), this.maxParticleID, thisParticleSystem.particleConstants);
+      let newParticle = new Particle(position, velocities[i], new THREE.Vector3(), new THREE.Vector3(), this.maxParticleID, this.bucketGrid, thisParticleSystem.particleConstants);
 
       //Find the bucket associated with this particle and add the particle to bucket
       let hash = this.bucketGrid.getHashKeyFromPosition(position);
@@ -84,6 +85,7 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
         particlesByHash[hash] = [];
         pointsByHash[hash].push(position);
         particlesByHash[hash].push(newParticle);
+        bucketsWithPoints.push(hash);
       }
 
       thisParticleSystem.particles.push(newParticle);
@@ -97,9 +99,12 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
     //We would either need to rebuild our hash from scratch, or we would need to pass a pointer,
     //to the particle inside so that each hash could be updated as needed.
     //
-    for(let hash in bucketsWithPoints){
-      let bucket = this.bucketGrid.hashedBuckets[hash];
-      bucket.addPoints(pointsByHash[hash]);
+    for(let i = 0, numHashes = bucketsWithPoints.length; i < numHashes; i++){
+      let hash = bucketsWithPoints[i];
+      if(hash in this.bucketGrid.hashedBuckets){
+        let bucket = this.bucketGrid.hashedBuckets[hash];
+        bucket.addPoints(pointsByHash[hash]);
+      }
     }
 
     //Flush all grids

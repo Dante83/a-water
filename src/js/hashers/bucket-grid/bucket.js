@@ -115,14 +115,14 @@ Bucket.prototype.toBox3 = function(){
   return new THREE.Box3(new THREE.Vector3(thisFace.upperCorner[0], thisFace.upperCorner[1], thisFace.upperCorner[2]), new THREE.Vect3(thisFace.lowerCorner[0], thisFace.lowerCorner[1], thisFace.lowerCorner[2]));
 };
 
-Bucket.prototype.addPoints = function(points, particles = false){
+Bucket.prototype.addParticles = function(points){
   this.needsUpdate = true;
   if(!this.parentBucketGrid.bucketsNeedingUpdates.includes(this)){
     this.parentBucketGrid.bucketsNeedingUpdates.push(this);
   }
 
   //Add all of these points to the bucket
-  this.pointsMarkedForAddition = [...pointsMarkedForAddition, ...points];
+  this.pointsMarkedForAddition = [...this.pointsMarkedForAddition, ...points];
 
   //Add this point to the bucket
   this.markPointsForAddition(points);
@@ -134,9 +134,10 @@ Bucket.prototype.addPoints = function(points, particles = false){
   }
 
   //Set this points bucket for this bucket grid to this bucket
-  this.points.foreach(function(point){
+  for(let i = 0, numPoints = this.points.length; i < numPoints; i++){
+    let point = this.points[i];
     point.bucketGrids[this.bucketGridID].bucket = this;
-  });
+  }
 
   //
   //TODO: This would be an excellent stage to predict the departure times for each of these particles

@@ -18,8 +18,8 @@ AFRAME.registerComponent('fluid-params', {
   },
   init: function(){
     this.runProgram = false;
-    this.drawParticles = this.data['draw-style'] === 'particles';
-    this.drawSurface = this.data['draw-style'] === 'surface';
+    this.drawParticles = this.data['drawStyle'] === 'particles';
+    this.drawSurface = this.data['drawStyle'] === 'surface';
     this.loaded = false;
     this.initialized = false;
     this.staticMeshes = {
@@ -88,37 +88,60 @@ AFRAME.registerComponent('fluid-params', {
       this.staticScene.addMesh(staticGeometries[i], staticWorldMatrices[i]);
     }
     this.staticScene.getFaceCollisionPoints();
-    this.staticScene.attachMeshToBucketGrid(this.particleSystem.bucketGrid);
+    let collisionSurfaceHashedBuckets = this.staticScene.filterBucketsInsideVersesOutside();
+    this.staticScene.attachMeshToBucketGrid(collisionSurfaceHashedBuckets);
     console.log("What are those static points?");
-    let vectPoints = this.staticScene.searchablePoints.map(x => new THREE.Vector3(...x.position));
-    this.el.emit('draw-points', {
-      points: vectPoints,
-      color: new THREE.Vector3(0.0,0.0,1.0)
-    });
+
+    //
+    //NOTE: For testing purposes only...
+    //
+    //let vectPoints = this.staticScene.searchablePoints.map(x => new THREE.Vector3(...x.position));
+    //For testing purposes only...
+    // this.el.emit('draw-points', {
+    //   points: vectPoints,
+    //   color: new THREE.Vector3(0.0,0.0,1.0)
+    // });
     this.el.emit('static-mesh-constructed', {particleSystem: this.particleSystem});
 
     //
     //TODO: Replace this. For now, I'm just grabbing the curren box geometry, but I probably want
     //something a bit more dynamic in the future.
     //
-    const fluidSystemId = this.el.id;
+    var fluidSystemId = this.el.id;
     this.currentFluidGeometries = document.querySelectorAll(`.fluid.${fluidSystemId}`);
 
     //Populate our initial particles
     //TODO: In the future this should be done by AI approximation to estimate what
     //we expect the system to look like.
-    console.break();
     let fluidCollisionBound = new StaticScene(this.particleSystem.bucketGrid, staticSceneConstants, this.data.staticSceneAccuracy);
     for(let i = 0, numOfFluidGeometries = this.currentFluidGeometries.length; i < numOfFluidGeometries; i++){
       let fluidBufferGeometry = this.currentFluidGeometries[i].components.geometry.geometry;
-      fluidCollisionBound.addMesh(fluidBufferGeometry);
+      let worldMatrixOfFluidBufferGeometry = this.currentFluidGeometries[i].object3D.matrixWorld;
+      fluidCollisionBound.addMesh(fluidBufferGeometry, worldMatrixOfFluidBufferGeometry);
     }
     fluidCollisionBound.getFaceCollisionPoints();
-    let particleFiller = new ParticleFiller(this.particleSystem.bucketGrid, this.staticScene, fluidCollisionBound);
-    particleFiller.fillMesh();
 
-    //NOTE: Unlike our static geometry above, we want to remove our geometries from the screen
+    //
+    //NOTE: For testing purposes only
+    //
+    //let vectPoints2 = fluidCollisionBound.searchablePoints.map(x => new THREE.Vector3(...x.position));
+    // this.el.emit('draw-points', {
+    //   points: vectPoints2,
+    //   color: new THREE.Vector3(1.0,0.0,1.0)
+    // });
+
+    let fluidBuckets = fluidCollisionBound.filterBucketsInsideVersesOutside();
+    let particleFiller = new ParticleFiller(this.particleSystem, collisionSurfaceHashedBuckets, fluidBuckets);
+    particleFiller.fillMesh(this.data['targetDensity']);
+
+    //Unlike our static geometry above, we want to remove our geometries from the screen
     //just as soon as we've finished populating all of those particles.
+    for(let i = 0, numOfFluidGeometries = this.currentFluidGeometries.length; i < numOfFluidGeometries; i++){
+      let fluidBufferGeometry = this.currentFluidGeometries[i];
+      fluidBufferGeometry.parentNode.removeChild(fluidBufferGeometry);
+    }
+    console.log(this.particleSystem);
+    console.break();
 
     //
     //NOTE: A future objective is to cover the surface in some super-fast adaptive grid

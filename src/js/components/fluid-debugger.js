@@ -15,12 +15,13 @@ AFRAME.registerComponent('fluid-debugger', {
     drawStaticMesh: {type: 'boolean', default: false},
     staticMeshColor: {type: 'vec4', default: {x: 0.0, y: 1.0, z: 0.0, w: 1.0}},
     drawCollidedBuckets: {type: 'boolean', default: false},
-    insideBucketColor: {type: 'vec4', default: {x: 1.0, y: 0.0, z: 0.0, w: 0.5}},
-    outsideBucketColor: {type: 'vec4', default: {x: 0.0, y: 1.0, z: 0.0, w: 0.5}},
-    collidedBucketColor: {type: 'vec4', default: {x: 0.0, y: 0.0, z: 1.0, w: 0.5}},
+    insideBucketColor: {type: 'vec4', default: {x: 1.0, y: 0.0, z: 0.0, w: 1.0}},
+    outsideBucketColor: {type: 'vec4', default: {x: 0.0, y: 1.0, z: 0.0, w: 1.0}},
+    collidedBucketColor: {type: 'vec4', default: {x: 0.0, y: 0.0, z: 1.0, w: 1.0}},
     drawStaticMeshVertexLines: {type: 'boolean', default: false},
     staticMeshVertexLinColor: {type: 'vec4', default: {x: 1.0, y: 0.0, z: 1.0, w: 1.0}},
-    drawSurfaceMesh: {type: 'boolean', default: false}
+    drawSurfaceMesh: {type: 'boolean', default: false},
+    drawFillPoints: {type: 'boolean', default: false},
   },
   drawParticleSystemContainer: function(particleSystem){
     //Grab the width depth and height of our box, as well as it's position, so we can draw it in the world view
@@ -147,11 +148,11 @@ AFRAME.registerComponent('fluid-debugger', {
       }
       else if(isInStaticMesh === false){
         box = new THREE.Mesh(new THREE.BoxGeometry(...dim), materialOut);
-        addBox = true;
+        addBox = false;
       }
       else{
         box = new THREE.Mesh(new THREE.BoxGeometry(...dim), materialColliding);
-        addBox = false;
+        addBox = true;
       }
 
       if(addBox){
@@ -270,18 +271,33 @@ AFRAME.registerComponent('fluid-debugger', {
     sceneRef.add(points);
     console.log('Static mesh points view constructed.');
   },
+  drawFillPoints: function(pointPositions){
+    this.drawPoints(pointPositions, new THREE.Vector4(0.5,0.2,1.0));
+  },
   drawPoints: function(points, c){
     //Stuff we use over and over
     let c3 = new THREE.Color(c.x, c.y, c.z);
     let pointGeometry = new THREE.Geometry();
     let pointMaterial = new THREE.PointsMaterial( {color: c3, size: 10.0, sizeAttenuation: false } );
     let test = 0;
-    for(let i = 0, numPoints = points.length; i < numPoints; i++){
-      //Draw all of these points onto the screen.
-      let point = points[i];
+    let useXYZ = points[0].hasOwnProperty('x');
+    if(useXYZ){
+      for(let i = 0, numPoints = points.length; i < numPoints; i++){
+        //Draw all of these points onto the screen.
+        let point = points[i];
 
-      //Basically a point with the given color
-      pointGeometry.vertices.push(new THREE.Vector3(point.x, point.z, point.y));
+        //Basically a point with the given color
+        pointGeometry.vertices.push(new THREE.Vector3(point.x, point.z, point.y));
+      }
+    }
+    else{
+      for(let i = 0, numPoints = points.length; i < numPoints; i++){
+        //Draw all of these points onto the screen.
+        let point = points[i];
+
+        //Basically a point with the given color
+        pointGeometry.vertices.push(new THREE.Vector3(point[0], point[2], point[1]));
+      }
     }
     let sceneRef = this.el.sceneEl.object3D;
 
@@ -394,6 +410,16 @@ AFRAME.registerComponent('fluid-debugger', {
         if(thisDebugger.data.drawCollidedBuckets){
           console.log("Beginning to draw collided buckets...");
           thisDebugger.drawBucketCollidedBuckets(data.detail.bucketCollisionData, data.detail.bucketGrid);
+        }
+      }
+    });
+
+    this.fluidParamsEl.addEventListener('draw-collided-points', function(data){
+      if(thisDebugger.data.particleSystemId === data.target.id){
+        if(thisDebugger.data.drawFillPoints){
+          console.log("Beginning to draw collided points...");
+          console.log(data.detail);
+          thisDebugger.drawFillPoints(data.detail.collidedPoints);
         }
       }
     });
