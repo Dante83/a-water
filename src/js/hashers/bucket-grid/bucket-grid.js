@@ -205,10 +205,10 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
     });
   };
 
-  this.flush = function(){
+  this.flushPoints = function(){
     let buckets = this.bucketsNeedingUpdates;
     for(let i = 0, bucketsLength = buckets.length; i < bucketsLength; i++){
-      buckets[i].flush();
+      buckets[i].flushPoints();
     }
     this.bucketsNeedingUpdates = [];
   };

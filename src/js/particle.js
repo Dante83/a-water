@@ -5,6 +5,7 @@ function Particle(position, velocity, force, windVelocity, id, bucketGrid, const
   this.force = force;
   this.id = id;
   this.bucketGrid = bucketGrid;
+  this.bucket = null;
   this.localWindVelocity = windVelocity;
   this.density = null;
   this.inverseDensity = null;

@@ -117,26 +117,24 @@ Bucket.prototype.toBox3 = function(){
 
 Bucket.prototype.addParticles = function(points){
   this.needsUpdate = true;
+
   if(!this.parentBucketGrid.bucketsNeedingUpdates.includes(this)){
     this.parentBucketGrid.bucketsNeedingUpdates.push(this);
   }
 
   //Add all of these points to the bucket
-  this.pointsMarkedForAddition = [...this.pointsMarkedForAddition, ...points];
-
-  //Add this point to the bucket
-  this.markPointsForAddition(points);
+  this.pointsMarkedForAddition = this.pointsMarkedForAddition.length > 0 ? [...this.pointsMarkedForAddition, ...points] : points.slice(0);
 
   //Detach this point from the original bucket if such a bucket exists
-  var filteredPoints = this.points.filter((x) => x !== false);
+  let filteredPoints = this.points.filter((x) => x !== false);
   if(filteredPoints.length > 0){
     point.bucketGrids[this.bucketGridID].bucket.markPointsForRemoval(filteredPoints);
   }
 
   //Set this points bucket for this bucket grid to this bucket
-  for(let i = 0, numPoints = this.points.length; i < numPoints; i++){
-    let point = this.points[i];
-    point.bucketGrids[this.bucketGridID].bucket = this;
+  for(let i = 0, numPoints = points.length; i < numPoints; i++){
+    let point = points[i];
+    point.bucket = this;
   }
 
   //
@@ -167,21 +165,23 @@ Bucket.prototype.markPointsForRemoval = function(points){
 };
 
 Bucket.prototype.flushPoints = function(){
-  var newPoints;
+  let newPoints = [];
 
   //Note: Ideally, we'd just do a property swap for each pair exchange. Buckets,
   //after all, not only lose particles, but also gain them, and particles are effectively
   //exchangable (you can't tell one particle from another). Then you'd only have to swap properties
   //instead of reconstructing the entire particle list (as filtering particles can be a bit expensive)
   //But, for now, this should work rather well and is at least a little more optimized then normal.
-  for(var i = 0; i < this.points.length; i++){
-    var point = this.points[i];
-    if(!(this.pointsMarkedForRemoval.includes(point) || this.pointsMarkedForAddition.includes(point))){
-      newPoints.push(this.points[i]);
+  for(let i = 0; i < this.pointsMarkedForAddition.length; i++){
+    let newPoint = this.pointsMarkedForAddition[i];
+    //Check we don't double add this
+    if(this.points.indexOf(newPoint) === -1){
+      newPoints.push(newPoint);
     }
   }
+  this.points = this.points.filter(x => this.pointsMarkedForRemoval.indexOf(x) === -1);
 
-  this.points = newPoints;
+  this.points = [...this.points, ...newPoints];
   this.pointsMarkedForRemoval = [];
   this.pointsMarkedForAddition = [];
   this.needsUpdate = false;

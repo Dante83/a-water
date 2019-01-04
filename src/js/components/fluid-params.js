@@ -140,20 +140,14 @@ AFRAME.registerComponent('fluid-params', {
       let fluidBufferGeometry = this.currentFluidGeometries[i];
       fluidBufferGeometry.parentNode.removeChild(fluidBufferGeometry);
     }
-    console.log(this.particleSystem);
-    console.break();
 
-    //
-    //NOTE: A future objective is to cover the surface in some super-fast adaptive grid
-    //technique
-    //
-    // this.useHardSpheres = true;
-    // this.geometry = new THREE.SphereGeometry( 0.1, 4, 4);
-    // this.material = new THREE.MeshBasicMaterial( {color: '#00AAFF'} );
-    // this.numberOfParticles = 0;
-    //
-    // //Initialize our time trackers for sub-frame calculations.
-    // //TODO: Move to time weighted average
+    //Trigger a call to track our particles over time if we want to.
+    this.el.emit('draw-sph-test-particles', {
+      particleSystem: this.particleSystem
+    });
+
+    //Initialize our time trackers for sub-frame calculations.
+    //TODO: Move to time weighted average
     // let storedDataForSecondsPerFrameEstimate = localStorage.getItem("a-fluid-system.spf.data");
     // const maxPreviousSPFTimeDeltas = 12;
     // this.dataNotUpdated = true;

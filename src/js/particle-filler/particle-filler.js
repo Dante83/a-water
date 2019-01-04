@@ -69,6 +69,6 @@ function ParticleFiller(particleSystem, collidableScene, fluidCollisionBound){
 
     //Let's stop right here. We want to make sure we have actually added the particles
     //but first I need to make sure they're actually inside.
-    //thisParticleFiller.particleSystem.addParticles(newPositions, newVelocities);
+    thisParticleFiller.particleSystem.addParticles(newPositions, newVelocities);
   };
 }

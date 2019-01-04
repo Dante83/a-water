@@ -22,6 +22,8 @@ AFRAME.registerComponent('fluid-debugger', {
     staticMeshVertexLinColor: {type: 'vec4', default: {x: 1.0, y: 0.0, z: 1.0, w: 1.0}},
     drawSurfaceMesh: {type: 'boolean', default: false},
     drawFillPoints: {type: 'boolean', default: false},
+    drawSPHTestSpheres: {type: 'boolean', default: false},
+    SPHTestSphereColor: {type: 'vec4', default: {x: 0.15, y: 0.2, z: 1.0, w: 1.0}}
   },
   drawParticleSystemContainer: function(particleSystem){
     //Grab the width depth and height of our box, as well as it's position, so we can draw it in the world view
@@ -345,7 +347,119 @@ AFRAME.registerComponent('fluid-debugger', {
     }
     console.log('Collided bucket view constructed.');
   },
+  drawSPHTestSpheres: function(particleSystem){
+    this.particleSystem = particleSystem;
+
+    //Get each particle half radius
+    let particleRadius = particleSystem.particleConstants.radius * 0.5;
+    let color = this.data.SPHTestSphereColor;
+
+    //Get all particle positions in the system.
+    let buckets = particleSystem.bucketGrid.buckets;
+    let particles = [];
+    for(let i = 0, numBuckets = buckets.length; i < numBuckets; i++){
+      let bucket = buckets[i];
+      if(bucket.points && bucket.points.length > 0){
+        particles = [...particles, ...bucket.points];
+      }
+    }
+    this.SPHParticles = particles;
+
+    let geometry = new THREE.SphereGeometry(particleRadius);
+    let c3 = new THREE.Color(color.x, color.y, color.z);
+    let material = new THREE.MeshLambertMaterial( {color: c3, transparent: false, opacity: color.w});
+    let sceneRef = this.el.sceneEl.object3D;
+
+    //Draw an instanced particle geometry for each particle at the given point.
+    for(let i = 0, numParticles = particles.length; i < numParticles; i++){
+      let particle = particles[i];
+
+      //Create a new sphere but use instances of the above data.
+      let sphere = new THREE.Mesh(geometry, material);
+
+      //Add the sphere
+      sceneRef.add(sphere);
+
+      //Move it to the appropriate location.
+      let x = particle.position[0];
+      let y = particle.position[2];
+      let z = particle.position[1];
+      sphere.position.set(x, y, z);
+      this.SPHSpheres.push(sphere);
+    }
+
+    this.SPHTestSpheresInitialized = true;
+  },
+  updateSPHTestSpheres: function(){
+    //Get each particle half radius
+    let particles = this.SPHParticles;
+
+    //Determine if there are more or less particles in the system.
+    let newParticleCount = 0;
+    let oldParticleCount = particles.length;
+    let buckets = this.particleSystem.bucketGrid.buckets;
+    for(let i = 0, numBuckets = buckets.length; i < numBuckets; i++){
+      newParticleCount += buckets[i].points.length;
+    }
+
+    //If there are less particles, remove some
+    if(newParticleCount < oldParticleCount){
+      let diff = oldParticleCount - newParticleCount;
+      particles = particles.slice(0, newParticleCount);
+      for(let i = 0; i < diff; i++){
+        let sphere = this.SPHSpheres.pop();
+        sphere.parentNode.removeChild(sphere);
+      }
+    }
+
+    //If there are more particles, start by adding them in with the given first positions
+    let particleRadius = this.particleSystem.particleConstants.radius * 0.5;
+    if(newParticleCount > oldParticleCount){
+      let diff = newParticleCount - oldParticleCount;
+      let newParticleSlots = new Array(newParticleCount);
+      particles = newParticleSlots;
+
+      for(let i = 0; i < diff; i++){
+        let geometry = new THREE.SphereGeometry(particleRadius);
+        let material = new THREE.MeshBasicMaterial( {color: this.SPHSphereColor} );
+        let sphere = new THREE.Mesh(geometry, material);
+        let sceneRef = this.el.sceneEl.object3D;
+
+        //Add the sphere
+        sceneRef.add(sphere);
+      }
+    }
+
+    //Now reset their positions
+    //Get all particle positions in the system
+    let particleIndx = 0;
+    for(let i = 0, numBuckets = buckets.length; i < numBuckets; i++){
+      let bucketParticles = buckets[i].points;
+      for(let j = 0; j < bucketParticles.length; j++){
+        particles[particleIndx] = bucketParticles[j];
+        particleIndx++;
+      }
+    }
+    this.SPHParticles = particles;
+
+    //Finally update the positions of all of our particles on the screen.
+    for(let i = 0, numParticles = this.SPHParticles.length; i < numParticles; i++){
+      let sphere = this.SPHSpheres[i];
+      let particle = this.SPHParticles[i];
+      let x = particle.position[0];
+      let y = particle.position[2];
+      let z = particle.position[1];
+      sphere.position.set(x, y, z);
+    }
+  },
   init: function(){
+    //Intialization variables we use later
+    this.SPHSpheres = [];
+    this.SPHParticles = [];
+    this.particleSystem;
+    this.SPHSphereColor;
+    this.SPHTestSpheresInitialized = false;
+
     //Set up events that are triggered from our particle system each time a critical
     //process is completed.
     this.fluidParamsEl = document.querySelector(`#${this.data.particleSystemId}`);
@@ -418,14 +532,25 @@ AFRAME.registerComponent('fluid-debugger', {
       if(thisDebugger.data.particleSystemId === data.target.id){
         if(thisDebugger.data.drawFillPoints){
           console.log("Beginning to draw collided points...");
-          console.log(data.detail);
           thisDebugger.drawFillPoints(data.detail.collidedPoints);
+        }
+      }
+    });
+
+    this.fluidParamsEl.addEventListener('draw-sph-test-particles', function(data){
+      if(thisDebugger.data.particleSystemId === data.target.id){
+        if(thisDebugger.data.drawSPHTestSpheres){
+          console.log("Beginning to draw SPH test particles...");
+          thisDebugger.particleSystem = data.detail.particleSystem;
+          thisDebugger.drawSPHTestSpheres(thisDebugger.particleSystem);
         }
       }
     });
   },
   tick: function (time, timeDelta) {
     //Update our particle positions and visible surface mesh once they're added.
-
+    if(this.data.drawSPHTestSpheres && this.SPHTestSpheresInitialized){
+      this.updateSPHTestSpheres();
+    }
   }
 });

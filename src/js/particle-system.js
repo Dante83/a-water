@@ -62,11 +62,12 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
   parentFluidParams.el.emit('bucket-grid-constructed', {particleSystem: this});
 
   this.addParticles = function(positions, velocities){
-    let pointsByHash = [];
+    let particlePositionByHash = [];
     let particlesByHash = [];
     let bucketsWithPoints = [];
 
-    //Sort our particles being added by hash
+    //Grab each position/velocity and create a particle for it, hashing the results
+    //into the above variables so they can be rapidly appended to their respective buckets.
     for(let i = 0, particlesLen = positions.length; i < particlesLen; i++){
       //Right now this starts off with no forces and no wind...
       //TODO: In the future, we might want to consider the impact of wind on our fluid.
@@ -77,13 +78,13 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
       //Find the bucket associated with this particle and add the particle to bucket
       let hash = this.bucketGrid.getHashKeyFromPosition(position);
       if(bucketsWithPoints.includes(hash)){
-        pointsByHash[hash].push(position);
+        particlePositionByHash[hash].push(position);
         particlesByHash[hash].push(newParticle);
       }
       else{
-        pointsByHash[hash] = [];
+        particlePositionByHash[hash] = [];
         particlesByHash[hash] = [];
-        pointsByHash[hash].push(position);
+        particlePositionByHash[hash].push(position);
         particlesByHash[hash].push(newParticle);
         bucketsWithPoints.push(hash);
       }
@@ -102,13 +103,13 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
     for(let i = 0, numHashes = bucketsWithPoints.length; i < numHashes; i++){
       let hash = bucketsWithPoints[i];
       if(hash in this.bucketGrid.hashedBuckets){
-        let bucket = this.bucketGrid.hashedBuckets[hash];
-        bucket.addPoints(pointsByHash[hash]);
+        var bucket = this.bucketGrid.hashedBuckets[hash];
+        bucket.addParticles(particlesByHash[hash]);
       }
     }
 
     //Flush all grids
-    this.bucketGrid.flush();
+    this.bucketGrid.flushPoints();
 
     thisParticleSystem.numberOfParticles += positions.length;
   };
