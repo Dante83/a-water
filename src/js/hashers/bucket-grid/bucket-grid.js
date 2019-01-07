@@ -1,4 +1,4 @@
-[0]/**
+/**
 * Bucket Grid
 *
 * Provides us with a hashed grid that we can use to accelerate the search for all

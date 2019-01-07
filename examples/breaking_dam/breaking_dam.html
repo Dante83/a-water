@@ -20,8 +20,10 @@
     <script src="../../src/js/particle.js"></script>
     <script src="../../src/js/collision-systems/static-scene.js"></script>
     <script src="../../src/js/particle-filler/particle-filler.js"></script>
+    <script src="../../src/js/timing/time-tracker.js"></script>
     <script src="../../src/js/components/fluid-params.js"></script>
     <script src="../../src/js/components/fluid-debugger.js"></script>
+    <script src="../../src/js/components/frame-tracker.js"></script>
     <script src="../../src/js/primitives/a-fluid-system.js"></script>
     <script src="../../src/js/primitives/a-fluid-debugger.js"></script>
 
@@ -32,7 +34,7 @@
   <!--Scene Scripts-->
   </head>
   <body>
-    <a-scene physics>
+    <a-scene physics frame-tracker>
       <a-assets>
         <a-asset-item id="containment-box" src="3d-models/containment-box.gltf">
       </a-assets>

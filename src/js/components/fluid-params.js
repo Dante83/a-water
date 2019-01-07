@@ -3,6 +3,9 @@ AFRAME.registerComponent('fluid-params', {
   fractionalSeconds: 0,
   dependencies: [],
   fluidParticles: [],
+  timeTracker: false,
+  tickerIterator: 1,
+  fluidParamsInitialized: false,
   schema: {
     'searchBucketDiameter': {type: 'number', default: 10.0},
     'upperCorner': {type: 'vec3', default: {x: 0.0, y: 0.0, z: 0.0}},
@@ -12,16 +15,12 @@ AFRAME.registerComponent('fluid-params', {
     'dragCoeficient': {type: 'number', default: 1.0},
     'particleMass': {type: 'number', default: 1.0},
     'staticSceneAccuracy': {type: 'number', default: 2},
-    'drawStyle': {type: 'string', default: 'particles'},
     'sphIterationsPerSecond': {type: 'number', default: 60.0},
     'stepsPerSPHIteration': {type: 'number', default: 5}
   },
   init: function(){
-    this.runProgram = false;
-    this.drawParticles = this.data['drawStyle'] === 'particles';
-    this.drawSurface = this.data['drawStyle'] === 'surface';
     this.loaded = false;
-    this.initialized = false;
+    this.fluidParamsInitialized = false;
     this.staticMeshes = {
       geometries: [],
       worldMatrices: []
@@ -146,106 +145,59 @@ AFRAME.registerComponent('fluid-params', {
       particleSystem: this.particleSystem
     });
 
-    //Initialize our time trackers for sub-frame calculations.
-    //TODO: Move to time weighted average
-    // let storedDataForSecondsPerFrameEstimate = localStorage.getItem("a-fluid-system.spf.data");
-    // const maxPreviousSPFTimeDeltas = 12;
-    // this.dataNotUpdated = true;
-    // this.dataForSecondsPerFrameEstimate = storedDataForSecondsPerFrameEstimate ? storedDataForSecondsPerFrameEstimate : [].fill(0, maxPreviousSPFTimeDeltas, 0.016);
-    // if(this.dataForSecondsPerFrameEstimate > maxPreviousSPFTimeDeltas){
-    //   //Cut off the oldest values
-    //   let difference = this.dataForSecondsPerFrameEstimate.length - maxPreviousSPFTimeDeltas;
-    //   this.dataForSecondsPerFrameEstimate = this.dataForSecondsPerFrameEstimate.splice(maxPreviousSPFTimeDeltas - 1, difference);
-    // }
-    // else if(this.dataForSecondsPerFrameEstimate < maxPreviousSPFTimeDeltas){
-    //   //Populate the rest of the data with the average value.
-    //   let difference = maxPreviousSPFTimeDeltas - this.dataForSecondsPerFrameEstimate;
-    //   let avg = this.dataForSecondsPerFrameEstimate.reduce((accumulator, currentValue) => currentValue + accumulator) / this.dataForSecondsPerFrameEstimate.length;
-    //   this.dataForSecondsPerFrameEstimate = [...this.dataForSecondsPerFrameEstimate, ...[].fill(0, difference, avg)];
-    // }
-    // this.estimatedSecondsPerFrameSum = this.dataForSecondsPerFrameEstimate.reduce((accumulator, currentValue) => currentValue + accumulator);
-    // this.inverseDataForSecondsPerFrameEstimateLength = 1.0 / this.dataForSecondsPerFrameEstimate.length;
-    // this.estimatedSecondsPerFrame = this.estimatedSecondsPerFrameSum * this.inverseDataForSecondsPerFrameEstimateLength;
-    // this.sphWriterTimeTracker = 0.0;
-    // this.runProgram = true;
+    self = this;
+    this.avgRunningTime = 1000.0 / 60.0;
+    this.timeTracker;
+    this.el.sceneEl.addEventListener('set-frame-timer-references', this.setFrameTimerReferences);
+    this.el.emit('get-frame-timer-references');
+  },
+  setFrameTimerReferences: function(data){
+    self.timeTracker = data.detail.timeTracker;
+    if(self.timeTracker){
+      self.fluidParamsInitialized = true;
+      self.el.removeEventListener('set-frame-timer-references', this.setFrameTimerReferences);
+    }
   },
   tick: function (time, timeDelta) {
     //Wait until post load is completed before attempting to tick through our system.
-    if(this.initialized){
-      //Update our FPS Tracking System
-      // this.previousFPSValues.unshift(timeDelta);
-      // let lastValue = this.previousFPSValues.pop();
-      // this.estimatedSecondsPerFrame = (this.estimatedSecondsPerFrameSum - lastValue + timeDelta) * this.inverseDataForSecondsPerFrameEstimateLength;
-      // let sphIterationsPerSecond = this.data['sph-iterations-per-second'];
-      // let numberOfSPCIterations = Math.ceil(sphIterationsPerSecond * this.estimatedSecondsPerFrame);
-      // let timeStep = timeDelta / numberOfSPCIterations;
-      //
-      // let previousParticlePositions = [];
-      // let cachedParticlePositions = [];
+    if(this.fluidParamsInitialized){
+      //How long do we expect the current frame will last
+      let estimatedFrameTime = this.timeTracker.averageTickTime;
 
       //
-      //NOTE: A lot of these things require a kind of parent over-arching system to handle all sub-systems.
+      //Knowledge about this fluid section and the computational
+      //limits of our system are used here to determine which solvers to implement.
       //
 
-      //
-      //NOTE: Re-Add Code to add new particles here from sources and remove particles from sinks.
-      //
+      //Gerstner Wave Solver
+
+      //Heightmap Fluid Solver
+
+      //SPH Fluid Solver
+      for(let i = 0; i < numberOfSPCIterations; i++){
+        //Implement our fluid solver
+        this.particleSystem.updateParticles(estimatedFrameTime);
+        this.particleSystem.resolveCollision();
+      }
 
       //
-      //NOTE:
-      //unless the user is able to observe the system before it can be updated with information from a heightmap
-      //for another constant of time. Perhaps an adaptive learning mechnism would prove useful here.
-      //
-
-      //
-      //NOTE: Implement adaptive grid accuracies that reflect less accuracy with greater distance.
+      //Using information from the above, merge the results into
+      //a mesh that represents the surface of the water.
       //
 
       //
-      //NOTE: Implement a wave solver that attempts to solve certain grids as normal deep ocean systems, possibly with just splash effects at great distances.
+      //Trigger a shader that paint this mesh so that it looks like water.
       //
 
-      //
-      //TODO: Pull this out into it's own solver in the solver that we can just update and call
-      //for each worker thread.
-      //
-      // for(let i = 0; i < numberOfSPCIterations; i++){
-      //   //Implement our fluid solver
-      //   this.particleSystem.updateParticles(timeDelta/1000.0);
-      //   this.particleSystem.resolveCollision();
-      //
-      //   if(){
-      //
-      //   }
-      //   else if(){
-      //
-      //   }
-      // }
-
-      //Update the draw position or redraw the fluid surface
-      // if(this.drawParticles){
-      //   for(let i = 0; i < this.numberOfParticles; i++){
-      //     var partPos = this.particleSystem.particles[i].position;
-      //     var drawPos = this.fluidParticles[i].position.set(partPos.x, partPos.y, partPos.z);
-      //   }
-      // }
-      //
-      // if(this.dataNotUpdated){
-      //   if(this.sphWriterTimeTracker >= this.data['time-between-sph-iteration-writes']){
-      //     this.dataNotUpdated = false;
-      //     localStorage.setItem("a-fluid-system.spf.data", this.previousFPSValues);
-      //   }
-      //   this.sphWriterTimeTracker += timeDelta;
-      // }
     }
-  },
-  getRandomColor() {
-    let letters = '0123456789ABCDEF';
-    let color = '#';
-    for (var i = 0; i < 6; i++) {
-      color += letters[Math.floor(Math.random() * 16)];
+    else if(this.tickerIterator % 5 === 0){
+      //Retry every ten frames until someone picks up
+      this.el.emit('get-frame-timer-references');
+      this.tickerIterator = 1;
     }
-    return color;
+    else{
+      this.tickerIterator += 1;
+    }
   },
   logNTimes: function(name, maxNumLogs, msg){
     if(self.logs[name] == null){
