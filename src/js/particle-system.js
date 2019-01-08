@@ -9,7 +9,7 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
   this.dynamicMesh = [];
   this.numberOfParticles = 0;
   this.maxParticleID = 0;
-  const gravity = new THREE.Vector3(0.0, -9.81, 0.0);
+  const gravity = new THREE.Vector3(0.0, 0.0, -9.81);
 
   //Basically, all of our particles are identical, so we calculate their universal values here and
   //then add this to every particle, allow it to reference the values through a point without redoing
@@ -73,7 +73,7 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
       //TODO: In the future, we might want to consider the impact of wind on our fluid.
       //NOTE: The default value for THREE.Vector3() is actually [0,0,0]
       let position = positions[i];
-      let newParticle = new Particle(position, velocities[i], new THREE.Vector3(), new THREE.Vector3(), this.maxParticleID, this.bucketGrid, thisParticleSystem.particleConstants);
+      let newParticle = new Particle(new THREE.Vector3(...position), new THREE.Vector3(...velocities[i]), new THREE.Vector3(), new THREE.Vector3(), this.maxParticleID, this.bucketGrid, thisParticleSystem.particleConstants);
 
       //Find the bucket associated with this particle and add the particle to bucket
       let hash = this.bucketGrid.getHashKeyFromPosition(position);
@@ -130,13 +130,14 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
 
   this.updateParticles = function(deltaT){
     //Our function for summing up the forces, which we will implement in parallel.
-    var updateParticle = function(particle){
+    let updateParticle = function(particle){
       //
       //Update Forces
       //
-      var gravitationalForce = gravity.clone().multiplyScalar(particle.mass);
-      var windResistanceForce = particle.velocity.clone().add(particle.localWindVelocity.negate()).multiplyScalar(particle.dragCoefficient);
-      var netForces = gravitationalForce.add(windResistanceForce.negate());
+      let gravitationalForce = gravity.clone().multiplyScalar(particle.mass);
+
+      let windResistanceForce = particle.velocity.clone().add(particle.localWindVelocity.negate()).multiplyScalar(particle.dragCoefficient);
+      let netForces = gravitationalForce.add(windResistanceForce.negate());
 
       particle.force = netForces;
 
@@ -159,24 +160,8 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
 
   this.resolveCollision = function(){
     //
-    //TODO: For now, we're just going to collide with the floor with a damping function
-    //TODO: to obsorb energy. In the future, we require a more robust collision engine.
+    //TODO: Implement a collision engine here.
     //
-    const fractionOfVLost = 0.5;
-    let particlesThatHitFloor = thisParticleSystem.particles.filter(
-      function(particle){
-        //Hit the floor and going down? Time to bounce.
-        return (particle.position.y <= 0.0 && particle.velocity.y < 0.0);
-      }
-    );
-
-    const particleMass = particle.mass;
-    for(let i = 0, particlesThatHitTheFloorLen = particlesThatHitFloor.length; i < particlesThatHitTheFloorLen; i++){
-      let particle = particlesThatHitFloor[i];
-      let particleVelocityClone = particle.velocity.clone();
-      let currentEnergy = 0.5 * particleMass * particleVelocityClone.lengthSq();
-      particle.velocity.y = -1.0 * particleVelocityClone.y * fractionOfVLost;
-    }
   };
 
   this.getNumberOfParticles = function(){

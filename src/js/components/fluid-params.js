@@ -162,7 +162,7 @@ AFRAME.registerComponent('fluid-params', {
     //Wait until post load is completed before attempting to tick through our system.
     if(this.fluidParamsInitialized){
       //How long do we expect the current frame will last
-      let estimatedFrameTime = this.timeTracker.averageTickTime;
+      let estimatedFrameTime = this.timeTracker.averageTickTime * 0.001;
 
       //
       //Knowledge about this fluid section and the computational
@@ -174,11 +174,8 @@ AFRAME.registerComponent('fluid-params', {
       //Heightmap Fluid Solver
 
       //SPH Fluid Solver
-      for(let i = 0; i < numberOfSPCIterations; i++){
-        //Implement our fluid solver
-        this.particleSystem.updateParticles(estimatedFrameTime);
-        this.particleSystem.resolveCollision();
-      }
+      this.particleSystem.updateParticles(estimatedFrameTime);
+      this.particleSystem.resolveCollision();
 
       //
       //Using information from the above, merge the results into

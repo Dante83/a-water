@@ -381,9 +381,9 @@ AFRAME.registerComponent('fluid-debugger', {
       sceneRef.add(sphere);
 
       //Move it to the appropriate location.
-      let x = particle.position[0];
-      let y = particle.position[2];
-      let z = particle.position[1];
+      let x = particle.position.x;
+      let y = particle.position.z;
+      let z = particle.position.y;
       sphere.position.set(x, y, z);
       this.SPHSpheres.push(sphere);
     }
@@ -446,9 +446,9 @@ AFRAME.registerComponent('fluid-debugger', {
     for(let i = 0, numParticles = this.SPHParticles.length; i < numParticles; i++){
       let sphere = this.SPHSpheres[i];
       let particle = this.SPHParticles[i];
-      let x = particle.position[0];
-      let y = particle.position[2];
-      let z = particle.position[1];
+      let x = particle.position.x;
+      let y = particle.position.z;
+      let z = particle.position.y;
       sphere.position.set(x, y, z);
     }
   },
