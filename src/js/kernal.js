@@ -1,81 +1,42 @@
-function Kernal(distance, constants){
-  //NOTE: We presume that our origin to particle vector is pre-normalized to reduce duplicate computations
-  var parentKernal = this;
-  this.distance = distance;
-  this.distanceSquared = distance * distance;
-  this.originToParticleVect = originToParticleVect;
-  this.mullerKernalValue = 0.0;
-  this.mullerSpikyKernalValue = 0.0;
-  this.mullerSpikyKernalFirstDerivative = 0.0;
-  this.mullerSpikyKernalSecondDerivative = 0.0;
-  this.gradient = 0.0;
-  this.laplacian = 0.0;
+function Kernal(kernalConstants){
+  this.kernalContants = kernalContants;
+}
 
-  ////
-  //Redefine constants locally for one less lookup per constant
-  ////
-  this.influenceRadius = constants.influenceRadius
-  this.influenceRadiusSquared = constants.influenceRadiusSquared
-  this.oneOverInfluenceRadiusSquared = constants.oneOverInfluenceRadiusSquared
-  this.influenceRadiusCubed = constants.influenceRadiusCubed
-  this.mullerCoefficient = constants.mullerCoefficient
-  this.oneOverInfluenceRadius = constants.oneOverInfluenceRadius
-  this.mullerSpikyCoefficient = constants.mullerSpikyCoefficient
-  this.mullerSpikyFirstDerivativeCoeficient = constants.mullerSpikyFirstDerivativeCoeficient
-  this.mullerSpikySecondDerivativeCoeficient = constants.mullerSpikySecondDerivativeCoeficient
+Kernal.prototype.updateKernal(distance){
+  //
+  //NOTE: We are ignoring the particle radius because we are interpolating between 0 and our radius
+  //
+  //Get the Mueller Kernal
+  let mullerVariableComponent = (1.0 - (distance * distance * this.kernalConstants.oneOverParticleRadiusSquared));
+  this.mullerKernalValue = this.kernalConstants.mullerCoefficient * mullerVariableComponent * mullerVariableComponent * mullerVariableComponent;
 
-  MullerKernal();
-  MullerSpikyKernal();
+  //Get the Meuller Spiky Kernal
+  //Note that we ignore the actual spiky kernal as we only use it for the gradient
+  //and the laplacian.
+  //(1 - r/h) values
+  let variableComponent = (1.0 - (distance * this.kernalConstants.oneOverInfluenceRadius));
 
-  function MullerKernal(){
-    if(this.distance <= this.constants.influenceRadius){
-      let mullerVariableComponent = (1.0 - (this.distanceSquared * this.constants.oneOverInfluenceRadiusSquared));
-      parentKernal.mullerKernalValue = this.constants.mullerCoefficient * mullerVariableComponent * mullerVariableComponent * mullerVariableComponent;
-    }
-  }
-
-  function MullerSpikyKernal(){
-    if(distance <= this.constants.influenceRadius){
-      //(1 - r/h) values
-      let variableComponent = (1.0 - (distance * this.constants.oneOverInfluenceRadius));
-      let variableComponentSquared = variableComponent * variableComponent;
-      let variableComponentCubed = variableComponentSquared * variableComponent;
-
-      this.mullerSpikyKernalValue = this.constants.mullerSpikyCoefficient * variableComponentCubed;
-      parentKernal.mullerSpikyKernalFirstDerivative = this.constants.mullerSpikyFirstDerivativeCoeficient * variableComponentSquared;
-      parentKernal.mullerSpikyKernalSecondDerivative = this.constants.mullerSpikySecondDerivativeCoeficient * variableComponent;
-    }
-  }
-
-  this.gradient = function(distance, directionToCenter){
-    if(distance <= h){
-      return {
-        x: this.mullerSpikyKernalFirstDerivative * directionToCenter.x,
-        y: this.mullerSpikyKernalFirstDerivative * directionToCenter.y,
-        z: this.mullerSpikyKernalFirstDerivative * directionToCenter.z,
-      }
-    }
-    return {x: 0.0, y: 0.0, z: 0.0};
-  }
+  this.mullerSpikyKernalFirstDerivative = this.kernalConstants.mullerSpikyFirstDerivativeCoeficient * variableComponent * variableComponent;
+  this.mullerSpikyKernalSecondDerivative = this.kernalConstants.mullerSpikySecondDerivativeCoeficient * variableComponent;
 }
 
 //Interpolaters use many of the variables over and over again - no use in doing these calculations for each one
 //when we can just create them once and use them everywhere.
-function KernalConstants(influenceRadius){
+function KernalConstants(particleRadius){
     ////
-    //MUELLER KERNAL CONSTANTS
+    //MULLER KERNAL CONSTANTS
     ////
-    this.influenceRadius = influenceRadius;
-    this.influenceRadiusSquared = this.influenceRadius * this.influenceRadius;
-    this.oneOverInfluenceRadiusSquared = 1.0 / this.influenceRadiusSquared;
-    this.influenceRadiusCubed = this.influenceRadiusSquared * this.influenceRadius;
-    this.mullerCoefficient = 315.0 / (64.0 * Math.PI * this.influenceRadiusCubed);
+    this.particleRadius = particleRadius;
+    let particleRadiusSquared = particleRadius * particleRadius;
+    this.oneOverParticleRadiusSquared = 1.0 / this.particleRadiusSquared;
+    this.particleRadiusCubed = this.particleRadiusSquared * particleRadius;
+    this.mullerCoefficient = 315.0 / (64.0 * Math.PI * this.particleRadiusCubed);
 
     ////
-    //MUELLER SPIKY KERNAL CONSTANTS
+    //MULLER SPIKY KERNAL CONSTANTS
     ////
-    this.oneOverInfluenceRadius = 1.0 / this.influenceRadius;
-    this.mullerSpikyCoefficient = 15.0 / (Math.PI * this.influenceRadiusCubed);
-    this.mullerSpikyFirstDerivativeCoeficient = -3.0 * this.mullerSpikyCoefficient * this.oneOverInfluenceRadius;
-    this.mullerSpikySecondDerivativeCoeficient = -2.0 * this.mullerSpikyCoefficient * this.oneOverInfluenceRadius;
+    let oneOverParticleRadius = 1.0 / particleRadius;
+    this.mullerSpikyCoefficient = 15.0 / (Math.PI * this.particleRadiusCubed);
+    this.mullerSpikyFirstDerivativeCoeficient = -3.0 * this.mullerSpikyCoefficient * this.oneOverParticleRadius;
+    this.mullerSpikySecondDerivativeCoeficient = -2.0 * this.mullerSpikyCoefficient * this.oneOverParticleRadius;
 }

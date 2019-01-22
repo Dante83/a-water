@@ -171,9 +171,7 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
         foundPoints.push({
           point: potentialPoints[i],
           distance: distance,
-          distanceSquared: sumOfSquares,
-          inverseDistance: inverseDistance,
-          vect2Point: {x: xDiff * inverseDistance, y: yDiff * inverseDistance, z: zDiff * inverseDistance}
+          vect2Point: new THREE.Vector3(xDiff * inverseDistance, yDiff * inverseDistance, zDiff * inverseDistance);
         });
       }
     }

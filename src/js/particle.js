@@ -1,57 +1,53 @@
 function Particle(position, velocity, force, windVelocity, id, bucketGrid, constants){
+  this.constants = constants;
   this.position = position;
   this.previousPosition = position; //In the event that we ever find ourselves inside of a bucket, we can use this to bounce out.
   this.velocity = velocity;
+  this.tempVelocity = new THREE.Vector3();
   this.force = force;
   this.id = id;
   this.bucketGrid = bucketGrid;
-  this.bucket = null;
+  this.bucket;
   this.localWindVelocity = windVelocity;
-  this.density = null;
-  this.inverseDensity = null;
-  this.particlesInNeighborhood = null;
+  this.density;
+  this.inverseDensity;
+  this.inverseDensitySquared;
+  this.pressure;
+  this.pressureForce = new THREE.Vector3();
+  this.viscocityForce = new THREE.Vector3();
+  this.particlesInNeighborhood;
+}
 
-  ////
-  //Redefine constants locally for one less lookup per constant
-  ////
-  this.radius = constants.radius
-  this.dragCoefficient = constants.dragCoefficient
-  this.mass = constants.mass
-  this.negativeMass = constants.negativeMass
-  this.inverseOfMass = constants.inverseOfMass
+Particle.prototype.updateVelocity = function(deltaT){
+  let x = this.force.clone();
+  x.multiplyScalar(deltaT * this.constants.inverseOfMass);
+  this.velocity.add(x);
+}
 
-  //
-  //TODO: Make a neighborhood predictor that determines the number of time steps before a particle
-  //leaves the neighborhood of this particle, and also a double radius checkpoint that estimates when particles in
-  //that zone are likely to enter the inner radius and when we need to update the outer radius
-  //
+Particle.prototype.updatePosition = function(deltaT){
+  let x = this.velocity.clone();
+  let y = this.position.clone();
+  this.position = y.add(x.multiplyScalar(deltaT));
+}
 
-  //NOTE: I have a feeling this is using Euler's method to solve our
-  //position and velocity equations. I am pretty sure we can do better
-  //than this using RK4 or perhaps even FEM or SEM.
-  this.updateVelocity = function(deltaT){
-    var x = this.force.clone();
-    x.multiplyScalar(deltaT * this.inverseOfMass);
-    this.velocity.add(x);
-  };
-
-  this.updatePosition = function(deltaT){
-    var x = this.velocity.clone();
-    var y = this.position.clone();
-    this.position = y.add(x.multiplyScalar(deltaT));
-  };
+Particle.prototype.updateParticlesInNeighborhood = function(){
+  this.particlesInNeighborhood = this.bucketGrid.findPointsInSphere(this.position, this.radius);
 }
 
 //Particles are created numerous times, but there's no duplicating code that's just used for stuff
 //over and over again, so we're just going to use pointers to the same propertives over and over instead.
-function ParticleConstants(radius, dragCoefficient, mass){
+function ParticleConstants(dragCoefficient, targetDensity, targetSpacing, viscosityCoeficient){
   ////
   //PARTICLE CONSTANTS
   ////
-  this.radius = radius;
-  this.inverseRadius = 1.0 / radius;
+  this.radius = targetSpacing; //The radius is interpreted as the target target spacing
+  this.oneOverRadiusSquared = 1.0 / (this.radius * this.radius);
+  this.targetSpacing = targetSpacing;
   this.dragCoefficient = dragCoefficient;
+
+  //Calculate the mass from our target density and target spacing
   this.mass = mass;
-  this.negativeMass = -1.0 * mass;
-  this.inverseOfMass = 1.0 / mass;
+  this.massSquared = mass * mass;
+  this.viscocityCoeficient = viscosityCoeficient;
+  this.viscosityCoefficientTimesMassSquared = viscocityCoeficient * this.massSquared;
 }

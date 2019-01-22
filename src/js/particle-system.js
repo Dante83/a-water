@@ -1,4 +1,4 @@
-function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluidParams){
+function ParticleSystem(upperCorner, lowerCorner, particleConstants, particleSolverConstants, parentFluidParams){
   var thisParticleSystem = this;
   var parentFluidParams = parentFluidParams;
   this.parentFluidParams = parentFluidParams;
@@ -9,6 +9,12 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
   this.dynamicMesh = [];
   this.numberOfParticles = 0;
   this.maxParticleID = 0;
+  this.interpolationEngine = false;
+  this.particleSolverConstants = false;
+  this.particleSolver = false;
+  this.debug_enableGravity = false;
+  this.debug_enableFluidCollision = true;
+  this.debug_enableWallCollision = false;
   const gravity = new THREE.Vector3(0.0, 0.0, -9.81);
 
   //Basically, all of our particles are identical, so we calculate their universal values here and
@@ -128,16 +134,24 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
     thisParticleSystem.numberOfParticles = thisParticleSystem.particles.length;
   };
 
+  //
+  //TODO: Looking over our code, this might be better in our PCISPH System solver rather then in the particle system.
+  //Then we could build the solver seperate and do the update there.
+  //
   this.updateParticles = function(deltaT){
-    //Our function for summing up the forces, which we will implement in parallel.
-    let updateParticle = function(particle){
+    for(let i = 0, particlesLen = thisParticleSystem.particles.length; i < particlesLen; i++){
+      let particle = thisParticleSystem.particles[i];
+
       //
       //Update Forces
+      //Equivalent to accumulateForces in D.K.'s Fluid Engine Development
       //
-      let gravitationalForce = gravity.clone().multiplyScalar(particle.mass);
-
-      let windResistanceForce = particle.velocity.clone().add(particle.localWindVelocity.negate()).multiplyScalar(particle.dragCoefficient);
-      let netForces = gravitationalForce.add(windResistanceForce.negate());
+      let netForces = new THREE.Vector3();
+      if(this.debug_enableGravity){
+        let gravitationalForce = gravity.clone().multiplyScalar(particle.mass);
+        let windResistanceForce = particle.velocity.clone().add(particle.localWindVelocity.negate()).multiplyScalar(particle.dragCoefficient);
+        let netForces = gravitationalForce.add(windResistanceForce.negate());
+      }
 
       particle.force = netForces;
 
@@ -152,13 +166,10 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
       //their position updates
       //
     }
-
-    for(let i = 0, particlesLen = this.particles.length; i < particlesLen; i++){
-      updateParticle(thisParticleSystem.particles[i]);
-    }
+    this.particleSolver.updatePressureForces();
   };
 
-  this.resolveCollision = function(){
+  this.resolveCollisions = function(tempPositions, tempVelocities){
     //
     //TODO: Implement a collision engine here.
     //

@@ -6,6 +6,8 @@ AFRAME.registerComponent('fluid-params', {
   timeTracker: false,
   tickerIterator: 1,
   fluidParamsInitialized: false,
+  particleSolver: false,
+  particleInterpolator: false,
   schema: {
     'searchBucketDiameter': {type: 'number', default: 10.0},
     'upperCorner': {type: 'vec3', default: {x: 0.0, y: 0.0, z: 0.0}},
@@ -140,6 +142,18 @@ AFRAME.registerComponent('fluid-params', {
       fluidBufferGeometry.parentNode.removeChild(fluidBufferGeometry);
     }
 
+    //During the first pass, let's initialize by determining the location of all neighboring particles.
+    let particles = this.particleSystem.particles;
+    for(let i = 0, numParticles = particles.length; i < numParticles; i++){
+      particles[i].updateParticlesInNeighborhood();
+    }
+
+    //Set up our fluid solver which simulates fluid dynamics for our particles
+    //mainly by calling accumulatePressureForce during the update process.
+    this.interpolationEngine = new InterpolationEngine(this.particleSystem.bucketGrid, new KernalConstants(this.particleConstants.radius), 1000);
+    let particleSolverContants = new ParticleSolverConstants(targetDensity, eosExponent, speedOfSound, negativePressureScale);
+    this.pciSPHSystemSolver = new PCISPHSystemSolver(this.interpolationEngine, particleSolverContants, this.particleSystem);
+
     //Trigger a call to track our particles over time if we want to.
     this.el.emit('draw-sph-test-particles', {
       particleSystem: this.particleSystem
@@ -173,9 +187,11 @@ AFRAME.registerComponent('fluid-params', {
 
       //Heightmap Fluid Solver
 
+      //
       //SPH Fluid Solver
-      this.particleSystem.updateParticles(estimatedFrameTime);
-      this.particleSystem.resolveCollision();
+      //
+      this.interpolationEngine.updateParticles(); //Update our neighbors list and densities
+      this.pciSPHSystemSolver.updateParticleForces(estimatedFrameTime);
 
       //
       //Using information from the above, merge the results into
