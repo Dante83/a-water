@@ -1,4 +1,4 @@
-function ParticleSystem(upperCorner, lowerCorner, particleConstants, particleSolverConstants, parentFluidParams){
+function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluidParams){
   var thisParticleSystem = this;
   var parentFluidParams = parentFluidParams;
   this.parentFluidParams = parentFluidParams;
@@ -9,13 +9,9 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, particleSol
   this.dynamicMesh = [];
   this.numberOfParticles = 0;
   this.maxParticleID = 0;
-  this.interpolationEngine = false;
-  this.particleSolverConstants = false;
-  this.particleSolver = false;
-  this.debug_enableGravity = false;
-  this.debug_enableFluidCollision = true;
-  this.debug_enableWallCollision = false;
+  this.pciSystemSolver;
   const gravity = new THREE.Vector3(0.0, 0.0, -9.81);
+  this.logs = {};
 
   //Basically, all of our particles are identical, so we calculate their universal values here and
   //then add this to every particle, allow it to reference the values through a point without redoing
@@ -66,143 +62,97 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, particleSol
   //Trigger an alert that our bucket system is now completed for our debugger. We can comment this out in the final release
   //once everything works.
   parentFluidParams.el.emit('bucket-grid-constructed', {particleSystem: this});
-
-  this.addParticles = function(positions, velocities){
-    let particlePositionByHash = [];
-    let particlesByHash = [];
-    let bucketsWithPoints = [];
-
-    //Grab each position/velocity and create a particle for it, hashing the results
-    //into the above variables so they can be rapidly appended to their respective buckets.
-    for(let i = 0, particlesLen = positions.length; i < particlesLen; i++){
-      //Right now this starts off with no forces and no wind...
-      //TODO: In the future, we might want to consider the impact of wind on our fluid.
-      //NOTE: The default value for THREE.Vector3() is actually [0,0,0]
-      let position = positions[i];
-      let newParticle = new Particle(new THREE.Vector3(...position), new THREE.Vector3(...velocities[i]), new THREE.Vector3(), new THREE.Vector3(), this.maxParticleID, this.bucketGrid, thisParticleSystem.particleConstants);
-
-      //Find the bucket associated with this particle and add the particle to bucket
-      let hash = this.bucketGrid.getHashKeyFromPosition(position);
-      if(bucketsWithPoints.includes(hash)){
-        particlePositionByHash[hash].push(position);
-        particlesByHash[hash].push(newParticle);
-      }
-      else{
-        particlePositionByHash[hash] = [];
-        particlesByHash[hash] = [];
-        particlePositionByHash[hash].push(position);
-        particlesByHash[hash].push(newParticle);
-        bucketsWithPoints.push(hash);
-      }
-
-      thisParticleSystem.particles.push(newParticle);
-      this.maxParticleID += 1;
-    }
-
-    //Add all of these points to the buckets
-    //
-    //NOTE: Not adding in links ot each of our particles for our point detector seems a bit
-    //odd. It would seem to me, both for mid-section tracking and to update our particles,
-    //We would either need to rebuild our hash from scratch, or we would need to pass a pointer,
-    //to the particle inside so that each hash could be updated as needed.
-    //
-    for(let i = 0, numHashes = bucketsWithPoints.length; i < numHashes; i++){
-      let hash = bucketsWithPoints[i];
-      if(hash in this.bucketGrid.hashedBuckets){
-        var bucket = this.bucketGrid.hashedBuckets[hash];
-        bucket.addParticles(particlesByHash[hash]);
-      }
-    }
-
-    //Flush all grids
-    this.bucketGrid.flushPoints();
-
-    thisParticleSystem.numberOfParticles += positions.length;
-  };
-
-  this.cullParticles = function(){
-    //For right now, we just kill all particles below -10m
-    //
-    //TODO: In the future we will want a more robust "Kill feature."
-    //
-    thisParticleSystem.particles = thisParticleSystem.particles.filter(function(particle){
-      return particle.position.length() < 20.0;
-    });
-
-    //TODO: Remove particles from all of our bucket hashes
-
-    thisParticleSystem.numberOfParticles = thisParticleSystem.particles.length;
-  };
-
-  //
-  //TODO: Looking over our code, this might be better in our PCISPH System solver rather then in the particle system.
-  //Then we could build the solver seperate and do the update there.
-  //
-  this.updateParticles = function(deltaT){
-    for(let i = 0, particlesLen = thisParticleSystem.particles.length; i < particlesLen; i++){
-      let particle = thisParticleSystem.particles[i];
-
-      //
-      //Update Forces
-      //Equivalent to accumulateForces in D.K.'s Fluid Engine Development
-      //
-      let netForces = new THREE.Vector3();
-      if(this.debug_enableGravity){
-        let gravitationalForce = gravity.clone().multiplyScalar(particle.mass);
-        let windResistanceForce = particle.velocity.clone().add(particle.localWindVelocity.negate()).multiplyScalar(particle.dragCoefficient);
-        let netForces = gravitationalForce.add(windResistanceForce.negate());
-      }
-
-      particle.force = netForces;
-
-      //
-      //Time Integration
-      //
-      particle.updateVelocity(deltaT);
-      particle.updatePosition(deltaT);
-
-      //
-      //NOTE: Until we have predictive schedualing for our particles, we need to update all particle hashes each time
-      //their position updates
-      //
-    }
-    this.particleSolver.updatePressureForces();
-  };
-
-  this.resolveCollisions = function(tempPositions, tempVelocities){
-    //
-    //TODO: Implement a collision engine here.
-    //
-  };
-
-  this.getNumberOfParticles = function(){
-    return thisParticleSystem.numberOfParticles;
-  };
-
-  //Debugging methods
-  this.printVector = function(vector){
-    return `${vector.x}, ${vector.y}, ${vector.z}`;
-  };
-
-  this.logs = {};
-  this.logOnce = function(name, msg){
-    if(thisParticleSystem.logs[name] !== 'logged'){
-      thisParticleSystem.logs[name] = 'logged';
-      console.log(msg);
-    }
-  };
-
-  this.logNTimes = function(name, maxNumLogs, msg){
-    if(thisParticleSystem.logs[name] == null){
-      thisParticleSystem.logs[name] = 1;
-      console.log(msg);
-    }
-    if(thisParticleSystem.logs[name] <= maxNumLogs){
-      thisParticleSystem.logs[name] += 1;
-      console.log(msg);
-    }
-  };
 }
+
+ParticleSystem.prototype.addParticles = function(positions, velocities){
+  let particlePositionByHash = [];
+  let particlesByHash = [];
+  let bucketsWithPoints = [];
+
+  //Grab each position/velocity and create a particle for it, hashing the results
+  //into the above variables so they can be rapidly appended to their respective buckets.
+  for(let i = 0, particlesLen = positions.length; i < particlesLen; i++){
+    //Right now this starts off with no forces and no wind...
+    //TODO: In the future, we might want to consider the impact of wind on our fluid.
+    //NOTE: The default value for THREE.Vector3() is actually [0,0,0]
+    let position = positions[i];
+    let newParticle = new Particle(new THREE.Vector3(...position), new THREE.Vector3(...velocities[i]), new THREE.Vector3(), new THREE.Vector3(), this.maxParticleID, this.bucketGrid, this.particleConstants);
+
+    //Find the bucket associated with this particle and add the particle to bucket
+    let hash = this.bucketGrid.getHashKeyFromPosition(position);
+    if(bucketsWithPoints.includes(hash)){
+      particlePositionByHash[hash].push(position);
+      particlesByHash[hash].push(newParticle);
+    }
+    else{
+      particlePositionByHash[hash] = [];
+      particlesByHash[hash] = [];
+      particlePositionByHash[hash].push(position);
+      particlesByHash[hash].push(newParticle);
+      bucketsWithPoints.push(hash);
+    }
+
+    this.particles.push(newParticle);
+    this.maxParticleID += 1;
+  }
+
+  //Add all of these points to the buckets
+  //
+  //NOTE: Not adding in links ot each of our particles for our point detector seems a bit
+  //odd. It would seem to me, both for mid-section tracking and to update our particles,
+  //We would either need to rebuild our hash from scratch, or we would need to pass a pointer,
+  //to the particle inside so that each hash could be updated as needed.
+  //
+  for(let i = 0, numHashes = bucketsWithPoints.length; i < numHashes; i++){
+    let hash = bucketsWithPoints[i];
+    if(hash in this.bucketGrid.hashedBuckets){
+      var bucket = this.bucketGrid.hashedBuckets[hash];
+      bucket.addParticles(particlesByHash[hash]);
+    }
+  }
+
+  //Flush all grids
+  this.bucketGrid.flushPoints();
+  this.numberOfParticles += positions.length;
+};
+
+ParticleSystem.prototype.cullParticles = function(){
+  //For right now, we just kill all particles below -10m
+  //
+  //TODO: In the future we will want a more robust "Kill feature."
+  //
+  this.particles = this.particles.filter(function(particle){
+    return particle.position.length() < 20.0;
+  });
+
+  //TODO: Remove particles from all of our bucket hashes
+  this.numberOfParticles = this.particles.length;
+};
+
+ParticleSystem.prototype.setPCISystemSolver = function(PCISystemSolver){
+  this.PCISystemSolver = PCISystemSolver;
+}
+
+ParticleSystem.prototype.updateParticles = function(timeIntervalInSeconds){
+  //Update our particle forces.
+  this.PCISystemSolver.updateForces(timeIntervalInSeconds);
+
+  //Implement time integration.
+  for(let i = 0, particlesLen = this.particles.length; i < particlesLen; i++){
+    let particle = this.particles[i];
+    particle.updateVelocity(timeIntervalInSeconds);
+    particle.updatePosition(timeIntervalInSeconds);
+
+    //
+    //NOTE: Until we have predictive schedualing for our particles, we need to update all particle hashes each time
+    //their position updates
+    //
+  }
+};
+
+ParticleSystem.prototype.getNumberOfParticles = function(){
+  return this.numberOfParticles;
+};
 
 ParticleSystem.prototype.getCenter = function(){
   let center = [];
@@ -214,3 +164,28 @@ ParticleSystem.prototype.getCenter = function(){
 
   return center;
 }
+
+//
+//Debugging methods
+//
+ParticleSystem.prototype.printVector = function(vector){
+  return `${vector.x}, ${vector.y}, ${vector.z}`;
+};
+
+ParticleSystem.prototype.logOnce = function(name, msg){
+  if(this.logs[name] !== 'logged'){
+    this.logs[name] = 'logged';
+    console.log(msg);
+  }
+};
+
+ParticleSystem.prototype.logNTimes = function(name, maxNumLogs, msg){
+  if(this.logs[name] == null){
+    this.logs[name] = 1;
+    console.log(msg);
+  }
+  if(this.logs[name] <= maxNumLogs){
+    this.logs[name] += 1;
+    console.log(msg);
+  }
+};

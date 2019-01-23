@@ -6,6 +6,7 @@ AFRAME.registerComponent('fluid-params', {
   timeTracker: false,
   tickerIterator: 1,
   fluidParamsInitialized: false,
+  tickOneComplete: false,
   particleSolver: false,
   particleInterpolator: false,
   schema: {
@@ -23,6 +24,7 @@ AFRAME.registerComponent('fluid-params', {
   init: function(){
     this.loaded = false;
     this.fluidParamsInitialized = false;
+    this.tickOneComplete = false;
     this.staticMeshes = {
       geometries: [],
       worldMatrices: []
@@ -153,6 +155,7 @@ AFRAME.registerComponent('fluid-params', {
     this.interpolationEngine = new InterpolationEngine(this.particleSystem.bucketGrid, new KernalConstants(this.particleConstants.radius), 1000);
     let particleSolverContants = new ParticleSolverConstants(targetDensity, eosExponent, speedOfSound, negativePressureScale);
     this.pciSPHSystemSolver = new PCISPHSystemSolver(this.interpolationEngine, particleSolverContants, this.particleSystem);
+    this.particleSystem.setPCISystemSolver(this.pciSystemSolver);
 
     //Trigger a call to track our particles over time if we want to.
     this.el.emit('draw-sph-test-particles', {
@@ -176,7 +179,7 @@ AFRAME.registerComponent('fluid-params', {
     //Wait until post load is completed before attempting to tick through our system.
     if(this.fluidParamsInitialized){
       //How long do we expect the current frame will last
-      let estimatedFrameTime = this.timeTracker.averageTickTime * 0.001;
+      let estTimeIntervalInSeconds = this.timeTracker.averageTickTime * 0.001;
 
       //
       //Knowledge about this fluid section and the computational
@@ -190,8 +193,7 @@ AFRAME.registerComponent('fluid-params', {
       //
       //SPH Fluid Solver
       //
-      this.interpolationEngine.updateParticles(); //Update our neighbors list and densities
-      this.pciSPHSystemSolver.updateParticleForces(estimatedFrameTime);
+      this.particleSystem.updateParticles(estTimeIntervalInSeconds); //Update our neighbors list and densities
 
       //
       //Using information from the above, merge the results into
@@ -199,9 +201,11 @@ AFRAME.registerComponent('fluid-params', {
       //
 
       //
-      //Trigger a shader that paint this mesh so that it looks like water.
+      //Update shaders
       //
 
+      //DONE :D
+      this.tickOneComplete = true;
     }
     else if(this.tickerIterator % 5 === 0){
       //Retry every ten frames until someone picks up
@@ -210,6 +214,13 @@ AFRAME.registerComponent('fluid-params', {
     }
     else{
       this.tickerIterator += 1;
+    }
+  },
+  tock: function (time, timeDelta) {
+    if(this.tickOneComplete){
+      //
+      //Combine Shader images and apply post processing.
+      //
     }
   },
   logNTimes: function(name, maxNumLogs, msg){

@@ -3,19 +3,27 @@ function Particle(position, velocity, force, windVelocity, id, bucketGrid, const
   this.position = position;
   this.previousPosition = position; //In the event that we ever find ourselves inside of a bucket, we can use this to bounce out.
   this.velocity = velocity;
-  this.tempVelocity = new THREE.Vector3();
   this.force = force;
   this.id = id;
   this.bucketGrid = bucketGrid;
   this.bucket;
   this.localWindVelocity = windVelocity;
-  this.density;
+  this.windResistanceForce = new THREE.Vector3(0.0,0.0,0.0);
+  this.density = 0.0;
   this.inverseDensity;
   this.inverseDensitySquared;
   this.pressure;
-  this.pressureForce = new THREE.Vector3();
-  this.viscocityForce = new THREE.Vector3();
+  this.pressureForce = new THREE.Vector3(0.0,0.0,0.0);
+  this.viscocityForce = new THREE.Vector3(0.0,0.0,0.0);
   this.particlesInNeighborhood;
+}
+
+Particle.cloneToPCITemp = function(){
+  return {
+    velocity: this.velocity.clone(),
+    position: this.position.clone(),
+    pressureForce: this.pressureForce.clone()
+  };
 }
 
 Particle.prototype.updateVelocity = function(deltaT){
@@ -37,6 +45,10 @@ Particle.prototype.updateParticlesInNeighborhood = function(){
 //Particles are created numerous times, but there's no duplicating code that's just used for stuff
 //over and over again, so we're just going to use pointers to the same propertives over and over instead.
 function ParticleConstants(dragCoefficient, targetDensity, targetSpacing, viscosityCoeficient){
+  //
+  //NOTE: Come back here and check for stuff like calculating our target mass from density and radius.
+  //
+
   ////
   //PARTICLE CONSTANTS
   ////
@@ -47,6 +59,7 @@ function ParticleConstants(dragCoefficient, targetDensity, targetSpacing, viscos
 
   //Calculate the mass from our target density and target spacing
   this.mass = mass;
+  this.inverseOfMass = 1.0 / mass;
   this.massSquared = mass * mass;
   this.viscocityCoeficient = viscosityCoeficient;
   this.viscosityCoefficientTimesMassSquared = viscocityCoeficient * this.massSquared;

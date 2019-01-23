@@ -5,102 +5,125 @@ function PCISPHSystemSolver(interpolator, PCIConstants, parentParticleSystem){
   this.particles = parentParticleSystem.particles;
   this.PCIConstants = PCIConstants;
   this.particleConstants = parentParticleSystem.particleConstants;
+  this.gravitationalForce = new THREE.Vector3(0.0,0.0, this.particleConstants.mass * this.PCIConstants.gravity);
 
-  //
-  //NOTE: We need to figure out how to integrate our gravitational and wind forces here.
-  //
-  this.updateParticleForces = function(timeIntervalInSeconds){
-    //Predicted densities
-    let delta = this.computeDelta(timeIntervalInSeconds);
-    let predictedDensity = new Array(this.particles.length());
-
-    //Initialize the buffer
-    this.pressureForces = [];
-    for(let i = 0, numParticles = this.particleSystem.particles.length(); i < numParticles; i++){
-      this.particles.pressureForce.set(0.0, 0.0, 0.0);
-    }
-
-    //Predict the velocity and position
-    //Not sure if I need to initialize the buffers or not...
-    for(let i = 0, predAndCorrctMaxIter = this.maxNumberOfIterations; i < predAndCorrctMaxIter; i++){
-      //Predict velocity and position
-      for(let j = 0, partLen = this.particles.length; j < partLen; j++){
-        let particle = this.particles[j];
-        //WARNING: We do not know what f[j] is and we do not have a calculation for _pressureForces[j] yet...
-        let a = f[j].clone().add(this.pressureForces[j];
-        let b = x1.multiplyScalar((timeIntervalInSeconds * particle.inverseOfMass);
-        this.tempVelocity[j] = particle.velocity.clone().add(b);
-        a = this.tempVelocity[j].clone().multiplyScalar(timeIntervalInSeconds);
-        this.tempPositions[j] = particle.position.clone().add(a);
-      }
-
-      //Resolve collisions
-      //WARNING: We might need to refer back to ParticleSystemSolver3 for this...
-      this.resolveCollision();
-
-      //Compute pressure from density error
-      const particleMass = this.particles[0].mass;//Because particle mass is constant
-      for(let j = 0, partLen = this.particles.length; j < partLen; j++){
-        let particle = this.particle[j];
-        let weightSum = 0.0;
-
-        for(let k = 0, particlesInNeighborhood = particle.particlesInNeighborhood; k < particlesInNeighborhood; k++){
-          let dist = Math.sqrt(this.tempPositions.clone().dot(this.tempPositions.clone()));
-          weightSum += kernal(dist); //NOTE: We need to update kernals or build another kernal to get out stupid
-          //kernal like this.
-        }
-        weightSum += kernal(0);//Again with this kernal...
-
-        let density = particleMass * weightSum;
-        let densityError = (density - this.targetDensity);
-        let pressure = delta * densityError;
-        if(pressure < 0.0){
-          pressure *= this.negativePressureScale;
-          densityError *= this.negativePressureScale;
-        }
-
-        particlePressures[j] += pressure;
-        predictedDensity[j] = density
-        _densityErrors[j] = densityError;
-      }
-
-      //Compute pressure gradient force
-
-
-      //Compute max density error
-      //let maxDensityError = /*Let blank in book*/;
-      let densityErrorRatio = maxDensityError * this.inverseOfTargetDensity;
-
-      if(Math.abs(densityErrorRatio) < this.maxDensityErrorRatio){
-        break;
-      }
-    }
-
-    //Accumulate pressure force
-
-  }
-
-  this.computeDelta = function(timeIntervalInSeconds){
-    //
-    //NOTE: This part is described in section Appendix B.2
-    //
-  }
+  //Debugging variables
+  this.debug_enableGravity = false;
+  this.debug_enableWindResistance = false;
+  this.debug_enableVicosityForces = false;
+  this.debug_enablePressureForces = false;
+  this.debug_enableCollisions = false;
 }
 
-PCISPHSystemSolver.prototype.computePressureFromEoS(density){
+PCISPHSystemSolver.prototype.updateForces = function(timeIntervalInSeconds){
+  let particles = this.particles;
+
+  //Update the forces for all of our particles
+  this.computePressure();
+  this.accumulatePressureForce(timeIntervalInSeconds);
+  this.accumulateViscosityForce();
+  this.calculateWindResistanceForce();
+  //this.computePseudoViscosityForce();
+
+  //Accumulate the forces for each particle
+  for(let i = 0, numParticles = particles.length; i < numParticles; i++){
+    let particle = particles[i];
+    let force = new THREE.Vector3(0.0, 0.0, 0.0);
+    if(this.debug_enableGravity){
+      force.add(gravitationalForce);
+    }
+    if(this.debug_enableWindResistance){
+      force.add(gravitationalForce);
+    }
+    if(this.debug_enableVicosityForces){
+      force.add(particle.viscocityForce);
+    }
+    if(this.debug_enablePressureForces){
+      force.add(particle.pressureForce);
+    }
+  }
+};
+
+//NOTE: As this is dependent upone one variable, we might want to convert the results
+//into an array.
+PCISPHSystemSolver.prototype.computeDelta = function(timeIntervalInSeconds){
+  //
+  //NOTE: Come back here when you're done and make sure all of this works together.
+  //
+
+  //We're constructing a grid of particles in a cubic grid in order
+  //to estimate our delta to avoid errors associated with low density particles.
+  //This seems like an excellent method to improve in the future for situations
+  //that involve complicated geometries.
+  let points = [];
+  let sampleBoxLength = 1.5 * this.particleConstants.radius;
+  let halfSpacing = this.particleConstants.targetSpacing * 0.5;
+  let numIters = Math.ceil(halfSpacing / sampleBoxLength);
+  let hasOffset = false;
+  let x = 0.0;
+  let y = 0.0;
+  let z = 0.0;
+
+  //As this is just used for a constant, we can set the lower corner to 0.0
+  //and because it's square we can keep all the interations equal.
+  //Also, because we're doing a sample we don't need to do all of them
+  //and we will never break early.
+  for(let i = 0; i <= numIters; i++){
+    y += halfSpacing;
+    let halfSpacingPlusOffset = halfSpacing + (hasOffset ? halfSpacing : 0.0);
+    for(let j = 0; j <= numIters; j++){
+      z += halfSpacingPlusOffset;
+      for(let k = 0; k <= numIters; k++){
+        x += halfSpacingPlusOffset;
+      }
+    }
+    hasOffset = !hasOffset;
+  }
+  points.push(new THREE.Vector3(x, y, z));
+
+  //Delta calculation.
+  let denom = 0.0;
+  let a = new THREE.Vector3(0.0,0.0,0.0);
+  let b = 0.0;
+  let particleRadiusSquared = this.particleConstants.particleRadiusSquared;
+
+  for(let i = 0, numParticles = this.particles.length; i < numParticles; i++){
+    let particle = this.particles[i];
+    let distanceSquared = particle.lengthSquared;
+    if(distanceSquared < particleRadiusSquared){
+      let distance = particle.length;
+      let direction = distance > 0.0 ? point / distance : new THREE.Vector3(0.0,0.0,0.0);
+
+      //grad(Wij)
+      gradWij = this.operators.gradient(distance, direction);
+      a.add(gradWij);
+      b += gradWij.dot(gradWij);
+    }
+  }
+
+  denom -= a.dot(a) + denom2;
+  return Math.abs(denom) > 0.0 ? -1.0 / (this.computeBeta(timeIntervalInSeconds) * denom) : 0.0;
+};
+
+PCISPHSystemSolver.prototype.computeBeta = function(timeIntervalInSeconds){
+  let a = this.particleConstants.mass * timeIntervalInSeconds * this.PCIConstants.inverseOfTargetDensity;
+  return 2.0 * a;
+};
+
+PCISPHSystemSolver.prototype.computePressureFromEoS = function(density){
   let constants = this.PCIConstants;
   let p = constants.eosScaleDivideByEosExponent * ((density * constants.inverseOfTargetDensity - 1.0)**constants.eosExponent);
   return p >= 0.0 ? p : p * constants.negativePressureScale;
-}
+};
 
-PCISPHSystemSolver.prototype.computePressure(particle){
+PCISPHSystemSolver.prototype.computePressure = function(){
   for(let i = 0, numParticles = this.particles.length; i < numParticles; i++){
     let particle = this.particles[i];
     particle.pressure = this.computePressureFromEoS(particle.density);
   }
-}
+};
 
-PCISPHSystemSolver.prototype.computePressureForce(){
+PCISPHSystemSolver.prototype.computePressureForce = function(){
   let massSquared = this.parentParticleSystem.particleConstants.massSquared;
   for(let i = 0, numParticles = this.particles.length; i < numParticles; i++){
     let particle = this.particles[i];
@@ -116,17 +139,104 @@ PCISPHSystemSolver.prototype.computePressureForce(){
       }
     }
   }
-}
+};
 
-PCISPHSystemSolver.prototype.accumulatePressureForce(){
+//
+//NOTE: We're still not sure how this computes our pressure force and I need to go over it.
+//
+PCISPHSystemSolver.prototype.accumulatePressureForce = function(timeIntervalInSeconds){
   //
   //NOTE: The text gathers copies of each of our particles here, position, density, pressure and forces.
   //
+  let particles = this.particles;
+  let targetDensity = this.PCIConstants.targetDensity;
+  let inverseTargetDensity = this.PCIConstants.inverseDensity;
+  let inverseOfMass = this.particleConstants.inverseOfMass;
+  let maxDensityErrorRatio = this.PCIConstants.maxDensityErrorRatio;
+  let negativePressureScale = this.PCIConstants.negativePressureScale;
 
-  this.computePressureForce();
+  //
+  //TODO: Fill out computeDelta
+  //
+  let delta = this.computeDelta(timeIntervalInSeconds);
+
+  //Reset pressure state
+  let tempStates = [];
+  for(let i = 0, numParticles = particles.length; i < numParticles; i++){
+    let particle = particles[i];
+    particle.pressure = 0.0;
+    particle.pressureForce.set(0.0,0.0,0.0);
+    tempStates.push(particle.cloneToPCITemp());
+  }
+
+  for(let i = 0; i < this.PCIConstants.maxNumberOfIterations; i++){
+    //Predict velocity and positiosns
+    for(let i = 0, numParticles = particles.length; i < numParticles; i++){
+      let particle = particles[i];
+      let tempVelocity = particle.velocity + timeIntervalInSeconds * inverseOfMass * (particle.forces + tempStates.pressureForce);
+      tempStates[i].velocity = tempVelocity;
+      tempStates[i].position = particle.position + timeIntervalInSeconds * tempVelocity;
+    }
+
+    //Resolve collisions
+    if(this.debug_enableCollisions){
+      this.resolveCollisions(tempStates);
+    }
+
+    //Compure pressure from density error
+    let maxDensityError = 0.0;
+    let abs = Math.abs;
+    for(let i = 0, numParticles = particles.length; i < numParticles; i++){
+      let particle = particles[i];
+      let weightSum = 0.0;
+      let neighboringParticleData = particle.neighboringParticles;
+
+      for(let j = 0, numNeighbors = neighboringParticleData.length; j < numNeighbors; j++){
+        let neighboringParticleData = neighboringParticleData[j];
+        this.interpolator.evalFKernalState(distance);
+        weightSum += this.interpolator.evalFMullerKernal(distance);
+      }
+      this.interpolator.isNotZero = true;
+      weightSum += this.interpolator.evalFMullerKernal(0.0);
+
+      let density = particleMass * weightSum;
+      let densityError = (density - targetDensity);
+      let pressure = delta * densityError;
+
+      if(pressure < 0.0){
+        pressure *= negativePressureScale;
+        densityError *= negativePressureScale;
+      }
+
+      particle.pressure += pressure;
+      particle.density = density;
+      let absDensityError = abs(densityError);
+      if(absDensityError > maxDensityError){
+        maxDensityError = absDensityError;
+      }
+    }
+
+    //Computer pressure gradient force
+
+
+    //Compute max density error
+    let densityErrorRatio = maxDensityError * inverseTargetDensity;
+    if(abs(densityErrorRatio) < maxDensityErrorRatio){
+      break;
+    }
+  }
+};
+
+//
+//NOTE: Duplicating temp states is probably an error.
+//
+PCISPHSystemSolver.prototype.resolveCollisions = function(tempStates, tempStates){
+  //
+  //TODO: Collide our particles with the sides here.
+  //
 }
 
-PCISPHSystemSolver.prototype.accumulateViscosityForce(){
+PCISPHSystemSolver.prototype.accumulateViscosityForce = function(){
   let massSquared = this.particleConstants.viscosityCoefficientTimesMassSquared;
   let viscocityCoefficient = this.particleConstants.viscocityCoeficient;
   let viscocityCoeficientTimesMassSquared = viscocityCoefficient * viscocityCoefficient;
@@ -145,18 +255,19 @@ PCISPHSystemSolver.prototype.accumulateViscosityForce(){
       particle.viscocityForce.add(littleViscosityForce);
     }
   }
-}
+};
 
-PCISPHSystemSolver.prototype.computePsuedoVisocity(){
+PCISPHSystemSolver.prototype.computePsuedoVisocity = function(){
   //This is used to even out noise in our results, but it's not filled out in
   //the book.
-}
+};
 
-function ParticleSolverConstants(targetDensity, eosExponent, speedOfSound, negativePressureScale, viscocityCoeficient){
+function ParticleSolverConstants(targetDensity, eosExponent, speedOfSound, gravity, negativePressureScale, maxDensityErrorRatio, maxNumberOfPCISteps){
+  this.gravity = gravity;
   this.targetDensity = targetDensity;
   this.inverseOfTargetDensity = 1.0 / targetDensity;
-  this.maxDensityErrorRatio = 0.01;
-  this.maxNumberOfIterations = 5.0;
+  this.maxDensityErrorRatio = maxDensityErrorRatio;
+  this.maxNumberOfIterations = maxNumberOfPCISteps;
   this.eosExponent = eosExponent;
   this.speedOfSound = speedOfSound;
   this.inverseOfEosExponent = 1.0 / eosExponent;
