@@ -13,6 +13,7 @@ function PCISPHSystemSolver(interpolator, PCIConstants, parentParticleSystem){
   this.debug_enableVicosityForces = false;
   this.debug_enablePressureForces = false;
   this.debug_enableCollisions = false;
+  this.debug_enablePseudoVisocityFilter = false;
 }
 
 PCISPHSystemSolver.prototype.updateForces = function(timeIntervalInSeconds){
@@ -40,6 +41,9 @@ PCISPHSystemSolver.prototype.updateForces = function(timeIntervalInSeconds){
     }
     if(this.debug_enablePressureForces){
       force.add(particle.pressureForce);
+    }
+    if(this.debug_enablePseudoVisocityFilter){
+      this.pseudoViscocityFilter(timeIntervalInSeconds);
     }
   }
 };
@@ -87,12 +91,12 @@ PCISPHSystemSolver.prototype.computeDelta = function(timeIntervalInSeconds){
   let b = 0.0;
   let particleRadiusSquared = this.particleConstants.particleRadiusSquared;
 
-  for(let i = 0, numParticles = this.particles.length; i < numParticles; i++){
-    let particle = this.particles[i];
-    let distanceSquared = particle.lengthSquared;
+  for(let i = 0, numPoints = points.length; i < numPoints; i++){
+    let point = points[i];
+    let distanceSquared = point.x * point.x + point.y * point.y + point.z * point.z;
     if(distanceSquared < particleRadiusSquared){
-      let distance = particle.length;
-      let direction = distance > 0.0 ? point / distance : new THREE.Vector3(0.0,0.0,0.0);
+      let distance = Math.sqrt(distanceSquared);
+      let direction = (distance > 0.0) ? point.clone().multiplyScalar(1.0 / distanceSquared) : new THREE.Vector3(0.0,0.0,0.0);
 
       //grad(Wij)
       gradWij = this.operators.gradient(distance, direction);
@@ -162,10 +166,12 @@ PCISPHSystemSolver.prototype.accumulatePressureForce = function(timeIntervalInSe
 
   //Reset pressure state
   let tempStates = [];
+  let predictedDensities = new Float32Array(numParticles);
   for(let i = 0, numParticles = particles.length; i < numParticles; i++){
     let particle = particles[i];
     particle.pressure = 0.0;
     particle.pressureForce.set(0.0,0.0,0.0);
+    predictedDensities = particle.density;
     tempStates.push(particle.cloneToPCITemp());
   }
 
@@ -173,9 +179,10 @@ PCISPHSystemSolver.prototype.accumulatePressureForce = function(timeIntervalInSe
     //Predict velocity and positiosns
     for(let i = 0, numParticles = particles.length; i < numParticles; i++){
       let particle = particles[i];
-      let tempVelocity = particle.velocity + timeIntervalInSeconds * inverseOfMass * (particle.forces + tempStates.pressureForce);
-      tempStates[i].velocity = tempVelocity;
-      tempStates[i].position = particle.position + timeIntervalInSeconds * tempVelocity;
+      let tempState = tempStates[i];
+      let tempVelocity = particle.velocity + timeIntervalInSeconds * inverseOfMass * (particle.forces + tempState.pressureForce);
+      tempState.velocity = tempVelocity;
+      tempState.position = particle.position + timeIntervalInSeconds * tempVelocity;
     }
 
     //Resolve collisions
@@ -192,7 +199,7 @@ PCISPHSystemSolver.prototype.accumulatePressureForce = function(timeIntervalInSe
       let neighboringParticleData = particle.neighboringParticles;
 
       for(let j = 0, numNeighbors = neighboringParticleData.length; j < numNeighbors; j++){
-        let neighboringParticleData = neighboringParticleData[j];
+        let distance = neighboringParticleData[j].distance;
         this.interpolator.evalFKernalState(distance);
         weightSum += this.interpolator.evalFMullerKernal(distance);
       }
@@ -216,8 +223,11 @@ PCISPHSystemSolver.prototype.accumulatePressureForce = function(timeIntervalInSe
       }
     }
 
-    //Computer pressure gradient force
-
+    //Compute pressure gradient force
+    for(let i = 0, numParticles = particles.length; i < numParticles; i++){
+      tempState[i].pressureForce = 0.0;
+    }
+    this.accumulatePressureForce(computePressureForce);
 
     //Compute max density error
     let densityErrorRatio = maxDensityError * inverseTargetDensity;
@@ -227,12 +237,9 @@ PCISPHSystemSolver.prototype.accumulatePressureForce = function(timeIntervalInSe
   }
 };
 
-//
-//NOTE: Duplicating temp states is probably an error.
-//
-PCISPHSystemSolver.prototype.resolveCollisions = function(tempStates, tempStates){
+PCISPHSystemSolver.prototype.resolveCollisions = function(tempStates){
   //
-  //TODO: Collide our particles with the sides here.
+  //TODO: Still need to do this one.
   //
 }
 
@@ -257,12 +264,36 @@ PCISPHSystemSolver.prototype.accumulateViscosityForce = function(){
   }
 };
 
-PCISPHSystemSolver.prototype.computePsuedoVisocity = function(){
-  //This is used to even out noise in our results, but it's not filled out in
-  //the book.
+PCISPHSystemSolver.prototype.pseudoViscocityFilter = function(timeIntervalInSeconds){
+  let particles = this.particles;
+  let particleMass = this.particleConstants.mass;
+  let smoothedVelocities = [];
+  let factor = Math.max(Math.min(timeIntervalInSeconds * this.PCIConstants.pseudoViscosityCoefficient), 0.0) 1.0);
+
+  for(let i = 0, numParticles = particles.length; i < numParticles; i++){
+    let weightSum = 0.0;
+    let smoothedVelocity = new Three.Vector3(0.0,0.0,0.0);
+
+    let neighbors = particle.neighboringParticles;
+    for(let j = 0; j < neighbors.length; j++){
+      let neighbor = neighbors[j];
+      this.interpolator.evalFKernalState(neighbor.distance);
+      let kernalVal = this.interpolator.evalFMullerKernal(neighbor.distance);
+      let wj = particleMass * neighbor.point.inverseDensity * kernalVal;
+      weightSum += wj;
+      smoothedVelocity.add(neighbor.point.velocity).multiplyScalar(wj);
+    }
+
+    let wi = particleMass * particle.inverseDensity;
+    if(weightSum > 0.0){
+      smoothedVelocity.multiplyScalar(1.0 / weightSum);
+    }
+
+    particle.velocity = particle.velocity.lerp(smoothedVelocity, factor);
+  }
 };
 
-function ParticleSolverConstants(targetDensity, eosExponent, speedOfSound, gravity, negativePressureScale, maxDensityErrorRatio, maxNumberOfPCISteps){
+function ParticleSolverConstants(targetDensity, eosExponent, speedOfSound, gravity, negativePressureScale, visocityCoefficient, pseudoViscosityCoefficient, maxDensityErrorRatio, maxNumberOfPCISteps){
   this.gravity = gravity;
   this.targetDensity = targetDensity;
   this.inverseOfTargetDensity = 1.0 / targetDensity;
@@ -274,4 +305,6 @@ function ParticleSolverConstants(targetDensity, eosExponent, speedOfSound, gravi
   this.eosScale = this.targetDensity * this.speedOfSound * this.inverseOfEosExponent;
   this.eosScaleDivideByEosExponent = this.eosScale * this.inverseOfEosExponent;
   this.negativePressureScale = negativePressureScale;
+  this.visocityCoefficient = visocityCoefficient;
+  this.pseudoViscosityCoefficient = pseudoViscosityCoefficient;
 }

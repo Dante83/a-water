@@ -44,21 +44,59 @@ Particle.prototype.updateParticlesInNeighborhood = function(){
 
 //Particles are created numerous times, but there's no duplicating code that's just used for stuff
 //over and over again, so we're just going to use pointers to the same propertives over and over instead.
-function ParticleConstants(dragCoefficient, targetDensity, targetSpacing, viscosityCoeficient){
-  //
-  //NOTE: Come back here and check for stuff like calculating our target mass from density and radius.
-  //
-
+function ParticleConstants(dragCoefficient, particleRadius, viscosityCoeficient, interpolator){
   ////
   //PARTICLE CONSTANTS
   ////
-  this.radius = targetSpacing; //The radius is interpreted as the target target spacing
-  this.oneOverRadiusSquared = 1.0 / (this.radius * this.radius);
-  this.targetSpacing = targetSpacing;
+  this.radius = particleRadius; //The radius is interpreted as the target target spacing
+  this.oneOverRadiusSquared = 1.0 / (particleRadius * particleRadius);
+  this.targetSpacing = particleRadius;
   this.dragCoefficient = dragCoefficient;
 
   //Calculate the mass from our target density and target spacing
-  this.mass = mass;
+  //We're constructing a grid of particles in a cubic grid in order
+  //to estimate our delta to avoid errors associated with low density particles.
+  //This seems like an excellent method to improve in the future for situations
+  //that involve complicated geometries.
+  let points = [];
+  let sampleBoxLength = 1.5 * particleRadius;
+  let halfSpacing = particleRadius * 0.5;
+  let numIters = Math.ceil(halfSpacing / sampleBoxLength);
+  let hasOffset = false;
+  let x = 0.0;
+  let y = 0.0;
+  let z = 0.0;
+
+  //As this is just used for a constant, we can set the lower corner to 0.0
+  //and because it's square we can keep all the interations equal.
+  //Also, because we're doing a sample we don't need to do all of them
+  //and we will never break early.
+  for(let i = 0; i <= numIters; i++){
+    y += halfSpacing;
+    let halfSpacingPlusOffset = halfSpacing + (hasOffset ? halfSpacing : 0.0);
+    for(let j = 0; j <= numIters; j++){
+      z += halfSpacingPlusOffset;
+      for(let k = 0; k <= numIters; k++){
+        x += halfSpacingPlusOffset;
+      }
+    }
+    hasOffset = !hasOffset;
+  }
+  points.push(new THREE.Vector3(x, y, z));
+
+  let maxNumberDensity = 0.0;
+  for(let i = 0; i < points.length; i++){
+    let sum = 0.0;
+    for(let j = 0; j < points.length; j++){
+      let distance2Point = points[i].distanceTo(points[j]);
+      interpolator.evalFKernalState(distance2Point);
+      sum += interpolator.evalFMullerKernal(distance2Point);
+    }
+
+    maxNumberDensity = Math.max(maxNumberDensity, sum);
+  }
+
+  this.mass = targetDensity / maxNumberDensity;
   this.inverseOfMass = 1.0 / mass;
   this.massSquared = mass * mass;
   this.viscocityCoeficient = viscosityCoeficient;
