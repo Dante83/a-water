@@ -19,11 +19,19 @@ PCISPHSystemSolver.prototype.updateForces = function(timeIntervalInSeconds){
   let particles = this.particles;
 
   //Update the forces for all of our particles
-  this.computePressure();
-  this.accumulatePressureForce(timeIntervalInSeconds);
-  this.accumulateViscosityForce();
-  this.calculateWindResistanceForce();
-  //this.computePseudoViscosityForce();
+  if(this.debug_enablePressureForces){
+    this.computePressure();
+    this.accumulatePressureForce(timeIntervalInSeconds);
+  }
+  if(this.debug_enableVicosityForces){
+    this.accumulateViscosityForce();
+  }
+  if(this.debug_enableWindResistance){
+    this.calculateWindResistanceForce();
+  }
+  if(this.debug_enablePseudoVisocityFilter){
+    this.computePseudoViscosityForce();
+  }
 
   //Accumulate the forces for each particle
   for(let i = 0, numParticles = particles.length; i < numParticles; i++){
@@ -34,7 +42,7 @@ PCISPHSystemSolver.prototype.updateForces = function(timeIntervalInSeconds){
       force.add(gravitationalForce);
     }
     if(this.debug_enableWindResistance){
-      force.add(gravitationalForce);
+      force.add(particle.windResistanceForce);
     }
     if(this.debug_enableVicosityForces){
       force.add(particle.viscocityForce);
@@ -123,7 +131,7 @@ PCISPHSystemSolver.prototype.computeDelta = function(timeIntervalInSeconds){
     }
   }
 
-  denom -= a.dot(a) + denom2;
+  denom -= a.dot(a) + b;
   return Math.abs(denom) > 0.0 ? -1.0 / (this.computeBeta(timeIntervalInSeconds) * denom) : 0.0;
 };
 
@@ -184,6 +192,7 @@ PCISPHSystemSolver.prototype.accumulatePressureForce = function(timeIntervalInSe
 
   //Reset pressure state
   let tempStates = [];
+  let numParticles = this.particles.length;
   let predictedDensities = new Float32Array(numParticles);
   for(let i = 0, numParticles = particles.length; i < numParticles; i++){
     let particle = particles[i];

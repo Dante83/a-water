@@ -9,7 +9,7 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
   this.dynamicMesh = [];
   this.numberOfParticles = 0;
   this.maxParticleID = 0;
-  this.pciSystemSolver;
+  this.PCISystemSolver;
   const gravity = new THREE.Vector3(0.0, 0.0, -9.81);
   this.logs = {};
 
@@ -129,8 +129,8 @@ ParticleSystem.prototype.cullParticles = function(){
   this.numberOfParticles = this.particles.length;
 };
 
-ParticleSystem.prototype.setPCISystemSolver = function(PCISystemSolver){
-  this.PCISystemSolver = PCISystemSolver;
+ParticleSystem.prototype.setPCISystemSolver = function(system){
+  this.PCISystemSolver = system;
 }
 
 ParticleSystem.prototype.updateParticles = function(timeIntervalInSeconds){

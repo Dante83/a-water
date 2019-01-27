@@ -159,7 +159,7 @@ AFRAME.registerComponent('fluid-params', {
     this.interpolationEngine = new InterpolationEngine(this.particleSystem.bucketGrid, kernalConstants, 1000);
     let particleSolverContants = new ParticleSolverConstants(this.data.targetDensity, this.data.eosExponent, this.data.speedOfSound, this.data.negativePressureScale);
     this.pciSPHSystemSolver = new PCISPHSystemSolver(this.interpolationEngine, particleSolverContants, this.particleSystem);
-    this.particleSystem.setPCISystemSolver(this.pciSystemSolver);
+    this.particleSystem.setPCISystemSolver(this.pciSPHSystemSolver);
 
     //Trigger a call to track our particles over time if we want to.
     this.el.emit('draw-sph-test-particles', {

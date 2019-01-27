@@ -122,7 +122,7 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
     var rowRange = 0;
     var currentBucket = this.hashedBuckets[hashOfUpperCornerBucket];
     var lowerCornerBucket = this.hashedBuckets[hashofLowerCornerBucket];
-    var searchLengthInBuckets = Math.round((currentBucket.center.x - lowerCornerBucket.center.x) / this.approximateSearchDiameter);
+    var searchLengthInBuckets = Math.round((currentBucket.getCenter().x - lowerCornerBucket.getCenter().x) / this.approximateSearchDiameter);
 
     //Fill in that curve
     var goDownZ = true;

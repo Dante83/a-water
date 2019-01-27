@@ -544,6 +544,10 @@ function StaticScene(bucketGrid, staticSceneConstants, numberOfDigitsBeforeMergi
     while(listOfTrackedBuckets.length < terminationLength){
       //Reset our next layer of buckets for populating.
       nextLayerOfBuckets = [];
+      if(listOfTrackedBuckets.length < terminationLength && lastLayerOfBuckets.length == 0){
+        throw 'Error: Infinite loop condition detected in filterBucketsInsideVersesOutside';
+      }
+
       for(let i = 0, numOriginBuckets = lastLayerOfBuckets.length; i < numOriginBuckets; i++){
         let bucket = lastLayerOfBuckets[i];
         let smallSetOfNextLayersBuckets = bucket.listOfConnectedBuckets;

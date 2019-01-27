@@ -18,7 +18,7 @@ function Particle(position, velocity, force, windVelocity, id, bucketGrid, const
   this.particlesInNeighborhood;
 }
 
-Particle.cloneToPCITemp = function(){
+Particle.prototype.cloneToPCITemp = function(){
   return {
     velocity: this.velocity.clone(),
     position: this.position.clone(),
@@ -39,7 +39,7 @@ Particle.prototype.updatePosition = function(deltaT){
 }
 
 Particle.prototype.updateParticlesInNeighborhood = function(){
-  this.particlesInNeighborhood = this.bucketGrid.findPointsInSphere(this.position, this.radius);
+  this.particlesInNeighborhood = this.bucketGrid.findPointsInSphere(this.position, this.constants.radius);
 }
 
 //Particles are created numerous times, but there's no duplicating code that's just used for stuff
