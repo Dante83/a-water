@@ -1,6 +1,5 @@
 function PCISPHSystemSolver(interpolator, PCIConstants, parentParticleSystem){
   this.interpolator = interpolator;
-  this.operators = interpolator.OperatorAt(origin);
   this.parentParticleSystem = parentParticleSystem;
   this.particles = parentParticleSystem.particles;
   this.PCIConstants = PCIConstants;
@@ -30,6 +29,7 @@ PCISPHSystemSolver.prototype.updateForces = function(timeIntervalInSeconds){
   for(let i = 0, numParticles = particles.length; i < numParticles; i++){
     let particle = particles[i];
     let force = new THREE.Vector3(0.0, 0.0, 0.0);
+
     if(this.debug_enableGravity){
       force.add(gravitationalForce);
     }
@@ -55,35 +55,53 @@ PCISPHSystemSolver.prototype.computeDelta = function(timeIntervalInSeconds){
   //NOTE: Come back here when you're done and make sure all of this works together.
   //
 
+  //Calculate the mass from our target density and target spacing
   //We're constructing a grid of particles in a cubic grid in order
   //to estimate our delta to avoid errors associated with low density particles.
   //This seems like an excellent method to improve in the future for situations
   //that involve complicated geometries.
+  let particleRadius = this.particleConstants.particleRadius;
+  let targetSpacing = this.particleConstants.targetSpacing;
   let points = [];
-  let sampleBoxLength = 1.5 * this.particleConstants.radius;
-  let halfSpacing = this.particleConstants.targetSpacing * 0.5;
-  let numIters = Math.ceil(halfSpacing / sampleBoxLength);
+  let sampleBoxLength = 3.0 * particleRadius;
+  let halfSpacing = targetSpacing * 0.5;
   let hasOffset = false;
-  let x = 0.0;
-  let y = 0.0;
-  let z = 0.0;
+  let initalLoc = -1.5 * particleRadius;
+  let z = initalLoc;
+  let y;
+  let x;
+  let maxZNumIterations = Math.floor((3.0 * particleRadius) / halfSpacing);
+  let maxXYNumIterationsWHasOffset = Math.floor((sampleBoxLength - halfSpacing) / targetSpacing);
+  let maxXYNumIterationsWOHasOffset = Math.floor((sampleBoxLength) / targetSpacing);
 
   //As this is just used for a constant, we can set the lower corner to 0.0
   //and because it's square we can keep all the interations equal.
   //Also, because we're doing a sample we don't need to do all of them
   //and we will never break early.
-  for(let i = 0; i <= numIters; i++){
-    y += halfSpacing;
-    let halfSpacingPlusOffset = halfSpacing + (hasOffset ? halfSpacing : 0.0);
-    for(let j = 0; j <= numIters; j++){
-      z += halfSpacingPlusOffset;
-      for(let k = 0; k <= numIters; k++){
-        x += halfSpacingPlusOffset;
+  let offset;
+  let maxXYNumIterations;
+  for(let i = 0; i <= maxZNumIterations; i++){
+    z += halfSpacing;
+    if(hasOffset){
+      offset = halfSpacing;
+      maxXYNumIterations = maxXYNumIterationsWHasOffset;
+    }
+    else{
+      offset = 0.0;
+      maxXYNumIterations = maxXYNumIterationsWOHasOffset;
+    }
+    y = initalLoc + offset;
+    for(let j = 0; j < maxXYNumIterations; j++){
+      y += targetSpacing;
+      x = initalLoc + offset;
+      for(let k = 0; k < maxXYNumIterations; k++){
+        x += targetSpacing;
+        points.push(new THREE.Vector3(x, y, z));
       }
     }
+
     hasOffset = !hasOffset;
   }
-  points.push(new THREE.Vector3(x, y, z));
 
   //Delta calculation.
   let denom = 0.0;
@@ -99,7 +117,7 @@ PCISPHSystemSolver.prototype.computeDelta = function(timeIntervalInSeconds){
       let direction = (distance > 0.0) ? point.clone().multiplyScalar(1.0 / distanceSquared) : new THREE.Vector3(0.0,0.0,0.0);
 
       //grad(Wij)
-      gradWij = this.operators.gradient(distance, direction);
+      gradWij = this.interpolator.gradient(distance, direction);
       a.add(gradWij);
       b += gradWij.dot(gradWij);
     }
@@ -134,12 +152,12 @@ PCISPHSystemSolver.prototype.computePressureForce = function(){
     let ithParticlePressureOverDensitySquared =  particle.pressure * particle.inverseDensitySquared;
     let neighbors = particle.particlesInNeighborhood;
     particle.pressureForce.set(0.0,0.0,0.0);
-    for(let j = 0, numNeighbors = neighbors.length; j++){
+    for(let j = 0, numNeighbors = neighbors.length; j < numNeighbors; j++){
       let neighbor = neighbors[j];
       let neighboringParticle = neighbor.point;
       if(neighbor.distance > 0.0){
         let scalarComponent = massSquared * (ithParticlePressureOverDensitySquared + (neighboringParticle.pressure * neighboringParticle.inverseDensitySquared));
-        particle.pressureForce.sub(this.operators.gradient(neighbor.distance, neighbor.vect2Point).multiplyScalar(scalarComponent));
+        particle.pressureForce.sub(this.interpolator.gradient(neighbor.distance, neighbor.vect2Point).multiplyScalar(scalarComponent));
       }
     }
   }
@@ -253,7 +271,7 @@ PCISPHSystemSolver.prototype.accumulateViscosityForce = function(){
     let neighbors = particle.particlesInNeighborhood;
     particle.viscocityForce.set(0.0,0.0,0.0);
     let ithParticleVelocity = particle.velocity;
-    for(let j = 0, numNeighbors = neighbors.length; j++){
+    for(let j = 0, numNeighbors = neighbors.length; j < numNeighbors; j++){
       let neighbor = neighbors[j];
       let neighboringParticle = neighbor.point;
       let distance = neighbor.distance;
@@ -268,7 +286,7 @@ PCISPHSystemSolver.prototype.pseudoViscocityFilter = function(timeIntervalInSeco
   let particles = this.particles;
   let particleMass = this.particleConstants.mass;
   let smoothedVelocities = [];
-  let factor = Math.max(Math.min(timeIntervalInSeconds * this.PCIConstants.pseudoViscosityCoefficient), 0.0) 1.0);
+  let factor = Math.max(Math.min(timeIntervalInSeconds * this.PCIConstants.pseudoViscosityCoefficient, 0.0), 1.0);
 
   for(let i = 0, numParticles = particles.length; i < numParticles; i++){
     let weightSum = 0.0;

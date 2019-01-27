@@ -112,7 +112,8 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
     perfDebug.spotCheckPerformance('connect buckets', false);
   };
 
-  this.getPotentialPointsForSearch = function(position, radius){
+  this.getPotentialPointsForSearch = function(inPosition, radius){
+    let position = inPosition.isVector3 ? inPosition.toArray() : inPosition;
     var hashOfUpperCornerBucket = this.getHashKeyFromPosition(position.map((x) => x + radius));
     var hashofLowerCornerBucket = this.getHashKeyFromPosition(position.map((x) => x - radius));
     var pointsFound = [];
@@ -171,7 +172,7 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
         foundPoints.push({
           point: potentialPoints[i],
           distance: distance,
-          vect2Point: new THREE.Vector3(xDiff * inverseDistance, yDiff * inverseDistance, zDiff * inverseDistance);
+          vect2Point: new THREE.Vector3(xDiff * inverseDistance, yDiff * inverseDistance, zDiff * inverseDistance)
         });
       }
     }

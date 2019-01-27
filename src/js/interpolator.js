@@ -1,5 +1,5 @@
 function InterpolationEngine(bucketGrid, kernalConstants, numberOfKernalPoints){
-  this.kernalContants = kernalConstants;
+  this.kernalConstants = kernalConstants;
   this.particleConstants = bucketGrid.particleConstants;
   this.bucketGrid = bucketGrid;
   this.parentParticleSystem = bucketGrid.parentParticleSystem;
@@ -13,9 +13,9 @@ function InterpolationEngine(bucketGrid, kernalConstants, numberOfKernalPoints){
   this.mullerSpikyKernalFirstDerivatives = new Float32Array(numberOfKernalPoints);
   this.mullerSpikyKernalSecondDerivative = new Float32Array(numberOfKernalPoints);
   this.delta = this.particleConstants.radius / numberOfKernalPoints;
-  let kernal = new Kernal(kernalContants);
+  let kernal = new Kernal(kernalConstants);
   for(let i = 0; i < numberOfKernalPoints; i++){
-    let d = delta * i;
+    let d = this.delta * i;
     kernal.updateKernal(d);
     this.distances[i] = d;
     this.mullerKernalValues[i] = kernal.mullerKernalValue;
@@ -24,10 +24,10 @@ function InterpolationEngine(bucketGrid, kernalConstants, numberOfKernalPoints){
   }
 
   //
-  //These are used to setup power up our lookup tables on the fly
+  //These are used to power up our lookup tables on the fly
   //
   this.isNotZero = true;
-  this.kernal0i = i;
+  this.kernal_i;
   this.oneOverDeltaX = 1.0 / this.delta;
   this.xF = null
 }
@@ -36,7 +36,7 @@ InterpolationEngine.prototype.evalFKernalState = function(distance){
   if(distance < this.particleConstants.particleRadius){
     this.isNotZero = true;
     let deltaPercent = distance / this.delta;
-    let i = Math.floor(deltaPercent);
+    this.kernal_i = Math.floor(deltaPercent);
     this.xf = this.distances[i];
   }
   this.isNotZero = false;
@@ -44,15 +44,28 @@ InterpolationEngine.prototype.evalFKernalState = function(distance){
 
 InterpolationEngine.prototype.evalFMullerKernal = function(distance){
   if(this.isNotZero){
-    let deltaY = this.mullerKernalValues[i + 1] - this.mullerKernalValues[i];
+    let deltaY = this.mullerKernalValues[this.kernal_i + 1] - this.mullerKernalValues[this.kernal_i];
     return deltaY  * this.oneOverDeltaX * (distance - this.xf) + this.kernal1.mullerKernalValue;
   }
   return 0.0;
 };
 
+//For the sake of our silly chicken egg problem that deriving the mass of a particle
+//with the muller kernal before we have the engine that produces the muller kernal int he first
+//place.
+function bootstrapMullerKernal(distance, particleRadius){
+  if(distance < particleRadius){
+    let deltaPercent = distance / this.delta;
+    let i = Math.floor(deltaPercent);
+    let deltaY = this.mullerKernalValues[i + 1] - this.mullerKernalValues[i];
+    return deltaY  * this.oneOverDeltaX * (distance - this.xf) + this.kernal1.mullerKernalValue;
+  }
+  return 0.0;
+}
+
 InterpolationEngine.prototype.evalFMullerSpikyFirstDerivativeKernal = function(distance){
   if(this.isNotZero){
-    let deltaY = this.mullerSpikyKernalFirstDerivatives[i + 1] - this.mullerSpikyKernalFirstDerivatives[i];
+    let deltaY = this.mullerSpikyKernalFirstDerivatives[this.kernal_i + 1] - this.mullerSpikyKernalFirstDerivatives[this.kernal_i];
     return deltaY  * this.oneOverDeltaX * (distance - this.xf) + this.kernal1.mullerKernalValue;
   }
   return 0.0;
@@ -60,7 +73,7 @@ InterpolationEngine.prototype.evalFMullerSpikyFirstDerivativeKernal = function(d
 
 InterpolationEngine.prototype.evalFMullerSpikySecondDerivativeKernal = function(distance){
   if(this.isNotZero){
-    let deltaY = this.mullerSpikyKernalSecondDerivative[i + 1] - this.mullerSpikyKernalSecondDerivative[i];
+    let deltaY = this.mullerSpikyKernalSecondDerivative[this.kernal_i + 1] - this.mullerSpikyKernalSecondDerivative[this.kernal_i];
     return deltaY  * this.oneOverDeltaX * (distance - this.xf) + this.kernal1.mullerKernalValue;
   }
   return 0.0;
@@ -97,7 +110,6 @@ InterpolationEngine.prototype.gradient = function(distance, vect2Center){
 }
 
 InterpolationEngine.prototype.gradientOf = function(nameOfInterpolatedQuantity, interpolatedQuantityAtOrigin, densityAtOrigin, neighboringParticles){
-  let interpolatedQuantityAtOrigin = interpolatedQuantityAtOrigin;
   let addativeConst = interpolatedQuantityAtOrigin / (densityAtOrigin * densityAtOrigin);
   let sum = 0.0;
   for(let i = 0, numParticlesInNeighborhood = neighboringParticles.length; i < numParticlesInNeighborhood; i++){

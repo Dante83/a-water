@@ -1,8 +1,8 @@
 function Kernal(kernalConstants){
-  this.kernalContants = kernalContants;
+  this.kernalConstants = kernalConstants;
 }
 
-Kernal.prototype.updateKernal(distance){
+Kernal.prototype.updateKernal = function(distance){
   //
   //NOTE: We are ignoring the particle radius because we are interpolating between 0 and our radius
   //
@@ -18,7 +18,15 @@ Kernal.prototype.updateKernal(distance){
 
   this.mullerSpikyKernalFirstDerivative = this.kernalConstants.mullerSpikyFirstDerivativeCoeficient * variableComponent * variableComponent;
   this.mullerSpikyKernalSecondDerivative = this.kernalConstants.mullerSpikySecondDerivativeCoeficient * variableComponent;
-}
+};
+
+Kernal.prototype.bootstrapMullerKernal = function(distanceSquared){
+  if(distanceSquared < this.kernalConstants.particleRadiusSquared){
+    let mullerVariableComponent = (1.0 - (distanceSquared * this.kernalConstants.oneOverParticleRadiusSquared));
+    return this.kernalConstants.mullerCoefficient * mullerVariableComponent * mullerVariableComponent * mullerVariableComponent;
+  }
+  return 0.0;
+};
 
 //Interpolaters use many of the variables over and over again - no use in doing these calculations for each one
 //when we can just create them once and use them everywhere.
@@ -27,7 +35,7 @@ function KernalConstants(particleRadius){
     //MULLER KERNAL CONSTANTS
     ////
     this.particleRadius = particleRadius;
-    let particleRadiusSquared = particleRadius * particleRadius;
+    this.particleRadiusSquared = particleRadius * particleRadius;
     this.oneOverParticleRadiusSquared = 1.0 / this.particleRadiusSquared;
     this.particleRadiusCubed = this.particleRadiusSquared * particleRadius;
     this.mullerCoefficient = 315.0 / (64.0 * Math.PI * this.particleRadiusCubed);

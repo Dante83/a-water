@@ -44,13 +44,14 @@ Particle.prototype.updateParticlesInNeighborhood = function(){
 
 //Particles are created numerous times, but there's no duplicating code that's just used for stuff
 //over and over again, so we're just going to use pointers to the same propertives over and over instead.
-function ParticleConstants(dragCoefficient, particleRadius, viscosityCoeficient, interpolator){
+function ParticleConstants(dragCoefficient, particleRadius, targetSpacing, viscosityCoeficient, targetDensity, kernal){
   ////
   //PARTICLE CONSTANTS
   ////
-  this.radius = particleRadius; //The radius is interpreted as the target target spacing
-  this.oneOverRadiusSquared = 1.0 / (particleRadius * particleRadius);
-  this.targetSpacing = particleRadius;
+  this.radius = particleRadius;
+  this.inverseRadius = 1.0 / particleRadius;
+  this.oneOverRadiusSquared = this.inverseRadius * this.inverseRadius;
+  this.targetSpacing = targetSpacing;
   this.dragCoefficient = dragCoefficient;
 
   //Calculate the mass from our target density and target spacing
@@ -59,46 +60,61 @@ function ParticleConstants(dragCoefficient, particleRadius, viscosityCoeficient,
   //This seems like an excellent method to improve in the future for situations
   //that involve complicated geometries.
   let points = [];
-  let sampleBoxLength = 1.5 * particleRadius;
-  let halfSpacing = particleRadius * 0.5;
-  let numIters = Math.ceil(halfSpacing / sampleBoxLength);
+  let sampleBoxLength = 3.0 * particleRadius;
+  let halfSpacing = targetSpacing * 0.5;
   let hasOffset = false;
-  let x = 0.0;
-  let y = 0.0;
-  let z = 0.0;
+  let initalLoc = -1.5 * particleRadius;
+  let z = initalLoc;
+  let y;
+  let x;
+  let maxZNumIterations = Math.floor((3.0 * particleRadius) / halfSpacing);
+  let maxXYNumIterationsWHasOffset = Math.floor((sampleBoxLength - halfSpacing) / targetSpacing);
+  let maxXYNumIterationsWOHasOffset = Math.floor((sampleBoxLength) / targetSpacing);
 
   //As this is just used for a constant, we can set the lower corner to 0.0
   //and because it's square we can keep all the interations equal.
   //Also, because we're doing a sample we don't need to do all of them
   //and we will never break early.
-  for(let i = 0; i <= numIters; i++){
-    y += halfSpacing;
-    let halfSpacingPlusOffset = halfSpacing + (hasOffset ? halfSpacing : 0.0);
-    for(let j = 0; j <= numIters; j++){
-      z += halfSpacingPlusOffset;
-      for(let k = 0; k <= numIters; k++){
-        x += halfSpacingPlusOffset;
+  let offset;
+  let maxXYNumIterations;
+  for(let i = 0; i <= maxZNumIterations; i++){
+    z += halfSpacing;
+    if(hasOffset){
+      offset = halfSpacing;
+      maxXYNumIterations = maxXYNumIterationsWHasOffset;
+    }
+    else{
+      offset = 0.0;
+      maxXYNumIterations = maxXYNumIterationsWOHasOffset;
+    }
+    y = initalLoc + offset;
+    for(let j = 0; j < maxXYNumIterations; j++){
+      y += targetSpacing;
+      x = initalLoc + offset;
+      for(let k = 0; k < maxXYNumIterations; k++){
+        x += targetSpacing;
+        points.push(new THREE.Vector3(x, y, z));
       }
     }
+
     hasOffset = !hasOffset;
   }
-  points.push(new THREE.Vector3(x, y, z));
 
   let maxNumberDensity = 0.0;
   for(let i = 0; i < points.length; i++){
     let sum = 0.0;
     for(let j = 0; j < points.length; j++){
-      let distance2Point = points[i].distanceTo(points[j]);
-      interpolator.evalFKernalState(distance2Point);
-      sum += interpolator.evalFMullerKernal(distance2Point);
+      let distance2PointSquared = points[i].distanceToSquared(points[j]);
+      sum += kernal.bootstrapMullerKernal(distance2PointSquared);
     }
 
     maxNumberDensity = Math.max(maxNumberDensity, sum);
   }
 
+  this.targetDensity = targetDensity;
   this.mass = targetDensity / maxNumberDensity;
-  this.inverseOfMass = 1.0 / mass;
-  this.massSquared = mass * mass;
+  this.inverseOfMass = 1.0 / this.mass;
+  this.massSquared = this.mass * this.mass;
   this.viscocityCoeficient = viscosityCoeficient;
-  this.viscosityCoefficientTimesMassSquared = viscocityCoeficient * this.massSquared;
+  this.viscosityCoefficientTimesMassSquared = viscosityCoeficient * this.massSquared;
 }

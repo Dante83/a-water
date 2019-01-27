@@ -9,16 +9,19 @@ AFRAME.registerComponent('fluid-params', {
   tickOneComplete: false,
   particleSolver: false,
   particleInterpolator: false,
+  kernalConstants: false,
   schema: {
     'searchBucketDiameter': {type: 'number', default: 10.0},
     'upperCorner': {type: 'vec3', default: {x: 0.0, y: 0.0, z: 0.0}},
     'lowerCorner': {type: 'vec3', default: {x: 0.0, y: 0.0, z: 0.0}},
-    'targetDensity': {type: 'number', default: 997.0},
     'particleRadius': {type: 'number', default: 0.5},
+    'targetSpacing' : {type: 'number', default: 0.5},
     'dragCoeficient': {type: 'number', default: 1.0},
-    'particleMass': {type: 'number', default: 1.0},
+    'targetDensity': {type: 'number', default: 997.0},
+    'visocity': {type: 'number', default: 1.0},
+    'eosExponent': {type: 'number', default: 1.0},
+    'speedOfSound': {type: 'number', default: 1.0},
     'staticSceneAccuracy': {type: 'number', default: 2},
-    'sphIterationsPerSecond': {type: 'number', default: 60.0},
     'stepsPerSPHIteration': {type: 'number', default: 5}
   },
   init: function(){
@@ -74,12 +77,14 @@ AFRAME.registerComponent('fluid-params', {
   postLoadInit: function(thisFluidParams){
     //We might as well construct our buckets and things all the way down here, after the models have loaded.
     //Most of this stuff could probably be done inside of a web worker for increased speed.
-    this.particleConstants = new ParticleConstants(this.data.particleRadius, this.data.dragCoeficient, this.data.particleMass);
+    let kernalConstants = new KernalConstants(this.data.particleRadius);
+    this.kernal = new Kernal(kernalConstants);
+    this.particleConstants = new ParticleConstants(this.data.dragCoeficient, this.data.particleRadius, this.data.targetSpacing, this.data.visocity, this.data.targetDensity, this.kernal);
     let staticSceneConstants = new StaticSceneConstants();
     //
     //NOTE: Play with this to determine the last bugs with the system.
     //
-    this.particleSystem = new ParticleSystem([4.1, 4.1, 2.0], [-2.0, -2.1, -0.0], this.particleConstants, this);
+    this.particleSystem = new ParticleSystem([2.1, 2.1, 3.0], [-2.0, -2.1, -0.0], this.particleConstants, this);
     this.el.emit('particle-system-constructed', {finished: true});
     this.staticScene = new StaticScene(this.particleSystem.bucketGrid, staticSceneConstants, this.data.staticSceneAccuracy);
 
@@ -93,7 +98,6 @@ AFRAME.registerComponent('fluid-params', {
     this.staticScene.getFaceCollisionPoints();
     let collisionSurfaceHashedBuckets = this.staticScene.filterBucketsInsideVersesOutside();
     this.staticScene.attachMeshToBucketGrid(collisionSurfaceHashedBuckets);
-    console.log("What are those static points?");
 
     //
     //NOTE: For testing purposes only...
@@ -152,8 +156,8 @@ AFRAME.registerComponent('fluid-params', {
 
     //Set up our fluid solver which simulates fluid dynamics for our particles
     //mainly by calling accumulatePressureForce during the update process.
-    this.interpolationEngine = new InterpolationEngine(this.particleSystem.bucketGrid, new KernalConstants(this.particleConstants.radius), 1000);
-    let particleSolverContants = new ParticleSolverConstants(targetDensity, eosExponent, speedOfSound, negativePressureScale);
+    this.interpolationEngine = new InterpolationEngine(this.particleSystem.bucketGrid, kernalConstants, 1000);
+    let particleSolverContants = new ParticleSolverConstants(this.data.targetDensity, this.data.eosExponent, this.data.speedOfSound, this.data.negativePressureScale);
     this.pciSPHSystemSolver = new PCISPHSystemSolver(this.interpolationEngine, particleSolverContants, this.particleSystem);
     this.particleSystem.setPCISystemSolver(this.pciSystemSolver);
 
