@@ -14,7 +14,7 @@ Kernal.prototype.updateKernal = function(distance){
   //Note that we ignore the actual spiky kernal as we only use it for the gradient
   //and the laplacian.
   //(1 - r/h) values
-  let variableComponent = (1.0 - (distance * this.kernalConstants.oneOverInfluenceRadius));
+  let variableComponent = (1.0 - (distance * this.kernalConstants.oneOverParticleRadius));
 
   this.mullerSpikyKernalFirstDerivative = this.kernalConstants.mullerSpikyFirstDerivativeCoeficient * variableComponent * variableComponent;
   this.mullerSpikyKernalSecondDerivative = this.kernalConstants.mullerSpikySecondDerivativeCoeficient * variableComponent;
@@ -35,6 +35,7 @@ function KernalConstants(particleRadius){
     //MULLER KERNAL CONSTANTS
     ////
     this.particleRadius = particleRadius;
+    this.oneOverParticleRadius = 1.0 / particleRadius;
     this.particleRadiusSquared = particleRadius * particleRadius;
     this.oneOverParticleRadiusSquared = 1.0 / this.particleRadiusSquared;
     this.particleRadiusCubed = this.particleRadiusSquared * particleRadius;

@@ -5,6 +5,9 @@ function InterpolationEngine(bucketGrid, kernalConstants, numberOfKernalPoints){
   this.parentParticleSystem = bucketGrid.parentParticleSystem;
   var thisInterpolationEngine = this;
 
+  //For logging
+  this.logs = {};
+
   //
   //Construct our lookup tables
   //
@@ -28,53 +31,43 @@ function InterpolationEngine(bucketGrid, kernalConstants, numberOfKernalPoints){
   //
   this.isNotZero = true;
   this.kernal_i;
-  this.oneOverDeltaX = 1.0 / this.delta;
-  this.xF = null
+  this.inverseDeltaX = 1.0 / this.delta;
 }
 
 InterpolationEngine.prototype.evalFKernalState = function(distance){
-  if(distance < this.particleConstants.particleRadius){
+  if(distance < this.particleConstants.radius){
     this.isNotZero = true;
-    let deltaPercent = distance / this.delta;
+    let deltaPercent = distance * this.inverseDeltaX;
     this.kernal_i = Math.floor(deltaPercent);
-    this.xf = this.distances[i];
   }
-  this.isNotZero = false;
+  else{
+    this.isNotZero = false;
+  }
 };
 
 InterpolationEngine.prototype.evalFMullerKernal = function(distance){
   if(this.isNotZero){
-    let deltaY = this.mullerKernalValues[this.kernal_i + 1] - this.mullerKernalValues[this.kernal_i];
-    return deltaY  * this.oneOverDeltaX * (distance - this.xf) + this.kernal1.mullerKernalValue;
+    let i = this.kernal_i;
+    let deltaY = this.mullerKernalValues[i + 1] - this.mullerKernalValues[i];
+    return deltaY  * this.inverseDeltaX * (distance - this.distances[i]) + this.mullerKernalValues[i];
   }
   return 0.0;
 };
 
-//For the sake of our silly chicken egg problem that deriving the mass of a particle
-//with the muller kernal before we have the engine that produces the muller kernal int he first
-//place.
-function bootstrapMullerKernal(distance, particleRadius){
-  if(distance < particleRadius){
-    let deltaPercent = distance / this.delta;
-    let i = Math.floor(deltaPercent);
-    let deltaY = this.mullerKernalValues[i + 1] - this.mullerKernalValues[i];
-    return deltaY  * this.oneOverDeltaX * (distance - this.xf) + this.kernal1.mullerKernalValue;
-  }
-  return 0.0;
-}
-
 InterpolationEngine.prototype.evalFMullerSpikyFirstDerivativeKernal = function(distance){
   if(this.isNotZero){
-    let deltaY = this.mullerSpikyKernalFirstDerivatives[this.kernal_i + 1] - this.mullerSpikyKernalFirstDerivatives[this.kernal_i];
-    return deltaY  * this.oneOverDeltaX * (distance - this.xf) + this.kernal1.mullerKernalValue;
+    let i = this.kernal_i;
+    let deltaY = this.mullerSpikyKernalFirstDerivatives[i + 1] - this.mullerSpikyKernalFirstDerivatives[i];
+    return deltaY  * this.inverseDeltaX * (distance - this.distances[i]) + this.mullerSpikyKernalFirstDerivatives[i];
   }
   return 0.0;
 };
 
 InterpolationEngine.prototype.evalFMullerSpikySecondDerivativeKernal = function(distance){
   if(this.isNotZero){
-    let deltaY = this.mullerSpikyKernalSecondDerivative[this.kernal_i + 1] - this.mullerSpikyKernalSecondDerivative[this.kernal_i];
-    return deltaY  * this.oneOverDeltaX * (distance - this.xf) + this.kernal1.mullerKernalValue;
+    let i = this.kernal_i;
+    let deltaY = this.mullerSpikyKernalSecondDerivative[i + 1] - this.mullerSpikyKernalSecondDerivative[i];
+    return deltaY  * this.inverseDeltaX * (distance - this.distances[i]) + this.mullerSpikyKernalSecondDerivative[i];
   }
   return 0.0;
 };
@@ -160,5 +153,17 @@ InterpolationEngine.prototype.updateParticles = function(){
     particle.density = particleMass * densitySum;
     particle.inverseDensity = 1.0 / particle.density;
     particle.inverseDensitySquared = particle.inverseDensity * particle.inverseDensity;
+  }
+};
+
+//logNTimes(name, maxNumLogs, msg)
+InterpolationEngine.prototype.logNTimes = function(name, maxNumLogs, msg){
+  if(this.logs[name] == null){
+    this.logs[name] = 1;
+    console.log(msg);
+  }
+  if(this.logs[name] <= maxNumLogs){
+    this.logs[name] += 1;
+    console.log(`${name}: ${msg}`);
   }
 };

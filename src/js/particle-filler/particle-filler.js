@@ -12,13 +12,13 @@ function ParticleFiller(particleSystem, collidableScene, fluidCollisionBound){
   this.shouldNotCollideWithTheseBuckets = collidableScene;
   var thisParticleFiller = this;
 
-  this.fillMesh = function(){
+  this.fillMesh = function(targetSpacing){
     //
     //For testing purposes. Honestly, we need to figure out the steady state density for our particles.
     //That is, the point at which all the forces on our particles are zero. We might even require optimization
     //methods if our particle density varies with position.
     //
-    let density = 8.0 / (this.particleSystem.particleConstants.radius);
+    let density = 8.0 / (targetSpacing);
 
     //Periodically add points to our system such that it matches the target density.
     let cubedRootOfDensity = density ** (1.0 / 3.0);

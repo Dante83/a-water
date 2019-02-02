@@ -49,6 +49,7 @@ function ParticleConstants(dragCoefficient, particleRadius, targetSpacing, visco
   //PARTICLE CONSTANTS
   ////
   this.radius = particleRadius;
+  this.radiusSquared = this.radius * this.radius;
   this.inverseRadius = 1.0 / particleRadius;
   this.oneOverRadiusSquared = this.inverseRadius * this.inverseRadius;
   this.targetSpacing = targetSpacing;
@@ -113,6 +114,8 @@ function ParticleConstants(dragCoefficient, particleRadius, targetSpacing, visco
 
   this.targetDensity = targetDensity;
   this.mass = targetDensity / maxNumberDensity;
+  this.gravity = -9.80665;
+  this.gravitationalForce = new THREE.Vector3(0.0,0.0,this.mass * this.gravity);
   this.inverseOfMass = 1.0 / this.mass;
   this.massSquared = this.mass * this.mass;
   this.viscocityCoeficient = viscosityCoeficient;

@@ -14,15 +14,20 @@ AFRAME.registerComponent('fluid-params', {
     'searchBucketDiameter': {type: 'number', default: 10.0},
     'upperCorner': {type: 'vec3', default: {x: 0.0, y: 0.0, z: 0.0}},
     'lowerCorner': {type: 'vec3', default: {x: 0.0, y: 0.0, z: 0.0}},
-    'particleRadius': {type: 'number', default: 0.5},
-    'targetSpacing' : {type: 'number', default: 0.5},
+    'particleRadius': {type: 'number', default: 1.0},
+    'particleDrawRadius': {type: 'number', default: 0.2},
+    'targetSpacing' : {type: 'number', default: 0.4},
+    'pciTimeStep': {type: 'number', default: 0.0013},
     'dragCoeficient': {type: 'number', default: 1.0},
     'targetDensity': {type: 'number', default: 997.0},
-    'visocity': {type: 'number', default: 1.0},
-    'eosExponent': {type: 'number', default: 1.0},
-    'speedOfSound': {type: 'number', default: 1.0},
+    'viscosity': {type: 'number', default: 0.801e-6},
+    'pseudoViscosityCoefficient': {type: 'number', default: 1.0},
+    'eosExponent': {type: 'number', default: 7.0}, //Thanks to http://www.infomus.org/Events/proceedings/CASA2009/Bao.pdf
+    'speedOfSound': {type: 'number', default: 1498.0},
     'staticSceneAccuracy': {type: 'number', default: 2},
-    'stepsPerSPHIteration': {type: 'number', default: 5}
+    'maxNumberOfPCISteps': {type: 'number', default: 5},
+    'maxDensityErrorRatio': {type: 'number', default: 0.1},
+    'negativePressureScale': {type: 'number', default: 0.0}
   },
   init: function(){
     this.loaded = false;
@@ -139,7 +144,7 @@ AFRAME.registerComponent('fluid-params', {
 
     let fluidBuckets = fluidCollisionBound.filterBucketsInsideVersesOutside();
     let particleFiller = new ParticleFiller(this.particleSystem, collisionSurfaceHashedBuckets, fluidBuckets);
-    particleFiller.fillMesh(this.data['targetDensity']);
+    particleFiller.fillMesh(this.data.targetSpacing);
 
     //Unlike our static geometry above, we want to remove our geometries from the screen
     //just as soon as we've finished populating all of those particles.
@@ -157,7 +162,7 @@ AFRAME.registerComponent('fluid-params', {
     //Set up our fluid solver which simulates fluid dynamics for our particles
     //mainly by calling accumulatePressureForce during the update process.
     this.interpolationEngine = new InterpolationEngine(this.particleSystem.bucketGrid, kernalConstants, 1000);
-    let particleSolverContants = new ParticleSolverConstants(this.data.targetDensity, this.data.eosExponent, this.data.speedOfSound, this.data.negativePressureScale);
+    let particleSolverContants = new ParticleSolverConstants(this.data.targetDensity, this.data.eosExponent, this.data.speedOfSound, this.data.negativePressureScale, this.data.viscosity, this.data.pseudoViscosityCoefficient, this.data.maxDensityErrorRatio, this.data.maxNumberOfPCISteps);
     this.pciSPHSystemSolver = new PCISPHSystemSolver(this.interpolationEngine, particleSolverContants, this.particleSystem);
     this.particleSystem.setPCISystemSolver(this.pciSPHSystemSolver);
 
@@ -197,7 +202,7 @@ AFRAME.registerComponent('fluid-params', {
       //
       //SPH Fluid Solver
       //
-      this.particleSystem.updateParticles(estTimeIntervalInSeconds); //Update our neighbors list and densities
+      this.particleSystem.updateParticles(); //Update our neighbors list and densities
 
       //
       //Using information from the above, merge the results into
