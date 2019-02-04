@@ -133,20 +133,20 @@ InterpolationEngine.prototype.laplacianOf = function(nameOfInterpolatedQuantity,
 //We might as well do these all at once, duplicating information that is re-used on every stage
 //in order to minimize the number of operations needed.
 InterpolationEngine.prototype.updateParticles = function(){
-  let particles = this.bucketGrid.particles;
+  let particles = this.parentParticleSystem.particles;
 
   //Find all neighboring particles and while we're here, get our multiplicative coeficients
   const particleMass = this.particleConstants.mass;
   const particleRadius = this.particleConstants.radius;
   const oneOverRadiusSquared = this.particleConstants.oneOverRadiusSquared;
-  for(let i = 0, numParticles = this.particles.length; i < numParticles; i++){
-    let particle = this.particles[i];
-    let particlesInSearchRadius = this.bucketGrid.findPointsInSphere(particle.position, particleRadius);
-    particle.particlesInNeighborhood = particlesInSearchRadius;
+  for(let i = 0, numParticles = particles.length; i < numParticles; i++){
+    let particle = particles[i];
+    particle.updateParticlesInNeighborhood();
+    let particlesInSearchRadius = particle.particlesInNeighborhood;
     let densitySum = 0.0;
     for(let j = 0, numParticlesInNeighborhood = particlesInSearchRadius.length; j < numParticlesInNeighborhood; j++){
       let distance = particlesInSearchRadius[j].distance;
-      this.evalFKernalState(distance)
+      this.evalFKernalState(distance);
       densitySum += this.evalFMullerKernal(distance);
     }
     particle.mullerKernalSum = densitySum;

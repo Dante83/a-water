@@ -351,7 +351,7 @@ AFRAME.registerComponent('fluid-debugger', {
     this.particleSystem = particleSystem;
 
     //Get each particle half radius
-    let particleRadius = particleSystem.particleConstants.radius * 0.5;
+    let particleRadius = particleSystem.particleConstants.drawRadius * 0.5;
     let color = this.data.SPHTestSphereColor;
 
     //Get all particle positions in the system.

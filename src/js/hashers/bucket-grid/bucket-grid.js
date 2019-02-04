@@ -122,7 +122,10 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
     var rowRange = 0;
     var currentBucket = this.hashedBuckets[hashOfUpperCornerBucket];
     var lowerCornerBucket = this.hashedBuckets[hashofLowerCornerBucket];
-    var searchLengthInBuckets = Math.round((currentBucket.getCenter().x - lowerCornerBucket.getCenter().x) / this.approximateSearchDiameter);
+    if(!currentBucket || !lowerCornerBucket){
+      return [];
+    }
+    var searchLengthInBuckets = Math.round((currentBucket.getCenter()[0] - lowerCornerBucket.getCenter()[0]) / this.approximateSearchDiameter);
 
     //Fill in that curve
     var goDownZ = true;
@@ -156,24 +159,27 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
     return pointsFound.concat(...pointCollections);
   };
 
-  this.findPointsInSphere = function(position, radius){
+  this.findPointsInSphere = function(position, radius, excludedParticleID){
     let potentialPoints = this.getPotentialPointsForSearch(position, radius);
+
     let foundPoints = [];
     let radiusSquared = radius * radius;
     for(var i = 0, potentialPointsLength = potentialPoints.length; i < potentialPointsLength; i++){
-      let potentialPoint = potentialPoints[i];
-      let xDiff = potentialPoint.x - position.x;
-      let yDiff = potentialPoint.y - position.y;
-      let zDiff = potentialPoint.z - position.z;
-      let sumOfSquares = xDiff * xDiff + yDiff * yDiff + zDiff + zDiff;
-      if(sumOfSquares < radiusSquared){
-        let distance = Math.sqrt(sumOfSquares);
-        let inverseDistance = 1.0 / distance;
-        foundPoints.push({
-          point: potentialPoints[i],
-          distance: distance,
-          vect2Point: new THREE.Vector3(xDiff * inverseDistance, yDiff * inverseDistance, zDiff * inverseDistance)
-        });
+      if(potentialPoints[i].id !== excludedParticleID){
+        let potentialPosition = potentialPoints[i].position;
+        let xDiff = potentialPosition.x - position.x;
+        let yDiff = potentialPosition.y - position.y;
+        let zDiff = potentialPosition.z - position.z;
+        let sumOfSquares = xDiff * xDiff + yDiff * yDiff + zDiff * zDiff;
+        if(sumOfSquares < radiusSquared){
+          let distance = Math.sqrt(sumOfSquares);
+          let inverseDistance = 1.0 / distance;
+          foundPoints.push({
+            point: potentialPoints[i],
+            distance: distance,
+            vect2Point: new THREE.Vector3(xDiff * inverseDistance, yDiff * inverseDistance, zDiff * inverseDistance)
+          });
+        }
       }
     }
 

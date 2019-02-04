@@ -9,13 +9,9 @@ function PCISPHSystemSolver(interpolator, PCIConstants, parentParticleSystem){
 
   //Debugging variables
   this.debug_enableGravity = false;
-  //
-  //NOTE: While this is cute, I gotta update this only for the exposed particles for the exposed fraction.
-  //as wind resistance doesn't happen underwater. That's viscosities job.
-  //
   this.debug_enableWindResistance = false;
   this.debug_enableVicosityForces = false;
-  this.debug_enablePressureForces = true;
+  this.debug_enablePressureForces = false;
   this.debug_enableCollisions = false;
   this.debug_enablePseudoVisocityFilter = false;
 }
@@ -24,21 +20,14 @@ PCISPHSystemSolver.prototype.updateForces = function(timeIntervalInSeconds){
   let particles = this.particles;
 
   //Update the forces for all of our particles
-  if(this.debug_enablePressureForces){
-    //
-    //NOTE: Re-reading the code, I think this step is actually skipped.
-    //
-    //this.computePressure();
-    this.accumulatePressureForce(timeIntervalInSeconds);
-    // console.log("PARTICLES!");
-    // console.log(this.particles);
-    debugger;
-  }
   if(this.debug_enableVicosityForces){
     this.accumulateViscosityForce();
   }
   if(this.debug_enableWindResistance){
     this.calculateWindResistanceForce();
+  }
+  if(this.debug_enablePressureForces){
+    this.accumulatePressureForce(timeIntervalInSeconds);
   }
   if(this.debug_enablePseudoVisocityFilter){
     this.computePseudoViscosityForce();
@@ -52,11 +41,11 @@ PCISPHSystemSolver.prototype.updateForces = function(timeIntervalInSeconds){
     if(this.debug_enableGravity){
       force.add(particle.constants.gravitationalForce);
     }
-    if(this.debug_enableWindResistance){
-      force.add(particle.windResistanceForce);
-    }
     if(this.debug_enableVicosityForces){
       force.add(particle.viscocityForce);
+    }
+    if(this.debug_enableWindResistance){
+      force.add(particle.windResistanceForce);
     }
     if(this.debug_enablePressureForces){
       force.add(particle.pressureForce);
@@ -68,13 +57,7 @@ PCISPHSystemSolver.prototype.updateForces = function(timeIntervalInSeconds){
   }
 };
 
-//NOTE: As this is dependent upone one variable, we might want to convert the results
-//into an array.
-PCISPHSystemSolver.prototype.computeDelta = function(timeIntervalInSeconds){
-  //
-  //NOTE: Come back here when you're done and make sure all of this works together.
-  //
-
+PCISPHSystemSolver.prototype.setDeltaConstant = function(timeIntervalInSeconds){
   //Calculate the mass from our target density and target spacing
   //We're constructing a grid of particles in a cubic grid in order
   //to estimate our delta to avoid errors associated with low density particles.
@@ -149,30 +132,9 @@ PCISPHSystemSolver.prototype.computeDelta = function(timeIntervalInSeconds){
   //
 
   denom -= denom1.dot(denom1) + denom2;
-  return Math.abs(denom) > 0.0 ? -1.0 / (this.computeBeta(timeIntervalInSeconds) * denom) : 0.0;
+  let beta = 2.0 * (this.particleConstants.mass * timeIntervalInSeconds * this.PCIConstants.inverseOfTargetDensity);
+  this.PCIConstants.delta = Math.abs(denom) > 0.0 ? -1.0 / (beta * denom) : 0.0;
 };
-
-PCISPHSystemSolver.prototype.computeBeta = function(timeIntervalInSeconds){
-  let a = this.particleConstants.mass * timeIntervalInSeconds * this.PCIConstants.inverseOfTargetDensity;
-  return 2.0 * a;
-};
-
-//
-//NOTE: I believe these functions might actually be unecessary do to our new PCI
-//implementation.
-//
-// PCISPHSystemSolver.prototype.computePressureFromEoS = function(density){
-//   let constants = this.PCIConstants;
-//   let p = constants.eosScaleDivideByEosExponent * ((density * constants.inverseOfTargetDensity - 1.0)**constants.eosExponent);
-//   return p >= 0.0 ? p : p * constants.negativePressureScale;
-// };
-//
-// PCISPHSystemSolver.prototype.computePressure = function(){
-//   for(let i = 0, numParticles = this.particles.length; i < numParticles; i++){
-//     let particle = this.particles[i];
-//     particle.pressure = this.computePressureFromEoS(particle.density);
-//   }
-// };
 
 PCISPHSystemSolver.prototype.computePressureForce = function(){
   let massSquared = this.parentParticleSystem.particleConstants.massSquared;
@@ -206,11 +168,7 @@ PCISPHSystemSolver.prototype.accumulatePressureForce = function(timeIntervalInSe
   let inverseOfMass = this.particleConstants.inverseOfMass;
   let maxDensityErrorRatio = this.PCIConstants.maxDensityErrorRatio;
   let negativePressureScale = this.PCIConstants.negativePressureScale;
-
-  //
-  //TODO: Fill out computeDelta
-  //
-  let delta = this.computeDelta(timeIntervalInSeconds);
+  let delta = this.PCIConstants.delta;
 
   //Reset pressure state
   let tempStates = [];
@@ -373,4 +331,5 @@ function ParticleSolverConstants(targetDensity, eosExponent, speedOfSound, negat
   this.negativePressureScale = negativePressureScale;
   this.visocityCoefficient = visocityCoefficient;
   this.pseudoViscosityCoefficient = pseudoViscosityCoefficient;
+  this.delta = null;
 }

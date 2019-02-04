@@ -39,18 +39,19 @@ Particle.prototype.updatePosition = function(deltaT){
 }
 
 Particle.prototype.updateParticlesInNeighborhood = function(){
-  this.particlesInNeighborhood = this.bucketGrid.findPointsInSphere(this.position, this.constants.radius);
+  this.particlesInNeighborhood = this.bucketGrid.findPointsInSphere(this.position, this.constants.radius, this.id);
 }
 
 //Particles are created numerous times, but there's no duplicating code that's just used for stuff
 //over and over again, so we're just going to use pointers to the same propertives over and over instead.
-function ParticleConstants(dragCoefficient, particleRadius, targetSpacing, viscosityCoeficient, targetDensity, kernal){
+function ParticleConstants(dragCoefficient, influenceRadius, targetSpacing, drawRadius, viscosityCoeficient, targetDensity, gravity, kernal){
   ////
   //PARTICLE CONSTANTS
   ////
-  this.radius = particleRadius;
+  this.drawRadius = drawRadius;
+  this.radius = influenceRadius;
   this.radiusSquared = this.radius * this.radius;
-  this.inverseRadius = 1.0 / particleRadius;
+  this.inverseRadius = 1.0 / influenceRadius;
   this.oneOverRadiusSquared = this.inverseRadius * this.inverseRadius;
   this.targetSpacing = targetSpacing;
   this.dragCoefficient = dragCoefficient;
@@ -61,14 +62,14 @@ function ParticleConstants(dragCoefficient, particleRadius, targetSpacing, visco
   //This seems like an excellent method to improve in the future for situations
   //that involve complicated geometries.
   let points = [];
-  let sampleBoxLength = 3.0 * particleRadius;
+  let sampleBoxLength = 3.0 * influenceRadius;
   let halfSpacing = targetSpacing * 0.5;
   let hasOffset = false;
-  let initalLoc = -1.5 * particleRadius;
+  let initalLoc = -1.5 * influenceRadius;
   let z = initalLoc;
   let y;
   let x;
-  let maxZNumIterations = Math.floor((3.0 * particleRadius) / halfSpacing);
+  let maxZNumIterations = Math.floor((3.0 * influenceRadius) / halfSpacing);
   let maxXYNumIterationsWHasOffset = Math.floor((sampleBoxLength - halfSpacing) / targetSpacing);
   let maxXYNumIterationsWOHasOffset = Math.floor((sampleBoxLength) / targetSpacing);
 
@@ -114,8 +115,8 @@ function ParticleConstants(dragCoefficient, particleRadius, targetSpacing, visco
 
   this.targetDensity = targetDensity;
   this.mass = targetDensity / maxNumberDensity;
-  this.gravity = -9.80665;
-  this.gravitationalForce = new THREE.Vector3(0.0,0.0,this.mass * this.gravity);
+  let gravityVector = new THREE.Vector3(gravity.x, gravity.y, gravity.z);
+  this.gravitationalForce = gravityVector.clone().multiplyScalar(this.mass);
   this.inverseOfMass = 1.0 / this.mass;
   this.massSquared = this.mass * this.mass;
   this.viscocityCoeficient = viscosityCoeficient;

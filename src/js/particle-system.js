@@ -10,7 +10,6 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
   this.numberOfParticles = 0;
   this.maxParticleID = 0;
   this.PCISystemSolver;
-  const gravity = new THREE.Vector3(0.0, 0.0, -9.81);
   this.logs = {};
 
   //Basically, all of our particles are identical, so we calculate their universal values here and
@@ -134,6 +133,9 @@ ParticleSystem.prototype.setPCISystemSolver = function(system){
 }
 
 ParticleSystem.prototype.updateParticles = function(timeIntervalInSeconds){
+  //Update our neighbors list
+  this.PCISystemSolver.interpolator.updateParticles();
+
   //Update our particle forces.
   this.PCISystemSolver.updateForces(timeIntervalInSeconds);
 
