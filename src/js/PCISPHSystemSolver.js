@@ -1,5 +1,6 @@
 function PCISPHSystemSolver(interpolator, PCIConstants, parentParticleSystem){
   this.interpolator = interpolator;
+  this.kernal = interpolator.kernal;
   this.parentParticleSystem = parentParticleSystem;
   this.particles = parentParticleSystem.particles;
   this.PCIConstants = PCIConstants;
@@ -8,7 +9,7 @@ function PCISPHSystemSolver(interpolator, PCIConstants, parentParticleSystem){
   this.logs = [];
 
   //Debugging variables
-  this.debug_enableGravity = false;
+  this.debug_enableGravity = true;
   this.debug_enableWindResistance = false;
   this.debug_enableVicosityForces = false;
   this.debug_enablePressureForces = false;
@@ -19,6 +20,19 @@ function PCISPHSystemSolver(interpolator, PCIConstants, parentParticleSystem){
 PCISPHSystemSolver.prototype.updateForces = function(timeIntervalInSeconds){
   let particles = this.particles;
 
+  //Update the spiky kernal for all neighbors.
+  for(let i = 0, numParticles = particles.length; i < numParticles; i++){
+    let particle = particles[i];
+    let neighboringParticleData = particle.particlesInNeighborhood;
+    particle.mullerSpikyKernalFirstDerivative = [];
+    particle.mullerSpikyKernalSecondDerivative = [];
+    for(let j = 0, numNeighbors = neighboringParticleData.length; j < numNeighbors; j++){
+      this.kernal.updateSpikyKernals(neighboringParticleData[j].distance);
+      particle.mullerSpikyKernalFirstDerivative.push(this.kernal.mullerSpikyKernalFirstDerivative);
+      particle.mullerSpikyKernalSecondDerivative.push(this.kernal.mullerSpikyKernalSecondDerivative);
+    }
+  }
+
   //Update the forces for all of our particles
   if(this.debug_enableVicosityForces){
     this.accumulateViscosityForce();
@@ -28,9 +42,6 @@ PCISPHSystemSolver.prototype.updateForces = function(timeIntervalInSeconds){
   }
   if(this.debug_enablePressureForces){
     this.accumulatePressureForce(timeIntervalInSeconds);
-  }
-  if(this.debug_enablePseudoVisocityFilter){
-    this.computePseudoViscosityForce();
   }
 
   //Accumulate the forces for each particle
@@ -120,7 +131,7 @@ PCISPHSystemSolver.prototype.setDeltaConstant = function(timeIntervalInSeconds){
       let direction = (distance > 0.0) ? point.clone().multiplyScalar(1.0 / distance) : new THREE.Vector3(0.0,0.0,0.0);
 
       //grad(Wij)
-      this.interpolator.evalFKernalState(distance);
+      this.kernal.updateSpikyKernals(distance);
       gradWij = this.interpolator.gradient(distance, direction);
       denom1.add(gradWij);
       denom2 += gradWij.dot(gradWij);
@@ -155,7 +166,10 @@ PCISPHSystemSolver.prototype.computePressureForce = function(){
 };
 
 //
-//NOTE: We're still not sure how this computes our pressure force and I need to go over it.
+//NOTE: I just went through our interpolator and killed all linear interpolation
+//functions and replaced them with regular kernal values because it wasn't saving us
+//any computations. A more efficient method was put in it's place and we're instead grabbing
+//the results directly.
 //
 PCISPHSystemSolver.prototype.accumulatePressureForce = function(timeIntervalInSeconds){
   //
@@ -163,7 +177,7 @@ PCISPHSystemSolver.prototype.accumulatePressureForce = function(timeIntervalInSe
   //
   let particles = this.particles;
   let targetDensity = this.PCIConstants.targetDensity;
-  let inverseTargetDensity = this.PCIConstants.inverseDensity;
+  let inverseTargetDensity = this.PCIConstants.inverseOfTargetDensity;
   let particleMass = this.particleConstants.mass;
   let inverseOfMass = this.particleConstants.inverseOfMass;
   let maxDensityErrorRatio = this.PCIConstants.maxDensityErrorRatio;
@@ -201,26 +215,21 @@ PCISPHSystemSolver.prototype.accumulatePressureForce = function(timeIntervalInSe
     let maxDensityError = 0.0;
     let abs = Math.abs;
     for(let j = 0, numParticles = particles.length; j < numParticles; j++){
+      //Now start the calculations
       let particle = particles[j];
       let weightSum = 0.0;
       let neighboringParticleData = particle.particlesInNeighborhood;
       for(let k = 0, numNeighbors = neighboringParticleData.length; k < numNeighbors; k++){
-        let distance = neighboringParticleData[k].distance;
-        this.interpolator.evalFKernalState(distance);
-        weightSum += this.interpolator.evalFMullerKernal(distance);
+        let distanceSquared = neighboringParticleData[k].distanceSquared;
+        weightSum += this.kernal.getMullerKernal(distanceSquared);
       }
-      this.interpolator.evalFKernalState(0.0);
-      weightSum += this.interpolator.evalFMullerKernal(0.0);
-
+      //NOTE: Our weight sums are too small because our particles are too far apart.
+      //But they should always be below the BCC distance, which makes me wonder
+      //if that is a good distance to approximate our mass with.
+      weightSum += this.kernal.mullerAtZeroDistance;
       let density = particleMass * weightSum;
       let densityError = (density - targetDensity);
       let pressure = delta * densityError;
-
-      //
-      //Our delta is 0, which says something is off there.
-      //
-      // this.logNTimes('delta', 1, delta);
-      // this.logNTimes('density error', 1, densityError);
 
       if(pressure < 0.0){
         pressure *= negativePressureScale;
@@ -247,8 +256,6 @@ PCISPHSystemSolver.prototype.accumulatePressureForce = function(timeIntervalInSe
       break;
     }
   }
-
-  this.logNTimes(1, particles[0]);
 };
 
 PCISPHSystemSolver.prototype.resolveCollisions = function(tempStates){
@@ -268,9 +275,8 @@ PCISPHSystemSolver.prototype.accumulateViscosityForce = function(){
     particle.viscocityForce.set(0.0,0.0,0.0);
     let ithParticleVelocity = particle.velocity;
     for(let j = 0, numNeighbors = neighbors.length; j < numNeighbors; j++){
-      let neighbor = neighbors[j];
-      let neighboringParticle = neighbor.point;
-      let distance = neighbor.distance;
+      let neighboringParticle = neighbors[j].point;
+      let distance = neighbors[j].distance;
       let scalarComponent = viscocityCoeficientTimesMassSquared * neighboringParticle.inverseDensity;
       let littleViscosityForce = ithParticleVelocity.clone().sub(neighboringParticle.velocity).multiplyScalar(scalarComponent);
       particle.viscocityForce.add(littleViscosityForce);
@@ -285,15 +291,14 @@ PCISPHSystemSolver.prototype.pseudoViscocityFilter = function(timeIntervalInSeco
   let factor = Math.max(Math.min(timeIntervalInSeconds * this.PCIConstants.pseudoViscosityCoefficient, 0.0), 1.0);
 
   for(let i = 0, numParticles = particles.length; i < numParticles; i++){
+    let particle = particles[i];
     let weightSum = 0.0;
-    let smoothedVelocity = new Three.Vector3(0.0,0.0,0.0);
+    let smoothedVelocity = new THREE.Vector3(0.0,0.0,0.0);
 
     let neighbors = particle.particlesInNeighborhood;
     for(let j = 0; j < neighbors.length; j++){
       let neighbor = neighbors[j];
-      this.interpolator.evalFKernalState(neighbor.distance);
-      let kernalVal = this.interpolator.evalFMullerKernal(neighbor.distance);
-      let wj = particleMass * neighbor.point.inverseDensity * kernalVal;
+      let wj = particleMass * neighbor.point.inverseDensity * this.kernal.getMullerKernal(neighbor.distanceSquared);
       weightSum += wj;
       smoothedVelocity.add(neighbor.point.velocity).multiplyScalar(wj);
     }
@@ -304,6 +309,25 @@ PCISPHSystemSolver.prototype.pseudoViscocityFilter = function(timeIntervalInSeco
     }
 
     particle.velocity = particle.velocity.lerp(smoothedVelocity, factor);
+  }
+};
+
+PCISPHSystemSolver.prototype.calculateWindResistanceForce = function(timeIntervalInSeconds){
+  for(let i = 0, numParticles = this.particles.length; i < numParticles; i++){
+    //
+    //NOTE: In the future, air resistance should not effect particles under water.
+    //A cheap way of implementing this is to to determine the number of particles close to this particle.
+    //The more particles, the less the epxpected air resistance. Over a certain number, air reistance
+    //should be shunted to zero. This is cheap though and a better method would determine the percent of particle
+    //exposed to the air, though that might be too much as we can't presume a spherical particle as the surface
+    //connects between particles.
+    //
+    //For now, just apply the fully air resistance to every particle.
+    for(let i = 0, numParticles = this.particles.length; i < numParticles; i++){
+      let particle = this.particles[i];
+      particle.windResistanceForce = particle.velocity.clone().add(this.particleConstants.localWindVelocity);
+      particle.windResistanceForce.multiplyScalar(this.particleConstants.dragCoefficient);
+    }
   }
 };
 

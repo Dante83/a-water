@@ -1,14 +1,17 @@
 function Kernal(kernalConstants){
   this.kernalConstants = kernalConstants;
+  this.mullerSpikyKernalFirstDerivative = null;
+  this.mullerSpikyKernalSecondDerivative = null;
+  this.mullerAtZeroDistance = this.getMullerKernal(0.0);
 }
 
-Kernal.prototype.updateKernal = function(distance){
-  //
-  //NOTE: We are ignoring the particle radius because we are interpolating between 0 and our radius
-  //
+Kernal.prototype.updateSpikyKernals = function(distance){
   //Get the Mueller Kernal
-  let mullerVariableComponent = (1.0 - (distance * distance * this.kernalConstants.oneOverParticleRadiusSquared));
-  this.mullerKernalValue = this.kernalConstants.mullerCoefficient * mullerVariableComponent * mullerVariableComponent * mullerVariableComponent;
+  if(distance > this.kernalConstants.particleRadius){
+    this.mullerSpikyKernalFirstDerivative = 0.0;
+    this.mullerSpikyKernalSecondDerivative = 0.0;
+    return false;
+  }
 
   //Get the Meuller Spiky Kernal
   //Note that we ignore the actual spiky kernal as we only use it for the gradient
@@ -18,14 +21,16 @@ Kernal.prototype.updateKernal = function(distance){
 
   this.mullerSpikyKernalFirstDerivative = this.kernalConstants.mullerSpikyFirstDerivativeCoeficient * variableComponent * variableComponent;
   this.mullerSpikyKernalSecondDerivative = this.kernalConstants.mullerSpikySecondDerivativeCoeficient * variableComponent;
+  return true;
 };
 
-Kernal.prototype.bootstrapMullerKernal = function(distanceSquared){
-  if(distanceSquared < this.kernalConstants.particleRadiusSquared){
-    let mullerVariableComponent = (1.0 - (distanceSquared * this.kernalConstants.oneOverParticleRadiusSquared));
-    return this.kernalConstants.mullerCoefficient * mullerVariableComponent * mullerVariableComponent * mullerVariableComponent;
+Kernal.prototype.getMullerKernal = function(distanceSquared){
+  if(distanceSquared > this.kernalConstants.particleRadiusSquared){
+    return 0.0;
   }
-  return 0.0;
+
+  let mullerVariableComponent = (1.0 - (distanceSquared * this.kernalConstants.oneOverParticleRadiusSquared));
+  return this.kernalConstants.mullerCoefficient * mullerVariableComponent * mullerVariableComponent * mullerVariableComponent;
 };
 
 //Interpolaters use many of the variables over and over again - no use in doing these calculations for each one

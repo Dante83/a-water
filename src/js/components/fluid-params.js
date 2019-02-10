@@ -19,16 +19,17 @@ AFRAME.registerComponent('fluid-params', {
     'targetSpacing' : {type: 'number', default: 0.1},
     'pciTimeStep': {type: 'number', default: 0.0013},
     'gravity': {type: 'vec3', default: {x: 0.0, y: 0.0, z: -9.80665}},
-    'dragCoeficient': {type: 'number', default: 1.0},
+    'localWindVelocity': {type: 'vec3', default: {x: 0.0, y: 0.0, z: 0.0}},
+    'dragCoeficient': {type: 'number', default: 0.1},
     'targetDensity': {type: 'number', default: 997.0},
     'viscosity': {type: 'number', default: 0.801e-6},
-    'pseudoViscosityCoefficient': {type: 'number', default: 1.0},
+    'pseudoViscosityCoefficient': {type: 'number', default: 0.01},
     'eosExponent': {type: 'number', default: 7.0}, //Thanks to http://www.infomus.org/Events/proceedings/CASA2009/Bao.pdf
     'speedOfSound': {type: 'number', default: 1498.0},
     'staticSceneAccuracy': {type: 'number', default: 2},
     'maxNumberOfPCISteps': {type: 'number', default: 5},
     'maxDensityErrorRatio': {type: 'number', default: 0.1},
-    'negativePressureScale': {type: 'number', default: 0.0}
+    'negativePressureScale': {type: 'number', default: 0.1}
   },
   init: function(){
     this.loaded = false;
@@ -85,7 +86,7 @@ AFRAME.registerComponent('fluid-params', {
     //Most of this stuff could probably be done inside of a web worker for increased speed.
     let kernalConstants = new KernalConstants(this.data.particleRadius);
     this.kernal = new Kernal(kernalConstants);
-    this.particleConstants = new ParticleConstants(this.data.dragCoeficient, this.data.particleRadius, this.data.targetSpacing, this.data.particleDrawRadius, this.data.visocity, this.data.targetDensity, this.data.gravity, this.kernal);
+    this.particleConstants = new ParticleConstants(this.data.dragCoeficient, this.data.particleRadius, this.data.targetSpacing, this.data.particleDrawRadius, this.data.viscosity, this.data.targetDensity, this.data.gravity, this.kernal, this.data.localWindVelocity);
     let staticSceneConstants = new StaticSceneConstants();
     this.particleSystem = new ParticleSystem([2.1, 2.1, 3.0], [-2.0, -2.1, -0.0], this.particleConstants, this);
     this.el.emit('particle-system-constructed', {finished: true});
@@ -159,7 +160,7 @@ AFRAME.registerComponent('fluid-params', {
 
     //Set up our fluid solver which simulates fluid dynamics for our particles
     //mainly by calling accumulatePressureForce during the update process.
-    this.interpolationEngine = new InterpolationEngine(this.particleSystem.bucketGrid, kernalConstants, 1000);
+    this.interpolationEngine = new InterpolationEngine(this.particleSystem.bucketGrid, this.kernal, kernalConstants, 1000);
     let particleSolverContants = new ParticleSolverConstants(this.data.targetDensity, this.data.eosExponent, this.data.speedOfSound, this.data.negativePressureScale, this.data.viscosity, this.data.pseudoViscosityCoefficient, this.data.maxDensityErrorRatio, this.data.maxNumberOfPCISteps);
     this.pciSPHSystemSolver = new PCISPHSystemSolver(this.interpolationEngine, particleSolverContants, this.particleSystem);
     this.pciSPHSystemSolver.setDeltaConstant(this.data.pciTimeStep);

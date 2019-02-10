@@ -7,15 +7,16 @@ function Particle(position, velocity, force, windVelocity, id, bucketGrid, const
   this.id = id;
   this.bucketGrid = bucketGrid;
   this.bucket;
-  this.localWindVelocity = windVelocity;
   this.windResistanceForce = new THREE.Vector3(0.0,0.0,0.0);
   this.density = 0.0;
-  this.inverseDensity;
-  this.inverseDensitySquared;
-  this.pressure;
+  this.inverseDensity = 0.0;
+  this.inverseDensitySquared = 0.0;
+  this.pressure = 0.0;
   this.pressureForce = new THREE.Vector3(0.0,0.0,0.0);
   this.viscocityForce = new THREE.Vector3(0.0,0.0,0.0);
   this.particlesInNeighborhood;
+  this.mullerSpikyKernalFirstDerivative = [];
+  this.mullerSpikyKernalSecondDerivative = [];
 }
 
 Particle.prototype.cloneToPCITemp = function(){
@@ -44,7 +45,7 @@ Particle.prototype.updateParticlesInNeighborhood = function(){
 
 //Particles are created numerous times, but there's no duplicating code that's just used for stuff
 //over and over again, so we're just going to use pointers to the same propertives over and over instead.
-function ParticleConstants(dragCoefficient, influenceRadius, targetSpacing, drawRadius, viscosityCoeficient, targetDensity, gravity, kernal){
+function ParticleConstants(dragCoefficient, influenceRadius, targetSpacing, drawRadius, viscosityCoeficient, targetDensity, gravity, kernal, localWindVelocity){
   ////
   //PARTICLE CONSTANTS
   ////
@@ -54,6 +55,7 @@ function ParticleConstants(dragCoefficient, influenceRadius, targetSpacing, draw
   this.inverseRadius = 1.0 / influenceRadius;
   this.oneOverRadiusSquared = this.inverseRadius * this.inverseRadius;
   this.targetSpacing = targetSpacing;
+  this.localWindVelocity = localWindVelocity;
   this.dragCoefficient = dragCoefficient;
 
   //Calculate the mass from our target density and target spacing
@@ -102,19 +104,23 @@ function ParticleConstants(dragCoefficient, influenceRadius, targetSpacing, draw
     hasOffset = !hasOffset;
   }
 
-  let maxNumberDensity = 0.0;
+  let maxKernalVal = 0.0;
   for(let i = 0; i < points.length; i++){
     let sum = 0.0;
     for(let j = 0; j < points.length; j++){
       let distance2PointSquared = points[i].distanceToSquared(points[j]);
-      sum += kernal.bootstrapMullerKernal(distance2PointSquared);
+      sum += kernal.getMullerKernal(distance2PointSquared);
     }
 
-    maxNumberDensity = Math.max(maxNumberDensity, sum);
+    maxKernalVal = Math.max(maxKernalVal, sum);
   }
 
   this.targetDensity = targetDensity;
-  this.mass = targetDensity / maxNumberDensity;
+  //This mass is in line with the result from Kelager (2006)
+  //mass= (targetDensity * volume) / numParticles
+  //https://nccastaff.bournemouth.ac.uk/jmacey/MastersProjects/MSc15/06Burak/BurakErtekinMScThesis.pdf
+  //They differ by about 7% in my tests.
+  this.mass = targetDensity / maxKernalVal;
   let gravityVector = new THREE.Vector3(gravity.x, gravity.y, gravity.z);
   this.gravitationalForce = gravityVector.clone().multiplyScalar(this.mass);
   this.inverseOfMass = 1.0 / this.mass;
