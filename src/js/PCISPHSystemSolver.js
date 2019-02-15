@@ -10,9 +10,9 @@ function PCISPHSystemSolver(interpolator, PCIConstants, parentParticleSystem){
 
   //Debugging variables
   this.debug_enableGravity = true;
-  this.debug_enableWindResistance = false;
-  this.debug_enableVicosityForces = false;
-  this.debug_enablePressureForces = false;
+  this.debug_enableWindResistance = true;
+  this.debug_enableVicosityForces = true;
+  this.debug_enablePressureForces = true;
   this.debug_enableCollisions = false;
   this.debug_enablePseudoVisocityFilter = false;
 }
@@ -323,11 +323,9 @@ PCISPHSystemSolver.prototype.calculateWindResistanceForce = function(timeInterva
     //connects between particles.
     //
     //For now, just apply the fully air resistance to every particle.
-    for(let i = 0, numParticles = this.particles.length; i < numParticles; i++){
-      let particle = this.particles[i];
-      particle.windResistanceForce = particle.velocity.clone().add(this.particleConstants.localWindVelocity);
-      particle.windResistanceForce.multiplyScalar(this.particleConstants.dragCoefficient);
-    }
+    let particle = this.particles[i];
+    particle.windResistanceForce = particle.velocity.clone().add(this.particleConstants.localWindVelocity);
+    particle.windResistanceForce.multiplyScalar(this.particleConstants.dragCoefficient);
   }
 };
 
