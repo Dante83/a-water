@@ -18,7 +18,7 @@ AFRAME.registerComponent('fluid-params', {
     'particleDrawRadius': {type: 'number', default: 0.1},
     'targetSpacing' : {type: 'number', default: 0.1},
     'pciTimeStep': {type: 'number', default: 0.0013},
-    'gravity': {type: 'vec3', default: {x: 0.0, y: 0.0, z: -9.80665}},
+    'gravity': {type: 'vec3', default: {x: 0.0, y: 0.0, z: -0.1}},
     'localWindVelocity': {type: 'vec3', default: {x: 0.0, y: 0.0, z: 0.0}},
     'dragCoeficient': {type: 'number', default: 0.1},
     'targetDensity': {type: 'number', default: 997.0},
@@ -29,7 +29,7 @@ AFRAME.registerComponent('fluid-params', {
     'staticSceneAccuracy': {type: 'number', default: 2},
     'maxNumberOfPCISteps': {type: 'number', default: 5},
     'maxDensityErrorRatio': {type: 'number', default: 0.1},
-    'negativePressureScale': {type: 'number', default: 0.1}
+    'negativePressureScale': {type: 'number', default: 0.0}
   },
   init: function(){
     this.loaded = false;

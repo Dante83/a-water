@@ -2,6 +2,7 @@ function PCISPHSystemSolver(interpolator, PCIConstants, parentParticleSystem){
   this.interpolator = interpolator;
   this.kernal = interpolator.kernal;
   this.parentParticleSystem = parentParticleSystem;
+  this.bucketGrid = parentParticleSystem.bucketGrid;
   this.particles = parentParticleSystem.particles;
   this.PCIConstants = PCIConstants;
   this.particleConstants = parentParticleSystem.particleConstants;
@@ -10,10 +11,10 @@ function PCISPHSystemSolver(interpolator, PCIConstants, parentParticleSystem){
 
   //Debugging variables
   this.debug_enableGravity = true;
-  this.debug_enableWindResistance = true;
-  this.debug_enableVicosityForces = true;
+  this.debug_enableWindResistance = false;
+  this.debug_enableVicosityForces = false;
   this.debug_enablePressureForces = true;
-  this.debug_enableCollisions = false;
+  this.debug_enableCollisions = true;
   this.debug_enablePseudoVisocityFilter = false;
 }
 
@@ -204,11 +205,16 @@ PCISPHSystemSolver.prototype.accumulatePressureForce = function(timeIntervalInSe
       let tempVelocity = particle.velocity + timeIntervalInSeconds * inverseOfMass * (particle.forces + tempState.pressureForce);
       tempState.velocity = tempVelocity;
       tempState.position = particle.position + timeIntervalInSeconds * tempVelocity;
-    }
 
-    //Resolve collisions
-    if(this.debug_enableCollisions){
-      this.resolveCollisions(tempStates);
+      //Resolve collisions
+      if(this.debug_enableCollisions){
+        //Note: This only deals with a single collision event.
+        //If multiple reflections occur, so that the ending point of
+        //this resolution ends inside of a mesh, the second iteration of
+        //this method will simply move the particle back out to the nearest
+        //point on the surface with a velocity of zero.
+        this.bucketGrid.resolveStaticMeshCollision(particle, tempState.velocity, tempState.position);
+      }
     }
 
     //Compure pressure from density error

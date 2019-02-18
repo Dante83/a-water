@@ -239,7 +239,177 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
   };
 }
 
-function BucketConstants(){
+//With a bit of help from https://www.redblobgames.com/grids/line-drawing.html
+BucketGrid.prototype.getSuperCoverOfLine = function(startingPoint, endingPoint){
+  let bcUCT = this.bucketConstants.unitCoordinateTransform;
+  let bucketWidth = this.bucketConstants.bucketWidth;
+  let delta = [(endingPoint.x - startingPoint.x) * bcUCT, (endingPoint.y - startingPoint.y) * bcUCT, (endingPoint.z - startingPoint.z) * bcUCT];
+  let maxNumPoints = new THREE.Vector3(delta.map((x) => Math.abs(x)));
+  let goForwardAlong = new THREE.Vector3(delta.map((x) => Math.sign(x)));
+  let walkingPoint = startingPoint.toArray();
+
+  //Initialize our supercover to include our starting point if it is in the bucket.
+  let supercover = [];
+  let startingHash = this.getHashKeyFromPosition(walkingPoint);
+  if(startingHash in this.hashedBuckets){
+    supercover.push(this.hashedBuckets[startingHash]);
+  }
+
+  let i = new THREE.Vector3();
+  let effectiveZero;
+  while(i.x < maxNumPoints.x || i.y < maxNumPoints.y || i.z < maxNumPoints.z){
+    let xTest = (0.5+i.x) / maxNumPoints.x;
+    let yTest = (0.5+i.y) / maxNumPoints.y;
+    let zTest = (0.5+i.z) / maxNumPoints.z;
+    let testDiagonalXY = Math.abs(xTest - yTest) < effectiveZero;
+    let testDiagonalXZ = Math.abs(xTest - zTest) < effectiveZero;
+    let testDiagonalYZ = Math.abs(yTest - zTest) < effectiveZero;
+    let hash;
+    if(testDiagonalXY || testDiagonalXZ || testDiagonalYZ){
+      //The next step is diagonal...
+      if(testDiagonalXY && testDiagonalXZ && testDiagonalYZ){
+        //Along x, y and z...
+        walkingPoint[0] += goForwardAlong.x;
+        walkingPoint[1] += goForwardAlong.y;
+        walkingPoint[2] += goForwardAlong.z;
+        i.x++;
+        i.y++;
+        i.z++;
+      }
+      else if(testDiagonalXY && testDiagonalXZ){
+        //Along y-z
+        walkingPoint[1] += goForwardAlong.y;
+        walkingPoint[2] += goForwardAlong.z;
+        i.y++;
+        i.z++;
+      }
+      else if(testDiagonalXZ && testDiagonalYZ){
+        //Along x-y
+        walkingPoint[0] += goForwardAlong.x;
+        walkingPoint[1] += goForwardAlong.y;
+        i.x++;
+        i.y++;
+      }
+      else{
+        //Along x-z
+        walkingPoint[0] += goForwardAlong.x;
+        walkingPoint[2] += goForwardAlong.z;
+        i.x++;
+        i.z++;
+      }
+    }
+    else if(xTest < yTest && xTest < zTest){
+      //Moves along x
+      walkingPoint[0] += goForwardAlong.x;
+      i.x++;
+    }
+    else if(yTest < xTest && yTest < zTest){
+      //Moves along y
+      walkingPoint[1] += goForwardAlong.y;
+      i.y++;
+    }
+    else{
+      //Moves along z
+      walkingPoint[2] += goForwardAlong.z;
+      i.z++;
+    }
+
+    //Retransform back into or our original coordinate system
+    transformedWalkingPoint = [];
+    transformedWalkingPoint.push(walkingPoint[0] * bucketWidth);
+    transformedWalkingPoint.push(walkingPoint[1] * bucketWidth);
+    transformedWalkingPoint.push(walkingPoint[2] * bucketWidth);
+    hash = this.getHashKeyFromPosition(walkingPoint);
+    if(hash in this.hashedBuckets){
+      supercover.push(this.hashedBuckets[hash]);
+    }
+  }
+
+  //Return our supercover
+  return supercover;
+};
+
+BucketGrid.prototype.resolveStaticMeshCollision = function(particle, endingPosition, endingVelocity){
+  //Get the starting position
+  let startingPosition = particle.lastPosition;
+
+  //Check if the starting position is inside of our mesh. If so, return the particle to the
+  //nearest point on the surface of the mesh and set it's velocity to zero.
+  // let startingBucket = this.hashedBuckets[this.getHashKeyFromPosition(startingPosition.toArray())];
+  // let initialParticleCollisionState = startingBucket.isPointInStaticMesh(startingPosition);
+  // if(initialParticleCollisionState.collidesWithMesh){
+  //   endingPosition = initialParticleCollisionState.collisionPoint;
+  //   endingVelocity = new THREE.Vector3();
+  //   return true;
+  // }
+
+  //Get the super-cover of all buckets between these two points.
+  //if the starting and ending bucket are the same, presume that this is the super cover.
+  let supercoverOfParticleMotion = this.getSuperCoverOfLine(startingPosition, endingPosition);
+
+  //For each of these buckets, determine if any intersect our mesh.
+  //If it does, add all the triangles into a set.
+  let triangles = [];
+  for(let i = 0; i < supercoverOfParticleMotion.legnth; i++){
+    let bucket = supercoverOfParticleMotion[i];
+    if(bucket.instersectsStaticMesh){
+      console.log("Intersects!");
+      let staticMeshPoints = bucket.staticMeshPoints;
+      for(let j = 0; j < staticMeshPoints.length; j++){
+        let staticMeshPointFaces = staticMeshPoints[j].faces;
+        for(let k = 0; k < staticMeshPointFaces.length; k++){
+          if(indexOf(staticMeshPointFaces[k], triangles) === -1){
+            triangles.push(staticMeshPointFaces[k]);
+          }
+        }
+      }
+    }
+  }
+  //If we still have no triangles then just let our particle go.
+  if(triangles.length === 0){
+    return false;
+  }
+
+  //Prime the loop
+  let triangle = triangles[i];
+  let closestFace = triangle;
+  let closestPoint2Face = new THREE.Vector3();
+  let collisionPoint = new THREE.Vector3();
+  let shortestDistanceToTriangle = triangle.closestPointToPoint(endingPosition, closestPoint2Face);
+  let closestDistanceSquared = closestPoint2Face.distanceSquared(endingPosition);
+  collisionPoint = closestPoint2Face.clone();
+  //Iterate this for the other triangles
+  for(let i = 1; i < triangles.length; i++){
+    let triangle = triangles[i];
+    closestPoint2Face = new THREE.Vector3();
+    let shortestDistanceToTriangle = triangle.closestPointToPoint(endingPosition, closestPoint2Face);
+    let distanceSquared = closestPoint2Face.distanceSquared(endingPosition);
+    if(distanceSquared < closestDistanceSquared){
+      collisionPoint = closestPoint2Face.clone();
+      closestDistanceSquared = distanceSquared;
+      closestFace = triangle;
+    }
+  }
+
+  //
+  //NOTE: In the future, we might want to include paintable friction
+  //based on the triangle for better water solutions.
+  //
+  //Flip the normal of our particle about the triangle and return and ending
+  //position along this ray equal to the depth inside the mesh, to assume a
+  //perfectly elastic (frictionless) collision.
+  endingPosition.subtract(startingPosition);
+  let newRayLength = Math.sqrt(closestDistanceSquared) / reflectedRay.distance();
+  endingPosition.multiplyScalar(newRayLength);
+  endingPosition.reflectedRay(closestFace.normal).negate();
+  endingPosition.add(collisionPoint);
+  endingVelocity.reflectedRay(closestFace.normal).negate();
+  return true;
+};
+
+function BucketConstants(bucketWidth){
+  this.bucketWidth = bucketWidth;
+  this.unitCoordinateTransform = 1.0 / bucketWidth;
   function pad(n, width) {
     n = n + '';
     return n.length >= width ? n : new Array(width - n.length + 1).join('0') + n;

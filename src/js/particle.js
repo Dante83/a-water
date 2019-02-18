@@ -1,12 +1,14 @@
 function Particle(position, velocity, force, windVelocity, id, bucketGrid, constants){
   this.constants = constants;
   this.position = position;
+  this.lastPosition = position;
   this.previousPosition = position; //In the event that we ever find ourselves inside of a bucket, we can use this to bounce out.
   this.velocity = velocity;
   this.force = force;
   this.id = id;
   this.bucketGrid = bucketGrid;
   this.bucket;
+  this.lastBucket;
   this.windResistanceForce = new THREE.Vector3(0.0,0.0,0.0);
   this.density = 0.0;
   this.inverseDensity = 0.0;

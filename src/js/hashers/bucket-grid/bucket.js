@@ -259,9 +259,9 @@ Bucket.prototype.isPointInStaticMesh = function(position, staticMeshPoints = nul
   }
 
   //Default to false.
-  console.warning("The method, Bucket.prototype.isPointInStaticMesh, does not work on this bucket.");
+  console.warn("The method, Bucket.prototype.isPointInStaticMesh, does not work on this bucket.");
   return false;
-}
+};
 
 //
 //TODO: This needs re-doing according to our current setup.
@@ -319,4 +319,4 @@ Bucket.prototype.findPointsInsideStaticMesh = function(points, searchRadius){
     }
     return pointsInsideOfMesh;
   };
-}
+};

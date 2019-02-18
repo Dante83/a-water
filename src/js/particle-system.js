@@ -20,7 +20,7 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
 
   //Construct the bucket grid system to attach to this particle system so that we can track our particles,
   //as they're added, subtracted or moved. Not that we want our grid size equal to our particle radius.
-  let bucketConstants = new BucketConstants();
+  let bucketConstants = new BucketConstants(particleConstants.radius);
   this.bucketGrid = new BucketGrid(upperCorner, lowerCorner, particleConstants.radius, parentFluidParams.el.id, thisParticleSystem, bucketConstants);
 
   //TODO: In the future, we might automatically construct an optimal grid from a gltf mesh.
