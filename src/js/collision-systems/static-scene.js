@@ -13,11 +13,11 @@ function StaticScene(bucketGrid, staticSceneConstants, numberOfDigitsBeforeMergi
   this.faces = [];
   this.searchablePoints = [];
   this.bucketGrid = bucketGrid;
-  this.hashedVertices = [];
-  this.hashedFaces = [];
+  this.hashedVertices = {};
+  this.hashedFaces = {};
   this.collidedBuckets = [];
-  this.hashedPoints = [];
-  this.bucketCollisionPoints = [];
+  this.hashedPoints = {};
+  this.bucketCollisionPoints = {};
   this.hashDigitsCount = numberOfDigitsBeforeMergingVertices;
   this.staticSceneConstants = staticSceneConstants;
   var thisStaticScene = this;
@@ -746,16 +746,21 @@ function StaticScene(bucketGrid, staticSceneConstants, numberOfDigitsBeforeMergi
   this.attachMeshToBucketGrid = function(bucketMarkings){
     //For our intersecting points
     let bucketGrid = thisStaticScene.bucketGrid;
-    let points = thisStaticScene.bucketCollisionPoints;
+    let hashedPoints = thisStaticScene.bucketCollisionPoints;
     let hashedBuckets = bucketGrid.hashedBuckets;
     let buckets = bucketGrid.buckets;
+    let bucketHashes = buckets.map((x) => x.hash);
     this.triggerDrawCollidedBuckets(bucketMarkings);
     let pointBucketHashes = [];
-    for(let i = 0, numPoints = points.length; i < numPoints; i++){
-      let point = points[i];
-      let pointBucketHash = bucketGrid.getHashKeyFromPosition(point.position);
-      hashedBuckets[pointBucketHash].instersectsStaticMesh = true;
-      bucket.staticMeshPoints.push(point);
+    for(let i = 0, numBucketHashes = bucketHashes.length; i < numBucketHashes; i++){
+      let bucketHash = bucketHashes[i];
+      let points = bucketHash in hashedPoints ? hashedPoints[bucketHash] : [];
+      for(let j = 0, numPoints = points.length; j < numPoints; j++){
+        let point = points[j];
+        let pointBucketHash = bucketGrid.getHashKeyFromPosition(point.position);
+        hashedBuckets[pointBucketHash].instersectsStaticMesh = true;
+        hashedBuckets[pointBucketHash].staticMeshPoints.push(point);
+      }
     }
 
     //Now use our markings to record whether we're inside or out.

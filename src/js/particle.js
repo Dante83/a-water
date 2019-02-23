@@ -37,8 +37,8 @@ Particle.prototype.updateVelocity = function(deltaT){
 
 Particle.prototype.updatePosition = function(deltaT){
   let x = this.velocity.clone();
-  let y = this.position.clone();
-  this.position = y.add(x.multiplyScalar(deltaT));
+  this.lastPosition = this.position.clone();
+  this.position.add(x.multiplyScalar(deltaT));
 }
 
 Particle.prototype.updateParticlesInNeighborhood = function(){

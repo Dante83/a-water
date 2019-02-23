@@ -23,7 +23,9 @@ AFRAME.registerComponent('fluid-debugger', {
     drawSurfaceMesh: {type: 'boolean', default: false},
     drawFillPoints: {type: 'boolean', default: false},
     drawSPHTestSpheres: {type: 'boolean', default: false},
-    SPHTestSphereColor: {type: 'vec4', default: {x: 0.15, y: 0.2, z: 1.0, w: 1.0}}
+    SPHTestSphereColor: {type: 'vec4', default: {x: 0.15, y: 0.2, z: 1.0, w: 1.0}},
+    drawMovingBuckets: {type: 'boolean', default: false},
+    MovingBucketDrawColor: {type: 'vec3', default: {x: 1.0, y: 0.0, z: 0.0}}
   },
   drawParticleSystemContainer: function(particleSystem){
     //Grab the width depth and height of our box, as well as it's position, so we can draw it in the world view
@@ -106,6 +108,7 @@ AFRAME.registerComponent('fluid-debugger', {
 
     //Stuff we use over and over
     let cIn = this.data.insideBucketColor;
+    console.log(this.data);
     let c3In = new THREE.Color(cIn.x, cIn.y, cIn.z);
     let materialIn = new THREE.MeshLambertMaterial({color: c3In, transparent: true, opacity: cIn.w, side: THREE.DoubleSide});
 
@@ -116,8 +119,6 @@ AFRAME.registerComponent('fluid-debugger', {
     let cColliding = this.data.collidedBucketColor;
     let c3Colliding = new THREE.Color(cColliding.x, cColliding.y, cColliding.z);
     let materialColliding = new THREE.MeshLambertMaterial({color: c3Colliding, transparent: true, opacity: cColliding.w, side: THREE.DoubleSide});
-
-    console.log(bucketCollisionData);
 
     for(let i = 0, numBuckets = buckets.length; i < numBuckets; i++){
       let bucket = buckets[i];
@@ -143,18 +144,18 @@ AFRAME.registerComponent('fluid-debugger', {
 
       //Basically a box with a color dependent upon whether it is inside, outside or colliding with the mesh.
       let box;
-      let addBox = false;
+      let addBox;
       if(isInStaticMesh === true){
         box = new THREE.Mesh(new THREE.BoxGeometry(...dim), materialIn);
+        addBox = true;
+      }
+      else if(isInStaticMesh === null){
+        box = new THREE.Mesh(new THREE.BoxGeometry(...dim), materialColliding);
         addBox = true;
       }
       else if(isInStaticMesh === false){
         box = new THREE.Mesh(new THREE.BoxGeometry(...dim), materialOut);
         addBox = false;
-      }
-      else{
-        box = new THREE.Mesh(new THREE.BoxGeometry(...dim), materialColliding);
-        addBox = true;
       }
 
       if(addBox){
@@ -368,6 +369,7 @@ AFRAME.registerComponent('fluid-debugger', {
     let geometry = new THREE.SphereGeometry(particleRadius);
     let c3 = new THREE.Color(color.x, color.y, color.z);
     let material = new THREE.MeshLambertMaterial( {color: c3, transparent: false, opacity: color.w});
+    let greenMaterial = new THREE.MeshLambertMaterial( {color: new THREE.Color(0.0, 1.0, 0.0), transparent: false, opacity: color.w})
     let sceneRef = this.el.sceneEl.object3D;
 
     //Draw an instanced particle geometry for each particle at the given point.
@@ -375,7 +377,13 @@ AFRAME.registerComponent('fluid-debugger', {
       let particle = particles[i];
 
       //Create a new sphere but use instances of the above data.
-      let sphere = new THREE.Mesh(geometry, material);
+      let sphere;
+      if(particle.id === 0){
+        sphere = new THREE.Mesh(geometry, greenMaterial);
+      }
+      else{
+        sphere = new THREE.Mesh(geometry, material);
+      }
 
       //Add the sphere
       sceneRef.add(sphere);
@@ -452,6 +460,70 @@ AFRAME.registerComponent('fluid-debugger', {
       sphere.position.set(x, y, z);
     }
   },
+  redrawSPHMovingBuckets: function(particleSystem, trackedbuckets, c){
+    //Get all of our buckets and create a bucket system.
+    buckets = particleSystem.bucketGrid.buckets;
+
+    //Initialize all of our buckets if they do not exist
+    //Stuff we use over and over
+    let c3 = new THREE.Color(c.x, c.y, c.z);
+    let material = new THREE.MeshLambertMaterial({color: c3, transparent: true, opacity: 0.5, side: THREE.DoubleSide});
+    if(this.initializeMovingBuckets){
+      this.initializeMovingBuckets = false;
+      let sceneRef = this.el.sceneEl.object3D;
+      for(let i = 0, numBuckets = buckets.length; i < numBuckets; i++){
+        let bucket = buckets[i];
+
+        //Grab the width depth and height of our box, as well as it's position, so we can draw it in the world view
+        let blc = bucket.lowerCorner.slice(0);
+        let hold = blc[1];
+        blc[1] = blc[2]; //Because our Z is THREE.JS' Y
+        blc[2] = hold;
+        let buc = bucket.upperCorner.slice(0);
+        hold = buc[1];
+        buc[1] = buc[2]; //Because our Z is THREE.JS' Y
+        buc[2] = hold;
+        let dim = [];
+        for(let i = 0; i < 3; i++){
+          dim[i] = buc[i] - blc[i];
+        }
+        let offset = bucket.getCenter();
+        hold = offset[1];
+        offset[1] = offset[2]; //Because our Z is THREE.JS' Y
+        offset[2] = hold;
+
+        //Basically a box with a color dependent upon whether it is inside, outside or colliding with the mesh.
+        let box = new THREE.Mesh(new THREE.BoxGeometry(...dim), material);
+        this.movingBuckets[bucket.hash] = box;
+        this.movingBucketIsVisible[bucket.hash] = false;
+        //Set this to layer 1 so that it is not visible to the camera.
+        box.layers.set(1);
+
+        //Add the box
+        sceneRef.add(box);
+
+        //Move it to the appropriate location.
+        box.position.set(...offset);
+      }
+    }
+
+    //Reset all of our buckets to clear unless they're in the tracked buckets
+    //in which case, set them to the tracked bucket color.
+    let trackedBucketHashes = trackedbuckets.map((x) => x.hash);
+    for(let i = 0; i < buckets.length; i++){
+      let bucket = buckets[i];
+      let bucketHashInTrackedBuckets = trackedBucketHashes.indexOf(bucket.hash) !== -1;
+      let bucketIsAlreadyVisible = this.movingBucketIsVisible[bucket.hash];
+      if(bucketHashInTrackedBuckets && !bucketIsAlreadyVisible){
+        this.movingBuckets[bucket.hash].layers.set(0);
+        this.movingBucketIsVisible[bucket.hash] = true;
+      }
+      else if(!bucketHashInTrackedBuckets && bucketIsAlreadyVisible){
+        this.movingBuckets[bucket.hash].layers.set(1);
+        this.movingBucketIsVisible[bucket.hash] = false;
+      }
+    }
+  },
   init: function(){
     //Intialization variables we use later
     this.SPHSpheres = [];
@@ -459,6 +531,9 @@ AFRAME.registerComponent('fluid-debugger', {
     this.particleSystem;
     this.SPHSphereColor;
     this.SPHTestSpheresInitialized = false;
+    this.movingBucketIsVisible = {};
+    this.initializeMovingBuckets = true;
+    this.movingBuckets = {};
 
     //Set up events that are triggered from our particle system each time a critical
     //process is completed.
@@ -543,6 +618,14 @@ AFRAME.registerComponent('fluid-debugger', {
           console.log("Beginning to draw SPH test particles...");
           thisDebugger.particleSystem = data.detail.particleSystem;
           thisDebugger.drawSPHTestSpheres(thisDebugger.particleSystem);
+        }
+      }
+    });
+
+    this.fluidParamsEl.addEventListener('draw-moving-buckets', function(data){
+      if(thisDebugger.data.particleSystemId === data.target.id){
+        if(thisDebugger.data.drawMovingBuckets){
+          thisDebugger.redrawSPHMovingBuckets(data.detail.particleSystem, data.detail.trackedBuckets, thisDebugger.data.MovingBucketDrawColor);
         }
       }
     });

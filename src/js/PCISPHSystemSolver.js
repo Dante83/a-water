@@ -41,6 +41,20 @@ PCISPHSystemSolver.prototype.updateForces = function(timeIntervalInSeconds){
   if(this.debug_enableWindResistance){
     this.calculateWindResistanceForce();
   }
+  for(let i = 0, numParticles = particles.length; i < numParticles; i++){
+    let particle = particles[i];
+    particle.force = new THREE.Vector3(0.0, 0.0, 0.0);
+
+    if(this.debug_enableGravity){
+      particle.force.add(particle.constants.gravitationalForce);
+    }
+    if(this.debug_enableVicosityForces){
+      particle.force.add(particle.viscocityForce);
+    }
+    if(this.debug_enableWindResistance){
+      particle.force.add(particle.windResistanceForce);
+    }
+  }
   if(this.debug_enablePressureForces){
     this.accumulatePressureForce(timeIntervalInSeconds);
   }
@@ -48,24 +62,12 @@ PCISPHSystemSolver.prototype.updateForces = function(timeIntervalInSeconds){
   //Accumulate the forces for each particle
   for(let i = 0, numParticles = particles.length; i < numParticles; i++){
     let particle = particles[i];
-    let force = new THREE.Vector3(0.0, 0.0, 0.0);
-
-    if(this.debug_enableGravity){
-      force.add(particle.constants.gravitationalForce);
-    }
-    if(this.debug_enableVicosityForces){
-      force.add(particle.viscocityForce);
-    }
-    if(this.debug_enableWindResistance){
-      force.add(particle.windResistanceForce);
-    }
     if(this.debug_enablePressureForces){
-      force.add(particle.pressureForce);
+      particle.force.add(particle.pressureForce);
     }
     if(this.debug_enablePseudoVisocityFilter){
       this.pseudoViscocityFilter(timeIntervalInSeconds);
     }
-    particle.force = force;
   }
 };
 
@@ -202,9 +204,9 @@ PCISPHSystemSolver.prototype.accumulatePressureForce = function(timeIntervalInSe
     for(let j = 0, numParticles = particles.length; j < numParticles; j++){
       let particle = particles[j];
       let tempState = tempStates[j];
-      let tempVelocity = particle.velocity + timeIntervalInSeconds * inverseOfMass * (particle.forces + tempState.pressureForce);
+      let tempVelocity = particle.velocity.clone().add(particle.force.clone().add(tempState.pressureForce).multiplyScalar(timeIntervalInSeconds * inverseOfMass));
       tempState.velocity = tempVelocity;
-      tempState.position = particle.position + timeIntervalInSeconds * tempVelocity;
+      tempState.position = particle.position.clone(tempVelocity.clone().multiplyScalar(timeIntervalInSeconds));
 
       //Resolve collisions
       if(this.debug_enableCollisions){
@@ -213,7 +215,7 @@ PCISPHSystemSolver.prototype.accumulatePressureForce = function(timeIntervalInSe
         //this resolution ends inside of a mesh, the second iteration of
         //this method will simply move the particle back out to the nearest
         //point on the surface with a velocity of zero.
-        this.bucketGrid.resolveStaticMeshCollision(particle, tempState.velocity, tempState.position);
+        this.bucketGrid.resolveStaticMeshCollision(particle, tempState.position, tempState.velocity);
       }
     }
 

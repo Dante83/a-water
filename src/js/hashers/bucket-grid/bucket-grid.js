@@ -21,6 +21,8 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
   this.gridLength = [0.0,0.0,0.0];
   this.gridLengthInMeters = [0.0,0.0,0.0];
   this.halfMaxInteger = Math.floor(Number.MAX_SAFE_INTEGER * 0.5);
+  this.testingIterator = 0;
+
   let inverseRadius = parentParticleSystem.particleConstants.inverseRadius;
   for(let i = 0; i < 3; i++){
     let gridDimensions = this.gridUpperCoordinates[i] - this.gridLowerCoordinates[i];
@@ -40,17 +42,16 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
   this.getHashKeyFromPosition = function(position){
     perfDebug.spotCheckPerformance('get hash key', true);
     let bucketGridLocalCoordinates = [];
-    bucketGridLocalCoordinates[0] = position[0] - thisBucketGrid.gridUpperCoordinates[0];
-    bucketGridLocalCoordinates[1] = position[1] - thisBucketGrid.gridUpperCoordinates[1];
-    bucketGridLocalCoordinates[2] = position[2] - thisBucketGrid.gridUpperCoordinates[2];
-
     let inverseRadius = this.particleConstants.inverseRadius;
-    //Choosing a prime of 97 via https://planetmath.org/goodhashtableprimes
-    let hashSection1 = Math.floor(bucketGridLocalCoordinates[0] * inverseRadius) * 97;
-    let hashSection2 = (hashSection1 + (Math.floor(bucketGridLocalCoordinates[1] * inverseRadius) * 9409) % thisBucketGrid.halfMaxInteger);
-    let finalHash = (hashSection2 + (Math.floor(bucketGridLocalCoordinates[2] * inverseRadius) * 912673) % thisBucketGrid.halfMaxInteger);
+    bucketGridLocalCoordinates[0] = Math.floor((position[0] - thisBucketGrid.gridLowerCoordinates[0]) * inverseRadius);
+    bucketGridLocalCoordinates[1] = Math.floor((position[1] - thisBucketGrid.gridLowerCoordinates[1]) * inverseRadius);
+    bucketGridLocalCoordinates[2] = Math.floor((position[2] - thisBucketGrid.gridLowerCoordinates[2]) * inverseRadius);
+
+    let hashSection1 = bucketGridLocalCoordinates[0];
+    let hashSection2 = hashSection1 + bucketGridLocalCoordinates[1] * 1024;
+    let finalHash = hashSection2 + bucketGridLocalCoordinates[2] * 1048576;
     perfDebug.spotCheckPerformance('get hash key', false);
-    return finalHash;
+    return finalHash.toString();
   }
 
   this.addBucket = function(upperCorner, radius){
@@ -240,7 +241,7 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
 }
 
 //With a bit of help from https://www.redblobgames.com/grids/line-drawing.html
-BucketGrid.prototype.getSuperCoverOfLine = function(startingPoint, endingPoint){
+BucketGrid.prototype.getSuperCoverOfLine = function(startingPoint, endingPoint, particle){
   let bcUCT = this.bucketConstants.unitCoordinateTransform;
   let bucketWidth = this.bucketConstants.bucketWidth;
   let delta = [(endingPoint.x - startingPoint.x) * bcUCT, (endingPoint.y - startingPoint.y) * bcUCT, (endingPoint.z - startingPoint.z) * bcUCT];
@@ -254,9 +255,12 @@ BucketGrid.prototype.getSuperCoverOfLine = function(startingPoint, endingPoint){
   if(startingHash in this.hashedBuckets){
     supercover.push(this.hashedBuckets[startingHash]);
   }
+  if(this.getHashKeyFromPosition(endingPoint.toArray()) === startingHash){
+    return supercover;
+  }
 
   let i = new THREE.Vector3();
-  let effectiveZero;
+  let effectiveZero = bucketWidth * 0.0001;
   while(i.x < maxNumPoints.x || i.y < maxNumPoints.y || i.z < maxNumPoints.z){
     let xTest = (0.5+i.x) / maxNumPoints.x;
     let yTest = (0.5+i.y) / maxNumPoints.y;
@@ -333,6 +337,10 @@ BucketGrid.prototype.resolveStaticMeshCollision = function(particle, endingPosit
   //Get the starting position
   let startingPosition = particle.lastPosition;
 
+  //Note: To reduce the cost of this function, it should only run for particles that either start or
+  //end on with a colliding or in static mesh bucket. This allows most of our buckets to ignore
+  //the static collision engine.
+
   //Check if the starting position is inside of our mesh. If so, return the particle to the
   //nearest point on the surface of the mesh and set it's velocity to zero.
   // let startingBucket = this.hashedBuckets[this.getHashKeyFromPosition(startingPosition.toArray())];
@@ -345,7 +353,28 @@ BucketGrid.prototype.resolveStaticMeshCollision = function(particle, endingPosit
 
   //Get the super-cover of all buckets between these two points.
   //if the starting and ending bucket are the same, presume that this is the super cover.
-  let supercoverOfParticleMotion = this.getSuperCoverOfLine(startingPosition, endingPosition);
+  let supercoverOfParticleMotion = this.getSuperCoverOfLine(startingPosition, endingPosition, particle);
+  if(supercoverOfParticleMotion.length === 0){
+    if(particle.id === 0){
+      if(this.testingIterator === 0){
+        console.log("Returned false!");
+      }
+      this.testingIterator += 1;
+      this.testingIterator = this.testingIterator % 260;
+    }
+    return false;
+  }
+
+  if(particle.id === 0){
+    if(this.testingIterator === 0){
+      this.parentParticleSystem.parentFluidParams.el.emit('draw-moving-buckets', {
+        particleSystem: this.parentParticleSystem,
+        trackedBuckets: supercoverOfParticleMotion
+      });
+    }
+    this.testingIterator += 1;
+    this.testingIterator = this.testingIterator % 10;
+  }
 
   //For each of these buckets, determine if any intersect our mesh.
   //If it does, add all the triangles into a set.

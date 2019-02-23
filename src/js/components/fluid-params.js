@@ -18,7 +18,7 @@ AFRAME.registerComponent('fluid-params', {
     'particleDrawRadius': {type: 'number', default: 0.1},
     'targetSpacing' : {type: 'number', default: 0.1},
     'pciTimeStep': {type: 'number', default: 0.0013},
-    'gravity': {type: 'vec3', default: {x: 0.0, y: 0.0, z: -0.1}},
+    'gravity': {type: 'vec3', default: {x: 0.0, y: 0.0, z: -0.02}},
     'localWindVelocity': {type: 'vec3', default: {x: 0.0, y: 0.0, z: 0.0}},
     'dragCoeficient': {type: 'number', default: 0.1},
     'targetDensity': {type: 'number', default: 997.0},
@@ -27,7 +27,7 @@ AFRAME.registerComponent('fluid-params', {
     'eosExponent': {type: 'number', default: 7.0}, //Thanks to http://www.infomus.org/Events/proceedings/CASA2009/Bao.pdf
     'speedOfSound': {type: 'number', default: 1498.0},
     'staticSceneAccuracy': {type: 'number', default: 2},
-    'maxNumberOfPCISteps': {type: 'number', default: 5},
+    'maxNumberOfPCISteps': {type: 'number', default: 1},
     'maxDensityErrorRatio': {type: 'number', default: 0.1},
     'negativePressureScale': {type: 'number', default: 0.0}
   },
@@ -88,7 +88,7 @@ AFRAME.registerComponent('fluid-params', {
     this.kernal = new Kernal(kernalConstants);
     this.particleConstants = new ParticleConstants(this.data.dragCoeficient, this.data.particleRadius, this.data.targetSpacing, this.data.particleDrawRadius, this.data.viscosity, this.data.targetDensity, this.data.gravity, this.kernal, this.data.localWindVelocity);
     let staticSceneConstants = new StaticSceneConstants();
-    this.particleSystem = new ParticleSystem([2.1, 2.1, 3.0], [-2.0, -2.1, -0.0], this.particleConstants, this);
+    this.particleSystem = new ParticleSystem([2.5, 2.5, 3.0], [-2.5, -2.5, -0.5], this.particleConstants, this);
     this.el.emit('particle-system-constructed', {finished: true});
     this.staticScene = new StaticScene(this.particleSystem.bucketGrid, staticSceneConstants, this.data.staticSceneAccuracy);
 

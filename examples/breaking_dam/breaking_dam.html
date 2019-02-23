@@ -8,7 +8,7 @@
 
     <!--Meta-->
     <meta name="viewport" content="width=device-width,initial-scale=1,shrink-to-fit=no,user-scalable=no,maximum-scale=1">
-    <script src="https://aframe.io/releases/0.8.0/aframe.min.js"></script>
+    <script src="https://aframe.io/releases/0.9.0/aframe.min.js"></script>
     <script src="../../src/js/debugging/performance_debug.js"></script>
     <script src="../../src/js/hashers/bucket-grid/bucket-face.js"></script>
     <script src="../../src/js/hashers/bucket-grid/bucket.js"></script>
@@ -40,7 +40,7 @@
       </a-assets>
 
       <!--While we slowly build this out, it's helpful to see what the basic components look like underneath.-->
-      <a-fluid-debugger fluid-debugger="particleSystemId: my-particle-system; drawStaticMesh: true; drawFillPoints: true; drawSPHTestSpheres: true;"></a-fluid-debugger>
+      <a-fluid-debugger fluid-debugger="particleSystemId: my-particle-system; drawStaticMesh: true; drawCollidedBuckets: true; drawMovingBuckets: true; drawSPHTestSpheres: true;"></a-fluid-debugger>
 
       <!-- The id for the particle system is used by all child elements belonging to it-->
       <!-- NOTE: this must be at the end, so that previous model data is loaded into the system -->
