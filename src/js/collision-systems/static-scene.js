@@ -672,11 +672,6 @@ function StaticScene(bucketGrid, staticSceneConstants, numberOfDigitsBeforeMergi
               let closestPointOnFace = new THREE.Vector3();
               nearbyFace.triangle.closestPointToPoint(originPoint, closestPointOnFace);
 
-              //
-              //NOTE: This is a good candidate for being wrong. Some of our results apparently are showing up with
-              //normal dots of 0, that is, they are falling within error bounds for telling us whether the results are positive or negative.
-              //to this end, we need to choose our faces such that they're not only close, but also provide solid angle's to test on.
-              //
               if(closestFaces.length > 1){
                 let distToPointSq = originPoint.distanceToSquared(closestPointOnFace);
                 //Get the closest collisionPoint on the first mesh face and the distance to that collisionPoint
@@ -685,16 +680,17 @@ function StaticScene(bucketGrid, staticSceneConstants, numberOfDigitsBeforeMergi
                   //from THREE JS in order to find the closest collisionPoint
                   nearbyFace = closestFaces[i];
                   originPoint = new THREE.Vector3(...bucketCenter);
-                  closestPointOnFace = new THREE.Vector3();
-                  nearbyFace.triangle.closestPointToPoint(originPoint, closestPointOnFace);
+                  closestPointOnThisTriangle = new THREE.Vector3();
+                  nearbyFace.triangle.closestPointToPoint(originPoint, closestPointOnThisTriangle);
 
                   //Check if the distance to this collisionPoint is less than the previous distance
-                  let newDistanceToPointSq = originPoint.distanceToSquared(closestPointOnFace);
-                  let testForInsideDistance = originPoint.clone().sub(closestPointOnFace).dot(closestFace.normal.clone());
-                  if(newDistanceToPointSq < distToPointSq && Math.abs(testForInsideDistance) > 0.1){
+                  let newDistanceToPointSq = originPoint.distanceToSquared(closestPointOnThisTriangle);
+                  let testForInsideDistance = originPoint.clone().sub(closestPointOnThisTriangle).dot(nearbyFace.normal);
+                  if(newDistanceToPointSq < distToPointSq && Math.abs(testForInsideDistance) > 0.0001){
                     //If it's closer, replace the previous face
                     distToPointSq = newDistanceToPointSq;
                     closestFace = nearbyFace;
+                    closestPointOnFace = closestPointOnThisTriangle;
                   }
                 }
               }
@@ -750,7 +746,6 @@ function StaticScene(bucketGrid, staticSceneConstants, numberOfDigitsBeforeMergi
     let hashedBuckets = bucketGrid.hashedBuckets;
     let buckets = bucketGrid.buckets;
     let bucketHashes = buckets.map((x) => x.hash);
-    this.triggerDrawCollidedBuckets(bucketMarkings);
     let pointBucketHashes = [];
     for(let i = 0, numBucketHashes = bucketHashes.length; i < numBucketHashes; i++){
       let bucketHash = bucketHashes[i];

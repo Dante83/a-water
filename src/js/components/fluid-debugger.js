@@ -15,9 +15,9 @@ AFRAME.registerComponent('fluid-debugger', {
     drawStaticMesh: {type: 'boolean', default: false},
     staticMeshColor: {type: 'vec4', default: {x: 0.0, y: 1.0, z: 0.0, w: 1.0}},
     drawCollidedBuckets: {type: 'boolean', default: false},
-    insideBucketColor: {type: 'vec4', default: {x: 1.0, y: 0.0, z: 0.0, w: 1.0}},
+    insideBucketColor: {type: 'vec4', default: {x: 1.0, y: 0.0, z: 0.0, w: 0.5}},
     outsideBucketColor: {type: 'vec4', default: {x: 0.0, y: 1.0, z: 0.0, w: 1.0}},
-    collidedBucketColor: {type: 'vec4', default: {x: 0.0, y: 0.0, z: 1.0, w: 1.0}},
+    collidedBucketColor: {type: 'vec4', default: {x: 0.0, y: 0.0, z: 1.0, w: 0.5}},
     drawStaticMeshVertexLines: {type: 'boolean', default: false},
     staticMeshVertexLinColor: {type: 'vec4', default: {x: 1.0, y: 0.0, z: 1.0, w: 1.0}},
     drawSurfaceMesh: {type: 'boolean', default: false},
@@ -151,7 +151,7 @@ AFRAME.registerComponent('fluid-debugger', {
       }
       else if(isInStaticMesh === null){
         box = new THREE.Mesh(new THREE.BoxGeometry(...dim), materialColliding);
-        addBox = true;
+        addBox = false;
       }
       else if(isInStaticMesh === false){
         box = new THREE.Mesh(new THREE.BoxGeometry(...dim), materialOut);

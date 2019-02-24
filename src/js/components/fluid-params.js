@@ -131,6 +131,8 @@ AFRAME.registerComponent('fluid-params', {
       fluidCollisionBound.addMesh(fluidBufferGeometry, worldMatrixOfFluidBufferGeometry);
     }
     fluidCollisionBound.getFaceCollisionPoints();
+    let fluidSurfaceHashedBuckets = fluidCollisionBound.filterBucketsInsideVersesOutside();
+    fluidCollisionBound.triggerDrawCollidedBuckets(fluidSurfaceHashedBuckets);
 
     //
     //NOTE: For testing purposes only
@@ -141,8 +143,7 @@ AFRAME.registerComponent('fluid-params', {
     //   color: new THREE.Vector3(1.0,0.0,1.0)
     // });
 
-    let fluidBuckets = fluidCollisionBound.filterBucketsInsideVersesOutside();
-    let particleFiller = new ParticleFiller(this.particleSystem, collisionSurfaceHashedBuckets, fluidBuckets);
+    let particleFiller = new ParticleFiller(this.particleSystem, collisionSurfaceHashedBuckets, this.staticScene, fluidSurfaceHashedBuckets, fluidCollisionBound);
     particleFiller.fillMesh(this.data.targetSpacing);
 
     //Unlike our static geometry above, we want to remove our geometries from the screen

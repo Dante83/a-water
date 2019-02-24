@@ -356,9 +356,6 @@ BucketGrid.prototype.resolveStaticMeshCollision = function(particle, endingPosit
   let supercoverOfParticleMotion = this.getSuperCoverOfLine(startingPosition, endingPosition, particle);
   if(supercoverOfParticleMotion.length === 0){
     if(particle.id === 0){
-      if(this.testingIterator === 0){
-        console.log("Returned false!");
-      }
       this.testingIterator += 1;
       this.testingIterator = this.testingIterator % 260;
     }

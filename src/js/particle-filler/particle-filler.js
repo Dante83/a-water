@@ -1,4 +1,4 @@
-function ParticleFiller(particleSystem, collidableScene, fluidCollisionBound){
+function ParticleFiller(particleSystem, staticCollisionBuckets, staticScene, fluidCollisionBuckets, fluidMesh){
   //
   //NOTE: We want to construct this after we have both the particle system,
   //and the static environment set up. Particles will then be added into the system,
@@ -8,9 +8,9 @@ function ParticleFiller(particleSystem, collidableScene, fluidCollisionBound){
   this.particles = [];
   this.particleSystem = particleSystem;
   this.bucketGrid = particleSystem.bucketGrid;
-  this.shouldCollideWithTheseBuckets = fluidCollisionBound;
-  this.shouldNotCollideWithTheseBuckets = collidableScene;
-  var thisParticleFiller = this;
+  this.staticScene = staticScene;
+  this.fluidMesh = fluidMesh;
+  var self = this;
 
   this.fillMesh = function(targetSpacing){
     //
@@ -19,15 +19,17 @@ function ParticleFiller(particleSystem, collidableScene, fluidCollisionBound){
     //methods if our particle density varies with position.
     //
     let density = 8.0 / (targetSpacing);
+    let staticScene = self.staticScene;
+    let fluidMesh = self.fluidMesh;
 
     //Periodically add points to our system such that it matches the target density.
     let cubedRootOfDensity = density ** (1.0 / 3.0);
-    let bucketGridLengthInMeters = thisParticleFiller.bucketGrid.gridLengthInMeters;
+    let bucketGridLengthInMeters = self.bucketGrid.gridLengthInMeters;
     let xPoints = Math.ceil(cubedRootOfDensity * bucketGridLengthInMeters[0]);
     let yPoints = Math.ceil(cubedRootOfDensity * bucketGridLengthInMeters[1]);
     let zPoints = Math.ceil(cubedRootOfDensity * bucketGridLengthInMeters[2]);
-    let startingPosition = thisParticleFiller.bucketGrid.gridLowerCoordinates.slice(0);
-    let endingPosition = thisParticleFiller.bucketGrid.gridUpperCoordinates.slice(0);
+    let startingPosition = self.bucketGrid.gridLowerCoordinates.slice(0);
+    let endingPosition = self.bucketGrid.gridUpperCoordinates.slice(0);
 
     let xDiff = (endingPosition[0] - startingPosition[0]) / xPoints;
     let yDiff = (endingPosition[1] - startingPosition[1]) / yPoints;
@@ -49,14 +51,42 @@ function ParticleFiller(particleSystem, collidableScene, fluidCollisionBound){
           //but are not entirely in either category. These should be handled individually in a seperate if branch that
           //check the particle in the event that it falls along the edge to determine inside verses outside.
           //
-          let hash = thisParticleFiller.bucketGrid.getHashKeyFromPosition([xPosition, yPosition, zPosition]);
-          if((hash in thisParticleFiller.bucketGrid.hashedBuckets) &&
-            thisParticleFiller.shouldCollideWithTheseBuckets[hash].isInMesh &&
-            !thisParticleFiller.shouldNotCollideWithTheseBuckets[hash].isInMesh
-          ){
+          let hash = self.bucketGrid.getHashKeyFromPosition([xPosition, yPosition, zPosition]);
+          let staticCollisionBucket = staticCollisionBuckets[hash];
+          let fluidCollisionBucket = fluidCollisionBuckets[hash];
+          let addPoint = false;
+          if(hash in self.bucketGrid.hashedBuckets){
+            if(staticCollisionBucket.isInMesh === false &&
+              fluidCollisionBucket.isInMesh === true
+            ){
+              addPoint = true;
+            }
+            else{
+              //As we're here, let's calculate the key components one at a time.
+              let origin = new THREE.Vector3(xPosition, yPosition, zPosition);
+              if(staticCollisionBucket.isInMesh === false && fluidCollisionBucket.isInMesh === null){
+                //Just check that the point is in the fluid collision mesh
+                addPoint = self.isOriginInMesh(origin, fluidMesh, hash);
+              }
+              else if(fluidCollisionBucket.isInMesh === true && staticCollisionBucket.isInMesh === null){
+                //Just check that the point is outside of the static collision mesh.
+                addPoint = !self.isOriginInMesh(origin, staticScene, hash);
+              }
+              else if(fluidCollisionBucket.isInMesh === null && staticCollisionBucket.isInMesh === null){
+                //Check whether the point is both in the fluid collision mesh
+                //and outside of the static collision mesh.
+                addPoint = self.isOriginInMesh(origin, fluidMesh, hash);
+                addPoint = addPoint && !self.isOriginInMesh(origin, staticScene, hash);
+              }
+            }
+          }
+
+          //Check our sentinal value from above.
+          if(addPoint){
             newPositions.push([xPosition, yPosition, zPosition]);
             newVelocities.push([0.0,0.0,0.0]);
           }
+
           zPosition += zDiff;
         }
         yPosition += yDiff;
@@ -69,6 +99,55 @@ function ParticleFiller(particleSystem, collidableScene, fluidCollisionBound){
 
     //Let's stop right here. We want to make sure we have actually added the particles
     //but first I need to make sure they're actually inside.
-    thisParticleFiller.particleSystem.addParticles(newPositions, newVelocities);
+    self.particleSystem.addParticles(newPositions, newVelocities);
+  };
+
+  this.isOriginInMesh = function(origin, staticMesh, bucketHash){
+    //Get the bucket hash and all nearby bucket hashes.
+    let bucket = self.bucketGrid.hashedBuckets[bucketHash];
+    let nearbyBucketHashes = bucket.listOfConnectedBuckets.map((x) => x.hash);
+    let nearbyPoints = [];
+    for(let i = 0; i < nearbyBucketHashes.length; i++){
+      if(nearbyBucketHashes[i] in staticMesh.bucketCollisionPoints){
+        nearbyPoints = [...nearbyPoints, ...staticMesh.bucketCollisionPoints[nearbyBucketHashes[i]]];
+      }
+    }
+    nearbyPoints = [...nearbyPoints, ...staticMesh.bucketCollisionPoints[bucketHash]];
+
+    //Now with all of our points, let's find the closest point and determine if it's inside or outside
+    let faces = [];
+    for(let i = 0; i < nearbyPoints.length; i++){
+      faces = [...faces, ...nearbyPoints[i].faces];
+    }
+
+    //Now figure out the closest face to our collisionPoint
+    let closestFace = faces[0];
+    let nearbyFace = faces[0];
+    let closestPointOnFace = new THREE.Vector3();
+    nearbyFace.triangle.closestPointToPoint(origin, closestPointOnFace);
+
+    if(faces.length > 1){
+      let distToPointSq = origin.distanceToSquared(closestPointOnFace);
+      //Get the closest collisionPoint on the first mesh face and the distance to that collisionPoint
+      for(let i = 1, numMeshFaces = faces.length; i < numMeshFaces; i++){
+        //Create a triangle from our mesh and then use the built in closest collisionPoint to collisionPoint method
+        //from THREE JS in order to find the closest collisionPoint
+        nearbyFace = faces[i];
+        closestPointOnThisTriangle = new THREE.Vector3();
+        nearbyFace.triangle.closestPointToPoint(origin, closestPointOnThisTriangle);
+
+        //Check if the distance to this collisionPoint is less than the previous distance
+        let newDistanceToPointSq = origin.distanceToSquared(closestPointOnThisTriangle);
+        let testForInsideDistance = origin.clone().sub(closestPointOnThisTriangle).dot(nearbyFace.normal);
+        if(newDistanceToPointSq < distToPointSq && Math.abs(testForInsideDistance) > 0.0001){
+          //If it's closer, replace the previous face
+          distToPointSq = newDistanceToPointSq;
+          closestFace = nearbyFace;
+          closestPointOnFace = closestPointOnThisTriangle;
+        }
+      }
+    }
+
+    return origin.sub(closestPointOnFace).dot(closestFace.normal.clone()) < 0.0;
   };
 }
