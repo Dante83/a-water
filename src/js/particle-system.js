@@ -139,16 +139,13 @@ ParticleSystem.prototype.updateParticles = function(timeIntervalInSeconds){
   //Update our particle forces.
   this.PCISystemSolver.updateForces(timeIntervalInSeconds);
 
-  //Implement time integration.
-  for(let i = 0, particlesLen = this.particles.length; i < particlesLen; i++){
+  for(let i = 0, numParticles = this.particles.length; i < numParticles; i++){
     let particle = this.particles[i];
+    //And once again, resolve our collisions
+    this.bucketGrid.resolveStaticMeshCollision(particle, particle.position, particle.velocity);
+
     particle.updateVelocity(timeIntervalInSeconds);
     particle.updatePosition(timeIntervalInSeconds);
-
-    //
-    //NOTE: Until we have predictive schedualing for our particles, we need to update all particle hashes each time
-    //their position updates
-    //
   }
 };
 

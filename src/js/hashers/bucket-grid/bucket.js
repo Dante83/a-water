@@ -19,7 +19,7 @@ function Bucket(upperCorner, lowerCorner, parentBucketGrid){
 
   //Intersection components associated with static meshes.
   this.instersectsStaticMesh = false;
-  this.isInsideStaticMesh = false;
+  this.isInStaticMesh = null;
   this.nearestStaticPointBucket = null;
   this.staticMeshPoints = [];
 
@@ -185,82 +185,6 @@ Bucket.prototype.flushPoints = function(){
   this.pointsMarkedForRemoval = [];
   this.pointsMarkedForAddition = [];
   this.needsUpdate = false;
-};
-
-Bucket.prototype.isPointInStaticMesh = function(position, staticMeshPoints = null){
-  //In the event that nothing is provided, we're probably talking about the default static mesh attached to this
-  //bucket grid and used for bouncing particles. This does not determine where the collision takes place however,
-  //only that a collision exists. in these divided boxes.
-  if(staticMeshPoints === null){
-    staticMeshPoints = this.staticMeshPoints;
-  }
-
-  if(this.instersectsStaticMesh){
-    //Determine the closest point to our position from those listed
-    let closestStaticMeshPoint = staticMeshPoints[0];
-    let xDist = closestStaticMeshPoint[0] - position[0];
-    let yDist = closestStaticMeshPoint[1] - position[1];
-    let zDist = closestStaticMeshPoint[2] - position[2];
-    let distCalc = xDist * xDist + yDist * yDist + zDist * zDist;
-    let pointsForFaces = [];
-    for(let i = 1, numStaticMeshPoints = staticMeshPoints.length; i < numStaticMeshPoints; i++){
-      let staticMeshPoint = staticMeshPoints[i];
-      let xDist = closestStaticMeshPoint[0] - position[0];
-      let yDist = closestStaticMeshPoint[1] - position[1];
-      let zDist = closestStaticMeshPoint[2] - position[2];
-      let distCalcNew = xDist * xDist + yDist * yDist + zDist * zDist;
-      if(distCalNew < distCal){
-        closestStaticMeshPoint = staticMeshPoint;
-        distCalc = distCalcNew;
-        pointsForFaces = [];
-      }
-      else if(distCalNew == distCal){
-        if(pointsForFaces.length > 0){
-          pointsForFaces.push(staticMeshPoint);
-        }
-        else{
-          pointsForFaces.push(staticMeshPoint);
-          pointsForFaces.push(closestStaticMeshPoint);
-        }
-      }
-    }
-
-    //Get all the mesh faces associated with each of these points and determine the closest point on each face.
-    let meshFaces = [];
-    if(pointsForFaces.length > 0){
-      for(let i = 0, numPointsForFaces = pointsForFaces.length; i < numPointsForFaces; i++){
-        let point = pointsForFaces[i];
-        meshFaces = [...meshFaces, ...point.faces];
-      }
-    }
-    else{
-      meshFaces = point.faces;
-    }
-    let closestFace;
-    //Get the closest point on the first mesh face and the distance to that point
-    for(let i = 1, numMeshFaces = meshFaces.length; i < numMeshFaces; i++){
-      //Get the closest point on the plane that is within the mesh triangle.
-
-
-      //Is the distnace to this point less than the distance to the previous point
-
-
-      //If it's closer, replace the previous face
-
-    }
-
-    //Use the method described here:
-    //https://blender.stackexchange.com/questions/31693/how-to-find-if-a-point-is-inside-a-mesh
-    //to determine if each particle is inside of the mesh.
-
-  }
-  else if(staticMeshPoints === null){
-    return this.isInsideStaticMesh;
-  }
-
-  //Default to false.
-  console.warn("The method, Bucket.prototype.isPointInStaticMesh, does not work on this bucket.");
-  return false;
 };
 
 //

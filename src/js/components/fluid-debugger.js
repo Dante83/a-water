@@ -108,7 +108,6 @@ AFRAME.registerComponent('fluid-debugger', {
 
     //Stuff we use over and over
     let cIn = this.data.insideBucketColor;
-    console.log(this.data);
     let c3In = new THREE.Color(cIn.x, cIn.y, cIn.z);
     let materialIn = new THREE.MeshLambertMaterial({color: c3In, transparent: true, opacity: cIn.w, side: THREE.DoubleSide});
 

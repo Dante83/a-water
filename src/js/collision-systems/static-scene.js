@@ -25,6 +25,12 @@ function StaticScene(bucketGrid, staticSceneConstants, numberOfDigitsBeforeMergi
   function Face(vertices, normal, hash){
     this.vertices = vertices;
     this.triangle = new THREE.Triangle(this.vertices[0].toVect3(), this.vertices[1].toVect3(), this.vertices[2].toVect3());
+    let triangleNormal = this.triangle.getNormal().clone().normalize();
+    normal.normalize();
+    let diff = normal.clone().sub(triangleNormal).manhattanLength();
+    if(diff > 1E-6){
+      this.triangle = new THREE.Triangle(this.vertices[2].toVect3(), this.vertices[1].toVect3(), this.vertices[0].toVect3());
+    }
     this.normal = normal;
     this.hash = hash;
   }
@@ -750,11 +756,13 @@ function StaticScene(bucketGrid, staticSceneConstants, numberOfDigitsBeforeMergi
     for(let i = 0, numBucketHashes = bucketHashes.length; i < numBucketHashes; i++){
       let bucketHash = bucketHashes[i];
       let points = bucketHash in hashedPoints ? hashedPoints[bucketHash] : [];
-      for(let j = 0, numPoints = points.length; j < numPoints; j++){
-        let point = points[j];
-        let pointBucketHash = bucketGrid.getHashKeyFromPosition(point.position);
-        hashedBuckets[pointBucketHash].instersectsStaticMesh = true;
-        hashedBuckets[pointBucketHash].staticMeshPoints.push(point);
+      if(points.length > 0){
+        hashedBuckets[bucketHash].instersectsStaticMesh = true;
+        hashedBuckets[bucketHash].staticMeshPoints = points;
+      }
+      else{
+        hashedBuckets[bucketHash].instersectsStaticMesh = false;
+        hashedBuckets[bucketHash].staticMeshPoints = [];
       }
     }
 

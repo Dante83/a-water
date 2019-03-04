@@ -19,6 +19,8 @@ function Particle(position, velocity, force, windVelocity, id, bucketGrid, const
   this.particlesInNeighborhood;
   this.mullerSpikyKernalFirstDerivative = [];
   this.mullerSpikyKernalSecondDerivative = [];
+  this.tempVect2Neighbors = [];
+  this.tempDistanceSquared2Neighbors = [];
 }
 
 Particle.prototype.cloneToPCITemp = function(){

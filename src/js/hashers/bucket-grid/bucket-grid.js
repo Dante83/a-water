@@ -375,46 +375,53 @@ BucketGrid.prototype.resolveStaticMeshCollision = function(particle, endingPosit
 
   //For each of these buckets, determine if any intersect our mesh.
   //If it does, add all the triangles into a set.
-  let triangles = [];
-  for(let i = 0; i < supercoverOfParticleMotion.legnth; i++){
+  let faces = [];
+  for(let i = 0; i < supercoverOfParticleMotion.length; i++){
     let bucket = supercoverOfParticleMotion[i];
     if(bucket.instersectsStaticMesh){
-      console.log("Intersects!");
       let staticMeshPoints = bucket.staticMeshPoints;
       for(let j = 0; j < staticMeshPoints.length; j++){
         let staticMeshPointFaces = staticMeshPoints[j].faces;
         for(let k = 0; k < staticMeshPointFaces.length; k++){
-          if(indexOf(staticMeshPointFaces[k], triangles) === -1){
-            triangles.push(staticMeshPointFaces[k]);
+          if(faces.indexOf(staticMeshPointFaces[k]) === -1){
+            faces.push(staticMeshPointFaces[k]);
           }
         }
       }
     }
   }
-  //If we still have no triangles then just let our particle go.
-  if(triangles.length === 0){
+  //If we still have no faces then just let our particle go.
+  if(faces.length === 0){
     return false;
   }
 
   //Prime the loop
-  let triangle = triangles[i];
-  let closestFace = triangle;
+  let originalVect = endingPosition.clone().sub(startingPosition);
+  let orginalVectDistSq = originalVect.dot(originalVect)
+  let distanceSquare2Beat = orginalVectDistSq;
+  let triangle;
+  let closestFace;
   let closestPoint2Face = new THREE.Vector3();
   let collisionPoint = new THREE.Vector3();
-  let shortestDistanceToTriangle = triangle.closestPointToPoint(endingPosition, closestPoint2Face);
-  let closestDistanceSquared = closestPoint2Face.distanceSquared(endingPosition);
-  collisionPoint = closestPoint2Face.clone();
-  //Iterate this for the other triangles
-  for(let i = 1; i < triangles.length; i++){
-    let triangle = triangles[i];
-    closestPoint2Face = new THREE.Vector3();
-    let shortestDistanceToTriangle = triangle.closestPointToPoint(endingPosition, closestPoint2Face);
-    let distanceSquared = closestPoint2Face.distanceSquared(endingPosition);
-    if(distanceSquared < closestDistanceSquared){
-      collisionPoint = closestPoint2Face.clone();
-      closestDistanceSquared = distanceSquared;
-      closestFace = triangle;
+  let noIntersectingPointFound = true;
+  let ray = new THREE.Ray(startingPosition, originalVect.clone().multiplyScalar(1.0 / Math.sqrt(orginalVectDistSq)));
+  let closestDistanceSquared;
+  //Iterate this for the other faces
+  for(let i = 0; i < faces.length; i++){
+    triangle = faces[i].triangle;
+    let intersectsTriangle = ray.intersectTriangle(triangle.a, triangle.b, triangle.c, true, closestPoint2Face);
+    if(intersectsTriangle !== null){
+      let distanceSquared = startingPosition.distanceToSquared(closestPoint2Face);
+      if(distanceSquare2Beat < distanceSquared){
+        noIntersectingPointFound = false;
+        collisionPoint = closestPoint2Face.clone();
+        distanceSquare2Beat = distanceSquared;
+        closestFace = faces[i];
+      }
     }
+  }
+  if(noIntersectingPointFound){
+    return false;
   }
 
   //
@@ -424,12 +431,15 @@ BucketGrid.prototype.resolveStaticMeshCollision = function(particle, endingPosit
   //Flip the normal of our particle about the triangle and return and ending
   //position along this ray equal to the depth inside the mesh, to assume a
   //perfectly elastic (frictionless) collision.
-  endingPosition.subtract(startingPosition);
-  let newRayLength = Math.sqrt(closestDistanceSquared) / reflectedRay.distance();
-  endingPosition.multiplyScalar(newRayLength);
-  endingPosition.reflectedRay(closestFace.normal).negate();
-  endingPosition.add(collisionPoint);
-  endingVelocity.reflectedRay(closestFace.normal).negate();
+  // let originalRay = endingPosition.clone().sub(startingPosition);
+  // let intersectedRay = collisionPoint.clone().sub(startingPosition);
+  // endingPosition = (originalRay.clone()).reflect(closestFace.normal);
+  // let newRayLength = Math.sqrt(originalRay.clone().dot(originalRay)) - Math.sqrt(intersectedRay.clone().dot(intersectedRay));
+  // endingPosition = endingPosition.setLength(newRayLength);
+  // endingPosition = endingPosition.add(collisionPoint);
+  endingPosition = startingPosition.clone();
+  endingVelocity = endingVelocity.reflect(closestFace.normal);
+
   return true;
 };
 
