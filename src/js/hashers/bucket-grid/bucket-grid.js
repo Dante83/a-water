@@ -8,7 +8,7 @@
 //instead estimate it's time of departure and check back and recalculate
 //the departure time at X% of the departure time. (try different values to see how it works)
 
-function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketGridID, parentParticleSystem, bucketConstants){
+function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketGridID, parentParticleSystem, bucketConstants, minDistanceFromStaticCollider){
   perfDebug.spotCheckPerformance('bucket grid initialization', true);
   this.buckets = [];
   this.hashedBuckets = {};
@@ -22,6 +22,7 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
   this.gridLengthInMeters = [0.0,0.0,0.0];
   this.halfMaxInteger = Math.floor(Number.MAX_SAFE_INTEGER * 0.5);
   this.testingIterator = 0;
+  this.minDistanceFromStaticCollider = minDistanceFromStaticCollider;
 
   let inverseRadius = parentParticleSystem.particleConstants.inverseRadius;
   for(let i = 0; i < 3; i++){
@@ -431,14 +432,14 @@ BucketGrid.prototype.resolveStaticMeshCollision = function(particle, endingPosit
   //Flip the normal of our particle about the triangle and return and ending
   //position along this ray equal to the depth inside the mesh, to assume a
   //perfectly elastic (frictionless) collision.
-  // let originalRay = endingPosition.clone().sub(startingPosition);
-  // let intersectedRay = collisionPoint.clone().sub(startingPosition);
-  // endingPosition = (originalRay.clone()).reflect(closestFace.normal);
-  // let newRayLength = Math.sqrt(originalRay.clone().dot(originalRay)) - Math.sqrt(intersectedRay.clone().dot(intersectedRay));
-  // endingPosition = endingPosition.setLength(newRayLength);
-  // endingPosition = endingPosition.add(collisionPoint);
-  endingPosition = startingPosition.clone();
-  endingVelocity = endingVelocity.reflect(closestFace.normal);
+  let intersectedRay = endingPosition.clone().sub(collisionPoint);
+  endingPosition = intersectedRay.reflect(closestFace.normal).negate();
+  if(this.minDistanceFromStaticCollider > Math.sqrt(intersectedRay.clone().dot(intersectedRay))){
+    console.log("BLING!");
+    endingPosition.setLength(this.minDistanceFromStaticCollider);
+  }
+  endingPosition.add(collisionPoint);
+  endingVelocity.reflect(closestFace.normal);
 
   return true;
 };

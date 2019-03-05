@@ -19,6 +19,8 @@ function Particle(position, velocity, force, windVelocity, id, bucketGrid, const
   this.particlesInNeighborhood;
   this.mullerSpikyKernalFirstDerivative = [];
   this.mullerSpikyKernalSecondDerivative = [];
+  this.tempPosition;
+  this.tempVelocity;
   this.tempVect2Neighbors = [];
   this.tempDistanceSquared2Neighbors = [];
 }

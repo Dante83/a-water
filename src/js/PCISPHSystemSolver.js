@@ -59,9 +59,6 @@ PCISPHSystemSolver.prototype.updateForces = function(timeIntervalInSeconds){
     this.accumulatePressureForce(timeIntervalInSeconds);
 
     for(let i = 0, numParticles = particles.length; i < numParticles; i++){
-      if(i === 0){
-        this.logNTimes('pressure_force', 1000, `${particles[i].pressureForce.x}, ${particles[i].pressureForce.y}, ${particles[i].pressureForce.z}`);
-      }
       particles[i].force.add(particles[i].pressureForce);
     }
   }
@@ -154,7 +151,7 @@ PCISPHSystemSolver.prototype.setDeltaConstant = function(timeIntervalInSeconds){
   this.PCIConstants.delta = Math.abs(denom) > 0.0 ? -1.0 / (beta * denom) : 0.0;
 };
 
-PCISPHSystemSolver.prototype.computePressureForce = function(tempStates){
+PCISPHSystemSolver.prototype.computePressureForce = function(){
   let massSquared = this.parentParticleSystem.particleConstants.massSquared;
   for(let i = 0, numParticles = this.particles.length; i < numParticles; i++){
     let particle = this.particles[i];
@@ -163,9 +160,10 @@ PCISPHSystemSolver.prototype.computePressureForce = function(tempStates){
     for(let j = 0, numNeighbors = neighbors.length; j < numNeighbors; j++){
       let neighbor = neighbors[j];
       let neighboringParticle = neighbor.point;
-      if(particle.tempDistanceSquared2Neighbors[j] > 0.0){
+      let dist2Neighbor = particle.tempDistanceSquared2Neighbors[j];
+      if(dist2Neighbor > 0.0){
         let scalarComponent = massSquared * (ithParticlePressureOverDensitySquared + (neighboringParticle.pressure * neighboringParticle.inverseDensitySquared));
-        particle.pressureForce.sub(this.interpolator.gradient(Math.sqrt(particle.tempDistanceSquared2Neighbors[j]), particle.tempVect2Neighbors[j]).multiplyScalar(scalarComponent));
+        particle.pressureForce.sub(this.interpolator.gradient(Math.sqrt(dist2Neighbor), particle.tempVect2Neighbors[j]).multiplyScalar(scalarComponent));
       }
     }
   }
@@ -177,30 +175,26 @@ PCISPHSystemSolver.prototype.accumulatePressureForce = function(timeIntervalInSe
   let inverseTargetDensity = this.PCIConstants.inverseOfTargetDensity;
   let particleMass = this.particleConstants.mass;
   let inverseOfMass = this.particleConstants.inverseOfMass;
+  let timeIntervalInSecondsTimesInverseOfMass = inverseOfMass * timeIntervalInSeconds;
   let maxDensityErrorRatio = this.PCIConstants.maxDensityErrorRatio;
   let negativePressureScale = this.PCIConstants.negativePressureScale;
   let delta = this.PCIConstants.delta;
 
   //Reset pressure state
-  let tempStates = [];
   let numParticles = this.particles.length;
-  let predictedDensities = new Float32Array(numParticles);
   for(let i = 0, numParticles = particles.length; i < numParticles; i++){
     let particle = particles[i];
     particle.pressure = 0.0;
     particle.pressureForce.set(0.0,0.0,0.0);
-    predictedDensities[i] = particle.density;
-    tempStates.push(particle.cloneToPCITemp());
   }
 
   for(let i = 0; i < this.PCIConstants.maxNumberOfIterations; i++){
     //Predict velocity and positiosns
     for(let j = 0, numParticles = particles.length; j < numParticles; j++){
       let particle = particles[j];
-      let tempState = tempStates[j];
-      let tempVelocity = particle.velocity.clone().add((particle.force.clone().add(particle.pressureForce)).multiplyScalar(timeIntervalInSeconds * inverseOfMass));
-      tempState.velocity = tempVelocity;
-      tempState.position = particle.position.clone(tempVelocity.clone().multiplyScalar(timeIntervalInSeconds));
+      let tempVelocity = particle.velocity.clone().add((particle.force.clone().add(particle.pressureForce)).multiplyScalar(timeIntervalInSecondsTimesInverseOfMass));
+      particle.tempVelocity = tempVelocity;
+      particle.tempPosition = particle.position.clone().add(tempVelocity.clone().multiplyScalar(timeIntervalInSeconds));
 
       //Resolve collisions
       if(this.debug_enableCollisions){
@@ -209,7 +203,7 @@ PCISPHSystemSolver.prototype.accumulatePressureForce = function(timeIntervalInSe
         //this resolution ends inside of a mesh, the second iteration of
         //this method will simply move the particle back out to the nearest
         //point on the surface with a velocity of zero.
-        this.bucketGrid.resolveStaticMeshCollision(particle, tempState.position, tempState.velocity);
+        this.bucketGrid.resolveStaticMeshCollision(particle, particle.tempPosition, particle.tempVelocity);
       }
     }
 
@@ -226,18 +220,21 @@ PCISPHSystemSolver.prototype.accumulatePressureForce = function(timeIntervalInSe
       let weightSum = 0.0;
       let neighboringParticleData = particle.particlesInNeighborhood;
       for(let k = 0, numNeighbors = neighboringParticleData.length; k < numNeighbors; k++){
-        let distanceSquared = tempStates[k].position.distanceToSquared(tempStates[j].position);
+        let neighbor = neighboringParticleData[k];
+        let distanceSquared = neighbor.point.tempPosition.distanceToSquared(particle.tempPosition);
         particle.tempDistanceSquared2Neighbors.push(distanceSquared);
-        particle.tempVect2Neighbors.push(tempStates[k].position.clone().sub(tempStates[j].position));
+        particle.tempVect2Neighbors.push(neighbor.point.tempPosition.clone().sub(particle.tempPosition));
         weightSum += this.kernal.getMullerKernal(distanceSquared);
       }
-      //NOTE: Our weight sums are too small because our particles are too far apart.
-      //But they should always be below the BCC distance, which makes me wonder
-      //if that is a good distance to approximate our mass with.
       weightSum += this.kernal.mullerAtZeroDistance;
       let density = particleMass * weightSum;
       let densityError = (density - targetDensity);
       let pressure = delta * densityError;
+      // 
+      // if(particle.id === 0){
+      //   this.logNTimes('density', 1000, `${densityError}`);
+      //   this.logNTimes('targetDensity', 1000, `${delta}`);
+      // }
 
       if(pressure < 0.0){
         pressure *= negativePressureScale;
@@ -255,7 +252,7 @@ PCISPHSystemSolver.prototype.accumulatePressureForce = function(timeIntervalInSe
     }
 
     //Compute the pressure force
-    this.computePressureForce(tempStates);
+    this.computePressureForce();
 
     //Compute max density error
     let densityErrorRatio = maxDensityError * inverseTargetDensity;
@@ -264,12 +261,6 @@ PCISPHSystemSolver.prototype.accumulatePressureForce = function(timeIntervalInSe
     }
   }
 };
-
-PCISPHSystemSolver.prototype.resolveCollisions = function(tempStates){
-  //
-  //TODO: Still need to do this one.
-  //
-}
 
 PCISPHSystemSolver.prototype.accumulateViscosityForce = function(){
   let massSquared = this.particleConstants.viscosityCoefficientTimesMassSquared;
