@@ -8,7 +8,7 @@
 //instead estimate it's time of departure and check back and recalculate
 //the departure time at X% of the departure time. (try different values to see how it works)
 
-function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketGridID, parentParticleSystem, bucketConstants, minDistanceFromStaticCollider){
+function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketGridID, parentParticleSystem, bucketConstants, minDistanceFromStaticCollider, maxCollisionReflections){
   perfDebug.spotCheckPerformance('bucket grid initialization', true);
   this.buckets = [];
   this.hashedBuckets = {};
@@ -24,6 +24,7 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
   this.testingIterator = 0;
   this.minDistanceFromStaticCollider = minDistanceFromStaticCollider;
   this.minDistanceFromStaticColliderSquared = minDistanceFromStaticCollider * minDistanceFromStaticCollider;
+  this.maxCollisionReflections = maxCollisionReflections;
 
   let inverseRadius = parentParticleSystem.particleConstants.inverseRadius;
   for(let i = 0; i < 3; i++){
@@ -78,7 +79,8 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
       //Z seems like a fine coordinate to make my 'up', but I think Three JS actually thinks Y is up. Weird little program...
       //In the event that we need those, I have also made these 'axial' so that I can include the 'corner' cases later -
       //that is, probably when we need to predict when particles are leaving a given grid.
-      let currentHash = thisBucketGrid.getHashKeyFromPosition([center[0] - offset, center[1], center[2]]);
+      let currentHash;
+      currentHash = thisBucketGrid.getHashKeyFromPosition([center[0] - offset, center[1], center[2]]);
       let xMinus1 = currentHash in this.hashedBuckets ? this.hashedBuckets[currentHash] : false;
       currentHash = thisBucketGrid.getHashKeyFromPosition([center[0] + offset, center[1], center[2]]);
       let xPlus1 = currentHash in this.hashedBuckets ? this.hashedBuckets[currentHash] : false;
@@ -117,46 +119,70 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
 
   this.getPotentialPointsForSearch = function(inPosition, radius){
     let position = inPosition.isVector3 ? inPosition.toArray() : inPosition;
-    var hashOfUpperCornerBucket = this.getHashKeyFromPosition(position.map((x) => x + radius));
-    var hashofLowerCornerBucket = this.getHashKeyFromPosition(position.map((x) => x - radius));
-    var pointsFound = [];
-    var pointCollections = [];
+    let hashOfUpperCornerBucket = this.getHashKeyFromPosition(position.map((x) => x + radius));
+    let hashofLowerCornerBucket = this.getHashKeyFromPosition(position.map((x) => x - radius));
+    let pointsFound = [];
+    let pointCollections = [];
 
-    var rowRange = 0;
-    var currentBucket = this.hashedBuckets[hashOfUpperCornerBucket];
-    var lowerCornerBucket = this.hashedBuckets[hashofLowerCornerBucket];
+    let rowRange = 0;
+    let currentBucket = this.hashedBuckets[hashOfUpperCornerBucket];
+    let lowerCornerBucket = this.hashedBuckets[hashofLowerCornerBucket];
     if(!currentBucket || !lowerCornerBucket){
       return [];
     }
-    var searchLengthInBuckets = Math.round((currentBucket.getCenter()[0] - lowerCornerBucket.getCenter()[0]) / this.approximateSearchDiameter);
+    let searchLengthInBuckets = Math.round((currentBucket.getCenter()[0] - lowerCornerBucket.getCenter()[0]) / this.approximateSearchDiameter);
 
     //Fill in that curve
-    var goDownZ = true;
-    var goDownY = true;
-    for(var x = 0; x < searchLengthInBuckets; x++){
-      for(var y = 0; y < searchLengthInBuckets; y++){
-        for(var z = 0; z < searchLengthInBuckets; z++){
+    let goDownZ = true;
+    let goDownY = true;
+    let previousBucket;
+    for(let x = 0; x < searchLengthInBuckets; x++){
+      for(let y = 0; y < searchLengthInBuckets; y++){
+        for(let z = 0; z < searchLengthInBuckets; z++){
+          previousBucket = currentBucket;
           if(goDownZ){
             currentBucket = currentBucket.connectedBuckets.axial.z.minus1;
           }
           else{
             currentBucket = currentBucket.connectedBuckets.axial.z.plus1;
           }
+
+          if(currentBucket === false){
+            currentBucket = previousBucket;
+            break;
+          }
+
           pointCollections.push(currentBucket.points);
         }
         goDownZ = !goDownZ;
 
+        previousBucket = currentBucket;
         if(goDownY){
           currentBucket = currentBucket.connectedBuckets.axial.y.minus1;
         }
         else{
           currentBucket = currentBucket.connectedBuckets.axial.y.plus1;
         }
+
+        if(currentBucket === false){
+          currentBucket = previousBucket;
+          break;
+        }
+
+        pointCollections.push(currentBucket.points);
       }
       goDownY = !goDownY;
 
       //Go one down along x
+      previousBucket = currentBucket;
       currentBucket = currentBucket.connectedBuckets.axial.x.minus1;
+
+      if(currentBucket === false){
+        currentBucket = previousBucket;
+        break;
+      }
+
+      pointCollections.push(currentBucket.points);
     }
 
     return pointsFound.concat(...pointCollections);
@@ -335,7 +361,7 @@ BucketGrid.prototype.getSuperCoverOfLine = function(startingPoint, endingPoint, 
   return supercover;
 };
 
-BucketGrid.prototype.resolveStaticMeshCollision = function(particle, endingPosition, endingVelocity){
+BucketGrid.prototype.resolveStaticMeshCollision = function(particle, endingPosition, endingVelocity, numberOfCollisions = 0){
   //Get the starting position
   let startingPosition = particle.lastPosition.clone();
 
@@ -441,13 +467,19 @@ BucketGrid.prototype.resolveStaticMeshCollision = function(particle, endingPosit
       }
     }
 
+    //Also check if this vector is completely inside of our mesh, in which case we
+    //need to pop it back outside again to the minimum distance.
+    let isInsideOfMesh = closestPoint.clone().sub(startingPosition);
+    isInsideOfMesh = isInsideOfMesh.dot(closestFace.normal) > 0;
+
     //Not that because our normal has a length of 1...
-    if(closestDistanceSquared < this.minDistanceFromStaticColliderSquared){
+    if(closestDistanceSquared < this.minDistanceFromStaticColliderSquared || isInsideOfMesh){
       let resetPosition = closestFace.normal.clone();
       resetPosition.multiplyScalar(this.minDistanceFromStaticCollider);
       resetPosition.add(closestPoint);
       endingPosition.set(resetPosition.x, resetPosition.y, resetPosition.z);
       endingVelocity.reflect(closestFace.normal);
+      return numberOfCollisions < this.maxCollisionReflections ? false : this.resolveStaticMeshCollision(particle, endingPosition, endingVelocity, numberOfCollisions + 1);
     }
 
     return false;
@@ -462,14 +494,14 @@ BucketGrid.prototype.resolveStaticMeshCollision = function(particle, endingPosit
   //perfectly elastic (frictionless) collision.
   let rayRemainder = startingPosition.clone();
   rayRemainder.sub(collisionPosition);
+  endingVelocity.reflect(closestFace.normal);
   //Check that we're still not within the minimum distance
   let newEndingDistanceSquared = rayRemainder.dot(rayRemainder);
-  endingVelocity.reflect(closestFace.normal);
   if(newEndingDistanceSquared < this.minDistanceFromStaticColliderSquared){
     let resetPosition = closestFace.normal.clone().multiplyScalar(this.minDistanceFromStaticCollider);
     resetPosition.add(collisionPosition);
     endingPosition.set(resetPosition.x, resetPosition.y, resetPosition.z);
-    return true;
+    return numberOfCollisions < this.maxCollisionReflections ? true : this.resolveStaticMeshCollision(particle, endingPosition, endingVelocity, numberOfCollisions + 1);
   }
   let a = closestFace.normal.clone();
   a.multiplyScalar(2.0 * rayRemainder.dot(a));
@@ -478,7 +510,7 @@ BucketGrid.prototype.resolveStaticMeshCollision = function(particle, endingPosit
   rayRemainder.add(collisionPosition);
   endingPosition.set(rayRemainder.x, rayRemainder.y, rayRemainder.z);
 
-  return true;
+  return numberOfCollisions < this.maxCollisionReflections ? true : this.resolveStaticMeshCollision(particle, endingPosition, endingVelocity, numberOfCollisions + 1);
 };
 
 function BucketConstants(bucketWidth){

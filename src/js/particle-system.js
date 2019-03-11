@@ -1,4 +1,4 @@
-function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluidParams, minDistanceFromStaticCollider){
+function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluidParams, minDistanceFromStaticCollider, maxCollisionReflections){
   var thisParticleSystem = this;
   var parentFluidParams = parentFluidParams;
   this.parentFluidParams = parentFluidParams;
@@ -23,7 +23,7 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
   //Construct the bucket grid system to attach to this particle system so that we can track our particles,
   //as they're added, subtracted or moved. Not that we want our grid size equal to our particle radius.
   let bucketConstants = new BucketConstants(particleConstants.radius);
-  this.bucketGrid = new BucketGrid(upperCorner, lowerCorner, particleConstants.radius, parentFluidParams.el.id, thisParticleSystem, bucketConstants, minDistanceFromStaticCollider);
+  this.bucketGrid = new BucketGrid(upperCorner, lowerCorner, particleConstants.radius, parentFluidParams.el.id, thisParticleSystem, bucketConstants, minDistanceFromStaticCollider, maxCollisionReflections);
 
   //TODO: In the future, we might automatically construct an optimal grid from a gltf mesh.
   //Or allow for several choices. For now, we're just providing an upper and lower corner and building the optimal grid from that.

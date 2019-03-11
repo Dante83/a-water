@@ -230,7 +230,7 @@ PCISPHSystemSolver.prototype.accumulatePressureForce = function(timeIntervalInSe
       let density = particleMass * weightSum;
       let densityError = (density - targetDensity);
       let pressure = delta * densityError;
-      // 
+      //
       // if(particle.id === 0){
       //   this.logNTimes('density', 1000, `${densityError}`);
       //   this.logNTimes('targetDensity', 1000, `${delta}`);

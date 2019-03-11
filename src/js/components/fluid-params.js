@@ -18,7 +18,7 @@ AFRAME.registerComponent('fluid-params', {
     'particleDrawRadius': {type: 'number', default: 0.1},
     'targetSpacing' : {type: 'number', default: 0.1},
     'pciTimeStep': {type: 'number', default: 0.0013},
-    'gravity': {type: 'vec3', default: {x: 0.0, y: 0.0, z: -9.81}},
+    'gravity': {type: 'vec3', default: {x: 0.0, y: 0.0, z: -9.8}},
     'localWindVelocity': {type: 'vec3', default: {x: 0.0, y: 0.0, z: 0.0}},
     'dragCoeficient': {type: 'number', default: 0.1},
     'targetDensity': {type: 'number', default: 997.0},
@@ -29,8 +29,9 @@ AFRAME.registerComponent('fluid-params', {
     'staticSceneAccuracy': {type: 'number', default: 2},
     'maxNumberOfPCISteps': {type: 'number', default: 1},
     'maxDensityErrorRatio': {type: 'number', default: 0.1},
-    'negativePressureScale': {type: 'number', default: -0.01},
+    'negativePressureScale': {type: 'number', default: 0.01},
     'minimumCollisionRestorationDistance': {type: 'number', default: 0.08},
+    'maxCollisionReflections': {type: 'number', default: 50}
   },
   init: function(){
     this.loaded = false;
@@ -89,7 +90,7 @@ AFRAME.registerComponent('fluid-params', {
     this.kernal = new Kernal(kernalConstants);
     this.particleConstants = new ParticleConstants(this.data.dragCoeficient, this.data.particleRadius, this.data.targetSpacing, this.data.particleDrawRadius, this.data.viscosity, this.data.targetDensity, this.data.gravity, this.kernal, this.data.localWindVelocity);
     let staticSceneConstants = new StaticSceneConstants();
-    this.particleSystem = new ParticleSystem([2.5, 2.5, 3.0], [-2.5, -2.5, -0.5], this.particleConstants, this, this.data.minimumCollisionRestorationDistance);
+    this.particleSystem = new ParticleSystem([2.5, 2.5, 3.0], [-2.5, -2.5, -0.5], this.particleConstants, this, this.data.minimumCollisionRestorationDistance, this.data.maxCollisionReflections);
     this.el.emit('particle-system-constructed', {finished: true});
     this.staticScene = new StaticScene(this.particleSystem.bucketGrid, staticSceneConstants, this.data.staticSceneAccuracy);
 
