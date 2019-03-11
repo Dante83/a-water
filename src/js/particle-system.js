@@ -12,6 +12,8 @@ function ParticleSystem(upperCorner, lowerCorner, particleConstants, parentFluid
   this.PCISystemSolver;
   this.logs = {};
 
+  this.testingNumber = 0;
+
   //Basically, all of our particles are identical, so we calculate their universal values here and
   //then add this to every particle, allow it to reference the values through a point without redoing
   //the calculations, potentially a whole a bunch of times - even for internal functions that are called
@@ -143,7 +145,6 @@ ParticleSystem.prototype.updateParticles = function(timeIntervalInSeconds){
     let particle = this.particles[i];
     //And once again, resolve our collisions
     this.bucketGrid.resolveStaticMeshCollision(particle, particle.position, particle.velocity);
-
     particle.updateVelocity(timeIntervalInSeconds);
     particle.updatePosition(timeIntervalInSeconds);
   }
@@ -155,8 +156,6 @@ ParticleSystem.prototype.getNumberOfParticles = function(){
 
 ParticleSystem.prototype.getCenter = function(){
   let center = [];
-  console.log(this.upperCorner);
-  console.log(this.lowerCorner);
   for(let i = 0; i < 3; i++){
     center.push((this.upperCorner[i] + this.lowerCorner[i]) * 0.5);
   }

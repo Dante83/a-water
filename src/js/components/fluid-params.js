@@ -30,7 +30,7 @@ AFRAME.registerComponent('fluid-params', {
     'maxNumberOfPCISteps': {type: 'number', default: 1},
     'maxDensityErrorRatio': {type: 'number', default: 0.1},
     'negativePressureScale': {type: 'number', default: -0.01},
-    'minimumCollisionRestorationDistance': {type: 'number', default: 0.05},
+    'minimumCollisionRestorationDistance': {type: 'number', default: 0.08},
   },
   init: function(){
     this.loaded = false;

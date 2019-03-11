@@ -25,7 +25,9 @@ function StaticScene(bucketGrid, staticSceneConstants, numberOfDigitsBeforeMergi
   function Face(vertices, normal, hash){
     this.vertices = vertices;
     this.triangle = new THREE.Triangle(this.vertices[0].toVect3(), this.vertices[1].toVect3(), this.vertices[2].toVect3());
-    let triangleNormal = this.triangle.getNormal().clone().normalize();
+    let triangleNormal = new THREE.Vector3();
+    this.triangle.getNormal(triangleNormal);
+    triangleNormal.normalize();
     normal.normalize();
     let diff = normal.clone().sub(triangleNormal).manhattanLength();
     if(diff > 1E-6){

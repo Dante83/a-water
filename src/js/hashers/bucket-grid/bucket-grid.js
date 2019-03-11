@@ -23,6 +23,7 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
   this.halfMaxInteger = Math.floor(Number.MAX_SAFE_INTEGER * 0.5);
   this.testingIterator = 0;
   this.minDistanceFromStaticCollider = minDistanceFromStaticCollider;
+  this.minDistanceFromStaticColliderSquared = minDistanceFromStaticCollider * minDistanceFromStaticCollider;
 
   let inverseRadius = parentParticleSystem.particleConstants.inverseRadius;
   for(let i = 0; i < 3; i++){
@@ -336,7 +337,7 @@ BucketGrid.prototype.getSuperCoverOfLine = function(startingPoint, endingPoint, 
 
 BucketGrid.prototype.resolveStaticMeshCollision = function(particle, endingPosition, endingVelocity){
   //Get the starting position
-  let startingPosition = particle.lastPosition;
+  let startingPosition = particle.lastPosition.clone();
 
   //Note: To reduce the cost of this function, it should only run for particles that either start or
   //end on with a colliding or in static mesh bucket. This allows most of our buckets to ignore
@@ -347,7 +348,7 @@ BucketGrid.prototype.resolveStaticMeshCollision = function(particle, endingPosit
   // let startingBucket = this.hashedBuckets[this.getHashKeyFromPosition(startingPosition.toArray())];
   // let initialParticleCollisionState = startingBucket.isPointInStaticMesh(startingPosition);
   // if(initialParticleCollisionState.collidesWithMesh){
-  //   endingPosition = initialParticleCollisionState.collisionPoint;
+  //   endingPosition = initialParticleCollisionState.collisionPosition;
   //   endingVelocity = new THREE.Vector3();
   //   return true;
   // }
@@ -359,6 +360,7 @@ BucketGrid.prototype.resolveStaticMeshCollision = function(particle, endingPosit
     if(particle.id === 0){
       this.testingIterator += 1;
       this.testingIterator = this.testingIterator % 260;
+      let hash = this.getHashKeyFromPosition(startingPosition.toArray());
     }
     return false;
   }
@@ -403,7 +405,7 @@ BucketGrid.prototype.resolveStaticMeshCollision = function(particle, endingPosit
   let triangle;
   let closestFace;
   let closestPoint2Face = new THREE.Vector3();
-  let collisionPoint = new THREE.Vector3();
+  let collisionPosition = new THREE.Vector3();
   let noIntersectingPointFound = true;
   let ray = new THREE.Ray(startingPosition, originalVect.clone().multiplyScalar(1.0 / Math.sqrt(orginalVectDistSq)));
   let closestDistanceSquared;
@@ -412,16 +414,42 @@ BucketGrid.prototype.resolveStaticMeshCollision = function(particle, endingPosit
     triangle = faces[i].triangle;
     let intersectsTriangle = ray.intersectTriangle(triangle.a, triangle.b, triangle.c, true, closestPoint2Face);
     if(intersectsTriangle !== null){
-      let distanceSquared = startingPosition.distanceToSquared(closestPoint2Face);
-      if(distanceSquare2Beat < distanceSquared){
+      let distanceSquared = startingPosition.distanceToSquared(intersectsTriangle);
+      if(distanceSquared < distanceSquare2Beat){
         noIntersectingPointFound = false;
-        collisionPoint = closestPoint2Face.clone();
+        collisionPosition = intersectsTriangle.clone();
         distanceSquare2Beat = distanceSquared;
         closestFace = faces[i];
       }
     }
   }
   if(noIntersectingPointFound){
+    //If no intersecting point is found, find the closest face.
+    closestFace = faces[0];
+    let closestPoint = new THREE.Vector3();
+    closestFace.triangle.closestPointToPoint(endingPosition, closestPoint);
+    let closestDistanceSquared = closestPoint.distanceToSquared(endingPosition);
+    for(let i = 1; i < faces.length; i++){
+      face = faces[i];
+      let testPoint = new THREE.Vector3();
+      face.triangle.closestPointToPoint(endingPosition, testPoint);
+      let testDistance = testPoint.distanceToSquared(endingPosition);
+      if(testDistance < closestDistanceSquared){
+        closestDistanceSquared = testDistance;
+        closestPoint = testPoint;
+        closestFace = faces[i];
+      }
+    }
+
+    //Not that because our normal has a length of 1...
+    if(closestDistanceSquared < this.minDistanceFromStaticColliderSquared){
+      let resetPosition = closestFace.normal.clone();
+      resetPosition.multiplyScalar(this.minDistanceFromStaticCollider);
+      resetPosition.add(closestPoint);
+      endingPosition.set(resetPosition.x, resetPosition.y, resetPosition.z);
+      endingVelocity.reflect(closestFace.normal);
+    }
+
     return false;
   }
 
@@ -432,14 +460,23 @@ BucketGrid.prototype.resolveStaticMeshCollision = function(particle, endingPosit
   //Flip the normal of our particle about the triangle and return and ending
   //position along this ray equal to the depth inside the mesh, to assume a
   //perfectly elastic (frictionless) collision.
-  let intersectedRay = endingPosition.clone().sub(collisionPoint);
-  endingPosition = intersectedRay.reflect(closestFace.normal).negate();
-  if(this.minDistanceFromStaticCollider > Math.sqrt(intersectedRay.clone().dot(intersectedRay))){
-    console.log("BLING!");
-    endingPosition.setLength(this.minDistanceFromStaticCollider);
-  }
-  endingPosition.add(collisionPoint);
+  let rayRemainder = startingPosition.clone();
+  rayRemainder.sub(collisionPosition);
+  //Check that we're still not within the minimum distance
+  let newEndingDistanceSquared = rayRemainder.dot(rayRemainder);
   endingVelocity.reflect(closestFace.normal);
+  if(newEndingDistanceSquared < this.minDistanceFromStaticColliderSquared){
+    let resetPosition = closestFace.normal.clone().multiplyScalar(this.minDistanceFromStaticCollider);
+    resetPosition.add(collisionPosition);
+    endingPosition.set(resetPosition.x, resetPosition.y, resetPosition.z);
+    return true;
+  }
+  let a = closestFace.normal.clone();
+  a.multiplyScalar(2.0 * rayRemainder.dot(a));
+  rayRemainder.sub(a);
+  rayRemainder.setLength(collisionPosition.distanceTo(endingPosition));
+  rayRemainder.add(collisionPosition);
+  endingPosition.set(rayRemainder.x, rayRemainder.y, rayRemainder.z);
 
   return true;
 };
