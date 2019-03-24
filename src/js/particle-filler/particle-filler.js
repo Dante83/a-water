@@ -115,10 +115,11 @@ function ParticleFiller(particleSystem, staticCollisionBuckets, staticScene, flu
     nearbyPoints = [...nearbyPoints, ...staticMesh.bucketCollisionPoints[bucketHash]];
 
     //Now with all of our points, let's find the closest point and determine if it's inside or outside
-    let faces = [];
+    let faceCollections = [];
     for(let i = 0; i < nearbyPoints.length; i++){
-      faces = [...faces, ...nearbyPoints[i].faces];
+      faceCollections.push(nearbyPoints[i].faces);
     }
+    let faces = [].concat.apply([], faceCollections);
 
     //Now figure out the closest face to our collisionPoint
     let closestFace = faces[0];
@@ -142,12 +143,12 @@ function ParticleFiller(particleSystem, staticCollisionBuckets, staticScene, flu
         if(newDistanceToPointSq < distToPointSq && Math.abs(testForInsideDistance) > 0.0001){
           //If it's closer, replace the previous face
           distToPointSq = newDistanceToPointSq;
-          closestFace = nearbyFace;
+          closestFace = faces[i];
           closestPointOnFace = closestPointOnThisTriangle;
         }
       }
     }
 
-    return origin.sub(closestPointOnFace).dot(closestFace.normal.clone()) < 0.0;
+    return (origin.clone().sub(closestPointOnFace)).dot(closestFace.normal.clone()) < 0.0;
   };
 }

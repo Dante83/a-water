@@ -84,10 +84,9 @@ BucketFace.prototype.getConnectedBucketHash = function(){
   //Use this point and the normal vector to find out where to search for our
   //second point, it should be in the direction of the normal and
   //half a bucket point away from our starting vector we found above.
-  let approximateConnectedBucketCenterVect3 = new THREE.Vector3();
-  approximateConnectedBucketCenterVect3.addVectors(centerOfMassPoint, this.normalVector);
-  let approximateConnectedBucketCenter = [];
-  approximateConnectedBucketCenterVect3.toArray(approximateConnectedBucketCenter, 0);
+  let aLittlePushAlongTheNormalVector = this.normalVector.clone().multiplyScalar(this.parentBucket.bucketConstants.halfBucketWidth * 0);
+  let pointInOtherBucket = centerOfMassPoint.clone().add(this.normalVector);
+  let approximateConnectedBucketCenter = [pointInOtherBucket.x, pointInOtherBucket.y, pointInOtherBucket.z];
 
   //Take this point and hash it, return this hash.
   //Even if it is not in this bucket grid, it might be in another bucket grid.

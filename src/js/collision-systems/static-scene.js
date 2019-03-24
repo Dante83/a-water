@@ -272,6 +272,14 @@ function StaticScene(bucketGrid, numberOfDigitsBeforeMergingVertices = 3){
       }
     }
 
+    //
+    //NOTE: Despite all of the below, it might just be better to do a collision test
+    //between each bucket box and each triangle to see if there are any collisions.
+    //In the end, because we're doing ray casts on each point, I don't think we need to
+    //create a set of searchable points. The collision system creates rays and those rays
+    //create intersection points.
+    //
+
     //For each face on our geometry.
     let meshFaces = Object.keys(thisStaticScene.hashedFaces).map(x => thisStaticScene.hashedFaces[x]);
     for(let i = 0, numMeshFaces = meshFaces.length; i < numMeshFaces; i++){
@@ -312,7 +320,7 @@ function StaticScene(bucketGrid, numberOfDigitsBeforeMergingVertices = 3){
       let xInterpolations = Math.ceil(Math.abs(vectDiff.x) * inverseApproximateSearchDiameter);
       let yInterpolations = Math.ceil(Math.abs(vectDiff.y) * inverseApproximateSearchDiameter);
       let zInterpolations = Math.ceil(Math.abs(vectDiff.z) * inverseApproximateSearchDiameter);
-      let largestNumInterpolations = Math.max(xInterpolations, yInterpolations, zInterpolations) + 1;
+      let largestNumInterpolations = Math.max(xInterpolations, yInterpolations, zInterpolations) * 3;
 
       //
       //Subcalculations useful for speeding up our interpolations

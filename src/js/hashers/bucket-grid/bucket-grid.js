@@ -392,7 +392,7 @@ BucketGrid.prototype.resolveStaticMeshCollision = function(particle, endingPosit
     return false;
   }
 
-  if(particle.id === 50){
+  if(particle.id === 40){
     if(this.testingIterator === 0){
       this.parentParticleSystem.parentFluidParams.el.emit('draw-moving-buckets', {
         particleSystem: this.parentParticleSystem,
@@ -518,6 +518,7 @@ BucketGrid.prototype.resolveStaticMeshCollision = function(particle, endingPosit
 
 function BucketConstants(bucketWidth){
   this.bucketWidth = bucketWidth;
+  this.halfBucketWidth = bucketWidth * 0.5;
   this.unitCoordinateTransform = 1.0 / bucketWidth;
   function pad(n, width) {
     n = n + '';
