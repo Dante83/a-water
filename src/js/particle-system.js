@@ -144,9 +144,9 @@ ParticleSystem.prototype.updateParticles = function(timeIntervalInSeconds){
   for(let i = 0, numParticles = this.particles.length; i < numParticles; i++){
     let particle = this.particles[i];
     //And once again, resolve our collisions
-    this.bucketGrid.resolveStaticMeshCollision(particle, particle.position, particle.velocity);
     particle.updateVelocity(timeIntervalInSeconds);
     particle.updatePosition(timeIntervalInSeconds);
+    this.bucketGrid.resolveStaticMeshCollision(particle, particle.position, particle.velocity);
   }
 };
 

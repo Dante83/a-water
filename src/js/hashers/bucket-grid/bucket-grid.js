@@ -383,15 +383,16 @@ BucketGrid.prototype.resolveStaticMeshCollision = function(particle, endingPosit
   //if the starting and ending bucket are the same, presume that this is the super cover.
   let supercoverOfParticleMotion = this.getSuperCoverOfLine(startingPosition, endingPosition, particle);
   if(supercoverOfParticleMotion.length === 0){
-    if(particle.id === 0){
+    if(particle.id === 40){
       this.testingIterator += 1;
       this.testingIterator = this.testingIterator % 260;
       let hash = this.getHashKeyFromPosition(startingPosition.toArray());
     }
+
     return false;
   }
 
-  if(particle.id === 0){
+  if(particle.id === 50){
     if(this.testingIterator === 0){
       this.parentParticleSystem.parentFluidParams.el.emit('draw-moving-buckets', {
         particleSystem: this.parentParticleSystem,
@@ -449,6 +450,7 @@ BucketGrid.prototype.resolveStaticMeshCollision = function(particle, endingPosit
       }
     }
   }
+
   if(noIntersectingPointFound){
     //If no intersecting point is found, find the closest face.
     closestFace = faces[0];
@@ -495,6 +497,7 @@ BucketGrid.prototype.resolveStaticMeshCollision = function(particle, endingPosit
   let rayRemainder = startingPosition.clone();
   rayRemainder.sub(collisionPosition);
   endingVelocity.reflect(closestFace.normal);
+
   //Check that we're still not within the minimum distance
   let newEndingDistanceSquared = rayRemainder.dot(rayRemainder);
   if(newEndingDistanceSquared < this.minDistanceFromStaticColliderSquared){

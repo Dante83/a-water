@@ -18,7 +18,7 @@ AFRAME.registerComponent('fluid-params', {
     'particleDrawRadius': {type: 'number', default: 0.1},
     'targetSpacing' : {type: 'number', default: 0.1},
     'pciTimeStep': {type: 'number', default: 0.0013},
-    'gravity': {type: 'vec3', default: {x: 0.0, y: 0.0, z: -9.8}},
+    'gravity': {type: 'vec3', default: {x: 0.0, y: 0.0, z: -0.1}},
     'localWindVelocity': {type: 'vec3', default: {x: 0.0, y: 0.0, z: 0.0}},
     'dragCoeficient': {type: 'number', default: 0.1},
     'targetDensity': {type: 'number', default: 997.0},
@@ -26,10 +26,10 @@ AFRAME.registerComponent('fluid-params', {
     'pseudoViscosityCoefficient': {type: 'number', default: 0.01},
     'eosExponent': {type: 'number', default: 7.0}, //Thanks to http://www.infomus.org/Events/proceedings/CASA2009/Bao.pdf
     'speedOfSound': {type: 'number', default: 1498.0},
-    'staticSceneAccuracy': {type: 'number', default: 2},
+    'staticSceneAccuracy': {type: 'number', default: 3},
     'maxNumberOfPCISteps': {type: 'number', default: 1},
     'maxDensityErrorRatio': {type: 'number', default: 0.1},
-    'negativePressureScale': {type: 'number', default: 0.01},
+    'negativePressureScale': {type: 'number', default: -0.0},
     'minimumCollisionRestorationDistance': {type: 'number', default: 0.08},
     'maxCollisionReflections': {type: 'number', default: 50}
   },
@@ -89,10 +89,9 @@ AFRAME.registerComponent('fluid-params', {
     let kernalConstants = new KernalConstants(this.data.particleRadius);
     this.kernal = new Kernal(kernalConstants);
     this.particleConstants = new ParticleConstants(this.data.dragCoeficient, this.data.particleRadius, this.data.targetSpacing, this.data.particleDrawRadius, this.data.viscosity, this.data.targetDensity, this.data.gravity, this.kernal, this.data.localWindVelocity);
-    let staticSceneConstants = new StaticSceneConstants();
     this.particleSystem = new ParticleSystem([2.5, 2.5, 3.0], [-2.5, -2.5, -0.5], this.particleConstants, this, this.data.minimumCollisionRestorationDistance, this.data.maxCollisionReflections);
     this.el.emit('particle-system-constructed', {finished: true});
-    this.staticScene = new StaticScene(this.particleSystem.bucketGrid, staticSceneConstants, this.data.staticSceneAccuracy);
+    this.staticScene = new StaticScene(this.particleSystem.bucketGrid, this.data.staticSceneAccuracy);
 
     //Trigger the partitioning of our mesh into a set of intersectable point for easy searching
     //in each bucket.
@@ -103,6 +102,7 @@ AFRAME.registerComponent('fluid-params', {
     }
     this.staticScene.getFaceCollisionPoints();
     let collisionSurfaceHashedBuckets = this.staticScene.filterBucketsInsideVersesOutside();
+    this.staticScene.triggerDrawCollidedBuckets(collisionSurfaceHashedBuckets);
     this.staticScene.attachMeshToBucketGrid(collisionSurfaceHashedBuckets);
 
     //
@@ -126,7 +126,7 @@ AFRAME.registerComponent('fluid-params', {
     //Populate our initial particles
     //TODO: In the future this should be done by AI approximation to estimate what
     //we expect the system to look like.
-    let fluidCollisionBound = new StaticScene(this.particleSystem.bucketGrid, staticSceneConstants, this.data.staticSceneAccuracy);
+    let fluidCollisionBound = new StaticScene(this.particleSystem.bucketGrid, this.data.staticSceneAccuracy);
     for(let i = 0, numOfFluidGeometries = this.currentFluidGeometries.length; i < numOfFluidGeometries; i++){
       let fluidBufferGeometry = this.currentFluidGeometries[i].components.geometry.geometry;
       let worldMatrixOfFluidBufferGeometry = this.currentFluidGeometries[i].object3D.matrixWorld;
@@ -134,7 +134,7 @@ AFRAME.registerComponent('fluid-params', {
     }
     fluidCollisionBound.getFaceCollisionPoints();
     let fluidSurfaceHashedBuckets = fluidCollisionBound.filterBucketsInsideVersesOutside();
-    fluidCollisionBound.triggerDrawCollidedBuckets(fluidSurfaceHashedBuckets);
+    //fluidCollisionBound.triggerDrawCollidedBuckets(fluidSurfaceHashedBuckets);
 
     //
     //NOTE: For testing purposes only
@@ -202,7 +202,7 @@ AFRAME.registerComponent('fluid-params', {
       for(let i = 0; i < numSPISPHIterations; i++){
         //Gerstner Wave Solver
 
-        //Heightmap Fluid Solver
+        //Wave Particle Solution
 
         //SPH Fluid Solver
         this.particleSystem.updateParticles(this.data.pciTimeStep); //Update our neighbors list and densities
