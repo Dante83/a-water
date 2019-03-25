@@ -13,44 +13,57 @@ function ParticleFiller(particleSystem, staticCollisionBuckets, staticScene, flu
   var self = this;
 
   this.fillMesh = function(targetSpacing){
-    //
-    //For testing purposes. Honestly, we need to figure out the steady state density for our particles.
-    //That is, the point at which all the forces on our particles are zero. We might even require optimization
-    //methods if our particle density varies with position.
-    //
-    let density = 8.0 / (targetSpacing);
+    let halfSpacing = 0.5 * targetSpacing;
     let staticScene = self.staticScene;
     let fluidMesh = self.fluidMesh;
-
-    //Periodically add points to our system such that it matches the target density.
-    let cubedRootOfDensity = density ** (1.0 / 3.0);
-    let bucketGridLengthInMeters = self.bucketGrid.gridLengthInMeters;
-    let xPoints = Math.ceil(cubedRootOfDensity * bucketGridLengthInMeters[0]);
-    let yPoints = Math.ceil(cubedRootOfDensity * bucketGridLengthInMeters[1]);
-    let zPoints = Math.ceil(cubedRootOfDensity * bucketGridLengthInMeters[2]);
     let startingPosition = self.bucketGrid.gridLowerCoordinates.slice(0);
+    let halfSpacingPlusStartingX = halfSpacing + startingPosition[0];
+    let halfSpacingPlusStartingZ = halfSpacing + startingPosition[2];
     let endingPosition = self.bucketGrid.gridUpperCoordinates.slice(0);
-
-    let xDiff = (endingPosition[0] - startingPosition[0]) / xPoints;
-    let yDiff = (endingPosition[1] - startingPosition[1]) / yPoints;
-    let zDiff = (endingPosition[2] - startingPosition[2]) / zPoints;
+    let boxWidth = endingPosition[0] - startingPosition[0];
+    let boxDepth = endingPosition[1] - startingPosition[1];
+    let boxHeight = endingPosition[2] - startingPosition[2];
+    let numYIterations = Math.floor(boxDepth / halfSpacing);
+    let numXIterations;
+    let numZIterations;
+    let numXIterationsWithOffset = Math.floor((boxWidth + targetSpacing) / targetSpacing);;
+    let numXIterationsWithoutOffset = Math.floor(boxWidth / targetSpacing);
+    let numZIterationsWithOffset = Math.floor((boxHeight + targetSpacing) / targetSpacing);
+    let numZIterationsWithoutOffset = Math.floor(boxHeight / targetSpacing);
 
     //For our particle system to add the particles
     let newPositions = [];
     let newVelocities = []; //NOTE: In the future, maybe we want to make these non-static and expand upon this class a bit more?
 
+    let hasOffset = false;
     let xPosition = startingPosition[0];
-    for(let x = 0; x < xPoints; x++){
-      let yPosition = startingPosition[1];
-      for(let y = 0; y < yPoints; y++){
-        let zPosition = startingPosition[2];
-        for(let z = 0; z < zPoints; z++){
+    let yPosition = startingPosition[1];
+    let zPosition = startingPosition[2];
+    let startingPositionX = startingPosition[0];
+    let startingPositionZ = startingPosition[2];
+    let xOffset;
+    let yOffset;
+    for(let i = 0; i < numYIterations; i++){
+      yPosition += halfSpacing;
+
+      if(hasOffset){
+        xOffset = halfSpacingPlusStartingX;
+        zOffset = halfSpacingPlusStartingZ;
+        numXIterations = numXIterationsWithOffset;
+        numZIterations = numZIterationsWithOffset;
+      }
+      else{
+        xOffset = startingPositionX;
+        zOffset = startingPositionZ;
+        numXIterations = numXIterationsWithoutOffset;
+        numZIterations = numZIterationsWithoutOffset;
+      }
+      for(let j = 0; j <= numXIterations; j++){
+        xPosition = j * targetSpacing + xOffset;
+        for(let k = 0; k <= numZIterations; k++){
+          zPosition = k * targetSpacing + zOffset;
+
           //Hash point position.
-          //
-          //TODO: This specifically tests if it is TRULY inside of the mesh, but ignores buckets that just collide with the mesh
-          //but are not entirely in either category. These should be handled individually in a seperate if branch that
-          //check the particle in the event that it falls along the edge to determine inside verses outside.
-          //
           let hash = self.bucketGrid.getHashKeyFromPosition([xPosition, yPosition, zPosition]);
           let staticCollisionBucket = staticCollisionBuckets[hash];
           let fluidCollisionBucket = fluidCollisionBuckets[hash];
@@ -86,12 +99,10 @@ function ParticleFiller(particleSystem, staticCollisionBuckets, staticScene, flu
             newPositions.push([xPosition, yPosition, zPosition]);
             newVelocities.push([0.0,0.0,0.0]);
           }
-
-          zPosition += zDiff;
         }
-        yPosition += yDiff;
       }
-      xPosition += xDiff;
+
+      hasOffset = !hasOffset;
     }
 
     //Ready to display those extra particles :D
@@ -140,7 +151,7 @@ function ParticleFiller(particleSystem, staticCollisionBuckets, staticScene, flu
         //Check if the distance to this collisionPoint is less than the previous distance
         let newDistanceToPointSq = origin.distanceToSquared(closestPointOnThisTriangle);
         let testForInsideDistance = origin.clone().sub(closestPointOnThisTriangle).dot(nearbyFace.normal);
-        if(newDistanceToPointSq < distToPointSq && Math.abs(testForInsideDistance) > 0.0001){
+        if(newDistanceToPointSq < distToPointSq && Math.abs(testForInsideDistance) > 0.01){
           //If it's closer, replace the previous face
           distToPointSq = newDistanceToPointSq;
           closestFace = faces[i];
