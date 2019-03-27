@@ -35,9 +35,6 @@ PCISPHSystemSolver.prototype.updateForces = function(timeIntervalInSeconds){
   }
 
   //Update the forces for all of our particles
-  if(this.debug_enableVicosityForces){
-    this.accumulateViscosityForce();
-  }
   if(this.debug_enableWindResistance){
     this.calculateWindResistanceForce();
   }
@@ -47,9 +44,6 @@ PCISPHSystemSolver.prototype.updateForces = function(timeIntervalInSeconds){
 
     if(this.debug_enableGravity){
       particle.force.add(particle.constants.gravitationalForce);
-    }
-    if(this.debug_enableVicosityForces){
-      particle.force.add(particle.viscocityForce);
     }
     if(this.debug_enableWindResistance){
       particle.force.add(particle.windResistanceForce);
@@ -62,6 +56,16 @@ PCISPHSystemSolver.prototype.updateForces = function(timeIntervalInSeconds){
       particles[i].force.add(particles[i].pressureForce);
     }
   }
+  if(this.debug_enableVicosityForces){
+    this.accumulateViscosityForce();
+  }
+  if(this.debug_enableVicosityForces){
+    for(let i = 0, numParticles = particles.length; i < numParticles; i++){
+      particles[i].force.add(particles[i].viscocityForce);
+    }
+  }
+
+  this.logNTimes('num particles', 1, particles.length);
 
   //Accumulate the forces for each particle
   for(let i = 0, numParticles = particles.length; i < numParticles; i++){
@@ -198,11 +202,6 @@ PCISPHSystemSolver.prototype.accumulatePressureForce = function(timeIntervalInSe
 
       //Resolve collisions
       if(this.debug_enableCollisions){
-        //Note: This only deals with a single collision event.
-        //If multiple reflections occur, so that the ending point of
-        //this resolution ends inside of a mesh, the second iteration of
-        //this method will simply move the particle back out to the nearest
-        //point on the surface with a velocity of zero.
         this.bucketGrid.resolveStaticMeshCollision(particle, particle.tempPosition, particle.tempVelocity);
       }
     }
@@ -223,17 +222,16 @@ PCISPHSystemSolver.prototype.accumulatePressureForce = function(timeIntervalInSe
         let neighbor = neighboringParticleData[k];
         let distanceSquared = neighbor.point.tempPosition.distanceToSquared(particle.tempPosition);
         particle.tempDistanceSquared2Neighbors.push(distanceSquared);
-        particle.tempVect2Neighbors.push(neighbor.point.tempPosition.clone().sub(particle.tempPosition));
+        particle.tempVect2Neighbors.push((neighbor.point.tempPosition.clone()).sub(particle.tempPosition));
         weightSum += this.kernal.getMullerKernal(distanceSquared);
       }
       weightSum += this.kernal.mullerAtZeroDistance;
       let density = particleMass * weightSum;
       let densityError = (density - targetDensity);
       let pressure = delta * densityError;
-      //
+
       // if(particle.id === 0){
-      //   this.logNTimes('density', 1000, `${densityError}`);
-      //   this.logNTimes('targetDensity', 1000, `${delta}`);
+      //   this.logNTimes('densityError', 1000, `${densityError}`);
       // }
 
       if(pressure < 0.0){
@@ -263,20 +261,20 @@ PCISPHSystemSolver.prototype.accumulatePressureForce = function(timeIntervalInSe
 };
 
 PCISPHSystemSolver.prototype.accumulateViscosityForce = function(){
-  let massSquared = this.particleConstants.viscosityCoefficientTimesMassSquared;
+  let massSquared = this.particleConstants.massSquared;
   let viscocityCoefficient = this.particleConstants.viscocityCoeficient;
-  let viscocityCoeficientTimesMassSquared = viscocityCoefficient * viscocityCoefficient;
+  let viscocityCoeficientTimesMassSquared = this.particleConstants.viscosityCoefficientTimesMassSquared;
   for(let i = 0, numParticles = this.particles.length; i < numParticles; i++){
     let particle = this.particles[i];
     let ithParticlePressureOverDensitySquared =  particle.pressure * particle.inverseDensitySquared;
     let neighbors = particle.particlesInNeighborhood;
     particle.viscocityForce.set(0.0,0.0,0.0);
-    let ithParticleVelocity = particle.velocity;
+    let ithParticleVelocity = particle.tempVelocity;
     for(let j = 0, numNeighbors = neighbors.length; j < numNeighbors; j++){
       let neighboringParticle = neighbors[j].point;
-      let distance = neighbors[j].distance;
+      let distance = Math.sqrt(particle.tempDistanceSquared2Neighbors[j]);
       let scalarComponent = viscocityCoeficientTimesMassSquared * neighboringParticle.inverseDensity;
-      let littleViscosityForce = ithParticleVelocity.clone().sub(neighboringParticle.velocity).multiplyScalar(scalarComponent);
+      let littleViscosityForce = (ithParticleVelocity.clone().sub(neighboringParticle.tempVelocity)).multiplyScalar(scalarComponent);
       particle.viscocityForce.add(littleViscosityForce);
     }
   }
