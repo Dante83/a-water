@@ -80,7 +80,6 @@ InterpolationEngine.prototype.updateParticles = function(){
   const oneOverRadiusSquared = this.particleConstants.oneOverRadiusSquared;
   for(let i = 0, numParticles = particles.length; i < numParticles; i++){
     let particle = particles[i];
-    particle.updateParticlesInNeighborhood();
     let particlesInSearchRadius = particle.particlesInNeighborhood;
     let densitySum = 0.0;
     for(let j = 0, numParticlesInNeighborhood = particlesInSearchRadius.length; j < numParticlesInNeighborhood; j++){

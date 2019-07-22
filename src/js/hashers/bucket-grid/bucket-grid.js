@@ -43,7 +43,6 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
 
   perfDebug.spotCheckPerformance('bucket grid function initialization', true);
   this.getHashKeyFromPosition = function(position){
-    perfDebug.spotCheckPerformance('get hash key', true);
     let bucketGridLocalCoordinates = [];
     let inverseRadius = this.particleConstants.inverseRadius;
     bucketGridLocalCoordinates[0] = Math.floor((position[0] - thisBucketGrid.gridLowerCoordinates[0]) * inverseRadius);
@@ -53,8 +52,7 @@ function BucketGrid(upperCorner, lowerCorner, approximateSearchDiameter, bucketG
     let hashSection1 = bucketGridLocalCoordinates[0];
     let hashSection2 = hashSection1 + bucketGridLocalCoordinates[1] * 1024;
     let finalHash = hashSection2 + bucketGridLocalCoordinates[2] * 1048576;
-    perfDebug.spotCheckPerformance('get hash key', false);
-    return finalHash.toString();
+    return finalHash;
   }
 
   this.addBucket = function(upperCorner, radius){

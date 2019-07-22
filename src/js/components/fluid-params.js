@@ -14,9 +14,9 @@ AFRAME.registerComponent('fluid-params', {
     'searchBucketDiameter': {type: 'number', default: 10.0},
     'upperCorner': {type: 'vec3', default: {x: 0.0, y: 0.0, z: 0.0}},
     'lowerCorner': {type: 'vec3', default: {x: 0.0, y: 0.0, z: 0.0}},
-    'particleRadius': {type: 'number', default: 0.65},
+    'particleRadius': {type: 'number', default: 0.5},
     'particleDrawRadius': {type: 'number', default: 0.5},
-    'targetSpacing' : {type: 'number', default: 0.5},
+    'targetSpacing' : {type: 'number', default: 0.25},
     'pciTimeStep': {type: 'number', default: 0.0013},
     'gravity': {type: 'vec3', default: {x: 0.0, y: 0.0, z: -9.8}},
     'localWindVelocity': {type: 'vec3', default: {x: 0.0, y: 0.0, z: 0.0}},
@@ -197,8 +197,17 @@ AFRAME.registerComponent('fluid-params', {
       //Knowledge about this fluid section and the computational
       //limits of our system are used here to determine which solvers to implement.
       //
-      let numSPISPHIterations = Math.ceil(estTimeIntervalInSeconds / this.data.pciTimeStep);
+      let numSPISPHIterations = Math.ceil(0.013 / this.data.pciTimeStep);
       numSPISPHIterations = numSPISPHIterations < 1 ? 1 : numSPISPHIterations;
+
+      //Update the particle neighborhood every tick
+      //not every iteration of our particle solver.
+      let particles = this.particleSystem.particles;
+      for(let i = 0, numParticles = particles.length; i < numParticles; i++){
+        let particle = particles[i];
+        particle.updateParticlesInNeighborhood();
+      }
+
       for(let i = 0; i < numSPISPHIterations; i++){
         //Gerstner Wave Solver
 
