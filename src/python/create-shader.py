@@ -1,26 +1,21 @@
 import os, time, re
 
 def ShaderFileWatcher():
+    #Reload a list of our file locations and write locations
+    template_files = ['../js/ocean-system/shaders/LUTs/noise-shader-template.txt',\
+    '../js/ocean-system/shaders/LUTs/h_0-shader-template.txt']
+    shader_js_files = ['../js/ocean-system/shaders/LUTs/noise-shader.js',\
+    '../js/ocean-system/shaders/LUTs/h_0-shader.js']
+    shader_vertex_files = ['../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
+    '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl']
+    shader_fragment_files = ['../glsl/gerstner-wave-LUTS/noise-frag.glsl',\
+    '../glsl/gerstner-wave-LUTS/h_0-frag.glsl']
+
     #Where is everything located? Give some relative paths that python can follow
-    sky_shader_template_name = os.path.abspath("sky_shader_template.txt")
-    sky_shader_file_name = os.path.abspath("../js/sky-shader.js")
-    sky_shader_vertex_file = os.path.abspath("../glsl/sky_vertex.glsl")
-    sky_shader_fragment_file = os.path.abspath("../glsl/sky_fragment.glsl")
-
-    moon_shader_template_name = os.path.abspath("moon_shader_template.txt")
-    moon_shader_file_name = os.path.abspath("../js/moon-shader.js")
-    moon_shader_vertex_file = os.path.abspath("../glsl/moon_vertex.glsl")
-    moon_shader_fragment_file = os.path.abspath("../glsl/moon_fragment.glsl")
-
-    sun_shader_template_name = os.path.abspath("sun_shader_template.txt")
-    sun_shader_file_name = os.path.abspath("../js/sun-shader.js")
-    sun_shader_vertex_file = os.path.abspath("../glsl/sun_vertex.glsl")
-    sun_shader_fragment_file = os.path.abspath("../glsl/sun_fragment.glsl")
-
-    template_names = [sky_shader_template_name, moon_shader_template_name, sun_shader_template_name]
-    file_names = [sky_shader_file_name, moon_shader_file_name, sun_shader_file_name]
-    vertex_files = [sky_shader_vertex_file, moon_shader_vertex_file, sun_shader_vertex_file]
-    fragment_files = [sky_shader_fragment_file, moon_shader_fragment_file, sun_shader_fragment_file]
+    template_names = [os.path.abspath(x) for x in template_files]
+    file_names = [os.path.abspath(x) for x in shader_js_files]
+    vertex_files = [os.path.abspath(x) for x in shader_vertex_files]
+    fragment_files = [os.path.abspath(x) for x in shader_fragment_files]
 
     num_files = len(template_names)
     previousVertexFileChangeDates = [None for x in xrange(num_files)]
