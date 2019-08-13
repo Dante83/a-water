@@ -1,17 +1,13 @@
 //This helps
 //--------------------------v
 //https://github.com/mrdoob/three.js/wiki/Uniforms-types
-var h0ShaderMaterial = new THREE.ShaderMaterial({
+var hkShaderMaterial = new THREE.ShaderMaterial({
   uniforms: {
-    noise_r0: {type: 't', value: null},
+    h_o_k: {type: 't', value: null},
     noise_i0: {type: 't', value: null},
-    noise_r1: {type: 't', value: null},
-    noise_i1: {type: 't', value: null},
     N: {type: 'f', value: 256.0},
     L: {type: 'f', value: 1000.0},
-    A: {type: 'f', value: 20.0},
-    L_Value: {type: 'f', value: 0.0},
-    w: {type: 'v2', value: new THREE.Vector2(1.0, 0.0)}
+    L: {type: 'f', value: 0.0},
   },
 
   transparent: false,
