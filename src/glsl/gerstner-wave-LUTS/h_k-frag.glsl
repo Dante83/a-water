@@ -8,8 +8,10 @@ varying vec3 vWorldPosition;
 //With a lot of help from https://youtu.be/i0BPrGuOdPo
 uniform sampler2D h_0_k;
 uniform float L; //1000.0
-uniform float t; //20
+uniform float N; //256.0
+uniform float uTime; //0.0
 const float g = 9.80665;
+const float piTimes2 = 6.283185307179586476925286766559005768394338798750211641949;
 const float pi = 3.141592653589793238462643383279502884197169;
 
 vec2 cMult(vec2 a, vec2 b){
@@ -20,8 +22,8 @@ vec2 cAdd(vec2 a, vec2 b){
   return vec2(a.x + b.x, a.y + b.y);
 }
 
-vec2 conj(vec2 a){
-  return vec2(a.x, -a.y);
+vec2 conjugate(vec2 a){
+  return vec2(a.x, -1.0 * a.y);
 }
 
 void main(){
@@ -29,24 +31,24 @@ void main(){
   vec2 k = vec2(piTimes2 / L) * x;
   float magK = length(k);
   if (magK < 0.0001) magK = 0.0001;
-  float w = (g * magK)
+  float w = sqrt(g * magK);
 
-  vec4 tilda_h0 = texture2D(h_0_k, texCoord);
-  tilda_h0_k = tilda_h0.xy;
-  tilda_h0__minus_k_conj = conj(tilda_h0.zw);
+  vec4 tilda_h0 = texture2D(h_0_k, vWorldPosition.xy);
+  vec2 tilda_h0_k = tilda_h0.rg;
+  vec2 tilda_h0_minus_k_conj = conjugate(tilda_h0.ba);
 
-  float sinus = sin(w * t);
-  float cosinus = cos(w * t);
+  float cosOfWT = cos(w * uTime);
+  float sinOfWT = sin(w * uTime);
 
   //Euler Formula
-  vec2 expIwt = vec2(sinus, cosinus);
-  vec2 expIwtConj = vec2(sinus, -cosinus);
+  vec2 expIwt = vec2(cosOfWT, sinOfWT);
+  vec2 expIwtConj = vec2(cosOfWT, -sinOfWT);
 
   //dy
-  vec2 hk_t_dy = cAdd(cMult(tilda_h0_k, expIwt), cMult(tilda_h0__minus_k_conj, expIwtConj));
+  vec2 hk_t_dy = cAdd(cMult(tilda_h0_k, expIwt), cMult(tilda_h0_minus_k_conj, expIwtConj));
 
   //We can actually pull this back in later on, because our hk_t_dx and hk_t_dz are just dependent
   //upon the above, k and magnitude
   //gl_FragColor =vec4(gaussianRandomNumber.xy * h0_k, gaussianRandomNumber.zw * h0_minusk);
-  gl_FragColor =vec4(dx, 0.0, 1.0);
+  gl_FragColor =vec4(hk_t_dy, 0.0, 1.0);
 }

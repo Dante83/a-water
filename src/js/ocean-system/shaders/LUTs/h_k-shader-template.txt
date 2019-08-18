@@ -3,11 +3,10 @@
 //https://github.com/mrdoob/three.js/wiki/Uniforms-types
 var hkShaderMaterial = new THREE.ShaderMaterial({
   uniforms: {
-    h_o_k: {type: 't', value: null},
-    noise_i0: {type: 't', value: null},
+    h_0_k: {type: 'time', value: null},
     N: {type: 'f', value: 256.0},
     L: {type: 'f', value: 1000.0},
-    L: {type: 'f', value: 0.0},
+    uTime: {type: 'f', value: 0.0}
   },
 
   transparent: false,

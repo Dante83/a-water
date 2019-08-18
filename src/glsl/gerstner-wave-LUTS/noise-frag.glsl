@@ -24,5 +24,5 @@ float rand(float x){
 }
 
 void main(){
-  gl_FragColor = vec4(vec3(rand(vWorldPosition.x * uImgSize.x + vWorldPosition.y * uImgSize.y * uImgSize.x + offset)), 1.0);
+  gl_FragColor = vec4(vec3(rand((uImgSize.x * (vWorldPosition.x + vWorldPosition.y * uImgSize.y)) * offset)), 1.0);
 }
