@@ -4,16 +4,24 @@ def ShaderFileWatcher():
     #Reload a list of our file locations and write locations
     template_files = ['../js/ocean-system/shaders/LUTs/noise-shader-template.txt',\
     '../js/ocean-system/shaders/LUTs/h_0-shader-template.txt',\
-    '../js/ocean-system/shaders/LUTs/h_k-shader-template.txt']
+    '../js/ocean-system/shaders/LUTs/h_k-shader-template.txt',\
+    '../js/ocean-system/shaders/LUTs/pingpong-template.txt',\
+    '../js/ocean-system/shaders/LUTs/fft-inverter-template.txt']
     shader_js_files = ['../js/ocean-system/shaders/LUTs/noise-shader.js',\
     '../js/ocean-system/shaders/LUTs/h_0-shader.js',\
-    '../js/ocean-system/shaders/LUTs/h_k-shader.js']
+    '../js/ocean-system/shaders/LUTs/h_k-shader.js',\
+    '../js/ocean-system/shaders/LUTs/pingpong-shader.js',\
+    '../js/ocean-system/shaders/LUTs/fft-inverter-shader.js']
     shader_vertex_files = ['../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
+    '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
+    '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
     '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
     '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl']
     shader_fragment_files = ['../glsl/gerstner-wave-LUTS/noise-frag.glsl',\
     '../glsl/gerstner-wave-LUTS/h_0-frag.glsl',\
-    '../glsl/gerstner-wave-LUTS/h_k-frag.glsl']
+    '../glsl/gerstner-wave-LUTS/h_k-frag.glsl',\
+    '../glsl/gerstner-wave-LUTS/pingpong-frag.glsl',\
+    '../glsl/gerstner-wave-LUTS/fft-inverter-frag.glsl']
 
     #Where is everything located? Give some relative paths that python can follow
     template_names = [os.path.abspath(x) for x in template_files]

@@ -14,7 +14,7 @@ function computeTwiddleIndices(N, renderer){
       binary.push('0');
     }
     let constantSignBitReversedInteger = binary.reverse();
-    constantSignBitReversedInteger.push(1);
+    constantSignBitReversedInteger.push('1');
     let bitReversedInteger = parseInt(constantSignBitReversedInteger.join(""), 2);
     twiddleIndices.push(bitReversedInteger);
   }
@@ -30,9 +30,10 @@ function computeTwiddleIndices(N, renderer){
   let butterflySpan = 1.0;
   //Initialization, x = 0
   let nextButterflySpan = butterflySpan * 2.0;
+  let twoPiOverN = 2.0 * Math.PI / N;
   for(let y = 0; y < textureHeight; y++){
     let k = (y * N / nextButterflySpan) % N;
-    let twiddle = [Math.cos(2.0 * Math.PI * k / N) + 1.0, Math.sin(2.0 * Math.PI * k / N)];
+    let twiddle = [Math.cos(twoPiOverN * k), Math.sin(twoPiOverN * k)];
     if((y % nextButterflySpan) < butterflySpan){
       twiddleTexture[0][y][0] = twiddle[0];
       twiddleTexture[0][y][1] = twiddle[1];
@@ -53,17 +54,17 @@ function computeTwiddleIndices(N, renderer){
     nextButterflySpan *= 2.0;
     for(let y = 0; y < textureHeight; y++){
       let k = (y * N / nextButterflySpan) % N;
-      let twiddle = [Math.cos(2.0 * Math.PI * k / N) + 1.0, Math.sin(2.0 * Math.PI * k / N)];
+      let twiddle = [Math.cos(2.0 * Math.PI * k / N), Math.sin(2.0 * Math.PI * k / N)];
       if((y % nextButterflySpan) < butterflySpan){
         twiddleTexture[x][y][0] = twiddle[0];
         twiddleTexture[x][y][1] = twiddle[1];
         twiddleTexture[x][y][2] = y;
-        twiddleTexture[x][y][3] = y + butterflySpan;
+        twiddleTexture[x][y][3] = (y + butterflySpan);
       }
       else{
         twiddleTexture[x][y][0] = twiddle[0];
         twiddleTexture[x][y][1] = twiddle[1];
-        twiddleTexture[x][y][2] = y - butterflySpan;
+        twiddleTexture[x][y][2] = (y - butterflySpan);
         twiddleTexture[x][y][3] = y;
       }
     }
@@ -72,18 +73,18 @@ function computeTwiddleIndices(N, renderer){
 
   //Create our twiddle texture
   let data = [];
-  for(let x = 0; x < textureWidth; x++){
-    for(let y = 0; y < textureHeight; y++){
+  for(let y = 0; y < textureHeight; y++){
+    for(let x = 0; x < textureWidth; x++){
       //For each R, G, B and A component
-      data.push(Math.max(Math.min(Math.floor(128.0 * twiddleTexture[x][y][0] + 128), 256), 0));
-      data.push(Math.max(Math.min(Math.floor(128.0 * twiddleTexture[x][y][1] + 128), 255), 0));
-      data.push(Math.max(Math.min(Math.floor(255.0 * twiddleTexture[x][y][2] / N), 255), 0));
-      data.push(Math.max(Math.min(Math.floor(255.0 * twiddleTexture[x][y][3] / N), 255), 0));
+      data.push(Math.max(Math.min(Math.floor(255.0 * twiddleTexture[x][y][0]), 255), 0));
+      data.push(Math.max(Math.min(Math.floor(255.0 * twiddleTexture[x][y][1]), 255), 0));
+      data.push(Math.max(Math.min(Math.floor(255.0 * twiddleTexture[x][y][2]), 255), 0));
+      data.push(Math.max(Math.min(Math.floor(255.0 * twiddleTexture[x][y][3]), 255), 0));
     }
   }
 
   //console.log(data);
-  let dataTexture = new THREE.DataTexture(new Uint8Array(data), textureHeight, textureWidth, THREE.RGBAFormat);
+  let dataTexture = new THREE.DataTexture(new Uint8Array(data), textureWidth, textureHeight, THREE.RGBAFormat);
   dataTexture.needsUpdate = true
 
   return dataTexture;

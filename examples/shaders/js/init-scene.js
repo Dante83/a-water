@@ -40,11 +40,13 @@ document.addEventListener("DOMContentLoaded", function(){
     let twiddleTextureLUT = computeTwiddleIndices(256.0, renderer);
 
     //Pass this texture onto the plane material for viewing.
-    let planeMaterial = new THREE.MeshBasicMaterial({map: twiddleTextureLUT});
+    let planeMaterial = new THREE.MeshBasicMaterial({map: hkTextureLUT});
 
     var geometry = new THREE.PlaneGeometry(1, 1, 1);
     var plane = new THREE.Mesh(geometry, planeMaterial);
     scene.add(plane);
+
+    var log2N = Math.round(Math.log(256) / Math.log(2));
 
     var lastTime = (new Date()).getTime();
     var animate = function(){
@@ -55,7 +57,62 @@ document.addEventListener("DOMContentLoaded", function(){
 
       hkShaderMaterial.uniforms.uTime.value += deltaTime;
       hkTextureLUT = StaticLUTRenderer(textureWidth, textureHeight, renderer, hkShaderMaterial);
-      //planeMaterial.map = twiddleTextureLUT;
+
+      //Clear shader pass for twiddle indices
+      pingpongMaterial.uniforms.twiddleIndices.value = twiddleTextureLUT;
+      pingpongMaterial.uniforms.pingpong_0.value = hkTextureLUT;
+      pingpongMaterial.uniforms.pingpong_1.value = null;
+      pingpongMaterial.uniforms.numStages.value = log2N * 2;
+      pingpongMaterial.uniforms.stage.value = 0;
+      pingpongMaterial.uniforms.pingpong.value = 0;
+      pingpongMaterial.uniforms.direction.value = 0;
+      pingpongMaterial.uniforms.N.value = 256.0;
+      let pingpong_0 = StaticLUTRenderer(textureWidth, textureHeight, renderer, pingpongMaterial);
+      // pingpongMaterial.uniforms.stage.value = 1;
+      // pingpongMaterial.uniforms.pingpong.value = 1;
+      // pingpongMaterial.uniforms.pingpong_1 = pingpong_0;
+      // let pingpong_1 = StaticLUTRenderer(textureWidth, textureHeight, renderer, pingpongMaterial);
+
+      // //Update our vertical pingpong texture
+      // let pingpong = 0;
+      // for(let i = 2; i < log2N; i++){
+      //   if(pingpong){
+      //     //Write to pingpong 0
+      //     pingpong_0 = StaticLUTRenderer(textureWidth, textureHeight, renderer, pingpongMaterial);
+      //     pingpongMaterial.uniforms.pingpong_0.value = pingpong_1;
+      //   }
+      //   else{
+      //     //Write to pingpong 1
+      //     pingpong_1 = StaticLUTRenderer(textureWidth, textureHeight, renderer, pingpongMaterial);
+      //     pingpongMaterial.uniforms.pingpong_1.value = pingpong_0;
+      //   }
+      //
+      //   pingpongMaterial.uniforms.stage.value += 1;
+      //   pingpong ^= 1;
+      //   pingpongMaterial.uniforms.pingpong.value = pingpong; //Switch back and forth between 0 and 1
+      // }
+      //
+      // //Update our horizontal pingpong texture
+      // pingpongMaterial.uniforms.direction.value = 1;
+      // for(let i = 0; i < log2N; i++){
+      //   if(pingpong){
+      //     //Write to pingpong 0
+      //     pingpong_0 = StaticLUTRenderer(textureWidth, textureHeight, renderer, pingpongMaterial);
+      //     pingpongMaterial.uniforms.pingpong_0.value = pingpong_0;
+      //   }
+      //   else{
+      //     //Write to pingpong 1
+      //     pingpong_1 = StaticLUTRenderer(textureWidth, textureHeight, renderer, pingpongMaterial);
+      //     pingpongMaterial.uniforms.pingpong_0.value = pingpong_1;
+      //   }
+      //
+      //   pingpongMaterial.uniforms.stage.value += 1;
+      //   pingpong ^= 1;
+      //   pingpongMaterial.uniforms.pingpong.value = pingpong; //Switch back and forth between 0 and 1
+      // }
+      //Invert shader
+      //finalRender = StaticLUTRenderer(textureWidth, textureHeight, renderer, pingpongMaterial);
+      planeMaterial.map = pingpong_0;
 
     	renderer.render(scene, camera);
     }

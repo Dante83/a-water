@@ -1,0 +1,29 @@
+//This helps
+//--------------------------v
+//https://github.com/mrdoob/three.js/wiki/Uniforms-types
+var pingpongMaterial = new THREE.ShaderMaterial({
+  uniforms: {
+    twiddleIndices: {type: 't', value: null},
+    pingpong_0: {type: 't', value: null},
+    pingpong_1: {type: 't', value: null},
+    stage: {type: 'i', value: 1},
+    N: {type: 'f', value: 0.0},
+    numStages: {type: 'i', value: 2},
+    pingpong: {type: 'i', value: 1},
+    direction: {type: 'i', value: 1},
+    uImgSize: {type: 'v2', value: new THREE.Vector2(100.0, 100.0)},
+  },
+
+  transparent: false,
+  lights: false,
+  flatShading: true,
+  clipping: false,
+
+  vertexShader: [
+    {vertex_glsl}
+  ].join('\n'),
+
+  fragmentShader: [
+    {fragment_glsl}
+  ].join('\n')
+});
