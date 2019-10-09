@@ -1,7 +1,7 @@
 //This helps
 //--------------------------v
 //https://github.com/mrdoob/three.js/wiki/Uniforms-types
-var h0ShaderMaterial = new THREE.ShaderMaterial({
+var h0ShaderMaterialData = {
   uniforms: {
     noise_r0: {type: 't', value: null},
     noise_i0: {type: 't', value: null},
@@ -96,4 +96,4 @@ var h0ShaderMaterial = new THREE.ShaderMaterial({
       'gl_FragColor =vec4(gaussianRandomNumber.xy * h0_k, gaussianRandomNumber.zw * h0_minus_k);',
     '}',
   ].join('\n')
-});
+};

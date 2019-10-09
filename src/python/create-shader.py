@@ -6,13 +6,16 @@ def ShaderFileWatcher():
     '../js/ocean-system/shaders/LUTs/h_0-shader-template.txt',\
     '../js/ocean-system/shaders/LUTs/h_k-shader-template.txt',\
     '../js/ocean-system/shaders/LUTs/pingpong-template.txt',\
-    '../js/ocean-system/shaders/LUTs/fft-inverter-template.txt']
+    '../js/ocean-system/shaders/LUTs/fft-inverter-template.txt',\
+    '../js/ocean-system/shaders/LUTs/test-output-template.txt']
     shader_js_files = ['../js/ocean-system/shaders/LUTs/noise-shader.js',\
     '../js/ocean-system/shaders/LUTs/h_0-shader.js',\
     '../js/ocean-system/shaders/LUTs/h_k-shader.js',\
     '../js/ocean-system/shaders/LUTs/pingpong-shader.js',\
-    '../js/ocean-system/shaders/LUTs/fft-inverter-shader.js']
+    '../js/ocean-system/shaders/LUTs/fft-inverter-shader.js',\
+    '../js/ocean-system/shaders/LUTs/test-output-shader.js']
     shader_vertex_files = ['../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
+    '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
     '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
     '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
     '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
@@ -21,7 +24,8 @@ def ShaderFileWatcher():
     '../glsl/gerstner-wave-LUTS/h_0-frag.glsl',\
     '../glsl/gerstner-wave-LUTS/h_k-frag.glsl',\
     '../glsl/gerstner-wave-LUTS/pingpong-frag.glsl',\
-    '../glsl/gerstner-wave-LUTS/fft-inverter-frag.glsl']
+    '../glsl/gerstner-wave-LUTS/fft-inverter-frag.glsl',\
+    '../glsl/gerstner-wave-LUTS/test-output-frag.glsl']
 
     #Where is everything located? Give some relative paths that python can follow
     template_names = [os.path.abspath(x) for x in template_files]
@@ -52,8 +56,6 @@ def ShaderFileWatcher():
         for loc in templateStrings[i]:
             if "\{vertex_glsl\}" in loc:
                  leadingSpacesBeforeVertextShaderCodeStrings[i] = len(loc) - len(loc.lstrip(' '))
-            elif "\{vertex_glsl\}" in loc:
-                leadingSpacesBeforeVertextShaderCodeStrings[i] = len(loc) - len(loc.lstrip(' '))
 
         #initialize our code strings
         vertex_file = vertex_files[i]
@@ -119,8 +121,6 @@ def ShaderFileWatcher():
                     for loc in templateStrings[i]:
                         if "\{vertex_glsl\}" in loc:
                             leadingSpacesBeforeVertextShaderCode[i] = len(loc) - len(loc.lstrip(' '))
-                        elif "\{vertex_glsl\}" in loc:
-                            leadingSpacesBeforeFragmentShaderCode[i] = len(loc) - len(loc.lstrip(' '))
 
                 codeLines = updatedVertexFileCodeStrings[i].splitlines()
                 jsStringifiedVertexLinesOfCode = []

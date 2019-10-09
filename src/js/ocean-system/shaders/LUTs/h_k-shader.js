@@ -1,34 +1,13 @@
 //This helps
 //--------------------------v
 //https://github.com/mrdoob/three.js/wiki/Uniforms-types
-var hkShaderMaterial = new THREE.ShaderMaterial({
+var hkShaderMaterialData = {
   uniforms: {
     h_0_k: {type: 't', value: null},
     N: {type: 'f', value: 256.0},
     L: {type: 'f', value: 1000.0},
     uTime: {type: 'f', value: 0.0}
   },
-
-  transparent: false,
-  lights: false,
-  flatShading: true,
-  clipping: false,
-
-  vertexShader: [
-    '#ifdef GL_ES',
-    'precision mediump float;',
-    'precision mediump int;',
-    '#endif',
-
-    'varying vec3 vWorldPosition;',
-
-    'void main() {',
-      'vec4 worldPosition = modelMatrix * vec4( position, 1.0 );',
-      'vWorldPosition = clamp(vec3((position.xy + vec2(1.0)) * 0.5, 0.0), 0.0, 1.0);',
-
-      'gl_Position = vec4(worldPosition.xy, 0.0, 1.0);',
-    '}',
-  ].join('\n'),
 
   fragmentShader: [
     '#ifdef GL_ES',
@@ -86,4 +65,4 @@ var hkShaderMaterial = new THREE.ShaderMaterial({
       'gl_FragColor =vec4(hk_t_dy, 0.0, 1.0);',
     '}',
   ].join('\n')
-});
+};

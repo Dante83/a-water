@@ -1,39 +1,20 @@
 //This helps
 //--------------------------v
 //https://github.com/mrdoob/three.js/wiki/Uniforms-types
-var pingpongMaterial = new THREE.ShaderMaterial({
+var pingpongMaterialData = {
   uniforms: {
     twiddleIndices: {type: 't', value: null},
     pingpong_0: {type: 't', value: null},
     pingpong_1: {type: 't', value: null},
     stage: {type: 'i', value: 1},
     N: {type: 'f', value: 0.0},
+    butterflySpan: {type: 'f', value: 1.0},
+    butterflyN: {type: 'f', value: 1.0},
     numStages: {type: 'i', value: 2},
     pingpong: {type: 'i', value: 1},
     direction: {type: 'i', value: 1},
     uImgSize: {type: 'v2', value: new THREE.Vector2(100.0, 100.0)},
   },
-
-  transparent: false,
-  lights: false,
-  flatShading: true,
-  clipping: false,
-
-  vertexShader: [
-    '#ifdef GL_ES',
-    'precision mediump float;',
-    'precision mediump int;',
-    '#endif',
-
-    'varying vec3 vWorldPosition;',
-
-    'void main() {',
-      'vec4 worldPosition = modelMatrix * vec4( position, 1.0 );',
-      'vWorldPosition = clamp(vec3((position.xy + vec2(1.0)) * 0.5, 0.0), 0.0, 1.0);',
-
-      'gl_Position = vec4(worldPosition.xy, 0.0, 1.0);',
-    '}',
-  ].join('\n'),
 
   fragmentShader: [
     '#ifdef GL_ES',
@@ -49,6 +30,8 @@ var pingpongMaterial = new THREE.ShaderMaterial({
     'uniform sampler2D pingpong_1;',
 
     'uniform float N;',
+    'uniform float butterflySpan;',
+    'uniform float butterflyN;',
     'uniform int numStages;',
     'uniform int stage;',
     'uniform int pingpong;',
@@ -66,19 +49,20 @@ var pingpongMaterial = new THREE.ShaderMaterial({
 
     'vec4 horizontalButterflies(vec2 position){',
       'vec4 data = texture2D(twiddleIndices, vec2(stage / numStages, position.x));',
+      'vec4 exData = vec4((2.0 * data.r) - 1.0, (2.0 * data.g) - 1.0, (data.b * (butterflySpan + butterflyN)) - butterflySpan, (data.a * (butterflySpan + butterflyN)) - butterflySpan);',
 
       'if(pingpong == 0){',
-        'vec2 p = texture2D(pingpong_0, vec2(data.z, position.y)).rg;',
-        'vec2 q = texture2D(pingpong_0, vec2(data.w, position.y)).rg;',
-        'vec2 w = vec2(data.x, data.y);',
+        'vec2 p = texture2D(pingpong_1, vec2(exData.z, position.y)).rg;',
+        'vec2 q = texture2D(pingpong_1, vec2(exData.w, position.y)).rg;',
+        'vec2 w = vec2(exData.x, exData.y);',
 
         'vec2 H = cAdd(p, cMult(w, q));',
         'return vec4(H.x, H.y, 0.0, 1.0);',
       '}',
       'else{',
-        'vec2 p = texture2D(pingpong_1, vec2(data.z, position.y)).rg;',
-        'vec2 q = texture2D(pingpong_1, vec2(data.w, position.y)).rg;',
-        'vec2 w = vec2(data.x, data.y);',
+        'vec2 p = texture2D(pingpong_0, vec2(exData.z, position.y)).rg;',
+        'vec2 q = texture2D(pingpong_0, vec2(exData.w, position.y)).rg;',
+        'vec2 w = vec2(exData.x, exData.y);',
 
         'vec2 H = cAdd(p, cMult(w, q));',
         'return vec4(H.x, H.y, 0.0, 1.0);',
@@ -86,20 +70,21 @@ var pingpongMaterial = new THREE.ShaderMaterial({
     '}',
 
     'vec4 verticalButterflies(vec2 position){',
-      'vec4 data = texture2D(twiddleIndices, vec2(stage / numStages, position.y));',
+      'vec4 data = texture2D(twiddleIndices, vec2(stage / numStages, position.x));',
+      'vec4 exData = vec4((2.0 * data.r) - 1.0, (2.0 * data.g) - 1.0, (data.b * (butterflySpan + butterflyN)) - butterflySpan, (data.a * (butterflySpan + butterflyN)) - butterflySpan);',
 
       'if(pingpong == 0){',
-        'vec2 p = texture2D(pingpong_0, vec2(position.x, data.z)).rg;',
-        'vec2 q = texture2D(pingpong_0, vec2(position.x, data.w)).rg;',
-        'vec2 w = vec2(data.x, data.y);',
+        'vec2 p = texture2D(pingpong_0, vec2(exData.z, position.x)).rg;',
+        'vec2 q = texture2D(pingpong_0, vec2(exData.w, position.x)).rg;',
+        'vec2 w = vec2(exData.x, exData.y);',
 
         'vec2 H = cAdd(p, cMult(w, q));',
         'return vec4(H.x, H.y, 0.0, 1.0);',
       '}',
       'else{',
-        'vec2 p = texture2D(pingpong_1, vec2(position.x, data.z)).rg;',
-        'vec2 q = texture2D(pingpong_1, vec2(position.x, data.w)).rg;',
-        'vec2 w = vec2(data.x, data.y);',
+        'vec2 p = texture2D(pingpong_1, vec2(exData.z, position.y)).rg;',
+        'vec2 q = texture2D(pingpong_1, vec2(exData.w, position.y)).rg;',
+        'vec2 w = vec2(exData.x, exData.y);',
 
         'vec2 H = cAdd(p, cMult(w, q));',
         'return vec4(H.x, H.y, 0.0, 1.0);',
@@ -122,4 +107,4 @@ var pingpongMaterial = new THREE.ShaderMaterial({
       'gl_FragColor = result;',
     '}',
   ].join('\n')
-});
+};

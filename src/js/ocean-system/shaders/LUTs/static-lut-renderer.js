@@ -5,7 +5,13 @@ function StaticLUTRenderer(width, height, webGLRenderer, inputMaterial){
   let geometry = new THREE.PlaneGeometry(2, 2, 1);
   let plane = new THREE.Mesh(geometry, inputMaterial);
   bufferScene.add(plane);
-  let bufferTexture = new THREE.WebGLRenderTarget(width, height, {minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter});
+  let bufferTexture = new THREE.WebGLRenderTarget(width, height,
+    {
+      format:  THREE.RGBAFormat,
+      type: THREE.FloatType,
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter
+    });
   webGLRenderer.render(bufferScene, bufferCamera, bufferTexture);
   return bufferTexture;
 }

@@ -1,32 +1,11 @@
 //This helps
 //--------------------------v
 //https://github.com/mrdoob/three.js/wiki/Uniforms-types
-var noiseShaderMaterial = new THREE.ShaderMaterial({
+var noiseShaderMaterialData = {
   uniforms: {
     offset: {type: 'f', value: 1.0},
     uImgSize: {type: 'v2', value: new THREE.Vector2(100.0, 100.0)},
   },
-
-  transparent: false,
-  lights: false,
-  flatShading: true,
-  clipping: false,
-
-  vertexShader: [
-    '#ifdef GL_ES',
-    'precision mediump float;',
-    'precision mediump int;',
-    '#endif',
-
-    'varying vec3 vWorldPosition;',
-
-    'void main() {',
-      'vec4 worldPosition = modelMatrix * vec4( position, 1.0 );',
-      'vWorldPosition = clamp(vec3((position.xy + vec2(1.0)) * 0.5, 0.0), 0.0, 1.0);',
-
-      'gl_Position = vec4(worldPosition.xy, 0.0, 1.0);',
-    '}',
-  ].join('\n'),
 
   fragmentShader: [
     '#ifdef GL_ES',
@@ -34,7 +13,7 @@ var noiseShaderMaterial = new THREE.ShaderMaterial({
     'precision mediump int;',
     '#endif',
 
-    'varying vec3 vWorldPosition;',
+    '//varying vec2 vWorldPosition;',
 
     'uniform vec2 uImgSize;',
     'uniform float offset;',
@@ -55,7 +34,10 @@ var noiseShaderMaterial = new THREE.ShaderMaterial({
     '}',
 
     'void main(){',
-      'gl_FragColor = vec4(vec3(rand((uImgSize.x * (vWorldPosition.x + vWorldPosition.y * uImgSize.y)) * offset)), 1.0);',
+      '//vec2 uv = vWorldPosition.xy / resolution.xy;',
+      '//vec2 uv = vec2(1.0);',
+      '//gl_FragColor = vec4(vec3(rand((uImgSize.x * (uv.x + uv.y * uImgSize.y)) * offset)), 1.0);',
+      'gl_FragColor = vec4(1.0, 1.0, 0.0, 1.0);',
     '}',
   ].join('\n')
-});
+};

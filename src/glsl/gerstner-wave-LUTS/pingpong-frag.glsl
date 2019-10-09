@@ -11,6 +11,8 @@ uniform sampler2D pingpong_0;
 uniform sampler2D pingpong_1;
 
 uniform float N;
+uniform float butterflySpan;
+uniform float butterflyN;
 uniform int numStages;
 uniform int stage;
 uniform int pingpong;
@@ -28,19 +30,20 @@ vec2 cAdd(vec2 a, vec2 b){
 
 vec4 horizontalButterflies(vec2 position){
   vec4 data = texture2D(twiddleIndices, vec2(stage / numStages, position.x));
+  vec4 exData = vec4((2.0 * data.r) - 1.0, (2.0 * data.g) - 1.0, (data.b * (butterflySpan + butterflyN)) - butterflySpan, (data.a * (butterflySpan + butterflyN)) - butterflySpan);
 
   if(pingpong == 0){
-    vec2 p = texture2D(pingpong_0, vec2(data.z, position.y)).rg;
-    vec2 q = texture2D(pingpong_0, vec2(data.w, position.y)).rg;
-    vec2 w = vec2(data.x, data.y);
+    vec2 p = texture2D(pingpong_1, vec2(exData.z, position.y)).rg;
+    vec2 q = texture2D(pingpong_1, vec2(exData.w, position.y)).rg;
+    vec2 w = vec2(exData.x, exData.y);
 
     vec2 H = cAdd(p, cMult(w, q));
     return vec4(H.x, H.y, 0.0, 1.0);
   }
   else{
-    vec2 p = texture2D(pingpong_1, vec2(data.z, position.y)).rg;
-    vec2 q = texture2D(pingpong_1, vec2(data.w, position.y)).rg;
-    vec2 w = vec2(data.x, data.y);
+    vec2 p = texture2D(pingpong_0, vec2(exData.z, position.y)).rg;
+    vec2 q = texture2D(pingpong_0, vec2(exData.w, position.y)).rg;
+    vec2 w = vec2(exData.x, exData.y);
 
     vec2 H = cAdd(p, cMult(w, q));
     return vec4(H.x, H.y, 0.0, 1.0);
@@ -48,20 +51,21 @@ vec4 horizontalButterflies(vec2 position){
 }
 
 vec4 verticalButterflies(vec2 position){
-  vec4 data = texture2D(twiddleIndices, vec2(stage / numStages, position.y));
+  vec4 data = texture2D(twiddleIndices, vec2(stage / numStages, position.x));
+  vec4 exData = vec4((2.0 * data.r) - 1.0, (2.0 * data.g) - 1.0, (data.b * (butterflySpan + butterflyN)) - butterflySpan, (data.a * (butterflySpan + butterflyN)) - butterflySpan);
 
   if(pingpong == 0){
-    vec2 p = texture2D(pingpong_0, vec2(position.x, data.z)).rg;
-    vec2 q = texture2D(pingpong_0, vec2(position.x, data.w)).rg;
-    vec2 w = vec2(data.x, data.y);
+    vec2 p = texture2D(pingpong_0, vec2(exData.z, position.x)).rg;
+    vec2 q = texture2D(pingpong_0, vec2(exData.w, position.x)).rg;
+    vec2 w = vec2(exData.x, exData.y);
 
     vec2 H = cAdd(p, cMult(w, q));
     return vec4(H.x, H.y, 0.0, 1.0);
   }
   else{
-    vec2 p = texture2D(pingpong_1, vec2(position.x, data.z)).rg;
-    vec2 q = texture2D(pingpong_1, vec2(position.x, data.w)).rg;
-    vec2 w = vec2(data.x, data.y);
+    vec2 p = texture2D(pingpong_1, vec2(exData.z, position.y)).rg;
+    vec2 q = texture2D(pingpong_1, vec2(exData.w, position.y)).rg;
+    vec2 w = vec2(exData.x, exData.y);
 
     vec2 H = cAdd(p, cMult(w, q));
     return vec4(H.x, H.y, 0.0, 1.0);

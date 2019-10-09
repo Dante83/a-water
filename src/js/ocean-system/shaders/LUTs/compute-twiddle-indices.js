@@ -14,7 +14,7 @@ function computeTwiddleIndices(N, renderer){
       binary.push('0');
     }
     let constantSignBitReversedInteger = binary.reverse();
-    constantSignBitReversedInteger.push('1');
+    //constantSignBitReversedInteger.push('1');
     let bitReversedInteger = parseInt(constantSignBitReversedInteger.join(""), 2);
     twiddleIndices.push(bitReversedInteger);
   }
@@ -56,7 +56,7 @@ function computeTwiddleIndices(N, renderer){
       let k = (y * N / nextButterflySpan) % N;
       let twiddle = [Math.cos(2.0 * Math.PI * k / N), Math.sin(2.0 * Math.PI * k / N)];
       if((y % nextButterflySpan) < butterflySpan){
-        twiddleTexture[x][y][0] = twiddle[0];
+        twiddleTexture[x][y][0] = twiddle[0] + 1.0;
         twiddleTexture[x][y][1] = twiddle[1];
         twiddleTexture[x][y][2] = y;
         twiddleTexture[x][y][3] = (y + butterflySpan);
@@ -76,16 +76,15 @@ function computeTwiddleIndices(N, renderer){
   for(let y = 0; y < textureHeight; y++){
     for(let x = 0; x < textureWidth; x++){
       //For each R, G, B and A component
-      data.push(Math.max(Math.min(Math.floor(255.0 * twiddleTexture[x][y][0]), 255), 0));
-      data.push(Math.max(Math.min(Math.floor(255.0 * twiddleTexture[x][y][1]), 255), 0));
-      data.push(Math.max(Math.min(Math.floor(255.0 * twiddleTexture[x][y][2]), 255), 0));
-      data.push(Math.max(Math.min(Math.floor(255.0 * twiddleTexture[x][y][3]), 255), 0));
+      data.push(Math.max(Math.min(Math.floor(255.0 * 0.5 * (twiddleTexture[x][y][0] + 1.0)), 255), 0));
+      data.push(Math.max(Math.min(Math.floor(255.0 * 0.5 * (twiddleTexture[x][y][1] + 1.0)), 255), 0));
+      data.push(Math.max(Math.min(Math.floor(255.0 * (twiddleTexture[x][y][2] + butterflySpan) / (N + butterflySpan)), 255), 0));
+      data.push(Math.max(Math.min(Math.floor(255.0 * (twiddleTexture[x][y][3] + butterflySpan) / (N + butterflySpan)), 255), 0));
     }
   }
 
-  //console.log(data);
   let dataTexture = new THREE.DataTexture(new Uint8Array(data), textureWidth, textureHeight, THREE.RGBAFormat);
-  dataTexture.needsUpdate = true
+  dataTexture.needsUpdate = true;
 
-  return dataTexture;
+  return {dataTexture: dataTexture, butterflySpan: butterflySpan, N: N};
 }

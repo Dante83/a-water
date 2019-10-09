@@ -3,7 +3,7 @@ precision mediump float;
 precision mediump int;
 #endif
 
-varying vec3 vWorldPosition;
+//varying vec2 vWorldPosition;
 
 uniform vec2 uImgSize;
 uniform float offset;
@@ -24,5 +24,8 @@ float rand(float x){
 }
 
 void main(){
-  gl_FragColor = vec4(vec3(rand((uImgSize.x * (vWorldPosition.x + vWorldPosition.y * uImgSize.y)) * offset)), 1.0);
+  //vec2 uv = vWorldPosition.xy / resolution.xy;
+  //vec2 uv = vec2(1.0);
+  //gl_FragColor = vec4(vec3(rand((uImgSize.x * (uv.x + uv.y * uImgSize.y)) * offset)), 1.0);
+  gl_FragColor = vec4(1.0, 1.0, 0.0, 1.0);
 }
