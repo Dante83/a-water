@@ -1,0 +1,16 @@
+//This helps
+//--------------------------v
+//https://github.com/mrdoob/three.js/wiki/Uniforms-types
+var testOutputMaterial = new THREE.ShaderMaterial({
+  uniforms: {
+    inTexture: {type: 't', value: null}
+  },
+
+  vertexShader: [
+    {vertex_glsl}
+  ].join('\n'),
+
+  fragmentShader: [
+    {fragment_glsl}
+  ].join('\n')
+});
