@@ -4,7 +4,6 @@
 var noiseShaderMaterialData = {
   uniforms: {
     offset: {type: 'f', value: 1.0},
-    uImgSize: {type: 'v2', value: new THREE.Vector2(100.0, 100.0)},
   },
 
   fragmentShader: [

@@ -3,37 +3,12 @@
 //https://github.com/mrdoob/three.js/wiki/Uniforms-types
 var h0ShaderMaterialData = {
   uniforms: {
-    noise_r0: {type: 't', value: null},
-    noise_i0: {type: 't', value: null},
-    noise_r1: {type: 't', value: null},
-    noise_i1: {type: 't', value: null},
     N: {type: 'f', value: 256.0},
     L: {type: 'f', value: 1000.0},
     A: {type: 'f', value: 20.0},
-    L_Value: {type: 'f', value: 0.0},
+    L_: {type: 'f', value: 0.0},
     w: {type: 'v2', value: new THREE.Vector2(1.0, 0.0)}
   },
-
-  transparent: false,
-  lights: false,
-  flatShading: true,
-  clipping: false,
-
-  vertexShader: [
-    '#ifdef GL_ES',
-    'precision mediump float;',
-    'precision mediump int;',
-    '#endif',
-
-    'varying vec3 vWorldPosition;',
-
-    'void main() {',
-      'vec4 worldPosition = modelMatrix * vec4( position, 1.0 );',
-      'vWorldPosition = clamp(vec3((position.xy + vec2(1.0)) * 0.5, 0.0), 0.0, 1.0);',
-
-      'gl_Position = vec4(worldPosition.xy, 0.0, 1.0);',
-    '}',
-  ].join('\n'),
 
   fragmentShader: [
     '#ifdef GL_ES',
@@ -41,13 +16,7 @@ var h0ShaderMaterialData = {
     'precision mediump int;',
     '#endif',
 
-    'varying vec3 vWorldPosition;',
-
     '//With a lot of help from https://youtu.be/i0BPrGuOdPo',
-    'uniform sampler2D noise_r0;',
-    'uniform sampler2D noise_i0;',
-    'uniform sampler2D noise_r1;',
-    'uniform sampler2D noise_i1;',
     'uniform float N; //256.0',
     'uniform float L; //1000.0',
     'uniform float A; //20',
@@ -60,12 +29,12 @@ var h0ShaderMaterialData = {
     'const float oneOverSqrtOf2 = 0.707106781186547524400844362104849039284835937688474036588;',
 
     '//Box-Muller Method',
-    'vec4 gaussRand(){',
-      'vec2 texCoord = vec2(vWorldPosition.xy);',
-      'float noise00 = clamp(texture2D(noise_r0, texCoord).r + 0.00001, 0.0, 1.0);',
-      'float noise01 = clamp(texture2D(noise_i0, texCoord).r + 0.00001, 0.0, 1.0);',
-      'float noise02 = clamp(texture2D(noise_r1, texCoord).r + 0.00001, 0.0, 1.0);',
-      'float noise03 = clamp(texture2D(noise_i1, texCoord).r + 0.00001, 0.0, 1.0);',
+    'vec4 gaussRand(vec2 uv){',
+      'vec2 texCoord = vec2(uv.xy);',
+      'float noise00 = clamp(texture2D(textureNoise1, texCoord).r + 0.00001, 0.0, 1.0);',
+      'float noise01 = clamp(texture2D(textureNoise2, texCoord).r + 0.00001, 0.0, 1.0);',
+      'float noise02 = clamp(texture2D(textureNoise3, texCoord).r + 0.00001, 0.0, 1.0);',
+      'float noise03 = clamp(texture2D(textureNoise4, texCoord).r + 0.00001, 0.0, 1.0);',
 
       'float u0 = piTimes2 * noise00;',
       'float v0 = sqrt(-2.0 * log(noise01));',
@@ -76,7 +45,8 @@ var h0ShaderMaterialData = {
     '}',
 
     'void main(){',
-      'vec2 x = vWorldPosition.xy * N;',
+      'vec2 uv = gl_FragCoord.xy / resolution.xy;',
+      'vec2 x = uv.xy * N;',
       'vec2 k = vec2(piTimes2 / L) * x;',
       'float magK = length(k);',
       'if (magK < 0.0001) magK = 0.0001;',
@@ -90,9 +60,8 @@ var h0ShaderMaterialData = {
       '//sqrt(Ph(-k) / sqrt(2))',
       'float h0_minus_k = clamp(h0_coeficient * pow(dot(normalize(-k), normalize(w)), 2.0), 0.0, 1000000.0);',
 
-      'vec4 gaussianRandomNumber = gaussRand();',
+      'vec4 gaussianRandomNumber = gaussRand(uv);',
 
-      '//gl_FragColor =vec4(gaussianRandomNumber.xy * h0_k, gaussianRandomNumber.zw * h0_minusk);',
       'gl_FragColor =vec4(gaussianRandomNumber.xy * h0_k, gaussianRandomNumber.zw * h0_minus_k);',
     '}',
   ].join('\n')

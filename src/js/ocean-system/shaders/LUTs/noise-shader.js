@@ -4,7 +4,6 @@
 var noiseShaderMaterialData = {
   uniforms: {
     offset: {type: 'f', value: 1.0},
-    uImgSize: {type: 'v2', value: new THREE.Vector2(100.0, 100.0)},
   },
 
   fragmentShader: [
@@ -13,9 +12,6 @@ var noiseShaderMaterialData = {
     'precision mediump int;',
     '#endif',
 
-    '//varying vec2 vWorldPosition;',
-
-    'uniform vec2 uImgSize;',
     'uniform float offset;',
 
     '//Additional work here to add more noise that is time dependent',
@@ -34,10 +30,8 @@ var noiseShaderMaterialData = {
     '}',
 
     'void main(){',
-      '//vec2 uv = vWorldPosition.xy / resolution.xy;',
-      '//vec2 uv = vec2(1.0);',
-      '//gl_FragColor = vec4(vec3(rand((uImgSize.x * (uv.x + uv.y * uImgSize.y)) * offset)), 1.0);',
-      'gl_FragColor = vec4(1.0, 1.0, 0.0, 1.0);',
+      'vec2 uv = gl_FragCoord.xy / resolution.xy;',
+      'gl_FragColor = vec4(vec3(rand((resolution.x * (uv.x + uv.y * resolution.y)) * offset)), 1.0);',
     '}',
   ].join('\n')
 };

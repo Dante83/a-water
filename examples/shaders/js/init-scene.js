@@ -7,56 +7,76 @@ document.addEventListener("DOMContentLoaded", function(){
     renderer.setSize(textureWidth, textureHeight);
     document.body.appendChild(renderer.domElement);
 
-    //Initialize our GPU Compute Renderer
-    var gpuCompute = new GPUComputationRenderer(textureWidth, textureHeight, renderer);
+    //Initialize our GPU Compute Renderers
+    let staticGPUCompute = new THREE.GPUComputationRenderer(textureWidth, textureHeight, renderer);
+    let twiddleCalculatorGPUCompute = new THREE.GPUComputationRenderer(textureWidth, textureHeight, renderer);
+    let dynamicGPUCompute = new THREE.GPUComputationRenderer(textureWidth, textureHeight, renderer);
 
     //Create 4 different textures for each of our noise LUTs.
     let offset = textureWidth * textureHeight;
-    let noiseInit0 = gpuCompute.createTexture();
-    let noise1Var = gpuCompute.addVariable('textureNoise1', noiseShaderMaterialData.fragmentShader, noiseInit0);
-    gpuCompute.setVariableDependencies(noise1Var, [noise1Var]);
-    console.log(noise1Var.material.uniforms);
+    let noiseInit1 = staticGPUCompute.createTexture();
+    let noise1Var = staticGPUCompute.addVariable('textureNoise1', noiseShaderMaterialData.fragmentShader, noiseInit1);
+    staticGPUCompute.setVariableDependencies(noise1Var, []);
     noise1Var.material.uniforms = JSON.parse(JSON.stringify(noiseShaderMaterialData.uniforms));
-    console.log(noise1Var);
     noise1Var.material.uniforms.offset.value = 1.0;
-    // let noiseTexture2 = gpuCompute.createTexture();
-    // let noiseVar2 = gpuCompute.addVariable('noiseVariable2', noiseShaderMaterialData.fragmentShader, noiseTexture);
-    // noiseVar2.material.uniforms.offset.value = noiseVar1.material.uniforms.offset.value + textureWidth * textureHeight;
-    // let noiseTexture3 = gpuCompute.createTexture();
-    // let noiseVar3 = gpuCompute.addVariable('noiseVariable3', noiseShaderMaterialData.fragmentShader, noiseTexture);
-    // noiseVar3.material.uniforms.offset.value = noiseVar2.material.uniforms.offset.value + textureWidth * textureHeight;
-    // let noiseTexture4 = gpuCompute.createTexture();
-    // let noiseVar4 = gpuCompute.addVariable('noiseVariable4', noiseShaderMaterialData.fragmentShader, noiseTexture);
-    // noiseVar4.material.uniforms.offset.value = noiseVar3.material.uniforms.offset.value + textureWidth * textureHeight;
-
-    //Determine the initial values of our h0 shaders
-    // h0ShaderMaterial.uniforms.N.value = 256.0;
-    // h0ShaderMaterial.uniforms.L.value = 1000.0;
-    // h0ShaderMaterial.uniforms.A.value = 20.0;
-    // h0ShaderMaterial.uniforms.L_Value.value = (26.0 * 26.0) / 9.81;
-    // h0ShaderMaterial.uniforms.w.value = new THREE.Vector2(1.0, 0.0);
+    let noiseInit2 = staticGPUCompute.createTexture();
+    let noise2Var = staticGPUCompute.addVariable('textureNoise2', noiseShaderMaterialData.fragmentShader, noiseInit2);
+    staticGPUCompute.setVariableDependencies(noise2Var, []);
+    noise2Var.material.uniforms = JSON.parse(JSON.stringify(noiseShaderMaterialData.uniforms));
+    noise2Var.material.uniforms.offset.value = noise1Var.material.uniforms.offset.value + textureWidth * textureHeight;
+    let noiseInit3 = staticGPUCompute.createTexture();
+    let noise3Var = staticGPUCompute.addVariable('textureNoise3', noiseShaderMaterialData.fragmentShader, noiseInit3);
+    staticGPUCompute.setVariableDependencies(noise3Var, []);
+    noise3Var.material.uniforms = JSON.parse(JSON.stringify(noiseShaderMaterialData.uniforms));
+    noise3Var.material.uniforms.offset.value = noise2Var.material.uniforms.offset.value + textureWidth * textureHeight;
+    let noiseInit4 = staticGPUCompute.createTexture();
+    let noise4Var = staticGPUCompute.addVariable('textureNoise4', noiseShaderMaterialData.fragmentShader, noiseInit4);
+    staticGPUCompute.setVariableDependencies(noise4Var, []);
+    noise4Var.material.uniforms = JSON.parse(JSON.stringify(noiseShaderMaterialData.uniforms));
+    noise4Var.material.uniforms.offset.value = noise3Var.material.uniforms.offset.value + textureWidth * textureHeight;
 
     //Produce the texture for our h0 shader
-    // let h0TextureLUT = StaticLUTRenderer(textureWidth, textureHeight, renderer, h0ShaderMaterial);
-    //
-    // hkShaderMaterial.uniforms.h_0_k.value = h0TextureLUT;
-    // hkShaderMaterial.uniforms.L.value = 1000.0;
-    // hkShaderMaterial.uniforms.uTime.value = 500.0;
-    // hkShaderMaterial.uniforms.N.value = 256.0;
-    // let hkTextureLUT = StaticLUTRenderer(textureWidth, textureHeight, renderer, hkShaderMaterial);
+    let h0TextureInit = staticGPUCompute.createTexture();
+    let h0TextureVar = staticGPUCompute.addVariable('textureH0', h0ShaderMaterialData.fragmentShader, h0TextureInit);
+    staticGPUCompute.setVariableDependencies(h0TextureVar, [noise1Var, noise2Var, noise3Var, noise4Var]);
+    h0TextureVar.material.uniforms = JSON.parse(JSON.stringify(h0ShaderMaterialData.uniforms));
+    h0TextureVar.material.uniforms.N.value = 256.0;
+    h0TextureVar.material.uniforms.L.value = 1000.0;
+    h0TextureVar.material.uniforms.A.value = 20.0;
+    h0TextureVar.material.uniforms.L_.value = (26.0 * 26.0) / 9.81;
+    h0TextureVar.material.uniforms.w.value = new THREE.Vector2(1.0, 0.0);
+
+    //Now compute our h_0 texture for future use
+    let error1 = staticGPUCompute.init();
+    if(error1 !== null){
+      console.error(`Static GPU Compute Renderer: ${error1}`);
+    }
+    staticGPUCompute.compute();
+    staticGPUCompute.compute(); //Must be run twice to fill up second ping pong shader? Weird.
+
+    //Now compute our twiddle indices for injection
     // let twiddleIndicesResult = computeTwiddleIndices(256.0, renderer);
     // let twiddleTextureLUT = twiddleIndicesResult.dataTexture;
     // let twiddleIndicesButterflySpan = twiddleIndicesResult.butterflySpan;
     // let twiddleIndicesN = twiddleIndicesResult.N;
-    //
 
-    let error = gpuCompute.init();
-    if(error !== null){
-      console.error(error);
+    //Initialize our h_k shader
+    let hkTextureInit = dynamicGPUCompute.createTexture();
+    let hkTextureVar = dynamicGPUCompute.addVariable('textureHk', hkShaderMaterialData.fragmentShader, hkTextureInit);
+    dynamicGPUCompute.setVariableDependencies(hkTextureVar, []);//Note: We use manual texture dependency injection here.
+    hkTextureVar.material.uniforms = JSON.parse(JSON.stringify(hkShaderMaterialData.uniforms));
+    hkTextureVar.material.uniforms.textureH0.value = staticGPUCompute.getCurrentRenderTarget(h0TextureVar).texture;
+    hkTextureVar.material.uniforms.L.value = 1000.0;
+    hkTextureVar.material.uniforms.uTime.value = 500.0;
+    hkTextureVar.material.uniforms.N.value = 256.0;
+
+    let error2 = dynamicGPUCompute.init();
+    if(error2 !== null){
+      console.error(`Dynamic GPU Compute Renderer: ${error2}`);
     }
-    let outTexture = gpuCompute.getCurrentRenderTarget(noise1Var).texture;
-    //noise1Var.material.uniforms['textureNoise1'] = outTexture;
-    testOutputMaterial.uniforms.inTexture = outTexture;
+    dynamicGPUCompute.compute();
+    let outTexture = dynamicGPUCompute.getCurrentRenderTarget(hkTextureVar).texture;
+    testOutputMaterial.uniforms.inTexture.value = outTexture;
 
     var geometry = new THREE.PlaneGeometry(1.5, 1.5, 1);
     var plane = new THREE.Mesh(geometry, testOutputMaterial);
@@ -71,9 +91,9 @@ document.addEventListener("DOMContentLoaded", function(){
        let deltaTime = (currentTime - lastTime) / 1000.0 || 0.0;
        lastTime = currentTime;
 
-    //   hkShaderMaterial.uniforms.uTime.value += deltaTime;
-    //   hkTextureLUT = StaticLUTRenderer(textureWidth, textureHeight, renderer, hkShaderMaterial);
-    //
+       //Update the time variable of our phillipse spectrum
+       hkTextureVar.material.uniforms.uTime.value += deltaTime;
+
     //   //Clear shader pass for twiddle indices
     //   pingpongMaterial.uniforms.twiddleIndices.value = twiddleTextureLUT;
     //   pingpongMaterial.uniforms.pingpong_0.value = hkTextureLUT;
@@ -134,13 +154,12 @@ document.addEventListener("DOMContentLoaded", function(){
 
       //finalRender = StaticLUTRenderer(textureWidth, textureHeight, renderer, heightMapShader);
       //NOTE: This is claiming this isn't a function for some reason getCurrentRenderTarget(noiseVar1)
-      // console.log(gpuCompute.getCurrentRenderTarget(noiseVar1));
+      // console.log(staticGPUCompute.getCurrentRenderTarget(noiseVar1));
       // debugger;
-      gpuCompute.compute();
+      dynamicGPUCompute.compute();
 
-      let outTexture = gpuCompute.getCurrentRenderTarget(noise1Var).texture;
-      //noise1Var.material.uniforms['textureNoise1'] = outTexture;
-      testOutputMaterial.uniforms.inTexture = outTexture;
+      let outTexture = dynamicGPUCompute.getCurrentRenderTarget(hkTextureVar).texture;
+      testOutputMaterial.uniforms.inTexture.value = outTexture;
 
     	renderer.render(scene, camera);
     }

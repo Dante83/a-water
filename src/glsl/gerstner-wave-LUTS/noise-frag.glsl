@@ -3,9 +3,6 @@ precision mediump float;
 precision mediump int;
 #endif
 
-//varying vec2 vWorldPosition;
-
-uniform vec2 uImgSize;
 uniform float offset;
 
 //Additional work here to add more noise that is time dependent
@@ -24,8 +21,6 @@ float rand(float x){
 }
 
 void main(){
-  //vec2 uv = vWorldPosition.xy / resolution.xy;
-  //vec2 uv = vec2(1.0);
-  //gl_FragColor = vec4(vec3(rand((uImgSize.x * (uv.x + uv.y * uImgSize.y)) * offset)), 1.0);
-  gl_FragColor = vec4(1.0, 1.0, 0.0, 1.0);
+  vec2 uv = gl_FragCoord.xy / resolution.xy;
+  gl_FragColor = vec4(vec3(rand((resolution.x * (uv.x + uv.y * resolution.y)) * offset)), 1.0);
 }

@@ -3,7 +3,7 @@
 //https://github.com/mrdoob/three.js/wiki/Uniforms-types
 var hkShaderMaterialData = {
   uniforms: {
-    h_0_k: {type: 't', value: null},
+    textureH0: {type: 't', value: null},
     N: {type: 'f', value: 256.0},
     L: {type: 'f', value: 1000.0},
     uTime: {type: 'f', value: 0.0}
@@ -15,10 +15,8 @@ var hkShaderMaterialData = {
     'precision mediump int;',
     '#endif',
 
-    'varying vec3 vWorldPosition;',
-
     '//With a lot of help from https://youtu.be/i0BPrGuOdPo',
-    'uniform sampler2D h_0_k;',
+    'uniform sampler2D textureH0;',
     'uniform float L; //1000.0',
     'uniform float N; //256.0',
     'uniform float uTime; //0.0',
@@ -39,13 +37,14 @@ var hkShaderMaterialData = {
     '}',
 
     'void main(){',
-      'vec2 x = vWorldPosition.xy * N;',
+      'vec2 uv = gl_FragCoord.xy / resolution.xy;',
+      'vec2 x = uv.xy * N;',
       'vec2 k = vec2(piTimes2 / L) * x;',
       'float magK = length(k);',
       'if (magK < 0.0001) magK = 0.0001;',
       'float w = sqrt(g * magK);',
 
-      'vec4 tilda_h0 = texture2D(h_0_k, vWorldPosition.xy);',
+      'vec4 tilda_h0 = texture2D(textureH0, uv.xy);',
       'vec2 tilda_h0_k = tilda_h0.rg;',
       'vec2 tilda_h0_minus_k_conj = conjugate(tilda_h0.ba);',
 

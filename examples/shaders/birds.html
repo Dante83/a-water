@@ -4,6 +4,7 @@
 		<title>three.js webgl - gpgpu - flocking</title>
 		<meta charset="utf-8">
 		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<link type="text/css" rel="stylesheet" href="main.css">
 		<style>
 			body {
 				background-color: #fff;
@@ -14,10 +15,18 @@
 			}
 		</style>
 
-    <script src="https://aframe.io/releases/0.9.0/aframe.min.js"></script>
-    <script src="../../src/js/GPUComputeRenderer.js"></script>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/109/three.min.js"></script>
+		<script src="../../src/js/GUI.js"></script>
+		<script src="../../src/js/Stats.js"></script>
+		<script src="../../src/js/GPUComputeRenderer.js"></script>
 	</head>
 	<body>
+
+		<div id="info">
+			<a href="http://threejs.org" target="_blank" rel="noopener">three.js</a> - webgl gpgpu birds<br/>
+			Move mouse to disturb birds.
+		</div>
+
 		<!--
 		TODO: If you're reading this, you may wish to improve this example by
 			- Create a better shading for the birds?
@@ -386,7 +395,7 @@
 			BirdGeometry.prototype = Object.create( THREE.BufferGeometry.prototype );
 
 
-			var container;
+			var container, stats;
 			var camera, scene, renderer;
 			var mouseX = 0, mouseY = 0;
 
@@ -426,6 +435,9 @@
 
 				initComputeRenderer();
 
+				stats = new Stats();
+				container.appendChild( stats.dom );
+
 				document.addEventListener( 'mousemove', onDocumentMouseMove, false );
 				document.addEventListener( 'touchstart', onDocumentTouchStart, false );
 				document.addEventListener( 'touchmove', onDocumentTouchMove, false );
@@ -433,6 +445,8 @@
 				//
 
 				window.addEventListener( 'resize', onWindowResize, false );
+
+				var gui = new dat.GUI();
 
 				var effectController = {
 					separation: 20.0,
@@ -443,21 +457,27 @@
 
 				var valuesChanger = function () {
 
-					velocityUniforms[ "separationDistance" ].value = 1.0;
-					velocityUniforms[ "alignmentDistance" ].value = 0.001;
-					velocityUniforms[ "cohesionDistance" ].value = 0.025;
-					velocityUniforms[ "freedomFactor" ].value = 0.025;
+					velocityUniforms[ "separationDistance" ].value = effectController.separation;
+					velocityUniforms[ "alignmentDistance" ].value = effectController.alignment;
+					velocityUniforms[ "cohesionDistance" ].value = effectController.cohesion;
+					velocityUniforms[ "freedomFactor" ].value = effectController.freedom;
 
 				};
 
 				valuesChanger();
+
+				gui.add( effectController, "separation", 0.0, 100.0, 1.0 ).onChange( valuesChanger );
+				gui.add( effectController, "alignment", 0.0, 100, 0.001 ).onChange( valuesChanger );
+				gui.add( effectController, "cohesion", 0.0, 100, 0.025 ).onChange( valuesChanger );
+				gui.close();
+
 				initBirds();
 
 			}
 
 			function initComputeRenderer() {
 
-				gpuCompute = new GPUComputationRenderer( WIDTH, WIDTH, renderer );
+				gpuCompute = new THREE.GPUComputationRenderer( WIDTH, WIDTH, renderer );
 
 				var dtPosition = gpuCompute.createTexture();
 				var dtVelocity = gpuCompute.createTexture();
@@ -621,6 +641,8 @@
 				requestAnimationFrame( animate );
 
 				render();
+				stats.update();
+
 			}
 
 			function render() {
