@@ -7,10 +7,10 @@ function computeTwiddleIndices(N, renderer){
   let textureHeight = N;
 
   //Get the bit reversed order of our twiddle indices.
-  for(let y = 0; y < textureHeight; y++){
+  for(let y = 0; y < textureHeight; ++y){
     let binary = y.toString(2).split("");
     let padding = textureWidth - binary.length;
-    for(let i = 0; i < padding; i++){
+    for(let i = 0; i < padding; ++i){
       binary.push('0');
     }
     let constantSignBitReversedInteger = binary.reverse();
@@ -20,9 +20,9 @@ function computeTwiddleIndices(N, renderer){
   }
 
   //Initialize our data array for storing our image texture
-  for(let x = 0; x < textureWidth; x++){
+  for(let x = 0; x < textureWidth; ++x){
     twiddleTexture.push([]);
-    for(let y = 0; y < textureHeight; y++){
+    for(let y = 0; y < textureHeight; ++y){
       twiddleTexture[x].push([0.0, 0.0, 0.0, 0.0]);
     }
   }
@@ -31,20 +31,20 @@ function computeTwiddleIndices(N, renderer){
   //Initialization, x = 0
   let nextButterflySpan = butterflySpan * 2.0;
   let twoPiOverN = 2.0 * Math.PI / N;
-  for(let y = 0; y < textureHeight; y++){
+  for(let y = 0; y < textureHeight; ++y){
     let k = (y * N / nextButterflySpan) % N;
     let twiddle = [Math.cos(twoPiOverN * k), Math.sin(twoPiOverN * k)];
     if((y % nextButterflySpan) < butterflySpan){
       twiddleTexture[0][y][0] = twiddle[0];
       twiddleTexture[0][y][1] = twiddle[1];
-      twiddleTexture[0][y][2] = twiddleIndices[y];
-      twiddleTexture[0][y][3] = twiddleIndices[y + 1];
+      twiddleTexture[0][y][2] = Math.ceil(twiddleIndices[y]);
+      twiddleTexture[0][y][3] = Math.ceil(twiddleIndices[y + 1]);
     }
     else{
       twiddleTexture[0][y][0] = twiddle[0];
       twiddleTexture[0][y][1] = twiddle[1];
-      twiddleTexture[0][y][2] = twiddleIndices[y - 1];
-      twiddleTexture[0][y][3] = twiddleIndices[y];
+      twiddleTexture[0][y][2] = Math.ceil(twiddleIndices[y - 1]);
+      twiddleTexture[0][y][3] = Math.ceil(twiddleIndices[y]);
     }
   }
   butterflySpan = nextButterflySpan;
@@ -54,18 +54,18 @@ function computeTwiddleIndices(N, renderer){
     nextButterflySpan *= 2.0;
     for(let y = 0; y < textureHeight; y++){
       let k = (y * N / nextButterflySpan) % N;
-      let twiddle = [Math.cos(2.0 * Math.PI * k / N), Math.sin(2.0 * Math.PI * k / N)];
+      let twiddle = [Math.cos(twoPiOverN * k ), Math.sin(twoPiOverN * k)];
       if((y % nextButterflySpan) < butterflySpan){
-        twiddleTexture[x][y][0] = twiddle[0] + 1.0;
+        twiddleTexture[x][y][0] = twiddle[0];
         twiddleTexture[x][y][1] = twiddle[1];
-        twiddleTexture[x][y][2] = y;
-        twiddleTexture[x][y][3] = (y + butterflySpan);
+        twiddleTexture[x][y][2] = Math.floor(y);
+        twiddleTexture[x][y][3] = Math.floor(y + butterflySpan);
       }
       else{
         twiddleTexture[x][y][0] = twiddle[0];
         twiddleTexture[x][y][1] = twiddle[1];
-        twiddleTexture[x][y][2] = (y - butterflySpan);
-        twiddleTexture[x][y][3] = y;
+        twiddleTexture[x][y][2] = Math.floor(y - butterflySpan);
+        twiddleTexture[x][y][3] = Math.floor(y);
       }
     }
     butterflySpan = nextButterflySpan;
@@ -76,14 +76,24 @@ function computeTwiddleIndices(N, renderer){
   for(let y = 0; y < textureHeight; y++){
     for(let x = 0; x < textureWidth; x++){
       //For each R, G, B and A component
-      data.push(Math.max(Math.min(Math.floor(255.0 * 0.5 * (twiddleTexture[x][y][0] + 1.0)), 255), 0));
-      data.push(Math.max(Math.min(Math.floor(255.0 * 0.5 * (twiddleTexture[x][y][1] + 1.0)), 255), 0));
-      data.push(Math.max(Math.min(Math.floor(255.0 * (twiddleTexture[x][y][2] + butterflySpan) / (N + butterflySpan)), 255), 0));
-      data.push(Math.max(Math.min(Math.floor(255.0 * (twiddleTexture[x][y][3] + butterflySpan) / (N + butterflySpan)), 255), 0));
+      data.push(twiddleTexture[x][y][0]);
+      data.push(twiddleTexture[x][y][1]);
+      data.push(twiddleTexture[x][y][2]);
+      data.push(twiddleTexture[x][y][3]);
     }
   }
 
-  let dataTexture = new THREE.DataTexture(new Uint8Array(data), textureWidth, textureHeight, THREE.RGBAFormat);
+  let dataTexture = new THREE.DataTexture(
+    new Float32Array(data),
+    textureWidth,
+    textureHeight,
+    THREE.RGBAFormat,
+    ( /(iPad|iPhone|iPod)/g.test( navigator.userAgent ) ) ? THREE.HalfFloatType : THREE.FloatType,
+    THREE.ClampToEdgeWrapping,
+    THREE.ClampToEdgeWrapping,
+    THREE.NearestFilter,
+    THREE.NearestFilter
+  );
   dataTexture.needsUpdate = true;
 
   return {dataTexture: dataTexture, butterflySpan: butterflySpan, N: N};

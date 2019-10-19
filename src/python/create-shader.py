@@ -5,15 +5,15 @@ def ShaderFileWatcher():
     template_files = ['../js/ocean-system/shaders/LUTs/noise-shader-template.txt',\
     '../js/ocean-system/shaders/LUTs/h_0-shader-template.txt',\
     '../js/ocean-system/shaders/LUTs/h_k-shader-template.txt',\
-    '../js/ocean-system/shaders/LUTs/pingpong-template.txt',\
+    '../js/ocean-system/shaders/LUTs/butterfly-template.txt',\
     '../js/ocean-system/shaders/LUTs/fft-inverter-template.txt',\
     '../js/ocean-system/shaders/LUTs/test-output-template.txt']
     shader_js_files = ['../js/ocean-system/shaders/LUTs/noise-shader.js',\
     '../js/ocean-system/shaders/LUTs/h_0-shader.js',\
     '../js/ocean-system/shaders/LUTs/h_k-shader.js',\
-    '../js/ocean-system/shaders/LUTs/pingpong-shader.js',\
+    '../js/ocean-system/shaders/LUTs/butterfly-shader.js',\
     '../js/ocean-system/shaders/LUTs/fft-inverter-shader.js',\
-    '../js/ocean-system/shaders/LUTs/test-output-shader.js']
+    '../js/ocean-system/shaders/LUTs/test-output-shader.js',]
     shader_vertex_files = ['../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
     '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
     '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
@@ -23,7 +23,7 @@ def ShaderFileWatcher():
     shader_fragment_files = ['../glsl/gerstner-wave-LUTS/noise-frag.glsl',\
     '../glsl/gerstner-wave-LUTS/h_0-frag.glsl',\
     '../glsl/gerstner-wave-LUTS/h_k-frag.glsl',\
-    '../glsl/gerstner-wave-LUTS/pingpong-frag.glsl',\
+    '../glsl/gerstner-wave-LUTS/butterfly-frag.glsl',\
     '../glsl/gerstner-wave-LUTS/fft-inverter-frag.glsl',\
     '../glsl/gerstner-wave-LUTS/test-output-frag.glsl']
 
@@ -129,7 +129,16 @@ def ShaderFileWatcher():
                         nLeadingSpaces = len(loc) - len(loc.lstrip(' ')) + leadingSpacesBeforeVertextShaderCode[i] + 2
                         if lineNumber == 0:
                             jsStringifiedVertexLinesOfCode += [''] #Empty newline at start
-                        jsStringifiedVertexLinesOfCode += [(' ' * nLeadingSpaces) + "'" + loc.lstrip(' ') + "',"]
+
+                        #Allows us to use ' in comments without breaking the code
+                        #Also allows the use of inline variable strings to program our shaders
+                        #on the fly.
+                        if bool(re.search('\$\{.*\}', loc)):
+                            jsStringifiedVertexLinesOfCode += [(' ' * nLeadingSpaces) + "`" + loc.lstrip(' ') + "`,"]
+                        elif bool(re.search("'", loc)):
+                            jsStringifiedVertexLinesOfCode += [(' ' * nLeadingSpaces) + '"' + loc.lstrip(' ') + '",']
+                        else:
+                            jsStringifiedVertexLinesOfCode += [(' ' * nLeadingSpaces) + "'" + loc.lstrip(' ') + "',"]
                     else:
                         jsStringifiedVertexLinesOfCode += [loc]
                 jsStringifiedVertexCode[i] = '\r\n'.join(jsStringifiedVertexLinesOfCode)
@@ -141,7 +150,16 @@ def ShaderFileWatcher():
                         nLeadingSpaces = len(loc) - len(loc.lstrip(' ')) + leadingSpacesBeforeFragmentShaderCode[i] + 2
                         if lineNumber == 0:
                             jsStringifiedFragmentLinesOfCode += [''] #Empty newline at start
-                        jsStringifiedFragmentLinesOfCode += [(' ' * nLeadingSpaces) + "'" + loc.lstrip(' ') + "',"]
+
+                        #Allows us to use ' in comments without breaking the code
+                        #Also allows the use of inline variable strings to program our shaders
+                        #on the fly.
+                        if bool(re.search('\$\{.*\}', loc)):
+                            jsStringifiedFragmentLinesOfCode += [(' ' * nLeadingSpaces) + "`" + loc.lstrip(' ') + "`,"]
+                        elif bool(re.search("'", loc)):
+                            jsStringifiedFragmentLinesOfCode += [(' ' * nLeadingSpaces) + '"' + loc.lstrip(' ') + '",']
+                        else:
+                            jsStringifiedFragmentLinesOfCode += [(' ' * nLeadingSpaces) + "'" + loc.lstrip(' ') + "',"]
                     else:
                         jsStringifiedFragmentLinesOfCode += [loc]
                 jsStringifiedFragmentCode[i] = '\r\n'.join(jsStringifiedFragmentLinesOfCode)

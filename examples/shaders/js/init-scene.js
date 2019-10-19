@@ -9,8 +9,8 @@ document.addEventListener("DOMContentLoaded", function(){
 
     //Initialize our GPU Compute Renderers
     let staticGPUCompute = new THREE.GPUComputationRenderer(textureWidth, textureHeight, renderer);
-    let twiddleCalculatorGPUCompute = new THREE.GPUComputationRenderer(textureWidth, textureHeight, renderer);
-    let dynamicGPUCompute = new THREE.GPUComputationRenderer(textureWidth, textureHeight, renderer);
+    let hkRenderer = new THREE.GPUComputationRenderer(textureWidth, textureHeight, renderer);
+    let butterflyRenderer = new THREE.GPUComputationRenderer(textureWidth, textureHeight, renderer);
 
     //Create 4 different textures for each of our noise LUTs.
     let offset = textureWidth * textureHeight;
@@ -54,29 +54,61 @@ document.addEventListener("DOMContentLoaded", function(){
     staticGPUCompute.compute();
     staticGPUCompute.compute(); //Must be run twice to fill up second ping pong shader? Weird.
 
-    //Now compute our twiddle indices for injection
-    // let twiddleIndicesResult = computeTwiddleIndices(256.0, renderer);
-    // let twiddleTextureLUT = twiddleIndicesResult.dataTexture;
-    // let twiddleIndicesButterflySpan = twiddleIndicesResult.butterflySpan;
-    // let twiddleIndicesN = twiddleIndicesResult.N;
+    //Now compute our twiddle data for injection
+    let twiddleTexture = computeTwiddleIndices(h0TextureVar.material.uniforms.N.value, renderer);
 
     //Initialize our h_k shader
-    let hkTextureInit = dynamicGPUCompute.createTexture();
-    let hkTextureVar = dynamicGPUCompute.addVariable('textureHk', hkShaderMaterialData.fragmentShader, hkTextureInit);
-    dynamicGPUCompute.setVariableDependencies(hkTextureVar, []);//Note: We use manual texture dependency injection here.
+    let hkTextureInit = hkRenderer.createTexture();
+    let hkTextureVar = hkRenderer.addVariable('textureHk', hkShaderMaterialData.fragmentShader, hkTextureInit);
+    hkRenderer.setVariableDependencies(hkTextureVar, []);//Note: We use manual texture dependency injection here.
     hkTextureVar.material.uniforms = JSON.parse(JSON.stringify(hkShaderMaterialData.uniforms));
     hkTextureVar.material.uniforms.textureH0.value = staticGPUCompute.getCurrentRenderTarget(h0TextureVar).texture;
     hkTextureVar.material.uniforms.L.value = 1000.0;
     hkTextureVar.material.uniforms.uTime.value = 500.0;
     hkTextureVar.material.uniforms.N.value = 256.0;
 
-    let error2 = dynamicGPUCompute.init();
-    if(error2 !== null){
-      console.error(`Dynamic GPU Compute Renderer: ${error2}`);
+    let error3 = hkRenderer.init();
+    if(error3 !== null){
+      console.error(`Dynamic GPU Compute Renderer: ${error3}`);
     }
-    dynamicGPUCompute.compute();
-    let outTexture = dynamicGPUCompute.getCurrentRenderTarget(hkTextureVar).texture;
-    testOutputMaterial.uniforms.inTexture.value = outTexture;
+    hkRenderer.compute();
+
+    //Set up our butterfly height generator
+    let pingPongDependencies = [];
+    let pingpongState = 0;
+    let butterflyTextureInit = hkRenderer.createTexture();
+    let pingpongTextureStage = 1;
+    let butterflyTextureVar = butterflyRenderer.addVariable(`ping_pong_texture`, butterflyTextureData.fragmentShader, butterflyTextureInit);
+    butterflyRenderer.setVariableDependencies(butterflyTextureVar, [butterflyTextureVar]);
+    butterflyTextureVar.material.uniforms = JSON.parse(JSON.stringify(hkShaderMaterialData.uniforms));
+    pingpong = 1;
+    let N = hkTextureVar.material.uniforms.N.value;
+    butterflyTextureVar.material.uniforms.pingpong = pingpong;
+    butterflyTextureVar.material.uniforms.direction = 0;
+    let numPingPongIterations = Math.log(N) / Math.log(2);
+    butterflyTextureVar.material.uniforms.numStages = Math.floor(numPingPongIterations);
+    butterflyTextureVar.material.uniforms.stage = 0;
+    butterflyTextureVar.material.uniforms.N = N;
+    butterflyTextureVar.material.uniforms.twiddleTexture = twiddleTexture;
+
+    let error4 = butterflyRenderer.init();
+    if(error4 !== null){
+      console.error(`Wave Renderer: ${error4}`);
+    }
+    butterflyTextureVar.material.uniforms.ping_pong_texture = hkRenderer.getCurrentRenderTarget(hkTextureVar).texture;
+    butterflyRenderer.compute();
+    for(let i = 1; i < numPingPongIterations; i++){
+      butterflyTextureVar.material.uniforms.stage += 1;
+      butterflyTextureVar.material.uniforms.pingpong = !butterflyTextureVar.material.uniforms.pingpong;
+      butterflyRenderer.compute();
+    }
+    butterflyTextureVar.material.uniforms.stage = 0;
+    butterflyTextureVar.material.uniforms.direction = 1;
+    for(let i = 0; i < numPingPongIterations; i++){
+      butterflyTextureVar.material.uniforms.stage += 1;
+      butterflyTextureVar.material.uniforms.pingpong = !butterflyTextureVar.material.uniforms.pingpong;
+      butterflyRenderer.compute();
+    }
 
     var geometry = new THREE.PlaneGeometry(1.5, 1.5, 1);
     var plane = new THREE.Mesh(geometry, testOutputMaterial);
@@ -86,82 +118,40 @@ document.addEventListener("DOMContentLoaded", function(){
 
     var lastTime = (new Date()).getTime();
     var animate = function(){
-       currentTime = (new Date()).getTime();
-     	 requestAnimationFrame(animate);
-       let deltaTime = (currentTime - lastTime) / 1000.0 || 0.0;
-       lastTime = currentTime;
+      currentTime = (new Date()).getTime();
+      requestAnimationFrame(animate);
+      let deltaTime = (currentTime - lastTime) / 1000.0 || 0.0;
+      lastTime = currentTime;
 
-       //Update the time variable of our phillipse spectrum
-       hkTextureVar.material.uniforms.uTime.value += deltaTime;
+      //Update the time variable of our phillipse spectrum
+      hkTextureVar.material.uniforms.uTime.value += deltaTime;
 
-    //   //Clear shader pass for twiddle indices
-    //   pingpongMaterial.uniforms.twiddleIndices.value = twiddleTextureLUT;
-    //   pingpongMaterial.uniforms.pingpong_0.value = hkTextureLUT;
-    //   pingpongMaterial.uniforms.pingpong_1.value = null;
-    //   pingpongMaterial.uniforms.numStages.value = log2N * 2;
-    //   pingpongMaterial.uniforms.stage.value = 0;
-    //   pingpongMaterial.uniforms.pingpong.value = 0;
-    //   pingpongMaterial.uniforms.direction.value = 0;
-    //   pingpongMaterial.uniforms.N.value = 256.0;
-    //   pingpongMaterial.uniforms.butterflySpan = twiddleIndicesButterflySpan;
-    //   pingpongMaterial.uniforms.butterflyN = twiddleIndicesN;
-    //   let pingpong_0 = StaticLUTRenderer(textureWidth, textureHeight, renderer, pingpongMaterial);
-    //   pingpongMaterial.uniforms.stage.value = 1;
-    //   pingpongMaterial.uniforms.pingpong.value = 1;
-    //   pingpongMaterial.uniforms.pingpong_1 = pingpong_0;
-    //   let pingpong_1 = StaticLUTRenderer(textureWidth, textureHeight, renderer, pingpongMaterial);
+      //Compute the next frame
+      hkRenderer.compute();
 
-      //Update our vertical pingpong texture
-      //let pingpong = 0;
-      // for(let i = 2; i < log2N; i++){
-      //   if(pingpong){
-      //     //Write to pingpong 0
-      //     pingpong_0 = StaticLUTRenderer(textureWidth, textureHeight, renderer, pingpongMaterial);
-      //     pingpongMaterial.uniforms.pingpong_0.value = pingpong_1;
-      //   }
-      //   else{
-      //     //Write to pingpong 1
-      //     pingpong_1 = StaticLUTRenderer(textureWidth, textureHeight, renderer, pingpongMaterial);
-      //     pingpongMaterial.uniforms.pingpong_1.value = pingpong_0;
-      //   }
-      //
-      //   pingpongMaterial.uniforms.stage.value += 1;
-      //   pingpong ^= 1;
-      //   pingpongMaterial.uniforms.pingpong.value = pingpong; //Switch back and forth between 0 and 1
-      // }
-      //
-      // //Update our horizontal pingpong texture
-      // pingpongMaterial.uniforms.direction.value = 1;
-      // for(let i = 0; i < log2N; i++){
-      //   if(pingpong){
-      //     //Write to pingpong 0
-      //     pingpong_0 = StaticLUTRenderer(textureWidth, textureHeight, renderer, pingpongMaterial);
-      //     pingpongMaterial.uniforms.pingpong_0.value = pingpong_0;
-      //   }
-      //   else{
-      //     //Write to pingpong 1
-      //     pingpong_1 = StaticLUTRenderer(textureWidth, textureHeight, renderer, pingpongMaterial);
-      //     pingpongMaterial.uniforms.pingpong_0.value = pingpong_1;
-      //   }
-      //
-      //   pingpongMaterial.uniforms.stage.value += 1;
-      //   pingpong ^= 1;
-      //   pingpongMaterial.uniforms.pingpong.value = pingpong; //Switch back and forth between 0 and 1
-      // }
-      //Invert shader
-      // heightMapShader.pingpongTexture = pingpong ? pingpong_1 : pingpong_0;
-      // heightMapShader.oneOverNSquared = 1.0 / (256.0 * 256.0);
+      //Update our ping-pong butterfly texture
+      butterflyTextureVar.material.uniforms.pingpong = 1;
+      butterflyTextureVar.material.uniforms.direction = 0;
+      butterflyTextureVar.material.uniforms.stage = 0;
+      butterflyTextureVar.material.uniforms.ping_pong_texture = hkRenderer.getCurrentRenderTarget(hkTextureVar).texture;
+      butterflyRenderer.compute();
+      for(let i = 1; i < numPingPongIterations; i++){
+        butterflyTextureVar.material.uniforms.stage += 1;
+        butterflyTextureVar.material.uniforms.pingpong = !butterflyTextureVar.material.uniforms.pingpong;
+        butterflyRenderer.compute();
+      }
+      butterflyTextureVar.material.uniforms.stage = 0;
+      butterflyTextureVar.material.uniforms.direction = 1;
+      for(let i = 0; i < numPingPongIterations; i++){
+        butterflyTextureVar.material.uniforms.stage += 1;
+        butterflyTextureVar.material.uniforms.pingpong = !butterflyTextureVar.material.uniforms.pingpong;
+        butterflyRenderer.compute();
+      }
 
-      //finalRender = StaticLUTRenderer(textureWidth, textureHeight, renderer, heightMapShader);
-      //NOTE: This is claiming this isn't a function for some reason getCurrentRenderTarget(noiseVar1)
-      // console.log(staticGPUCompute.getCurrentRenderTarget(noiseVar1));
-      // debugger;
-      dynamicGPUCompute.compute();
-
-      let outTexture = dynamicGPUCompute.getCurrentRenderTarget(hkTextureVar).texture;
+      let outTexture = butterflyRenderer.getCurrentRenderTarget(butterflyTextureVar).texture;
       testOutputMaterial.uniforms.inTexture.value = outTexture;
 
-    	renderer.render(scene, camera);
+      renderer.render(scene, camera);
     }
     animate();
 });
