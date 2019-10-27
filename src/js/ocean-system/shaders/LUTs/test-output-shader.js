@@ -12,11 +12,11 @@ var testOutputMaterial = new THREE.ShaderMaterial({
     'precision mediump int;',
     '#endif',
 
-    'varying vec3 vWorldPosition;',
+    'varying vec2 vUv;',
 
     'void main() {',
       'vec4 worldPosition = modelMatrix * vec4( position, 1.0 );',
-      'vWorldPosition = clamp(vec3((position.xy + vec2(1.0)) * 0.5, 0.0), 0.0, 1.0);',
+      'vUv = uv;',
 
       'gl_Position = vec4(worldPosition.xy, 0.0, 1.0);',
     '}',
@@ -28,11 +28,11 @@ var testOutputMaterial = new THREE.ShaderMaterial({
     'precision mediump int;',
     '#endif',
 
-    'varying vec3 vWorldPosition;',
     'uniform sampler2D inTexture;',
+    'varying vec2 vUv;',
 
     'void main(){',
-      'gl_FragColor = texture2D(inTexture, vWorldPosition.xy);',
+      'gl_FragColor = texture2D(inTexture, vUv);',
     '}',
   ].join('\n')
 });

@@ -1,7 +1,7 @@
 document.addEventListener("DOMContentLoaded", function(){
     let scene = new THREE.Scene();
-    let textureWidth = 100;
-    let textureHeight = 100;
+    let textureWidth = 512;
+    let textureHeight = 512;
     let camera = new THREE.OrthographicCamera(-0.5, 0.5, 0.5, -0.5, 0.0, 0.1);
     let renderer = new THREE.WebGLRenderer();
     renderer.setSize(textureWidth, textureHeight);
@@ -11,6 +11,7 @@ document.addEventListener("DOMContentLoaded", function(){
     let staticGPUCompute = new THREE.GPUComputationRenderer(textureWidth, textureHeight, renderer);
     let hkRenderer = new THREE.GPUComputationRenderer(textureWidth, textureHeight, renderer);
     let butterflyRenderer = new THREE.GPUComputationRenderer(textureWidth, textureHeight, renderer);
+    let waveHeightRenderer = new THREE.GPUComputationRenderer(textureWidth, textureHeight, renderer);
 
     //Create 4 different textures for each of our noise LUTs.
     let offset = textureWidth * textureHeight;
@@ -39,7 +40,10 @@ document.addEventListener("DOMContentLoaded", function(){
     let h0TextureInit = staticGPUCompute.createTexture();
     let h0TextureVar = staticGPUCompute.addVariable('textureH0', h0ShaderMaterialData.fragmentShader, h0TextureInit);
     staticGPUCompute.setVariableDependencies(h0TextureVar, [noise1Var, noise2Var, noise3Var, noise4Var]);
-    h0TextureVar.material.uniforms = JSON.parse(JSON.stringify(h0ShaderMaterialData.uniforms));
+    h0TextureVar.material.uniforms = {
+      ...h0TextureVar.material.uniforms,
+      ...JSON.parse(JSON.stringify(h0ShaderMaterialData.uniforms))
+    }
     h0TextureVar.material.uniforms.N.value = 256.0;
     h0TextureVar.material.uniforms.L.value = 1000.0;
     h0TextureVar.material.uniforms.A.value = 20.0;
@@ -75,39 +79,48 @@ document.addEventListener("DOMContentLoaded", function(){
 
     //Set up our butterfly height generator
     let pingPongDependencies = [];
-    let pingpongState = 0;
     let butterflyTextureInit = hkRenderer.createTexture();
-    let pingpongTextureStage = 1;
-    let butterflyTextureVar = butterflyRenderer.addVariable(`ping_pong_texture`, butterflyTextureData.fragmentShader, butterflyTextureInit);
-    butterflyRenderer.setVariableDependencies(butterflyTextureVar, [butterflyTextureVar]);
-    butterflyTextureVar.material.uniforms = JSON.parse(JSON.stringify(hkShaderMaterialData.uniforms));
-    pingpong = 1;
+    let butterflyTextureVar = butterflyRenderer.addVariable('pingPongTexture', butterflyTextureData.fragmentShader, butterflyTextureInit);
+    butterflyRenderer.setVariableDependencies(butterflyTextureVar, []);
+    butterflyTextureVar.material.uniforms = JSON.parse(JSON.stringify(butterflyTextureData.uniforms));
     let N = hkTextureVar.material.uniforms.N.value;
-    butterflyTextureVar.material.uniforms.pingpong = pingpong;
-    butterflyTextureVar.material.uniforms.direction = 0;
+    butterflyTextureVar.material.uniforms.direction.value = 0;
     let numPingPongIterations = Math.log(N) / Math.log(2);
-    butterflyTextureVar.material.uniforms.numStages = Math.floor(numPingPongIterations);
-    butterflyTextureVar.material.uniforms.stage = 0;
-    butterflyTextureVar.material.uniforms.N = N;
-    butterflyTextureVar.material.uniforms.twiddleTexture = twiddleTexture;
+    butterflyTextureVar.material.uniforms.numStages.value = Math.floor(numPingPongIterations);
+    butterflyTextureVar.material.uniforms.stage.value = 0;
+    butterflyTextureVar.material.uniforms.N.value = N;
+    butterflyTextureVar.material.uniforms.twiddleTexture.value = twiddleTexture;
 
     let error4 = butterflyRenderer.init();
     if(error4 !== null){
-      console.error(`Wave Renderer: ${error4}`);
+      console.error(`Butterfly Texture Renderer: ${error4}`);
     }
-    butterflyTextureVar.material.uniforms.ping_pong_texture = hkRenderer.getCurrentRenderTarget(hkTextureVar).texture;
+    butterflyTextureVar.material.uniforms.pingPongTexture.value = hkRenderer.getCurrentRenderTarget(hkTextureVar).texture;
     butterflyRenderer.compute();
     for(let i = 1; i < numPingPongIterations; i++){
-      butterflyTextureVar.material.uniforms.stage += 1;
-      butterflyTextureVar.material.uniforms.pingpong = !butterflyTextureVar.material.uniforms.pingpong;
+      butterflyTextureVar.material.uniforms.pingPongTexture.value = butterflyRenderer.getCurrentRenderTarget(butterflyTextureVar).texture;
+      butterflyTextureVar.material.uniforms.stage.value += 1;
       butterflyRenderer.compute();
     }
-    butterflyTextureVar.material.uniforms.stage = 0;
-    butterflyTextureVar.material.uniforms.direction = 1;
+    butterflyTextureVar.material.uniforms.stage.value = 0;
+    butterflyTextureVar.material.uniforms.direction.value = 1;
     for(let i = 0; i < numPingPongIterations; i++){
-      butterflyTextureVar.material.uniforms.stage += 1;
-      butterflyTextureVar.material.uniforms.pingpong = !butterflyTextureVar.material.uniforms.pingpong;
+      butterflyTextureVar.material.uniforms.pingPongTexture.value = butterflyRenderer.getCurrentRenderTarget(butterflyTextureVar).texture;
+      butterflyTextureVar.material.uniforms.stage.value += 1;
       butterflyRenderer.compute();
+    }
+
+    //Initialize our wave height shader
+    let waveHeightTextureInit = waveHeightRenderer.createTexture();
+    let waveHeightTextureVar = waveHeightRenderer.addVariable('textureWaveHeight', waveHeightShaderMaterialData.fragmentShader, waveHeightTextureInit);
+    waveHeightRenderer.setVariableDependencies(waveHeightTextureVar, []);//Note: We use manual texture dependency injection here.
+    waveHeightTextureVar.material.uniforms = JSON.parse(JSON.stringify(waveHeightShaderMaterialData.uniforms));
+    waveHeightTextureVar.material.uniforms.butterflyTexture.value = null;
+    waveHeightTextureVar.material.uniforms.N.value = 64.0;
+
+    let error5 = waveHeightRenderer.init();
+    if(error5 !== null){
+      console.error(`Wave Height Renderer: ${error5}`);
     }
 
     var geometry = new THREE.PlaneGeometry(1.5, 1.5, 1);
@@ -130,25 +143,29 @@ document.addEventListener("DOMContentLoaded", function(){
       hkRenderer.compute();
 
       //Update our ping-pong butterfly texture
-      butterflyTextureVar.material.uniforms.pingpong = 1;
-      butterflyTextureVar.material.uniforms.direction = 0;
-      butterflyTextureVar.material.uniforms.stage = 0;
-      butterflyTextureVar.material.uniforms.ping_pong_texture = hkRenderer.getCurrentRenderTarget(hkTextureVar).texture;
+      butterflyTextureVar.material.uniforms.direction.value = 0;
+      butterflyTextureVar.material.uniforms.stage.value = 0;
+      butterflyTextureVar.material.uniforms.pingPongTexture.value = hkRenderer.getCurrentRenderTarget(hkTextureVar).texture;
+      butterflyTextureVar.material.uniforms.twiddleTexture.value = twiddleTexture;
       butterflyRenderer.compute();
       for(let i = 1; i < numPingPongIterations; i++){
-        butterflyTextureVar.material.uniforms.stage += 1;
-        butterflyTextureVar.material.uniforms.pingpong = !butterflyTextureVar.material.uniforms.pingpong;
+        butterflyTextureVar.material.uniforms.pingPongTexture.value = butterflyRenderer.getCurrentRenderTarget(butterflyTextureVar).texture;
+        butterflyTextureVar.material.uniforms.stage.value += 1;
         butterflyRenderer.compute();
       }
-      butterflyTextureVar.material.uniforms.stage = 0;
-      butterflyTextureVar.material.uniforms.direction = 1;
+      butterflyTextureVar.material.uniforms.stage.value = 0;
+      butterflyTextureVar.material.uniforms.direction.value = 1;
       for(let i = 0; i < numPingPongIterations; i++){
-        butterflyTextureVar.material.uniforms.stage += 1;
-        butterflyTextureVar.material.uniforms.pingpong = !butterflyTextureVar.material.uniforms.pingpong;
+        butterflyTextureVar.material.uniforms.pingPongTexture.value = butterflyRenderer.getCurrentRenderTarget(butterflyTextureVar).texture;
+        butterflyTextureVar.material.uniforms.stage.value += 1;
         butterflyRenderer.compute();
       }
 
-      let outTexture = butterflyRenderer.getCurrentRenderTarget(butterflyTextureVar).texture;
+      waveHeightTextureVar.material.uniforms.butterflyTexture.value = butterflyRenderer.getCurrentRenderTarget(butterflyTextureVar).texture;
+      waveHeightRenderer.compute();
+
+      //let outTexture = waveHeightRenderer.getCurrentRenderTarget(waveHeightTextureVar).texture;
+      let outTexture = waveHeightTextureVar.material.uniforms.butterflyTexture.value;
       testOutputMaterial.uniforms.inTexture.value = outTexture;
 
       renderer.render(scene, camera);

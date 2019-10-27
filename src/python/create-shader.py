@@ -7,14 +7,17 @@ def ShaderFileWatcher():
     '../js/ocean-system/shaders/LUTs/h_k-shader-template.txt',\
     '../js/ocean-system/shaders/LUTs/butterfly-template.txt',\
     '../js/ocean-system/shaders/LUTs/fft-inverter-template.txt',\
-    '../js/ocean-system/shaders/LUTs/test-output-template.txt']
+    '../js/ocean-system/shaders/LUTs/test-output-template.txt',\
+    '../js/ocean-system/shaders/LUTs/wave-height-template.txt']
     shader_js_files = ['../js/ocean-system/shaders/LUTs/noise-shader.js',\
     '../js/ocean-system/shaders/LUTs/h_0-shader.js',\
     '../js/ocean-system/shaders/LUTs/h_k-shader.js',\
     '../js/ocean-system/shaders/LUTs/butterfly-shader.js',\
     '../js/ocean-system/shaders/LUTs/fft-inverter-shader.js',\
-    '../js/ocean-system/shaders/LUTs/test-output-shader.js',]
+    '../js/ocean-system/shaders/LUTs/test-output-shader.js',\
+    '../js/ocean-system/shaders/LUTs/wave-height-shader.js']
     shader_vertex_files = ['../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
+    '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
     '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
     '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
     '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
@@ -25,7 +28,8 @@ def ShaderFileWatcher():
     '../glsl/gerstner-wave-LUTS/h_k-frag.glsl',\
     '../glsl/gerstner-wave-LUTS/butterfly-frag.glsl',\
     '../glsl/gerstner-wave-LUTS/fft-inverter-frag.glsl',\
-    '../glsl/gerstner-wave-LUTS/test-output-frag.glsl']
+    '../glsl/gerstner-wave-LUTS/test-output-frag.glsl',\
+    '../glsl/gerstner-wave-LUTS/wave-height-frag.glsl']
 
     #Where is everything located? Give some relative paths that python can follow
     template_names = [os.path.abspath(x) for x in template_files]
