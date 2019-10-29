@@ -39,14 +39,14 @@ function computeTwiddleIndices(N, renderer){
     if((y % nextButterflySpan) < butterflySpan){
       twiddleTexture[0][y][0] = twiddle[0];
       twiddleTexture[0][y][1] = twiddle[1];
-      twiddleTexture[0][y][2] = indices[y];
-      twiddleTexture[0][y][3] = indices[y + 1];
+      twiddleTexture[0][y][2] = indices[y] / N;
+      twiddleTexture[0][y][3] = indices[y + 1] / N;
     }
     else{
       twiddleTexture[0][y][0] = twiddle[0];
       twiddleTexture[0][y][1] = twiddle[1];
-      twiddleTexture[0][y][2] = indices[y - 1];
-      twiddleTexture[0][y][3] = indices[y];
+      twiddleTexture[0][y][2] = indices[y - 1]  / N;
+      twiddleTexture[0][y][3] = indices[y] / N;
     }
   }
   butterflySpan = nextButterflySpan;
@@ -60,14 +60,14 @@ function computeTwiddleIndices(N, renderer){
       if((y % nextButterflySpan) < butterflySpan){
         twiddleTexture[x][y][0] = twiddle[0];
         twiddleTexture[x][y][1] = twiddle[1];
-        twiddleTexture[x][y][2] = y;
-        twiddleTexture[x][y][3] = y + butterflySpan;
+        twiddleTexture[x][y][2] = y / N;
+        twiddleTexture[x][y][3] = (y + butterflySpan)  / N;
       }
       else{
         twiddleTexture[x][y][0] = twiddle[0];
         twiddleTexture[x][y][1] = twiddle[1];
-        twiddleTexture[x][y][2] = y - butterflySpan;
-        twiddleTexture[x][y][3] = y;
+        twiddleTexture[x][y][2] = (y - butterflySpan)  / N;
+        twiddleTexture[x][y][3] = y / N;
       }
     }
     butterflySpan = nextButterflySpan;

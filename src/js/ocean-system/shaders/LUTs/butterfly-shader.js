@@ -3,28 +3,18 @@
 //https://github.com/mrdoob/three.js/wiki/Uniforms-types
 var butterflyTextureData = {
   uniforms: {
-    pingPongTexture: {type: 't', value: null},
     twiddleTexture: {type: 't', value: null},
-    stage: {type: 'i', value: 1},
-    N: {type: 'f', value: 0.0},
-    numStages: {type: 'i', value: 2},
+    stageFraction: {type: 'f', value: 0.0},
     direction: {type: 'i', value: 1}
   },
 
-  fragmentShader: [
-    '#ifdef GL_ES',
-    'precision mediump float;',
-    'precision mediump int;',
-    '#endif',
-
+  fragmentShader: function(pingpong_id, injectVariable = false){
+    let glsl = [
     'varying vec3 vWorldPosition;',
 
     '//With a lot of help from https://youtu.be/i0BPrGuOdPo',
-    'uniform sampler2D pingPongTexture;',
     'uniform sampler2D twiddleTexture;',
-    'uniform float N;',
-    'uniform int numStages;',
-    'uniform int stage;',
+    'uniform float stageFraction;',
     'uniform int direction;',
 
     'const float pi = 3.141592653589793238462643383279502884197169;',
@@ -38,25 +28,25 @@ var butterflyTextureData = {
     '}',
 
     'vec4 horizontalButterflies(vec2 position){',
-      'vec4 data = texture2D(twiddleTexture, vec2(stage / numStages, position.x));',
+      'vec4 data = texture2D(twiddleTexture, vec2(stageFraction, position.x));',
 
-      'vec2 p = texture2D(pingPongTexture, vec2(data.z, position.y)).rg;',
-      'vec2 q = texture2D(pingPongTexture, vec2(data.w, position.y)).rg;',
+      `vec2 p = texture2D(pingpong_${pingpong_id}, vec2(data.z, position.y)).rg;`,
+      `vec2 q = texture2D(pingpong_${pingpong_id}, vec2(data.w, position.y)).rg;`,
       'vec2 w = vec2(data.x, data.y);',
 
       'vec2 H = cAdd(p, cMult(w, q));',
-      'return vec4(H.x, H.y, 0.0, 1.0);',
+      'return vec4(H, 0.0, 1.0);',
     '}',
 
     'vec4 verticalButterflies(vec2 position){',
-      'vec4 data = texture2D(twiddleTexture, vec2(stage / numStages, position.y));',
+      'vec4 data = texture2D(twiddleTexture, vec2(stageFraction, position.y));',
 
-      'vec2 p = texture2D(pingPongTexture, vec2(data.z, position.x)).rg;',
-      'vec2 q = texture2D(pingPongTexture, vec2(data.w, position.x)).rg;',
+      `vec2 p = texture2D(pingpong_${pingpong_id}, vec2(position.x, data.z)).rg;`,
+      `vec2 q = texture2D(pingpong_${pingpong_id}, vec2(position.x, data.w)).rg;`,
       'vec2 w = vec2(data.x, data.y);',
 
       'vec2 H = cAdd(p, cMult(w, q));',
-      'return vec4(H.x, H.y, 0.0, 1.0);',
+      'return vec4(H, 0.0, 1.0);',
     '}',
 
     'void main(){',
@@ -74,5 +64,12 @@ var butterflyTextureData = {
 
       'gl_FragColor = result;',
     '}',
-  ].join('\n')
+    ];
+
+    if(injectVariable){
+      glsl = [`uniform sampler2D pingpong_${pingpong_id};`, ...glsl];
+    }
+
+    return glsl.join('\n');
+  }
 };
