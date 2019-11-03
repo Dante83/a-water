@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+
+<html>
+  <head>
+
+    <meta charset="UTF-8">
+    <title>Breaking Dam</title>
+
+    <!--Meta-->
+    <meta name="viewport" content="width=device-width,initial-scale=1,shrink-to-fit=no,user-scalable=no,maximum-scale=1">
+    <script src="https://aframe.io/releases/0.9.2/aframe.min.js"></script>
+    <script src="../../src/js/GPUComputeRenderer.js"></script>
+    <script src="../../src/js/ocean-system/shaders/LUTS/noise-shader.js"></script>
+    <script src="../../src/js/ocean-system/shaders/LUTS/h_0-shader.js"></script>
+    <script src="../../src/js/ocean-system/shaders/LUTS/h_k-shader.js"></script>
+    <script src="../../src/js/ocean-system/shaders/LUTS/fft-inverter-shader.js"></script>
+    <script src="../../src/js/ocean-system/shaders/LUTS/compute-twiddle-indices.js"></script>
+    <script src="../../src/js/ocean-system/shaders/LUTS/static-lut-renderer.js"></script>
+    <script src="../../src/js/ocean-system/shaders/LUTS/test-output-shader.js"></script>
+    <script src="../../src/js/ocean-system/shaders/LUTS/butterfly-shader.js"></script>
+    <script src="../../src/js/ocean-system/shaders/LUTS/wave-height-shader.js"></script>
+    <script src="../../src/js/ocean-system/ocean-heightmap.js"></script>
+    <script src="../../src/js/ocean-system/ocean-patch.js"></script>
+    <script src="../../src/js/ocean-system/ocean-grid.js"></script>
+    <script src="../../src/js/components/ocean-state.js"></script>
+    <script src="../../src/js/primitives/a-ocean.js"></script>
+
+  <!--Scene Scripts-->
+  </head>
+  <body>
+    <a-scene>
+      <a-ocean></a-ocean>
+    </a-scene>
+  </body>
+</html>
