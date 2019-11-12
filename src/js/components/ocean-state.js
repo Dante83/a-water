@@ -4,8 +4,8 @@ AFRAME.registerComponent('ocean_state', {
   oceanRenderer: null,
   oceanCollider: null,
   schema: {
-    'draw_distance': {type: 'number', default: 1000.0},
-    'patch_size': {type: 'number', default: 10.0},
+    'draw_distance': {type: 'number', default: 64.0},
+    'patch_size': {type: 'number', default: 16.0},
     'patch_data_size': {type: 'number', default: 512},
     'L': {type: 'number', default: 1000.0},
     'A': {type: 'number', default: 20.0},
@@ -17,10 +17,11 @@ AFRAME.registerComponent('ocean_state', {
     //Get our renderer to pass in
     let renderer = this.el.sceneEl.renderer;
     let scene = this.el.sceneEl.object3D;
+    let camera = this.el.sceneEl.camera.el.object3D;
     let self = this;
 
     //Set up our ocean grid
-    this.oceanGrid = new OceanGrid(this.data, scene, renderer);
+    this.oceanGrid = new OceanGrid(this.data, scene, renderer, camera);
   },
   tick: function(time, timeDelta){
     this.oceanGrid.tick(time);
