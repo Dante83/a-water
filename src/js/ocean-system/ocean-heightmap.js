@@ -14,6 +14,7 @@ function OceanHeightmap(data, renderer){
   this.hkRenderer = new THREE.GPUComputationRenderer(textureWidth, textureHeight, this.renderer);
   this.butterflyRenderer = new THREE.GPUComputationRenderer(textureWidth, textureHeight, this.renderer);
   this.waveHeightRenderer = new THREE.GPUComputationRenderer(textureWidth, textureHeight, this.renderer);
+  this.waveNormalMapRenderer = new THREE.GPUComputationRenderer(textureWidth, textureHeight, this.renderer);
 
   //Create 4 different textures for each of our noise LUTs.
   let offset = textureWidth * textureHeight;
@@ -120,7 +121,7 @@ function OceanHeightmap(data, renderer){
   this.butterflyRenderer.compute();
 
   //Initialize our wave height shader
-  let waveHeightTextureInit = this.waveHeightRenderer.createTexture();
+  let waveHeightTextureInit = this.waveHeightRenderer.createTexture(textureWidth, textureHeight, true, true, THREE.LinearMipMapLinearFilter, THREE.LinearMipMapLinearFilter);
   this.waveHeightTextureVar = this.waveHeightRenderer.addVariable('textureWaveHeight', waveHeightShaderMaterialData.fragmentShader, waveHeightTextureInit);
   this.waveHeightRenderer.setVariableDependencies(this.waveHeightTextureVar, []);//Note: We use manual texture dependency injection here.
   this.waveHeightTextureVar.material.uniforms = JSON.parse(JSON.stringify(waveHeightShaderMaterialData.uniforms));
@@ -130,6 +131,19 @@ function OceanHeightmap(data, renderer){
   let error5 = this.waveHeightRenderer.init();
   if(error5 !== null){
     console.error(`Wave Height Renderer: ${error5}`);
+  }
+  this.waveHeightRenderer.compute();
+
+  //Initialize our wave height shader
+  let waveNormalMapTextureInit = this.waveNormalMapRenderer.createTexture(textureWidth, textureHeight, THREE.ClampToEdgeWrapping, THREE.ClampToEdgeWrapping, THREE.LinearMipMapLinearFilter, THREE.LinearMipMapLinearFilter);
+  this.waveNormalMapTextureVar = this.waveNormalMapRenderer.addVariable('textureWaveNormalMap', waveNormalMapMaterialData.fragmentShader, waveNormalMapTextureInit);
+  this.waveNormalMapRenderer.setVariableDependencies(this.waveNormalMapTextureVar, []);//Note: We use manual texture dependency injection here.
+  this.waveNormalMapTextureVar.material.uniforms = JSON.parse(JSON.stringify(waveNormalMapMaterialData.uniforms));
+  this.waveNormalMapTextureVar.material.uniforms.waveHeightTexture.value = this.waveHeightRenderer.getCurrentRenderTarget(this.waveHeightTextureVar).texture;
+
+  let error6 = this.waveNormalMapRenderer.init();
+  if(error6 !== null){
+    console.error(`Wave Normal Map Renderer: ${error6}`);
   }
 
   //To be removed when we eventually combine multiples of these
@@ -150,6 +164,14 @@ function OceanHeightmap(data, renderer){
     self.waveHeightTextureVar.material.uniforms.butterflyTexture.value = self.butterflyRenderer.getCurrentRenderTarget(self.finalButterflyTextureVar).texture;
     self.waveHeightRenderer.compute();
 
-    return self.waveHeightRenderer.getCurrentRenderTarget(self.waveHeightTextureVar).texture;
+    let waveHeightTexture = self.waveHeightRenderer.getCurrentRenderTarget(self.waveHeightTextureVar).texture;
+
+    self.waveNormalMapTextureVar.material.uniforms.waveHeightTexture.value = waveHeightTexture;
+    self.waveNormalMapRenderer.compute();
+
+    return {
+      waveHeight: waveHeightTexture,
+      waveNormal: self.waveNormalMapRenderer.getCurrentRenderTarget(self.waveNormalMapTextureVar).texture
+    };
   }
 }

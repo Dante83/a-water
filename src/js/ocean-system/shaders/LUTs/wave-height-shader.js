@@ -16,9 +16,15 @@ var waveHeightShaderMaterialData = {
     'uniform sampler2D butterflyTexture;',
     'uniform float N;',
 
+    'float fModulo1(float a){',
+      'return (a - floor(a));',
+    '}',
+
     'void main(){',
-      'vec2 uv = gl_FragCoord.xy / resolution.xy;',
-      'float outputputColor = texture2D(butterflyTexture, uv).x / (N * N);',
+      'float sizeExpansion = (resolution.x + 1.0) / resolution.x; //Expand by exactly one pixel',
+      'vec2 uv = sizeExpansion * (gl_FragCoord.xy / resolution.xy);',
+      'vec2 wrappedUV = vec2(fModulo1(uv.x), fModulo1(uv.y));',
+      'float outputputColor = texture2D(butterflyTexture, wrappedUV).x / (N * N);',
       'gl_FragColor = vec4(vec3(outputputColor), 1.0);',
     '}',
   ].join('\n')
