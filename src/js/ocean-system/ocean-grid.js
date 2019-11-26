@@ -1,4 +1,4 @@
-function OceanGrid(data, scene, renderer, camera){
+function OceanGrid(data, scene, renderer, camera, staticMeshes){
   //Variable for holding all of our patches
   //For now, just create 1 plane
   this.scene = scene;
@@ -11,10 +11,17 @@ function OceanGrid(data, scene, renderer, camera){
   this.drawDistance = data.draw_distance;
   this.startingPoint = [0.0, 0.0];
   this.patchSize = data.patch_size;
-  console.log(data);
+  this.data = data;
   this.time = 0.0;
-
-  console.log(this.camera.position.clone().applyMatrix4(this.camera.matrixWorld));
+  this.staticMeshes = staticMeshes;
+  this.downVector = new THREE.Vector3(0.0, -1.0, 0.0);
+  let down = new THREE.Vector3(0.0, -1.0, 0.0);
+  this.raycaster = new THREE.Raycaster(
+    new THREE.Vector3(0.0, 100.0, 0.0),
+    down,
+    0.0,
+    -500.0
+  );
 
   //Get all ocean patch offsets
   let maxHalfPatchesPerSide = Math.ceil((this.drawDistance + this.patchSize) / this.patchSize);
@@ -31,7 +38,10 @@ function OceanGrid(data, scene, renderer, camera){
 
   //Initialize all shader LUTs for future ocean viewing
   //Initialize our ocean variables and all associated shaders.
-  this.oceanHeightmap = new OceanHeightmap(data, this.renderer);
+  this.oceanMaterialHkLibrary = new OceanMaterialHkLibrary(data, this.renderer);
+  let dwd = data.default_water_depth;
+  let defaultHeights = [dwd, dwd, dwd, dwd];
+  this.defaultHeightMap = new OceanHeightmap(data, this.renderer, this.oceanMaterialHkLibrary, defaultHeights);
   let self = this;
 
   this.checkForNewGridElements = function(){
@@ -109,7 +119,7 @@ function OceanGrid(data, scene, renderer, camera){
       }
       else if(newOceanPatches.length < self.numberOfPatches){
         //Create a new patch as we are out of old patches to use
-        let patch = new OceanPatch(self.scene, self.oceanHeightmap.tick(self.time), self.patchSize);
+        let patch = new OceanPatch(self.scene, self);
         patch.position.x = newGridCoordX;
         patch.position.y = newGridCoordY;
         if(patchCounterCheckerCounter < 10){
@@ -132,12 +142,15 @@ function OceanGrid(data, scene, renderer, camera){
   };
 
   this.tick = function(time){
+    //Reset our library
+    self.oceanMaterialHkLibrary.resetActiveTextures();
+
     //Update the state of our ocean grid
     self.time = time;
     self.checkForNewGridElements();
 
     //Update each of our ocean grid height maps
-    let oceanHeightMap = self.oceanHeightmap.tick(time);
+    let oceanHeightMap = self.defaultHeightMap.tick(time);
     for(let i = 0, numOceanPatches = self.oceanPatches.length; i < numOceanPatches; ++i){
       self.oceanPatches[i].tick(oceanHeightMap);
     }

@@ -6,6 +6,7 @@ def ShaderFileWatcher():
     '../js/ocean-system/shaders/LUTs/h_0-shader-template.txt',\
     '../js/ocean-system/shaders/LUTs/h_k-shader-template.txt',\
     '../js/ocean-system/shaders/LUTs/butterfly-template.txt',\
+    '../js/ocean-system/shaders/LUTs/butterfly-0-template.txt',\
     '../js/ocean-system/shaders/LUTs/fft-inverter-template.txt',\
     '../js/ocean-system/shaders/LUTs/test-output-template.txt',\
     '../js/ocean-system/shaders/LUTs/wave-height-template.txt',\
@@ -14,6 +15,7 @@ def ShaderFileWatcher():
     '../js/ocean-system/shaders/LUTs/h_0-shader.js',\
     '../js/ocean-system/shaders/LUTs/h_k-shader.js',\
     '../js/ocean-system/shaders/LUTs/butterfly-shader.js',\
+    '../js/ocean-system/shaders/LUTs/butterfly-0-shader.js',\
     '../js/ocean-system/shaders/LUTs/fft-inverter-shader.js',\
     '../js/ocean-system/shaders/LUTs/test-output-shader.js',\
     '../js/ocean-system/shaders/LUTs/wave-height-shader.js',\
@@ -25,11 +27,13 @@ def ShaderFileWatcher():
     '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
     '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
     '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
+    '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
     '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl']
     shader_fragment_files = ['../glsl/gerstner-wave-LUTS/noise-frag.glsl',\
     '../glsl/gerstner-wave-LUTS/h_0-frag.glsl',\
     '../glsl/gerstner-wave-LUTS/h_k-frag.glsl',\
     '../glsl/gerstner-wave-LUTS/butterfly-frag.glsl',\
+    '../glsl/gerstner-wave-LUTS/butterfly-0-frag.glsl',\
     '../glsl/gerstner-wave-LUTS/fft-inverter-frag.glsl',\
     '../glsl/gerstner-wave-LUTS/test-output-frag.glsl',\
     '../glsl/gerstner-wave-LUTS/wave-height-frag.glsl',\
