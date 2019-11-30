@@ -2,14 +2,13 @@ function OceanHeightmap(data, renderer, oceanMaterialHkLibrary, cornerHeights, c
   const textureWidth = data.patch_data_size;
   const textureHeight = data.patch_data_size;
   this.N = data.number_of_octaves;
-  this.L = data.L;
-  this.A = data.A;
-  this.L_ = (26.0 * 26.0) / 9.81;
-  this.w = data.wind_velocity;
   this.renderer = renderer;
+  this.waveHeightTexture;
+  this.waveNormalTexture;
   this.oceanMaterialHkLibrary = oceanMaterialHkLibrary;
   this.cornerHeights = cornerHeights;
   this.cornerDissipationVectors = cornerDissipationVectors;
+  this.hkLibraryIds = [false, false, false, false];
   document.body.appendChild(renderer.domElement);
 
   //Initialize our GPU Compute Renderers
@@ -17,60 +16,54 @@ function OceanHeightmap(data, renderer, oceanMaterialHkLibrary, cornerHeights, c
   this.waveHeightRenderer = new THREE.GPUComputationRenderer(textureWidth, textureHeight, this.renderer);
   this.waveNormalMapRenderer = new THREE.GPUComputationRenderer(textureWidth, textureHeight, this.renderer);
 
-  //Now compute our twiddle data for injection
-  let twiddleTexture = computeTwiddleIndices(this.N, renderer);
-
   //Set up our butterfly height generator
   this.butterflyTextureVars = [];
   let numPingPongIterations = Math.ceil(Math.log(this.N) / Math.log(2));
-  let butterflyTextureInit = this.butterflyRenderer.createTexture();
-  this.butterflyTextureVars.push(this.butterflyRenderer.addVariable(`pingpong_0`, butterflyTextureDataInitializer.fragmentShader(), butterflyTextureInit));
+  let butterFlyTexture = this.butterflyRenderer.createTexture();
+  this.butterflyTextureVars.push(this.butterflyRenderer.addVariable(`pingpong_0`, butterflyTextureDataInitializer.fragmentShader(), butterFlyTexture));
   this.butterflyRenderer.setVariableDependencies(this.butterflyTextureVars[0], []);
-  this.butterflyTextureVars[0].material.uniforms = JSON.parse(JSON.stringify(butterflyTextureData.uniforms));
+  this.butterflyTextureVars[0].material.uniforms = JSON.parse(JSON.stringify(butterflyTextureDataInitializer.uniforms));
 
-  //We now use four hk textures for each of the corners
+  //We now use four hk textures for each of the corners to initialize our first butterfly texture
   let i0 = oceanMaterialHkLibrary.waterDepthToIndex(cornerHeights[0]);
-  this.targetHKRenderer0 = oceanMaterialHkLibrary.hkRenderers[i0];
-  this.targetHKVar0 = oceanMaterialHkLibrary.hkTextureVars[i0];
+  this.hkLibraryIds[0] = i0;
   let i1 = oceanMaterialHkLibrary.waterDepthToIndex(cornerHeights[1]);
-  this.targetHKRenderer1 = oceanMaterialHkLibrary.hkRenderers[i1];
-  this.targetHKVar1 = oceanMaterialHkLibrary.hkTextureVars[i1];
+  this.hkLibraryIds[1] = i1;
   let i2 = oceanMaterialHkLibrary.waterDepthToIndex(cornerHeights[2]);
-  this.targetHKRenderer2 = oceanMaterialHkLibrary.hkRenderers[i2];
-  this.targetHKVar2 = oceanMaterialHkLibrary.hkTextureVars[i2];
+  this.hkLibraryIds[2] = i2;
   let i3 = oceanMaterialHkLibrary.waterDepthToIndex(cornerHeights[3]);
-  this.targetHKRenderer3 = oceanMaterialHkLibrary.hkRenderers[i3];
-  this.targetHKVar3 = oceanMaterialHkLibrary.hkTextureVars[i3];
+  this.hkLibraryIds[3] = i3;
   this.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_0 = {};
-  this.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_0.value = this.targetHKRenderer0.getCurrentRenderTarget(this.targetHKVar0).texture;
+  this.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_0.value = this.oceanMaterialHkLibrary.hkTextureOuts[i0];
   this.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_1 = {};
-  this.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_1.value = this.targetHKRenderer1.getCurrentRenderTarget(this.targetHKVar1).texture;
+  this.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_1.value = this.oceanMaterialHkLibrary.hkTextureOuts[i1];
   this.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_2 = {};
-  this.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_2.value = this.targetHKRenderer2.getCurrentRenderTarget(this.targetHKVar2).texture;
+  this.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_2.value = this.oceanMaterialHkLibrary.hkTextureOuts[i2];
   this.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_3 = {};
-  this.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_3.value = this.targetHKRenderer3.getCurrentRenderTarget(this.targetHKVar3).texture;
-
+  this.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_3.value = this.oceanMaterialHkLibrary.hkTextureOuts[i3];
   this.butterflyTextureVars[0].material.uniforms.direction.value = 0;
   this.butterflyTextureVars[0].material.uniforms.stageFraction.value = 0.0;
-  this.butterflyTextureVars[0].material.uniforms.twiddleTexture.value = twiddleTexture;
+  this.butterflyTextureVars[0].material.uniforms.twiddleTexture.value = this.oceanMaterialHkLibrary.twiddleTexture;
+
+  //Now we can perform the remaining butterfly operations using the above texture
   for(let i = 1; i < numPingPongIterations; i++){
-    let butterflyTextureInit = this.butterflyRenderer.createTexture();
-    this.butterflyTextureVars.push(this.butterflyRenderer.addVariable(`pingpong_${i}`, butterflyTextureData.fragmentShader(i - 1), butterflyTextureInit));
+    let butterFlyTexture = this.butterflyRenderer.createTexture();
+    this.butterflyTextureVars.push(this.butterflyRenderer.addVariable(`pingpong_${i}`, butterflyTextureData.fragmentShader(i - 1), butterFlyTexture));
     this.butterflyRenderer.setVariableDependencies(this.butterflyTextureVars[i], [this.butterflyTextureVars[i - 1]]);
     this.butterflyTextureVars[i].material.uniforms = JSON.parse(JSON.stringify(butterflyTextureData.uniforms));
     this.butterflyTextureVars[i].material.uniforms.direction.value = 0;
     this.butterflyTextureVars[i].material.uniforms.stageFraction.value = i / (numPingPongIterations - 1.0);
-    this.butterflyTextureVars[i].material.uniforms.twiddleTexture.value = twiddleTexture;
+    this.butterflyTextureVars[i].material.uniforms.twiddleTexture.value = this.oceanMaterialHkLibrary.twiddleTexture;
   }
   let numPingPongIterationsTimes2 = numPingPongIterations * 2;
   for(let i = numPingPongIterations; i < numPingPongIterationsTimes2; i++){
-    let butterflyTextureInit = this.butterflyRenderer.createTexture();
-    this.butterflyTextureVars.push(this.butterflyRenderer.addVariable(`pingpong_${i}`, butterflyTextureData.fragmentShader(i - 1), butterflyTextureInit));
+    let butterFlyTexture = this.butterflyRenderer.createTexture();
+    this.butterflyTextureVars.push(this.butterflyRenderer.addVariable(`pingpong_${i}`, butterflyTextureData.fragmentShader(i - 1), butterFlyTexture));
     this.butterflyRenderer.setVariableDependencies(this.butterflyTextureVars[i], [this.butterflyTextureVars[i - 1]]);
     this.butterflyTextureVars[i].material.uniforms = JSON.parse(JSON.stringify(butterflyTextureData.uniforms));
     this.butterflyTextureVars[i].material.uniforms.direction.value = 1;
     this.butterflyTextureVars[i].material.uniforms.stageFraction.value = (i - numPingPongIterations) / (numPingPongIterations - 1.0);
-    this.butterflyTextureVars[i].material.uniforms.twiddleTexture.value = twiddleTexture;
+    this.butterflyTextureVars[i].material.uniforms.twiddleTexture.value = this.oceanMaterialHkLibrary.twiddleTexture;
   }
   this.finalButterflyTextureVar = this.butterflyTextureVars[numPingPongIterationsTimes2 - 1];
 
@@ -114,23 +107,19 @@ function OceanHeightmap(data, renderer, oceanMaterialHkLibrary, cornerHeights, c
 
   this.tick = function(time){
     //Update our ping-pong butterfly texture
-    self.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_0.value = self.targetHKRenderer0.getCurrentRenderTarget(self.targetHKVar0).texture;
-    self.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_1.value = self.targetHKRenderer1.getCurrentRenderTarget(self.targetHKVar1).texture;
-    self.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_2.value = self.targetHKRenderer2.getCurrentRenderTarget(self.targetHKVar2).texture;
-    self.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_3.value = self.targetHKRenderer3.getCurrentRenderTarget(self.targetHKVar3).texture;
+    self.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_0.value = self.oceanMaterialHkLibrary.hkTextureOuts[self.hkLibraryIds[0]];
+    self.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_1.value = self.oceanMaterialHkLibrary.hkTextureOuts[self.hkLibraryIds[1]];
+    self.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_2.value = self.oceanMaterialHkLibrary.hkTextureOuts[self.hkLibraryIds[2]];
+    self.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_3.value = self.oceanMaterialHkLibrary.hkTextureOuts[self.hkLibraryIds[3]];
     self.butterflyRenderer.compute();
 
     self.waveHeightTextureVar.material.uniforms.butterflyTexture.value = self.butterflyRenderer.getCurrentRenderTarget(self.finalButterflyTextureVar).texture;
     self.waveHeightRenderer.compute();
 
-    let waveHeightTexture = self.waveHeightRenderer.getCurrentRenderTarget(self.waveHeightTextureVar).texture;
+    self.waveHeightTexture = self.waveHeightRenderer.getCurrentRenderTarget(self.waveHeightTextureVar).texture;
 
-    self.waveNormalMapTextureVar.material.uniforms.waveHeightTexture.value = waveHeightTexture;
+    self.waveNormalMapTextureVar.material.uniforms.waveHeightTexture.value = self.waveHeightTexture;
     self.waveNormalMapRenderer.compute();
-
-    return {
-      waveHeight: waveHeightTexture,
-      waveNormal: self.waveNormalMapRenderer.getCurrentRenderTarget(self.waveNormalMapTextureVar).texture
-    };
+    self.waveNormalTexture = self.waveNormalMapRenderer.getCurrentRenderTarget(self.waveNormalMapTextureVar).texture;
   }
 }
