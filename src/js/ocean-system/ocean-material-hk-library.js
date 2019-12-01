@@ -26,7 +26,7 @@ function OceanMaterialHkLibrary(data, renderer){
   this.textureWidth = data.patch_data_size;
   this.textureHeight = data.patch_data_size;
   this.N = data.number_of_octaves; //N is The number of octaves that are used for the FFT
-  this.L = data.patch_size * this.N; //L is the horizontal dimension of the patch
+  this.L = data.patch_size * 64; //L is the horizontal dimension of the patch
   let windVelocity = new THREE.Vector2(data.wind_velocity.x, data.wind_velocity.y);
   this.L_ = windVelocity.dot(windVelocity) / 9.80665; //(Wind speed squared divided by gravity)
   this.w = windVelocity.clone().normalize(); //w is the wind direction

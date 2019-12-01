@@ -96,16 +96,15 @@ function OceanPatch(scene, parentOceanGrid){
     }
   }
 
-  this.tick = function(time){
+  this.tick = function(time, defaultOceanTextures){
     if(self.customMaterial){
-      self.customMaterial.tick(time);
-      self.oceanMaterial.displacementMap = self.customMaterial.waveHeight;
-      self.oceanMaterial.normalMap = self.customMaterial.waveNormal;
+      let customOceanTexture = self.customMaterial.tick(time);
+      self.oceanMaterial.displacementMap = customOceanTexture.heightMap;
+      self.oceanMaterial.normalMap = customOceanTexture.normalMap;
     }
     else{
-      // self.oceanMaterial.displacementMap = self.parentOceanGrid.defaultHeightMap.waveHeight;
-      // self.oceanMaterial.normalMap = self.parentOceanGrid.defaultHeightMap.waveNormal;
-      self.oceanMaterial.map = self.parentOceanGrid.defaultHeightMap.waveNormalTexture;
+      self.oceanMaterial.displacementMap = defaultOceanTextures.heightMap;
+      self.oceanMaterial.normalMap = defaultOceanTextures.normalMap;
     }
   };
 }

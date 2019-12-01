@@ -3,8 +3,6 @@ function OceanHeightmap(data, renderer, oceanMaterialHkLibrary, cornerHeights, c
   const textureHeight = data.patch_data_size;
   this.N = data.number_of_octaves;
   this.renderer = renderer;
-  this.waveHeightTexture;
-  this.waveNormalTexture;
   this.oceanMaterialHkLibrary = oceanMaterialHkLibrary;
   this.cornerHeights = cornerHeights;
   this.cornerDissipationVectors = cornerDissipationVectors;
@@ -25,22 +23,28 @@ function OceanHeightmap(data, renderer, oceanMaterialHkLibrary, cornerHeights, c
   this.butterflyTextureVars[0].material.uniforms = JSON.parse(JSON.stringify(butterflyTextureDataInitializer.uniforms));
 
   //We now use four hk textures for each of the corners to initialize our first butterfly texture
-  let i0 = oceanMaterialHkLibrary.waterDepthToIndex(cornerHeights[0]);
+  //let i0 = oceanMaterialHkLibrary.waterDepthToIndex(cornerHeights[0]);
+  let i0 = 15;
   this.hkLibraryIds[0] = i0;
-  let i1 = oceanMaterialHkLibrary.waterDepthToIndex(cornerHeights[1]);
+  // let i1 = oceanMaterialHkLibrary.waterDepthToIndex(cornerHeights[1]);
+  let i1 = 15;
   this.hkLibraryIds[1] = i1;
-  let i2 = oceanMaterialHkLibrary.waterDepthToIndex(cornerHeights[2]);
+  // let i2 = oceanMaterialHkLibrary.waterDepthToIndex(cornerHeights[2]);
+  let i2 = 15;
   this.hkLibraryIds[2] = i2;
-  let i3 = oceanMaterialHkLibrary.waterDepthToIndex(cornerHeights[3]);
+  // let i3 = oceanMaterialHkLibrary.waterDepthToIndex(cornerHeights[3]);
+  let i3 = 15;
   this.hkLibraryIds[3] = i3;
-  this.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_0 = {};
-  this.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_0.value = this.oceanMaterialHkLibrary.hkTextureOuts[i0];
-  this.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_1 = {};
-  this.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_1.value = this.oceanMaterialHkLibrary.hkTextureOuts[i1];
-  this.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_2 = {};
-  this.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_2.value = this.oceanMaterialHkLibrary.hkTextureOuts[i2];
-  this.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_3 = {};
-  this.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_3.value = this.oceanMaterialHkLibrary.hkTextureOuts[i3];
+  console.log(cornerHeights[0]);
+  console.log(i0);
+  this.butterflyTextureVars[0].material.uniforms.hkTexture_0 = {};
+  this.butterflyTextureVars[0].material.uniforms.hkTexture_0.value = this.oceanMaterialHkLibrary.hkTextureOuts[i0];
+  this.butterflyTextureVars[0].material.uniforms.hkTexture_1 = {};
+  this.butterflyTextureVars[0].material.uniforms.hkTexture_1.value = this.oceanMaterialHkLibrary.hkTextureOuts[i1];
+  this.butterflyTextureVars[0].material.uniforms.hkTexture_2 = {};
+  this.butterflyTextureVars[0].material.uniforms.hkTexture_2.value = this.oceanMaterialHkLibrary.hkTextureOuts[i2];
+  this.butterflyTextureVars[0].material.uniforms.hkTexture_3 = {};
+  this.butterflyTextureVars[0].material.uniforms.hkTexture_3.value = this.oceanMaterialHkLibrary.hkTextureOuts[i3];
   this.butterflyTextureVars[0].material.uniforms.direction.value = 0;
   this.butterflyTextureVars[0].material.uniforms.stageFraction.value = 0.0;
   this.butterflyTextureVars[0].material.uniforms.twiddleTexture.value = this.oceanMaterialHkLibrary.twiddleTexture;
@@ -99,27 +103,27 @@ function OceanHeightmap(data, renderer, oceanMaterialHkLibrary, cornerHeights, c
     console.error(`Wave Normal Map Renderer: ${error6}`);
   }
 
-  //To be removed when we eventually combine multiples of these
-  this.heightmapTexture;
-
   //This that is used in internal functions
   let self = this;
-
   this.tick = function(time){
     //Update our ping-pong butterfly texture
-    self.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_0.value = self.oceanMaterialHkLibrary.hkTextureOuts[self.hkLibraryIds[0]];
-    self.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_1.value = self.oceanMaterialHkLibrary.hkTextureOuts[self.hkLibraryIds[1]];
-    self.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_2.value = self.oceanMaterialHkLibrary.hkTextureOuts[self.hkLibraryIds[2]];
-    self.butterflyTextureVars[0].material.uniforms.pingpong_hk_texture_3.value = self.oceanMaterialHkLibrary.hkTextureOuts[self.hkLibraryIds[3]];
+    self.butterflyTextureVars[0].material.uniforms.hkTexture_0.value = self.oceanMaterialHkLibrary.hkTextureOuts[self.hkLibraryIds[0]];
+    self.butterflyTextureVars[0].material.uniforms.hkTexture_1.value = self.oceanMaterialHkLibrary.hkTextureOuts[self.hkLibraryIds[1]];
+    self.butterflyTextureVars[0].material.uniforms.hkTexture_2.value = self.oceanMaterialHkLibrary.hkTextureOuts[self.hkLibraryIds[2]];
+    self.butterflyTextureVars[0].material.uniforms.hkTexture_3.value = self.oceanMaterialHkLibrary.hkTextureOuts[self.hkLibraryIds[3]];
     self.butterflyRenderer.compute();
 
     self.waveHeightTextureVar.material.uniforms.butterflyTexture.value = self.butterflyRenderer.getCurrentRenderTarget(self.finalButterflyTextureVar).texture;
     self.waveHeightRenderer.compute();
 
-    self.waveHeightTexture = self.waveHeightRenderer.getCurrentRenderTarget(self.waveHeightTextureVar).texture;
+    let waveHeightTexture = self.waveHeightRenderer.getCurrentRenderTarget(self.waveHeightTextureVar).texture;
 
-    self.waveNormalMapTextureVar.material.uniforms.waveHeightTexture.value = self.waveHeightTexture;
+    self.waveNormalMapTextureVar.material.uniforms.waveHeightTexture.value = waveHeightTexture;
     self.waveNormalMapRenderer.compute();
-    self.waveNormalTexture = self.waveNormalMapRenderer.getCurrentRenderTarget(self.waveNormalMapTextureVar).texture;
+
+    return {
+      heightMap: waveHeightTexture,
+      normalMap: self.waveNormalMapRenderer.getCurrentRenderTarget(self.waveNormalMapTextureVar).texture
+    };
   }
 }

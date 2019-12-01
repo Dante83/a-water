@@ -168,9 +168,9 @@ function OceanGrid(data, scene, renderer, camera, staticMeshes){
     //Update each of our ocean grid height maps
     self.updateActiveOceanHkMaterials();
     self.oceanMaterialHkLibrary.tick(time);
-    self.defaultHeightMap.tick(time);
+    let defaultOceanTextures = self.defaultHeightMap.tick(time);
     for(let i = 0, numOceanPatches = self.oceanPatches.length; i < numOceanPatches; ++i){
-      self.oceanPatches[i].tick();
+      self.oceanPatches[i].tick(time, defaultOceanTextures);
     }
   };
 }
