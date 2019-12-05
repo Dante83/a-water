@@ -5,24 +5,23 @@ AFRAME.registerComponent('ocean_state', {
   staticMeshes: null,
   isMeshLoaded: false,
   schema: {
-    'draw_distance': {type: 'number', default: 64.0},
-    'patch_size': {type: 'number', default: 16.0},
+    'draw_distance': {type: 'number', default: 256.0},
+    'patch_size': {type: 'number', default: 128.0},
     'patch_data_size': {type: 'number', default: 512},
-    'number_of_octaves': {type: 'number', default: 512},
-    'wind_velocity': {type: 'vec2', default: {x: 26.0, y: 0.0}},
+    'number_of_octaves': {type: 'number', default: 256},
+    'wind_velocity': {type: 'vec2', default: {x: 25.0, y: 10.0}},
     'default_water_depth': {type: 'number', default: 100.0},
-    'surface_mesh_class': {type: 'string', default: 'static-ocean-collider'}
+    'surface_mesh_class': {type: 'string', default: 'static-ocean-collider'},
+    'height_offset': {type: 'number', default: -10.0}
   },
   init: function(){
     this.loaded = false;
-    this.staticMeshes = {
-      geometries: [],
-      worldMatrices: []
-    };
+    this.staticMeshes = [];
 
     //Get all static assets loaded so we can attach them to the upcoming static scene that we will attach them all to
     const fluidSystemId = this.el.id;
     const staticColliders = document.querySelectorAll(`.${this.data.surface_mesh_class}`);
+
     this.staticCollidersAwaitingLoading = [];
     for(let i = 0, staticCollidersLen = staticColliders.length; i < staticCollidersLen; i++){
       this.staticCollidersAwaitingLoading[staticColliders[i].object3D.uuid] = false;
@@ -37,19 +36,11 @@ AFRAME.registerComponent('ocean_state', {
       staticCollider.addEventListener('model-loaded', function (gltf) {
         let object3D = gltf.target.object3D;
         self.staticCollidersAwaitingLoading[object3D.uuid] = true;
-        let matrixWorld = object3D.matrixWorld;
-        let model = gltf.detail.model;
-
-        model.traverse(function(child){
-          if (child.isMesh) {
-            self.staticMeshes.worldMatrices.push(child.matrixWorld);
-            self.staticMeshes.geometries.push(child.geometry);
-          }
-        });
+        self.staticMeshes = [...self.staticMeshes, ...object3D.children[0].children];
 
         //Check if alls models were added, if so, it's time for this entity to start rocking and rolling
         let allMeshesParsed = true;
-        for(let status in thisFluidParams.staticCollidersAwaitingLoading){
+        for(let status in self.staticCollidersAwaitingLoading){
           if(status === false){
             allMeshesParsed = false;
             break;

@@ -11,17 +11,15 @@ function OceanGrid(data, scene, renderer, camera, staticMeshes){
   this.drawDistance = data.draw_distance;
   this.startingPoint = [0.0, 0.0];
   this.patchSize = data.patch_size;
+  this.heightOffset = data.height_offset;
   this.data = data;
   this.time = 0.0;
   this.staticMeshes = staticMeshes;
   this.downVector = new THREE.Vector3(0.0, -1.0, 0.0);
-  let down = new THREE.Vector3(0.0, -1.0, 0.0);
   this.defaultDepth = 500;
   this.raycaster = new THREE.Raycaster(
-    new THREE.Vector3(0.0, 100.0, 0.0),
-    down,
-    0.0,
-    -500.0
+    new THREE.Vector3(0.0,100.0,0.0),
+    this.downVector
   );
 
   //Get all ocean patch offsets

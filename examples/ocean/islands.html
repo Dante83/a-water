@@ -32,8 +32,18 @@
   </head>
   <body>
     <a-scene>
-      <a-camera></a-camera>
+      <a-assets>
+        <a-asset-item id="island" src="3d-models/IslandTest2.gltf">
+      </a-assets>
+
+      <a-entity camera look-controls wasd-controls="acceleration: 1000">
+      </a-entity>
+
+      <!-- <a-camera></a-camera> -->
+
       <a-ocean></a-ocean>
+
+      <a-gltf-model src="#island" class="static-ocean-collider" position="0 -102 0"></a-gltf-model>
     </a-scene>
   </body>
 </html>

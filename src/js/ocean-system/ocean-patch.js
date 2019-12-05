@@ -10,7 +10,7 @@ function OceanPatch(scene, parentOceanGrid){
   this.parentOceanGrid = parentOceanGrid;
   this.customMaterial = false;
 
-  let geometry = new THREE.PlaneBufferGeometry(parentOceanGrid.patchSize, parentOceanGrid.patchSize, 64, 64);
+  let geometry = new THREE.PlaneBufferGeometry(parentOceanGrid.patchSize, parentOceanGrid.patchSize, 128, 128);
   this.oceanMaterial = new THREE.MeshStandardMaterial( {
     side: THREE.BackSide,
     flatShading: true
@@ -22,7 +22,7 @@ function OceanPatch(scene, parentOceanGrid){
 
   this.update = function(){
     //Change where the mesh is
-    self.plane.position.set(self.position.x, 0.0, self.position.y);
+    self.plane.position.set(self.position.x, self.parentOceanGrid.heightOffset, self.position.y);
 
     //Update our heightmap data
     let hw = self.parentOceanGrid.patchSize * 0.5;
@@ -31,16 +31,20 @@ function OceanPatch(scene, parentOceanGrid){
     let numberOfStaticMeshElements = self.staticMeshes ? self.staticMeshes.length : 0;
     let raycasterPosition = new THREE.Vector3(0.0, 0.0, 0.0);
     for(let i = 0; i < 4; ++i){
-      //Get the corner postion
-      let cornerPosition = [self.position.x + cornerOffsets[i][0], self.position.y + cornerOffsets[i][1]];
-      raycasterPosition.set(cornerPosition[0], 500, cornerPosition[1]);
-      parentOceanGrid.raycaster.set(raycasterPosition, parentOceanGrid.downVector);
-
       //Determine the height at this position by casing a ray at each of the static meshes and determining
       //the closest one
       let results;
-      if(self.staticMeshes && self.staticMeshes.geometry && self.staticMeshes.geometry.length > 0){
-        results = parentOceanGrid.raycaster.intersectObjects(self.staticMeshes);
+      if(numberOfStaticMeshElements > 0){
+        //Get the corner postion
+        let cornerPosition = [self.position.x + cornerOffsets[i][0], self.position.y + cornerOffsets[i][1]];
+        raycasterPosition.set(0.0,100.0,0.0);
+        parentOceanGrid.raycaster.set(raycasterPosition, self.parentOceanGrid.downVector);
+        console.log(self.parentOceanGrid.staticMeshes);
+        results = parentOceanGrid.raycaster.intersectObjects(self.parentOceanGrid.staticMeshes, true);
+        console.log(raycasterPosition);
+        console.log(self.parentOceanGrid.downVector);
+        console.log(results);
+        debugger;
         self.cornerHeights[i] = results && results.length > 0 ? results[0] : self.parentOceanGrid.defaultDepth;
 
         //Go forward and back by a half width and determine the right and left
@@ -48,27 +52,27 @@ function OceanPatch(scene, parentOceanGrid){
         //can be used to determine how much the rise in terrain impacts waves
         //based on their direction, filtering out waves going parallel to shore.
         cornerPosition = [self.position.x + cornerOffsets[i][0] + differentialOffsets[2][0], self.position.y + cornerOffsets[i][1] + differentialOffsets[2][1]];
-        raycasterPosition.set(cornerPosition[0], 500, cornerPosition[1]);
+        raycasterPosition.set(cornerPosition[0], 5.0 + self.parentOceanGrid.heightOffset, cornerPosition[1]);
         parentOceanGrid.raycaster.set(raycasterPosition,parentOceanGrid.downVector);
-        results = parentOceanGrid.raycaster.intersectObjects(self.staticMeshes);
+        results = parentOceanGrid.raycaster.intersectObjects(self.parentOceanGrid.staticMeshes);
         let xInitialHeight = results.length > 0 ? results[0] : self.parentOceanGrid.defaultDepth;
 
         cornerPosition = [self.position.x + cornerOffsets[i][0] + differentialOffsets[3][0], self.position.y + cornerOffsets[i][1] + differentialOffsets[3][1]];
-        raycasterPosition.set(cornerPosition[0], 500, cornerPosition[1]);
+        raycasterPosition.set(cornerPosition[0], 5.0 + self.parentOceanGrid.heightOffset, cornerPosition[1]);
         parentOceanGrid.raycaster.set(raycasterPosition,parentOceanGrid.downVector);
-        results = parentOceanGrid.raycaster.intersectObjects(self.staticMeshes);
+        results = parentOceanGrid.raycaster.intersectObjects(self.parentOceanGrid.staticMeshes);
         let xFinalHeight = results.length > 0 ? results[0] : self.parentOceanGrid.defaultDepth;
 
         cornerPosition = [self.position.x + cornerOffsets[i][0] + differentialOffsets[1][0], self.position.y + cornerOffsets[i][1] + differentialOffsets[1][1]];
-        raycasterPosition.set(cornerPosition[0], 500, cornerPosition[1]);
+        raycasterPosition.set(cornerPosition[0], 5.0 + self.parentOceanGrid.heightOffset, cornerPosition[1]);
         parentOceanGrid.raycaster.set(raycasterPosition,parentOceanGrid.downVector);
-        results = parentOceanGrid.raycaster.intersectObjects(self.staticMeshes);
+        results = parentOceanGrid.raycaster.intersectObjects(self.parentOceanGrid.staticMeshes);
         let yInitialHeight = results.length > 0 ? results[0] : self.parentOceanGrid.defaultDepth;
 
         cornerPosition = [self.position.x + cornerOffsets[i][0] + differentialOffsets[0][0], self.position.y + cornerOffsets[i][1] + differentialOffsets[0][1]];
-        raycasterPosition.set(cornerPosition[0], 500, cornerPosition[1]);
+        raycasterPosition.set(cornerPosition[0], 5.0 + self.parentOceanGrid.heightOffset, cornerPosition[1]);
         parentOceanGrid.raycaster.set(raycasterPosition,parentOceanGrid.downVector);
-        results = parentOceanGrid.raycaster.intersectObjects(self.staticMeshes);
+        results = parentOceanGrid.raycaster.intersectObjects(self.parentOceanGrid.staticMeshes);
         let yFinalHeight = results.length > 0 ? results[0] : self.parentOceanGrid.defaultDepth;
 
         self.dissipationVector[i][0] = (xFinalHeight - xInitialHeight) / self.parentOceanGrid.patchSize;

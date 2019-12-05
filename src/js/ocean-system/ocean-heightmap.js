@@ -23,17 +23,13 @@ function OceanHeightmap(data, renderer, oceanMaterialHkLibrary, cornerHeights, c
   this.butterflyTextureVars[0].material.uniforms = JSON.parse(JSON.stringify(butterflyTextureDataInitializer.uniforms));
 
   //We now use four hk textures for each of the corners to initialize our first butterfly texture
-  //let i0 = oceanMaterialHkLibrary.waterDepthToIndex(cornerHeights[0]);
-  let i0 = 15;
+  let i0 = oceanMaterialHkLibrary.waterDepthToIndex(cornerHeights[0]);
   this.hkLibraryIds[0] = i0;
-  // let i1 = oceanMaterialHkLibrary.waterDepthToIndex(cornerHeights[1]);
-  let i1 = 15;
+  let i1 = oceanMaterialHkLibrary.waterDepthToIndex(cornerHeights[1]);
   this.hkLibraryIds[1] = i1;
-  // let i2 = oceanMaterialHkLibrary.waterDepthToIndex(cornerHeights[2]);
-  let i2 = 15;
+  let i2 = oceanMaterialHkLibrary.waterDepthToIndex(cornerHeights[2]);
   this.hkLibraryIds[2] = i2;
-  // let i3 = oceanMaterialHkLibrary.waterDepthToIndex(cornerHeights[3]);
-  let i3 = 15;
+  let i3 = oceanMaterialHkLibrary.waterDepthToIndex(cornerHeights[3]);
   this.hkLibraryIds[3] = i3;
   console.log(cornerHeights[0]);
   console.log(i0);
