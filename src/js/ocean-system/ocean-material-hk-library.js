@@ -1,6 +1,6 @@
 function OceanMaterialHkLibrary(data, renderer){
-  const minHeight = 25.0;
-  const maxHeight = 1.0;
+  this.minHeight = 1.0;
+  this.maxHeight = 15.0;
   this.numVariations = 16;
 
   //We have 16 wave heights that we fade between
@@ -38,7 +38,7 @@ function OceanMaterialHkLibrary(data, renderer){
 
   for(let i = 0; i < this.numVariations; ++i){
     //From https://planetcalc.com/4442/
-    let heightFactor = Math.min(Math.max(minHeight + (maxHeight - minHeight) * (i / this.numVariations), minHeight), maxHeight);
+    let heightFactor = Math.min(Math.max(this.minHeight + (this.maxHeight - this.minHeight) * (i / this.numVariations), this.minHeight), this.maxHeight);
     let maxWaveAmplitutude = 0.54 * this.L_ * heightFactor; //Amplitude is twice the height
 
     this.staticGPUComputers.push(new THREE.GPUComputationRenderer(this.textureWidth, this.textureHeight, this.renderer));
@@ -129,7 +129,10 @@ function OceanMaterialHkLibrary(data, renderer){
   };
 
   this.waterDepthToIndex = function(waterDepth){
-    let i = Math.max(Math.min(Math.round((waterDepth - minHeight) * (this.numVariations / (maxHeight - minHeight))), this.numVariations), 0);
+
+    let percent = Math.max(Math.min(waterDepth, self.maxHeight), self.minHeight) / (self.maxHeight - self.minHeight);
+    let i = Math.max(Math.min(Math.round((percent * (self.numVariations + 1)) - 1.0), self.numVariations), 0);
+    console.log(i);
     return i;
   };
 }

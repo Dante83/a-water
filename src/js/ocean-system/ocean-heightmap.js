@@ -31,8 +31,6 @@ function OceanHeightmap(data, renderer, oceanMaterialHkLibrary, cornerHeights, c
   this.hkLibraryIds[2] = i2;
   let i3 = oceanMaterialHkLibrary.waterDepthToIndex(cornerHeights[3]);
   this.hkLibraryIds[3] = i3;
-  console.log(cornerHeights[0]);
-  console.log(i0);
   this.butterflyTextureVars[0].material.uniforms.hkTexture_0 = {};
   this.butterflyTextureVars[0].material.uniforms.hkTexture_0.value = this.oceanMaterialHkLibrary.hkTextureOuts[i0];
   this.butterflyTextureVars[0].material.uniforms.hkTexture_1 = {};

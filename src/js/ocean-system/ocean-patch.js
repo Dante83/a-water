@@ -37,15 +37,10 @@ function OceanPatch(scene, parentOceanGrid){
       if(numberOfStaticMeshElements > 0){
         //Get the corner postion
         let cornerPosition = [self.position.x + cornerOffsets[i][0], self.position.y + cornerOffsets[i][1]];
-        raycasterPosition.set(0.0,100.0,0.0);
+        raycasterPosition.set(cornerPosition[0], 5.0 + self.parentOceanGrid.heightOffset, cornerPosition[1]);
         parentOceanGrid.raycaster.set(raycasterPosition, self.parentOceanGrid.downVector);
-        console.log(self.parentOceanGrid.staticMeshes);
         results = parentOceanGrid.raycaster.intersectObjects(self.parentOceanGrid.staticMeshes, true);
-        console.log(raycasterPosition);
-        console.log(self.parentOceanGrid.downVector);
-        console.log(results);
-        debugger;
-        self.cornerHeights[i] = results && results.length > 0 ? results[0] : self.parentOceanGrid.defaultDepth;
+        self.cornerHeights[i] = results && results.length > 0 ? results[0].distance : self.parentOceanGrid.defaultDepth;
 
         //Go forward and back by a half width and determine the right and left
         //then use these to determine the slope along the x and y axis. This
@@ -55,25 +50,25 @@ function OceanPatch(scene, parentOceanGrid){
         raycasterPosition.set(cornerPosition[0], 5.0 + self.parentOceanGrid.heightOffset, cornerPosition[1]);
         parentOceanGrid.raycaster.set(raycasterPosition,parentOceanGrid.downVector);
         results = parentOceanGrid.raycaster.intersectObjects(self.parentOceanGrid.staticMeshes);
-        let xInitialHeight = results.length > 0 ? results[0] : self.parentOceanGrid.defaultDepth;
+        let xInitialHeight = results.length > 0 ? results[0].distance : self.parentOceanGrid.defaultDepth;
 
         cornerPosition = [self.position.x + cornerOffsets[i][0] + differentialOffsets[3][0], self.position.y + cornerOffsets[i][1] + differentialOffsets[3][1]];
         raycasterPosition.set(cornerPosition[0], 5.0 + self.parentOceanGrid.heightOffset, cornerPosition[1]);
         parentOceanGrid.raycaster.set(raycasterPosition,parentOceanGrid.downVector);
         results = parentOceanGrid.raycaster.intersectObjects(self.parentOceanGrid.staticMeshes);
-        let xFinalHeight = results.length > 0 ? results[0] : self.parentOceanGrid.defaultDepth;
+        let xFinalHeight = results.length > 0 ? results[0].distance : self.parentOceanGrid.defaultDepth;
 
         cornerPosition = [self.position.x + cornerOffsets[i][0] + differentialOffsets[1][0], self.position.y + cornerOffsets[i][1] + differentialOffsets[1][1]];
         raycasterPosition.set(cornerPosition[0], 5.0 + self.parentOceanGrid.heightOffset, cornerPosition[1]);
         parentOceanGrid.raycaster.set(raycasterPosition,parentOceanGrid.downVector);
         results = parentOceanGrid.raycaster.intersectObjects(self.parentOceanGrid.staticMeshes);
-        let yInitialHeight = results.length > 0 ? results[0] : self.parentOceanGrid.defaultDepth;
+        let yInitialHeight = results.length > 0 ? results[0].distance : self.parentOceanGrid.defaultDepth;
 
         cornerPosition = [self.position.x + cornerOffsets[i][0] + differentialOffsets[0][0], self.position.y + cornerOffsets[i][1] + differentialOffsets[0][1]];
         raycasterPosition.set(cornerPosition[0], 5.0 + self.parentOceanGrid.heightOffset, cornerPosition[1]);
         parentOceanGrid.raycaster.set(raycasterPosition,parentOceanGrid.downVector);
         results = parentOceanGrid.raycaster.intersectObjects(self.parentOceanGrid.staticMeshes);
-        let yFinalHeight = results.length > 0 ? results[0] : self.parentOceanGrid.defaultDepth;
+        let yFinalHeight = results.length > 0 ? results[0].distance : self.parentOceanGrid.defaultDepth;
 
         self.dissipationVector[i][0] = (xFinalHeight - xInitialHeight) / self.parentOceanGrid.patchSize;
         self.dissipationVector[i][1] = (yFinalHeight - yInitialHeight) / self.parentOceanGrid.patchSize;

@@ -63,6 +63,9 @@ AFRAME.registerComponent('ocean_state', {
     let camera = this.el.sceneEl.camera.el.object3D;
     let self = this;
 
+    //Update the position of the objects
+    scene.updateMatrixWorld();
+
     //Set up our ocean grid
     this.oceanGrid = new OceanGrid(this.data, scene, renderer, camera, self.staticMeshes);
 
