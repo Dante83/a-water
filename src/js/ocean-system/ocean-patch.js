@@ -6,9 +6,8 @@ function OceanPatch(scene, parentOceanGrid){
   this.ageOutOfRange = 0;
   this.staticMeshes = parentOceanGrid.staticMeshes;
   this.cornerHeights = [0.0,0.0,0.0,0.0];
-  this.dissipationVector = [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]];
   this.parentOceanGrid = parentOceanGrid;
-  this.customMaterial = false;
+  this.customOceanHeightComposer = false;
 
   let geometry = new THREE.PlaneBufferGeometry(parentOceanGrid.patchSize, parentOceanGrid.patchSize, 128, 128);
   this.oceanMaterial = new THREE.MeshStandardMaterial( {
@@ -27,7 +26,6 @@ function OceanPatch(scene, parentOceanGrid){
     //Update our heightmap data
     let hw = self.parentOceanGrid.patchSize * 0.5;
     let cornerOffsets = [[hw, hw], [hw, -hw], [-hw, hw], [-hw, -hw]];
-    let differentialOffsets = [[0.0, hw], [0.0, -hw], [-hw, 0.0], [hw, 0.0]];
     let numberOfStaticMeshElements = self.staticMeshes ? self.staticMeshes.length : 0;
     let raycasterPosition = new THREE.Vector3(0.0, 0.0, 0.0);
     for(let i = 0; i < 4; ++i){
@@ -41,37 +39,6 @@ function OceanPatch(scene, parentOceanGrid){
         parentOceanGrid.raycaster.set(raycasterPosition, self.parentOceanGrid.downVector);
         results = parentOceanGrid.raycaster.intersectObjects(self.parentOceanGrid.staticMeshes, true);
         self.cornerHeights[i] = results && results.length > 0 ? results[0].distance : self.parentOceanGrid.defaultDepth;
-
-        //Go forward and back by a half width and determine the right and left
-        //then use these to determine the slope along the x and y axis. This
-        //can be used to determine how much the rise in terrain impacts waves
-        //based on their direction, filtering out waves going parallel to shore.
-        cornerPosition = [self.position.x + cornerOffsets[i][0] + differentialOffsets[2][0], self.position.y + cornerOffsets[i][1] + differentialOffsets[2][1]];
-        raycasterPosition.set(cornerPosition[0], 5.0 + self.parentOceanGrid.heightOffset, cornerPosition[1]);
-        parentOceanGrid.raycaster.set(raycasterPosition,parentOceanGrid.downVector);
-        results = parentOceanGrid.raycaster.intersectObjects(self.parentOceanGrid.staticMeshes);
-        let xInitialHeight = results.length > 0 ? results[0].distance : self.parentOceanGrid.defaultDepth;
-
-        cornerPosition = [self.position.x + cornerOffsets[i][0] + differentialOffsets[3][0], self.position.y + cornerOffsets[i][1] + differentialOffsets[3][1]];
-        raycasterPosition.set(cornerPosition[0], 5.0 + self.parentOceanGrid.heightOffset, cornerPosition[1]);
-        parentOceanGrid.raycaster.set(raycasterPosition,parentOceanGrid.downVector);
-        results = parentOceanGrid.raycaster.intersectObjects(self.parentOceanGrid.staticMeshes);
-        let xFinalHeight = results.length > 0 ? results[0].distance : self.parentOceanGrid.defaultDepth;
-
-        cornerPosition = [self.position.x + cornerOffsets[i][0] + differentialOffsets[1][0], self.position.y + cornerOffsets[i][1] + differentialOffsets[1][1]];
-        raycasterPosition.set(cornerPosition[0], 5.0 + self.parentOceanGrid.heightOffset, cornerPosition[1]);
-        parentOceanGrid.raycaster.set(raycasterPosition,parentOceanGrid.downVector);
-        results = parentOceanGrid.raycaster.intersectObjects(self.parentOceanGrid.staticMeshes);
-        let yInitialHeight = results.length > 0 ? results[0].distance : self.parentOceanGrid.defaultDepth;
-
-        cornerPosition = [self.position.x + cornerOffsets[i][0] + differentialOffsets[0][0], self.position.y + cornerOffsets[i][1] + differentialOffsets[0][1]];
-        raycasterPosition.set(cornerPosition[0], 5.0 + self.parentOceanGrid.heightOffset, cornerPosition[1]);
-        parentOceanGrid.raycaster.set(raycasterPosition,parentOceanGrid.downVector);
-        results = parentOceanGrid.raycaster.intersectObjects(self.parentOceanGrid.staticMeshes);
-        let yFinalHeight = results.length > 0 ? results[0].distance : self.parentOceanGrid.defaultDepth;
-
-        self.dissipationVector[i][0] = (xFinalHeight - xInitialHeight) / self.parentOceanGrid.patchSize;
-        self.dissipationVector[i][1] = (yFinalHeight - yInitialHeight) / self.parentOceanGrid.patchSize;
       }
       else{
         //Everything stays normal and we presume a constant dept everywhere
@@ -82,22 +49,18 @@ function OceanPatch(scene, parentOceanGrid){
     }
 
     //Update our material if this is not the default state
-    self.customMaterial = false;
     for(let i = 0; i < 4; ++i){
       //Use custom material
       if(self.cornerHeights[i] < self.parentOceanGrid.defaultDepth){
-        self.customMaterial = new OceanHeightmap(self.parentOceanGrid.data, self.parentOceanGrid.renderer, self.parentOceanGrid.oceanMaterialHkLibrary, self.cornerHeights, self.dissipationVector);
+        self.customOceanHeightComposer = new OceanHeightComposer(self.parentOceanGrid.data, self.parentOceanGrid.renderer, self.parentOceanGrid.oceanHeightBandLibrary, self.cornerHeights);
         break;
       }
-    }
-    if(!self.customMaterial){
-      self.parentOceanGrid.defaultHeightMap;
     }
   }
 
   this.tick = function(time, defaultOceanTextures){
-    if(self.customMaterial){
-      let customOceanTexture = self.customMaterial.tick(time);
+    if(self.customOceanHeightComposer){
+      let customOceanTexture = self.customOceanHeightComposer.tick();
       self.oceanMaterial.displacementMap = customOceanTexture.heightMap;
       self.oceanMaterial.normalMap = customOceanTexture.normalMap;
     }

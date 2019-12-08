@@ -1,0 +1,15 @@
+//This helps
+//--------------------------v
+//https://github.com/mrdoob/three.js/wiki/Uniforms-types
+var amplitudeFilterShaderMaterial = {
+  uniforms: {
+    centralAmplitude: {type: 'f', value: 0.0},
+    bandwidth: {type: 'f', value: 1.0}
+  },
+
+  fragmentShader: function(){
+    return [
+      {fragment_glsl}
+    ].join('\n');
+  }
+};

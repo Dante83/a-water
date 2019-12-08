@@ -37,11 +37,10 @@ function OceanGrid(data, scene, renderer, camera, staticMeshes){
 
   //Initialize all shader LUTs for future ocean viewing
   //Initialize our ocean variables and all associated shaders.
-  this.oceanMaterialHkLibrary = new OceanMaterialHkLibrary(data, this.renderer);
+  this.oceanHeightBandLibrary = new OceanHeightBandLibrary(data, this.renderer);
   let dwd = data.default_water_depth;
   let defaultHeights = [dwd, dwd, dwd, dwd];
-  let defaultDissipationVectors = [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]];
-  this.defaultHeightMap = new OceanHeightmap(data, this.renderer, this.oceanMaterialHkLibrary, defaultHeights, defaultDissipationVectors);
+  this.defaultHeightMap = new OceanHeightComposer(data, this.renderer, this.oceanHeightBandLibrary, defaultHeights);
   let self = this;
 
   this.checkForNewGridElements = function(){
@@ -136,37 +135,14 @@ function OceanGrid(data, scene, renderer, camera, staticMeshes){
     //NOTE: Iterate all potential animation combinations for use in our patches
   };
 
-  //Determines which hk materials are active or not in a given frame to avoid hitting the GPU more then needed
-  this.updateActiveOceanHkMaterials = function(){
-    //Reset each of our ocean library elements to false
-    for(let i = 0; i < (self.oceanMaterialHkLibrary.activeTextures.length - 1); ++i){
-      self.oceanMaterialHkLibrary.activeTextures[i] = false;
-    }
-
-    //Get each of the ids in each of our grid elements and use them to update which ids are active
-    for(let i = 0; i < self.oceanPatches; ++i){
-      let oceanPatch = self.oceanPatches[i];
-      if(oceanPatch.customMaterial){
-        let oceanPatchMaterial = oceanPatch.customMaterial;
-        for(let j = 0; j < 4; ++j){
-          self.oceanMaterialHkLibrary.activeTextures[oceanPatchMaterial.hkLibraryIds[j]] = true;
-        }
-      }
-    }
-
-    //The final element is always active as it is default
-    self.oceanMaterialHkLibrary.activeTextures[self.oceanMaterialHkLibrary.activeTextures.length - 1] = true;
-  };
-
   this.tick = function(time){
     //Update the state of our ocean grid
     self.time = time;
     self.checkForNewGridElements();
 
     //Update each of our ocean grid height maps
-    self.updateActiveOceanHkMaterials();
-    self.oceanMaterialHkLibrary.tick(time);
-    let defaultOceanTextures = self.defaultHeightMap.tick(time);
+    self.oceanHeightBandLibrary.tick(time);
+    let defaultOceanTextures = self.defaultHeightMap.tick();
     for(let i = 0, numOceanPatches = self.oceanPatches.length; i < numOceanPatches; ++i){
       self.oceanPatches[i].tick(time, defaultOceanTextures);
     }
