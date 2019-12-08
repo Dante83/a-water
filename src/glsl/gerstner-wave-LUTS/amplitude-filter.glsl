@@ -8,7 +8,7 @@ void main(){
   float maxBandwidth = centralAmplitude - bandwidth;
   float minBandwidth = centralAmplitude + bandwidth;
 
-  vec2 hkTexel = texture2D(hkTexture, position);
+  vec2 hkTexel = texture2D(textureHk, position).rg;
   float redChannelOut = 0.0;
   if(hkTexel.r > minBandwidth && hkTexel.r <= centralAmplitude){
     redChannelOut = (hkTexel.r - minBandwidth) / (centralAmplitude - minBandwidth);

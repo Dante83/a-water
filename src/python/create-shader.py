@@ -31,7 +31,7 @@ def ShaderFileWatcher():
     '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
     '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
     '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
-    '../glsl/gerstner-wave-LUTS/wave-composer-vertex.glsl']
+    '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl']
     shader_fragment_files = ['../glsl/gerstner-wave-LUTS/noise-frag.glsl',\
     '../glsl/gerstner-wave-LUTS/h_0-frag.glsl',\
     '../glsl/gerstner-wave-LUTS/h_k-frag.glsl',\

@@ -52,7 +52,7 @@ function OceanPatch(scene, parentOceanGrid){
     for(let i = 0; i < 4; ++i){
       //Use custom material
       if(self.cornerHeights[i] < self.parentOceanGrid.defaultDepth){
-        self.customOceanHeightComposer = new OceanHeightComposer(self.parentOceanGrid.data, self.parentOceanGrid.renderer, self.parentOceanGrid.oceanHeightBandLibrary, self.cornerHeights);
+        self.customOceanHeightComposer = new OceanHeightComposer(self.parentOceanGrid, self.cornerHeights);
         break;
       }
     }

@@ -1,7 +1,9 @@
-function OceanMaterialHeightBandLibrary(data, renderer){
+function OceanHeightBandLibrary(parentOceanGrid){
+  let renderer = parentOceanGrid.renderer;
+  let data = parentOceanGrid.data;
   this.minWaveAmplitude = 0.0;
   this.maxWaveAmplitude = 20.0;
-  this.numLevels = 4;
+  this.numLevels = parentOceanGrid.numberOfOceanHeightBands;
 
   //Key inner variables
   this.staticGPUComputer;
@@ -37,8 +39,7 @@ function OceanMaterialHeightBandLibrary(data, renderer){
   this.twiddleTexture = computeTwiddleIndices(this.N, renderer);
 
   //From https://planetcalc.com/4442/
-  let heightFactor = Math.min(Math.max(this.minHeight + (this.maxHeight - this.minHeight) * (i / this.numVariations), this.minHeight), this.maxHeight);
-  let maxWaveAmplitutude = 0.54 * this.L_ * heightFactor;
+  let maxWaveAmplitutude = 0.54 * this.L_;
 
   this.staticGPUComputer = new THREE.GPUComputationRenderer(this.textureWidth, this.textureHeight, this.renderer);
   this.hkRenderer = new THREE.GPUComputationRenderer(this.textureWidth, this.textureHeight, this.renderer);
@@ -60,7 +61,7 @@ function OceanMaterialHeightBandLibrary(data, renderer){
   noiseVar2.material.uniforms = JSON.parse(JSON.stringify(noiseShaderMaterialData.uniforms));
   noiseVar2.material.uniforms.offset.value = noiseVar1.material.uniforms.offset.value + this.textureWidth * this.textureHeight;
   this.noiseTexture3 = staticGPUCompute.createTexture();
-  this.noiseVar3 = taticGPUCompute.addVariable('textureNoise3', noiseShaderMaterialData.fragmentShader, this.noiseTexture3);
+  this.noiseVar3 = staticGPUCompute.addVariable('textureNoise3', noiseShaderMaterialData.fragmentShader, this.noiseTexture3);
   let noiseVar3 = this.noiseVar3;
   staticGPUCompute.setVariableDependencies(noiseVar3, []);
   noiseVar3.material.uniforms = JSON.parse(JSON.stringify(noiseShaderMaterialData.uniforms));
@@ -112,9 +113,9 @@ function OceanMaterialHeightBandLibrary(data, renderer){
   let bandwidth = (this.maxWaveAmplitude - this.minWaveAmplitude) / this.numLevels;
   for(let i = 0; i < this.numLevels; i++){
     this.hkBandTextures.push(hkRenderer.createTexture());
-    this.hkBandVars.push(hkRenderer.addVariable(`textureHkBand_${i}`, amplitudeFilterMaterialData.fragmentShader, this.hkBandTextures[i]));
+    this.hkBandVars.push(hkRenderer.addVariable(`textureHkBand_${i}`, amplitudeFilterShaderMaterial.fragmentShader(), this.hkBandTextures[i]));
     hkRenderer.setVariableDependencies(this.hkBandVars[i], [hkVar]);//Note: We use manual texture dependency injection here.
-    this.hkBandVars[i].material.uniforms = JSON.parse(JSON.stringify(amplitudeFilterMaterialData.uniforms));
+    this.hkBandVars[i].material.uniforms = JSON.parse(JSON.stringify(amplitudeFilterShaderMaterial.uniforms));
     this.hkBandVars[i].material.uniforms.centralAmplitude.value = bandwidth * i;
     this.hkBandVars[i].material.uniforms.bandwidth.value = bandwidth;
   }
@@ -128,11 +129,10 @@ function OceanMaterialHeightBandLibrary(data, renderer){
   //Now hook each of the above bands into each of our ocean wave height bands
   this.butterflyRenderers = [];
   this.butterflyTextureVarHolder = [];
-  this.waveheightVars = [];
   this.finalButterflyTextureVars = [];
   for(let i = 0; i < this.numLevels; i++){
     //Initialize our GPU Compute Renderer
-    this.butterflyRenderers.push(new THREE.GPUComputationRenderer(textureWidth, textureHeight, this.renderer));
+    this.butterflyRenderers.push(new THREE.GPUComputationRenderer(this.textureWidth, this.textureHeight, this.renderer));
     let butterflyRenderer = this.butterflyRenderers[i];
 
     //Set up our butterfly height generator
@@ -147,7 +147,7 @@ function OceanMaterialHeightBandLibrary(data, renderer){
     butterflyTextureVars[0].material.uniforms.pingpong_hk_texture.value = this.hkRenderer.getCurrentRenderTarget(this.hkBandVars[i]).texture;
     butterflyTextureVars[0].material.uniforms.direction.value = 0;
     butterflyTextureVars[0].material.uniforms.stageFraction.value = 0.0;
-    butterflyTextureVars[0].material.uniforms.twiddleTexture.value = twiddleTexture;
+    butterflyTextureVars[0].material.uniforms.twiddleTexture.value = this.twiddleTexture;
 
     //Now we can perform the remaining butterfly operations using the above texture
     for(let i = 1; i < numPingPongIterations; i++){
@@ -157,7 +157,7 @@ function OceanMaterialHeightBandLibrary(data, renderer){
       butterflyTextureVars[i].material.uniforms = JSON.parse(JSON.stringify(butterflyTextureData.uniforms));
       butterflyTextureVars[i].material.uniforms.direction.value = 0;
       butterflyTextureVars[i].material.uniforms.stageFraction.value = i / (numPingPongIterations - 1.0);
-      butterflyTextureVars[i].material.uniforms.twiddleTexture.value = this.oceanMaterialHkLibrary.twiddleTexture;
+      butterflyTextureVars[i].material.uniforms.twiddleTexture.value = this.twiddleTexture;
     }
     let numPingPongIterationsTimes2 = numPingPongIterations * 2;
     for(let i = numPingPongIterations; i < numPingPongIterationsTimes2; i++){
@@ -167,7 +167,7 @@ function OceanMaterialHeightBandLibrary(data, renderer){
       butterflyTextureVars[i].material.uniforms = JSON.parse(JSON.stringify(butterflyTextureData.uniforms));
       butterflyTextureVars[i].material.uniforms.direction.value = 1;
       butterflyTextureVars[i].material.uniforms.stageFraction.value = (i - numPingPongIterations) / (numPingPongIterations - 1.0);
-      butterflyTextureVars[i].material.uniforms.twiddleTexture.value = this.oceanMaterialHkLibrary.twiddleTexture;
+      butterflyTextureVars[i].material.uniforms.twiddleTexture.value = this.twiddleTexture;
     }
     this.finalButterflyTextureVars.push(butterflyTextureVars[numPingPongIterationsTimes2 - 1]);
     this.butterflyTextureVarHolder.push(butterflyTextureVars);
@@ -179,24 +179,20 @@ function OceanMaterialHeightBandLibrary(data, renderer){
     butterflyRenderer.compute();
   }
 
-  self = this;
+  let self = this;
   this.tick = function(time, activeTextures){
     //Update the time variable of our phillipse spectrum and update hk
     self.hkVar.material.uniforms.uTime.value = time / 1000.0;
     self.hkRenderer.compute();
 
     //Grab each of the textures from each of our filters
-    for(let i = 0; i < self.numLevels; i++){
+    for(let i = 0; i < self.numLevels; ++i){
       //Get the hk for the given band
-      self.waveHeightTextureVar.material.uniforms.pingpong_hk_texture.value = self.hkRenderer.getCurrentRenderTarget(self.hkBandVars[i]).texture;
-
-      //Pass this into our wave height generator
-      self.butterflyRenderer.compute();
-      self.waveheightVars[i].material.uniforms.butterflyTexture.value = self.butterflyRenderers[i].getCurrentRenderTarget(self.finalButterflyTextureVars[i]).texture;
-      self.waveHeightRenderer.compute();
+      self.butterflyTextureVarHolder[i][0].material.uniforms.pingpong_hk_texture.value = self.hkRenderer.getCurrentRenderTarget(self.hkBandVars[i]).texture;
+      self.butterflyRenderers[i].compute();
 
       //Store this for future requests
-      self.wavesFilteredByAmplitude = self.waveHeightRenderer.getCurrentRenderTarget(self.waveHeightTextureVar).texture;
+      self.wavesFilteredByAmplitude[i] = self.butterflyRenderers[i].getCurrentRenderTarget(self.finalButterflyTextureVars[i]).texture;
     }
   };
 }

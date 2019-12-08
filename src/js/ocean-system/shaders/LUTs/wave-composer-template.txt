@@ -4,10 +4,11 @@
 var waveComposerShaderMaterial = {
   uniforms: function(numberOfWaveComponents){
     return {
-      centralAmplitude: {value: new Array(numberOfWaveComponents)},
-      beginFadingHeight: {type: new Array(numberOfWaveComponents)},
-      fadeOutHeight: {type: new Array(numberOfWaveComponents)},
-    }
+      wavetextures: {value: new Array(numberOfWaveComponents)},
+      beginFadingHeight: {value: new Array(numberOfWaveComponents)},
+      vanishingHeight: {value: new Array(numberOfWaveComponents)},
+      cornerDepth: {value: new Array(4)}
+    };
   },
 
   fragmentShader: function(numberOfWaveComponents){
@@ -21,11 +22,5 @@ var waveComposerShaderMaterial = {
     }
 
     return updatedLines.join('\n');
-  }
-
-  vertexShader: function(){
-    return [
-      {vertex_glsl}
-    ].join('\n');
   }
 };

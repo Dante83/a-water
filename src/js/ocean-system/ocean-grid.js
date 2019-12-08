@@ -35,12 +35,23 @@ function OceanGrid(data, scene, renderer, camera, staticMeshes){
   }
   this.numberOfPatches = this.oceanPatchOffsets.length;
 
+  //Determine what our fade out start and end heights are
+  //This is a bit of a hack but we're going to leave it static for now
+  this.numberOfOceanHeightBands = 4;
+  this.beginsFadingOutAtHeight = [];
+  this.vanishingHeight = [];
+  let distanceBetweenBands = 20.0;
+  for(let i = 0; i < this.numberOfOceanHeightBands; ++i){
+    this.beginsFadingOutAtHeight.push(distanceBetweenBands * i);
+    this.vanishingHeight.push(0.0);
+  }
+
   //Initialize all shader LUTs for future ocean viewing
   //Initialize our ocean variables and all associated shaders.
-  this.oceanHeightBandLibrary = new OceanHeightBandLibrary(data, this.renderer);
+  this.oceanHeightBandLibrary = new OceanHeightBandLibrary(this);
   let dwd = data.default_water_depth;
   let defaultHeights = [dwd, dwd, dwd, dwd];
-  this.defaultHeightMap = new OceanHeightComposer(data, this.renderer, this.oceanHeightBandLibrary, defaultHeights);
+  this.defaultHeightMap = new OceanHeightComposer(this, defaultHeights);
   let self = this;
 
   this.checkForNewGridElements = function(){
