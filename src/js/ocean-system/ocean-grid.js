@@ -37,10 +37,10 @@ function OceanGrid(data, scene, renderer, camera, staticMeshes){
 
   //Determine what our fade out start and end heights are
   //This is a bit of a hack but we're going to leave it static for now
-  this.numberOfOceanHeightBands = 4;
+  this.numberOfOceanHeightBands = 5;
   this.beginsFadingOutAtHeight = [];
   this.vanishingHeight = [];
-  let distanceBetweenBands = 20.0;
+  let distanceBetweenBands = 80.0;
   for(let i = 0; i < this.numberOfOceanHeightBands; ++i){
     this.beginsFadingOutAtHeight.push(distanceBetweenBands * i);
     this.vanishingHeight.push(0.0);

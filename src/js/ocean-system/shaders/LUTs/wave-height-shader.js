@@ -25,7 +25,7 @@ var waveHeightShaderMaterialData = {
       'vec2 uv = sizeExpansion * (gl_FragCoord.xy / resolution.xy);',
       'vec2 wrappedUV = vec2(fModulo1(uv.x), fModulo1(uv.y));',
       'float outputputColor = texture2D(combinedWaveHeights, wrappedUV).x / (N * N);',
-      'gl_FragColor = vec4(vec3(outputputColor), 1.0);',
+      'gl_FragColor = vec4(vec3(outputColor), 1.0);',
     '}',
   ].join('\n')
 };

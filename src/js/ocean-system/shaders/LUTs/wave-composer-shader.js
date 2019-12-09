@@ -7,7 +7,8 @@ var waveComposerShaderMaterial = {
       wavetextures: {value: new Array(numberOfWaveComponents)},
       beginFadingHeight: {value: new Array(numberOfWaveComponents)},
       vanishingHeight: {value: new Array(numberOfWaveComponents)},
-      cornerDepth: {value: new Array(4)}
+      cornerDepth: {value: new Array(4)},
+      N: {type: 'f', value: 0.0}
     };
   },
 
@@ -19,33 +20,37 @@ var waveComposerShaderMaterial = {
     'uniform float beginFadingHeight[$numwaveTextures];',
     'uniform float vanishingHeight[$numwaveTextures];',
     'uniform float cornerDepth[4];',
+    'uniform float N;',
+
+    'float fModulo1(float a){',
+      'return (a - floor(a));',
+    '}',
 
     'void main(){',
       'vec2 position = gl_FragCoord.xy / resolution.xy;',
+      'float sizeExpansion = (resolution.x + 1.0) / resolution.x; //Expand by exactly one pixel',
+      'vec2 uv = sizeExpansion * position;',
+      'vec2 wrappedUV = vec2(fModulo1(uv.x), fModulo1(uv.y));',
       'float combinedWaveHeight = 0.0;',
 
-      '//Get our position in a values between 0 and 1 for easier work',
-      'vec2 np = (position + vec2(1.0)) * 0.5;',
-      'float weight = sqrt(np.x * np.x + np.y * np.y);',
-      'float weights = weight;',
-      'float weightedSum = weight * cornerDepth[0];',
-      'weight = sqrt((1.0 - np.x) * (1.0 - np.x) + np.y * np.y);',
-      'weights = weights + weight;',
-      'weightedSum = weightedSum + weight * cornerDepth[1];',
-      'weight = sqrt((1.0 - np.x) * (1.0 - np.x) + (1.0 - np.y) * (1.0 - np.y));',
-      'weights = weights + weight;',
-      'weightedSum = weightedSum + weight * cornerDepth[2];',
-      'weight = sqrt(np.x * np.x + (1.0 - np.y) * (1.0 - np.y));',
-      'weights = weights + weight;',
-      'weightedSum = weightedSum + weight * cornerDepth[3];',
-      'float waterDepth = weightedSum / weights;',
+      '//Bilinear interpolation',
+      'mat2 cornerDepthMatrix = mat2(',
+        'cornerDepth[3], cornerDepth[1],',
+        'cornerDepth[2], cornerDepth[0]',
+      ');',
+      'vec2 bilinearXTerm = vec2(1.0 - position.x, position.x);',
+      'vec2 bilinearYTerm = vec2(1.0 - position.y, position.y);',
+      'float waterDepth = dot((cornerDepthMatrix * bilinearYTerm), bilinearXTerm);',
 
+      '//Interpolations',
+      'float totalHeights = 0.0;',
       '#pragma unroll',
       'for(int i = 0; i < $numwaveTextures; i++){',
-        'float waveheight_i = texture2D(wavetextures[i], position).r;',
+        'float waveheight_i = texture2D(wavetextures[i], wrappedUV).r;',
 
         'if(waterDepth > beginFadingHeight[i]){',
-          'combinedWaveHeight += waveheight_i;',
+          'combinedWaveHeight = waveheight_i;',
+          'totalHeights += 1.0;',
         '}',
         'else if(waterDepth > vanishingHeight[i]){',
           'float heightModifier = clamp((waterDepth - vanishingHeight[i]) / (beginFadingHeight[i] - vanishingHeight[i]), 0.0, 1.0);',
@@ -53,7 +58,8 @@ var waveComposerShaderMaterial = {
         '}',
       '}',
 
-      'gl_FragColor = vec4(combinedWaveHeight, 0.0, 0.0, 0.0);',
+      '//gl_FragColor = vec4(vec3(combinedWaveHeight / (N * N)), 0.0);',
+      'gl_FragColor = vec4(vec3(combinedWaveHeight / (totalHeights * N * N)), 1.0);',
     '}',
     ];
 

@@ -3,40 +3,40 @@
 //https://github.com/mrdoob/three.js/wiki/Uniforms-types
 var amplitudeFilterShaderMaterial = {
   uniforms: {
-    centralAmplitude: {type: 'f', value: 0.0},
-    bandwidth: {type: 'f', value: 1.0}
+    frequencyRadiusStart: {type: 'f', value: 0.00},
+    maxBandwidthStart: {type: 'f', value: 30000000.0},
   },
 
   fragmentShader: function(){
     return [
     'varying vec3 vWorldPosition;',
 
-    'uniform float centralAmplitude;',
-    'uniform float bandwidth;',
+    'uniform float frequencyRadiusStart;',
+    'uniform float maxBandwidthStart;',
 
     'void main(){',
       'vec2 position = gl_FragCoord.xy / resolution.xy;',
-      'float maxBandwidth = centralAmplitude - bandwidth;',
-      'float minBandwidth = centralAmplitude + bandwidth;',
-
       'vec2 hkTexel = texture2D(textureHk, position).rg;',
+
+      '//Low has a radius greater than 0.05 and a band limit of 10000',
+      '//Low medium has a radius greater than 0.01 and a band limit of 750000',
+      '//medium has a radius greater than 0.002 and a band limit of 10000000.0',
+      '//medium high as a radius greater than 0.0014 and a band limit of 30000000.0',
+
+      "//This could use fading... but for now, we don't need fading, we need this to work",
+      '//So our filters are hard.',
       'float redChannelOut = 0.0;',
-      'if(hkTexel.r > minBandwidth && hkTexel.r <= centralAmplitude){',
-        'redChannelOut = (hkTexel.r - minBandwidth) / (centralAmplitude - minBandwidth);',
-      '}',
-      'else if(hkTexel.r < maxBandwidth && hkTexel.r >= centralAmplitude){',
-        'redChannelOut = (maxBandwidth - hkTexel.r) / (maxBandwidth - centralAmplitude);',
-      '}',
-
       'float greenChannelOut = 0.0;',
-      'if(hkTexel.g > minBandwidth && hkTexel.g <= centralAmplitude){',
-        'greenChannelOut = (hkTexel.g - minBandwidth) / (centralAmplitude - minBandwidth);',
+      'float radiusOfFrequency = sqrt(position.x * position.x + position.y * position.y);',
+      'bool frequencyInRange = radiusOfFrequency > frequencyRadiusStart;',
+      'if(abs(hkTexel.r) < maxBandwidthStart && frequencyInRange){',
+        'redChannelOut = hkTexel.r;',
       '}',
-      'else if(hkTexel.g < maxBandwidth && hkTexel.g >= centralAmplitude){',
-        'greenChannelOut = (maxBandwidth - hkTexel.g) / (maxBandwidth - centralAmplitude);',
+      'if(abs(hkTexel.g) < maxBandwidthStart && frequencyInRange){',
+        'greenChannelOut = hkTexel.g;',
       '}',
 
-      'gl_FragColor = vec4(redChannelOut, greenChannelOut, 0.0, 0.0);',
+      'gl_FragColor = vec4(redChannelOut, greenChannelOut, 0.0, 1.0);',
     '}',
     ].join('\n');
   }

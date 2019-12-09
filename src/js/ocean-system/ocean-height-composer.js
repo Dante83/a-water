@@ -24,24 +24,16 @@ function OceanHeightComposer(parentOceanGrid, patchHeights){
   for(let i = 0; i < this.numberOfWaveComponents; ++i){
     whcVar.material.uniforms.wavetextures.value[i] = this.OceanMaterialHeightBandLibrary.wavesFilteredByAmplitude[i];
     whcVar.material.uniforms.beginFadingHeight.value[i] = parentOceanGrid.beginsFadingOutAtHeight[i];
-    whcVar.material.uniforms.vanishingHeight.value[i] = parentOceanGrid.vanishingHeight[i];
+    whcVar.material.uniforms.vanishingHeight.value[i] = 0.0;
   }
   for(let i = 0; i < 4; ++i){
     whcVar.material.uniforms.cornerDepth.value[i] = patchHeights[i];
   }
-
-  //TODO: Massively increase the scale of our texture to a size that allows for smoothing details
-  //while making the texture tileable.
-  let waveHeightTextureInit = this.waveHeightComposerRenderer.createTexture(this.outputTextureWidth, this.outputTextureHeight, true, true, THREE.LinearMipMapLinearFilter, THREE.LinearMipMapLinearFilter);
-  this.waveheightVar = this.waveHeightComposerRenderer.addVariable('textureWaveHeight', waveHeightShaderMaterialData.fragmentShader, waveHeightTextureInit);
-  this.waveHeightComposerRenderer.setVariableDependencies(this.waveheightVar, []);//Note: We use manual texture dependency injection here.
-  this.waveheightVar.material.uniforms = JSON.parse(JSON.stringify(waveHeightShaderMaterialData.uniforms));
-  this.waveheightVar.material.uniforms.combinedWaveHeights.value = this.combinedWaveHeights;
-  this.waveheightVar.material.uniforms.N.value = this.N;
+  whcVar.material.uniforms.N.value = this.N;
 
   let error5 = this.waveHeightComposerRenderer.init();
   if(error5 !== null){
-    console.error(`Wave Height Renderer: ${error5}`);
+    console.error(`Wave Height Composer Renderer: ${error5}`);
   }
   this.waveHeightComposerRenderer.compute();
 
@@ -50,7 +42,7 @@ function OceanHeightComposer(parentOceanGrid, patchHeights){
   this.waveNormalMapTextureVar = this.waveNormalMapRenderer.addVariable('textureWaveNormalMap', waveNormalMapMaterialData.fragmentShader, waveNormalMapTextureInit);
   this.waveNormalMapRenderer.setVariableDependencies(this.waveNormalMapTextureVar, []);//Note: We use manual texture dependency injection here.
   this.waveNormalMapTextureVar.material.uniforms = JSON.parse(JSON.stringify(waveNormalMapMaterialData.uniforms));
-  this.waveNormalMapTextureVar.material.uniforms.waveHeightTexture.value = this.waveHeightComposerRenderer.getCurrentRenderTarget(this.waveheightVar).texture;
+  this.waveNormalMapTextureVar.material.uniforms.waveHeightTexture.value = this.waveHeightComposerRenderer.getCurrentRenderTarget(whcVar).texture;
 
   let error6 = this.waveNormalMapRenderer.init();
   if(error6 !== null){
@@ -61,14 +53,10 @@ function OceanHeightComposer(parentOceanGrid, patchHeights){
   this.tick = function(){
     //Update our uniforms
     for(let i = 0; i < this.numberOfWaveComponents; ++i){
-      whcVar.material.uniforms.wavetextures.value[i] = this.OceanMaterialHeightBandLibrary.wavesFilteredByAmplitude[i];
+      self.waveHeightComposerVar.material.uniforms.wavetextures.value[i] = this.OceanMaterialHeightBandLibrary.wavesFilteredByAmplitude[i];
     }
     self.waveHeightComposerRenderer.compute();
-
-    //Create our wrapped texture
-    self.waveheightVar.material.uniforms.combinedWaveHeights.value = self.waveHeightComposerRenderer.getCurrentRenderTarget(self.waveHeightComposerVar).texture;
-    self.waveHeightComposerRenderer.compute();
-    let waveHeightTexture = self.waveHeightComposerRenderer.getCurrentRenderTarget(self.waveheightVar).texture;
+    let waveHeightTexture = self.waveHeightComposerRenderer.getCurrentRenderTarget(self.waveHeightComposerVar).texture;
 
     //Use this to produce our normal map
     self.waveNormalMapTextureVar.material.uniforms.waveHeightTexture.value = waveHeightTexture;

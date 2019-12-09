@@ -1,8 +1,6 @@
 function OceanHeightBandLibrary(parentOceanGrid){
   let renderer = parentOceanGrid.renderer;
   let data = parentOceanGrid.data;
-  this.minWaveAmplitude = 0.0;
-  this.maxWaveAmplitude = 20.0;
   this.numLevels = parentOceanGrid.numberOfOceanHeightBands;
 
   //Key inner variables
@@ -110,14 +108,19 @@ function OceanHeightBandLibrary(parentOceanGrid){
   //Now set up each of our filters
   this.hkBandTextures = [];
   this.hkBandVars = [];
-  let bandwidth = (this.maxWaveAmplitude - this.minWaveAmplitude) / this.numLevels;
+
+  //This. This is totally ad-hoc crud. It's probably some exponentials or hyper-exponentials,
+  //but fact that the numbers are as they are really makes little sense to me.
+  //Honestly, the mere sight of this fills me with disgust. Blegh! I spit upon thee magic numbers!
+  let frequencyRadaii = [0.05, 0.01, 0.002, 0.0014, 0.0];
+  let bandFrequencyLimits = [10000.0, 750000.0, 10000000.0, 30000000.0, 100000000.0];
   for(let i = 0; i < this.numLevels; i++){
     this.hkBandTextures.push(hkRenderer.createTexture());
     this.hkBandVars.push(hkRenderer.addVariable(`textureHkBand_${i}`, amplitudeFilterShaderMaterial.fragmentShader(), this.hkBandTextures[i]));
     hkRenderer.setVariableDependencies(this.hkBandVars[i], [hkVar]);//Note: We use manual texture dependency injection here.
     this.hkBandVars[i].material.uniforms = JSON.parse(JSON.stringify(amplitudeFilterShaderMaterial.uniforms));
-    this.hkBandVars[i].material.uniforms.centralAmplitude.value = bandwidth * i;
-    this.hkBandVars[i].material.uniforms.bandwidth.value = bandwidth;
+    this.hkBandVars[i].material.uniforms.frequencyRadiusStart.value = frequencyRadaii[i];
+    this.hkBandVars[i].material.uniforms.maxBandwidthStart.value = bandFrequencyLimits[i];
   }
 
   let error3 = hkRenderer.init();
