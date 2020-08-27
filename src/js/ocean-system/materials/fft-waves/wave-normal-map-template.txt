@@ -1,0 +1,12 @@
+//This helps
+//--------------------------v
+//https://github.com/mrdoob/three.js/wiki/Uniforms-types
+AWater.AOcean.Materials.FFTWaves.waveNormalMapMaterialData = {
+  uniforms: {
+    waveHeightTexture: {type: 't', value: null},
+  },
+
+  fragmentShader: [
+    {fragment_glsl}
+  ].join('\n')
+};

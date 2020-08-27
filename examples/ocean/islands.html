@@ -8,26 +8,35 @@
 
     <!--Meta-->
     <meta name="viewport" content="width=device-width,initial-scale=1,shrink-to-fit=no,user-scalable=no,maximum-scale=1">
-    <script src="https://aframe.io/releases/0.9.2/aframe.min.js"></script>
-    <script src="../../src/js/GPUComputeRenderer.js"></script>
-    <script src="../../src/js/ocean-system/shaders/LUTS/noise-shader.js"></script>
-    <script src="../../src/js/ocean-system/shaders/LUTS/h_0-shader.js"></script>
-    <script src="../../src/js/ocean-system/shaders/LUTS/h_k-shader.js"></script>
-    <script src="../../src/js/ocean-system/shaders/LUTS/fft-inverter-shader.js"></script>
-    <script src="../../src/js/ocean-system/shaders/LUTS/compute-twiddle-indices.js"></script>
-    <script src="../../src/js/ocean-system/shaders/LUTS/static-lut-renderer.js"></script>
-    <script src="../../src/js/ocean-system/shaders/LUTS/test-output-shader.js"></script>
-    <script src="../../src/js/ocean-system/shaders/LUTS/butterfly-shader.js"></script>
-    <script src="../../src/js/ocean-system/shaders/LUTS/amplitude-filter-shader.js"></script>
-    <script src="../../src/js/ocean-system/shaders/LUTS/wave-composer-shader.js"></script>
-    <script src="../../src/js/ocean-system/shaders/LUTS/wave-height-shader.js"></script>
-    <script src="../../src/js/ocean-system/shaders/LUTS/wave-normal-map-shader.js"></script>
-    <script src="../../src/js/ocean-system/ocean-height-band-library.js"></script>
-    <script src="../../src/js/ocean-system/ocean-height-composer.js"></script>
-    <script src="../../src/js/ocean-system/ocean-patch.js"></script>
-    <script src="../../src/js/ocean-system/ocean-grid.js"></script>
-    <script src="../../src/js/components/ocean-state.js"></script>
-    <script src="../../src/js/primitives/a-ocean.js"></script>
+
+    <!--External JS Files from THREE.JS -->
+    <script src="https://aframe.io/releases/1.0.4/aframe.min.js"></script>
+    <script src="../../external_js/three-js/GPUComputeRenderer.js"></script>
+    <!-- <script src="../../external_js/three-js/ShaderPass.js"></script>
+    <script src="../../external_js/three-js/RenderPass.js"></script>
+    <script src="../../external_js/three-js/GPUComputeRenderer.js"></script> -->
+
+    <!--Sky Forge -->
+    <script src="./other-libraries/askyforge.v0.3.0.min.js"></script>
+
+    <!--Code files for ocean -->
+    <script src="../../src/js/AWater.js"></script>
+    <script src="../../src/js/ocean-system/materials/fft-waves/noise-pass.js"></script>
+    <script src="../../src/js/ocean-system/materials/fft-waves/h_0-pass.js"></script>
+    <script src="../../src/js/ocean-system/materials/fft-waves/h_k-pass.js"></script>
+    <script src="../../src/js/ocean-system/materials/fft-waves/fft-inverter.js"></script>
+    <script src="../../src/js/ocean-system/materials/fft-waves/compute-twiddle-indices.js"></script>
+    <script src="../../src/js/ocean-system/materials/fft-waves/butterfly-pass.js"></script>
+    <script src="../../src/js/ocean-system/materials/fft-waves/amplitude-filter.js"></script>
+    <script src="../../src/js/ocean-system/materials/fft-waves/wave-composer.js"></script>
+    <script src="../../src/js/ocean-system/materials/fft-waves/wave-height.js"></script>
+    <script src="../../src/js/ocean-system/materials/fft-waves/wave-normal-map.js"></script>
+    <script src="../../src/js/ocean-system/luts/ocean-height-band-library.js"></script>
+    <script src="../../src/js/ocean-system/luts/ocean-height-composer.js"></script>
+    <script src="../../src/js/ocean-system/components/ocean-patch.js"></script>
+    <script src="../../src/js/ocean-system/components/ocean-grid.js"></script>
+    <script src="../../src/js/ocean-system/components/ocean-state.js"></script>
+    <script src="../../src/js/ocean-system/components/a-ocean.js"></script>
 
   <!--Scene Scripts-->
   </head>
@@ -42,9 +51,14 @@
 
       <!-- <a-camera></a-camera> -->
 
+      <!-- The ocean we want to create -->
       <a-ocean></a-ocean>
 
+      <!-- The scene model for our island and buildings -->
       <a-gltf-model src="#island" class="static-ocean-collider" position="0 -102 0"></a-gltf-model>
+
+      <!-- The sky so we can render the sky in our background -->
+      <a-sky-forge sky-time="imgDir:image-dir/;"></a-sky-forge>
     </a-scene>
   </body>
 </html>

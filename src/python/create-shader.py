@@ -1,193 +1,169 @@
-import os, time, re
+import os, time, re, yaml, copy
 
-def ShaderFileWatcher():
+current_glsl_dir = []
+current_js_dir = []
+last_update_times_for_dir = {}
+
+def ConvertGLSLToStringArray(glsl_string):
+    leading_spaces_in_code = 2
+    code_lines = glsl_string.splitlines()
+    js_stringified_code = []
+    for lineNumber, loc in enumerate(code_lines):
+        if len(loc) >= 1:
+            n_leading_spaces = len(loc) - len(loc.lstrip(' ')) + leading_spaces_in_code + 2
+            if lineNumber == 0:
+                js_stringified_code += [''] #Empty newline at start
+
+            #Allows us to use ' in comments without breaking the code
+            #Also allows the use of inline variable strings to program our shaders
+            #on the fly.
+            if bool(re.search('\$\{.*\}', loc)):
+                js_stringified_code += [(' ' * n_leading_spaces) + "`" + loc.lstrip(' ') + "`,"]
+            elif bool(re.search("'", loc)):
+                js_stringified_code += [(' ' * n_leading_spaces) + '"' + loc.lstrip(' ') + '",']
+            else:
+                js_stringified_code += [(' ' * n_leading_spaces) + "'" + loc.lstrip(' ') + "',"]
+        else:
+            js_stringified_code += [loc]
+    return '\r\n'.join(js_stringified_code)
+
+def ParseShader(yaml_structure):
     #Reload a list of our file locations and write locations
-    template_files = ['../js/ocean-system/shaders/LUTs/noise-shader-template.txt',\
-    '../js/ocean-system/shaders/LUTs/h_0-shader-template.txt',\
-    '../js/ocean-system/shaders/LUTs/h_k-shader-template.txt',\
-    '../js/ocean-system/shaders/LUTs/butterfly-template.txt',\
-    '../js/ocean-system/shaders/LUTs/fft-inverter-template.txt',\
-    '../js/ocean-system/shaders/LUTs/test-output-template.txt',\
-    '../js/ocean-system/shaders/LUTs/wave-height-template.txt',\
-    '../js/ocean-system/shaders/LUTs/wave-normal-map-template.txt',\
-    '../js/ocean-system/shaders/LUTs/amplitude-filter-template.txt',\
-    '../js/ocean-system/shaders/LUTs/wave-composer-template.txt']
-    shader_js_files = ['../js/ocean-system/shaders/LUTs/noise-shader.js',\
-    '../js/ocean-system/shaders/LUTs/h_0-shader.js',\
-    '../js/ocean-system/shaders/LUTs/h_k-shader.js',\
-    '../js/ocean-system/shaders/LUTs/butterfly-shader.js',\
-    '../js/ocean-system/shaders/LUTs/fft-inverter-shader.js',\
-    '../js/ocean-system/shaders/LUTs/test-output-shader.js',\
-    '../js/ocean-system/shaders/LUTs/wave-height-shader.js',\
-    '../js/ocean-system/shaders/LUTs/wave-normal-map-shader.js',\
-    '../js/ocean-system/shaders/LUTs/amplitude-filter-shader.js',\
-    '../js/ocean-system/shaders/LUTs/wave-composer-shader.js']
-    shader_vertex_files = ['../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
-    '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
-    '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
-    '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
-    '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
-    '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
-    '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
-    '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
-    '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl',\
-    '../glsl/gerstner-wave-LUTS/LUT-vertex.glsl']
-    shader_fragment_files = ['../glsl/gerstner-wave-LUTS/noise-frag.glsl',\
-    '../glsl/gerstner-wave-LUTS/h_0-frag.glsl',\
-    '../glsl/gerstner-wave-LUTS/h_k-frag.glsl',\
-    '../glsl/gerstner-wave-LUTS/butterfly-frag.glsl',\
-    '../glsl/gerstner-wave-LUTS/fft-inverter-frag.glsl',\
-    '../glsl/gerstner-wave-LUTS/test-output-frag.glsl',\
-    '../glsl/gerstner-wave-LUTS/wave-height-frag.glsl',\
-    '../glsl/gerstner-wave-LUTS/wave-normal-map-frag.glsl',\
-    '../glsl/gerstner-wave-LUTS/amplitude-filter.glsl',\
-    '../glsl/gerstner-wave-LUTS/wave-composer.glsl']
+    relative_template_path = '/'.join(current_js_dir) + '/' + yaml_structure['template'] if 'template' in yaml_structure else False
+    relative_material_path = '/'.join(current_js_dir) + '/' + yaml_structure['material'] if 'material' in yaml_structure else False
+    relative_vertex_path = '/'.join(current_glsl_dir) + '/' + yaml_structure['vertex'] if 'vertex' in yaml_structure else False
+    relative_fragment_path = '/'.join(current_glsl_dir) + '/' + yaml_structure['fragment'] if 'fragment' in yaml_structure else False
 
     #Where is everything located? Give some relative paths that python can follow
-    template_names = [os.path.abspath(x) for x in template_files]
-    file_names = [os.path.abspath(x) for x in shader_js_files]
-    vertex_files = [os.path.abspath(x) for x in shader_vertex_files]
-    fragment_files = [os.path.abspath(x) for x in shader_fragment_files]
+    template_file = os.path.abspath(relative_template_path) if relative_template_path != False else False
+    material_file = os.path.abspath(relative_material_path) if relative_material_path != False else False
+    vertex_file = os.path.abspath(relative_vertex_path) if relative_vertex_path != False else False
+    fragment_file = os.path.abspath(relative_fragment_path) if relative_fragment_path != False else False
 
-    num_files = len(template_names)
-    previousVertexFileChangeDates = [None for x in xrange(num_files)]
-    previousFragmentFileChangeDates = [None for x in xrange(num_files)]
-    previousTemplateFileChangeDates = [None for x in xrange(num_files)]
+    #Get times for last changed events
+    is_first_template_iteration = False
+    is_first_vertex_iteration = False
+    is_first_shader_iteration = False
+    if template_file != False:
+        if template_file in last_update_times_for_dir:
+            template_file_last_changed_at = last_update_times_for_dir[template_file]
+        else:
+            last_update_times_for_dir[template_file] = os.path.getmtime(template_file)
+            template_file_last_changed_at = last_update_times_for_dir[template_file]
+            is_first_template_iteration = True
+    if vertex_file != False:
+        if vertex_file in last_update_times_for_dir:
+            vertex_file_last_changed_at = last_update_times_for_dir[vertex_file]
+        else:
+            last_update_times_for_dir[vertex_file] = os.path.getmtime(vertex_file)
+            vertex_file_last_changed_at = last_update_times_for_dir[vertex_file]
+            is_first_vertex_iteration = True
+    if fragment_file != False:
+        if fragment_file in last_update_times_for_dir:
+            fragment_file_last_changed_at = last_update_times_for_dir[fragment_file]
+        else:
+            last_update_times_for_dir[fragment_file] = os.path.getmtime(fragment_file)
+            fragment_file_last_changed_at = last_update_times_for_dir[fragment_file]
+            is_first_shader_iteration = True
 
-    leadingSpacesBeforeFragmentShaderCode = [2 for x in xrange(num_files)]
-    leadingSpacesBeforeVertextShaderCode = [2 for x in xrange(num_files)]
+    changes_detected = False
+    template_file_changed = False
+    if template_file != False and (os.path.getmtime(template_file) != template_file_last_changed_at or is_first_template_iteration):
+        changes_detected = True
+        template_file_changed = True
+        last_update_times_for_dir[template_file] = os.path.getmtime(template_file)
 
-    #Initialize our template for usage - we're gonna need this one no matter what gets updated
-    leadingSpacesBeforeVertextShaderCodeStrings = ['' for x in xrange(num_files)]
-    updatedVertexFileCodeStrings = ['' for x in xrange(num_files)]
-    updatedFragmentFileCodeStrings = ['' for x in xrange(num_files)]
-    jsStringifiedVertexCode = ['' for x in xrange(num_files)]
-    jsStringifiedFragmentCode = ['' for x in xrange(num_files)]
-    templateStrings = ['' for x in xrange(num_files)]
+    #initialize our code strings
+    if vertex_file != False and (os.path.getmtime(vertex_file) != vertex_file_last_changed_at or is_first_vertex_iteration):
+        changes_detected = True
+        last_update_times_for_dir[vertex_file] = os.path.getmtime(vertex_file)
 
-    for i in xrange(num_files):
-        template_name = template_names[i]
-        with open(template_name, 'r') as f:
-            templateStrings[i] = f.read()
-        for loc in templateStrings[i]:
-            if "\{vertex_glsl\}" in loc:
-                 leadingSpacesBeforeVertextShaderCodeStrings[i] = len(loc) - len(loc.lstrip(' '))
+    if fragment_file != False and (os.path.getmtime(fragment_file) != fragment_file_last_changed_at or is_first_shader_iteration):
+        changes_detected = True
+        last_update_times_for_dir[fragment_file] = os.path.getmtime(fragment_file)
 
-        #initialize our code strings
-        vertex_file = vertex_files[i]
-        with open(vertex_file) as vf:
-            updatedVertexFileCodeStrings[i] = vf.read()
+    #If any changes were detected above, rewrite our shader JS file
+    if changes_detected:
+        #Initialize our variables
+        update_vertex_file_code_string = ''
+        update_fragment_file_code_string = ''
+        js_stringified_vertex_code = ''
+        js_stringified_fragment_code = ''
+        template_string = ''
 
-        fragment_file = fragment_files[i]
-        with open(fragment_file) as ff:
-            updatedFragmentFileCodeStrings[i] = ff.read()
+        #Load all our files as we are updating things
+        if template_file != False:
+            with open(template_file, 'r') as f:
+                try:
+                    template_string = f.read()
+                except f.IOError as exc:
+                    print(exc)
+                    return 0
 
-    #Endless while loop - exit via ctrl-pause/break... It's just above that numpad block on your keyboard. You're welcome ^_^.
-    while 1:
-        #Do this every 1 seconds
+        if vertex_file != False:
+            with open(vertex_file) as vf:
+                try:
+                    update_vertex_file_code_string = vf.read()
+                except vf.IOError as exc:
+                    print(exc)
+                    return 0
+
+        if fragment_file != False:
+            with open(fragment_file) as ff:
+                try:
+                    update_fragment_file_code_string = ff.read()
+                except ff.IOError as exc:
+                    print(exc)
+                    return 0
+
+        #Clone the template string and modify it with the imported components
+        with open(material_file, 'w') as w:
+            material_code = template_string
+            if vertex_file != False:
+                js_stringified_vertex_code = ConvertGLSLToStringArray(update_vertex_file_code_string)
+                material_code = re.sub('\s+\{vertex_glsl\}', js_stringified_vertex_code, material_code)
+            if fragment_file != False:
+                js_stringified_fragment_code = ConvertGLSLToStringArray(update_fragment_file_code_string)
+                material_code = re.sub('\s+\{fragment_glsl\}', js_stringified_fragment_code, material_code)
+            w.write(material_code)
+            print("Shader JS File updated at: " + time.strftime('%H:%M %Y-%m-%d'))
+            print("-"*15)
+
+def NextAction(yaml_structure):
+    delete_base_glsl_when_done = False
+    delete_base_js_dir_when_done = False
+    if 'base_glsl_dir' in yaml_structure:
+        current_glsl_dir.append(yaml_structure['base_glsl_dir'])
+        delete_base_glsl_when_done = True
+    if 'base_js_dir' in yaml_structure:
+        current_js_dir.append(yaml_structure['base_js_dir'])
+        delete_base_js_dir_when_done = True
+    if 'shaders' in yaml_structure:
+        for shader in yaml_structure['shaders']:
+            ParseShader(shader)
+    if 'groups' in yaml_structure:
+        for group in yaml_structure['groups']:
+            NextAction(group)
+
+    #Now that we are done, remove the above groupings from the shader directories
+    if delete_base_glsl_when_done:
+        del current_glsl_dir[-1]
+    if delete_base_js_dir_when_done:
+        del current_js_dir[-1]
+
+def ShaderFileWatcher():
+    #This should run forever, repeatedly creating our files from the updated structure every time
+    while True:
+        #Get the YAML file containing instructions for organizing our GLSL files
+        with open("shader-file-structure.yaml", 'r') as stream:
+            current_glsl_dir = []
+            current_js_dir = []
+            try:
+                yaml_data = yaml.safe_load(stream)
+                NextAction(yaml_data)
+            except yaml.YAMLError as exc:
+                print(exc)
         time.sleep(1)
-
-        #For each of our shaders
-        for i in xrange(num_files):
-            #Prepare for this iteration
-            vertex_file = vertex_files[i]
-            fragment_file = fragment_files[i]
-            template_name = template_names[i]
-            file_name = file_names[i]
-            previousVertexFileChangeDate = previousVertexFileChangeDates[i]
-            previousFragmentFileChangeDate = previousFragmentFileChangeDates[i]
-            previousTemplateFileChangeDate = previousTemplateFileChangeDates[i]
-
-            #Check for changes
-            vertexFileLastChangedAt = os.path.getmtime(vertex_file)
-            fragmentFileLastChangedAt = os.path.getmtime(fragment_file)
-            templateFileLastChangedAt = os.path.getmtime(template_name)
-
-            # Check if any files changed, and if so, update our output js shader file
-            if (previousVertexFileChangeDate != vertexFileLastChangedAt) or (previousFragmentFileChangeDate != fragmentFileLastChangedAt) or (previousTemplateFileChangeDate != templateFileLastChangedAt):
-                #Get the current time...
-                time.ctime()
-
-                #
-                #Check if our vertex shader file was the changer - is so, update the internal values associated with this
-                #
-                if (previousVertexFileChangeDate != vertexFileLastChangedAt):
-                    print "Vertex File Change Detected"
-                    previousVertexFileChangeDates[i] = vertexFileLastChangedAt
-                    with open(vertex_file) as vf:
-                        updatedVertexFileCodeStrings[i] = vf.read()
-                #
-                #Check if our fragment shader file was the changer - is so, update the internal values associated with this
-                #
-                if (previousFragmentFileChangeDate != fragmentFileLastChangedAt):
-                    print "Fragment File Change Detected"
-                    previousFragmentFileChangeDates[i] = fragmentFileLastChangedAt
-                    with open(fragment_file) as ff:
-                        updatedFragmentFileCodeStrings[i] = ff.read()
-
-                #
-                #Check if our template file was the changer - is so, update the internal values associated with this
-                #
-                if (previousTemplateFileChangeDate != templateFileLastChangedAt):
-                    print "Template file change detected."
-                    previousTemplateFileChangeDates[i] = templateFileLastChangedAt
-
-                    with open(template_name, 'r') as f:
-                        templateStrings[i] = f.read()
-                    for loc in templateStrings[i]:
-                        if "\{vertex_glsl\}" in loc:
-                            leadingSpacesBeforeVertextShaderCode[i] = len(loc) - len(loc.lstrip(' '))
-
-                codeLines = updatedVertexFileCodeStrings[i].splitlines()
-                jsStringifiedVertexLinesOfCode = []
-                for lineNumber, loc in enumerate(codeLines):
-                    if len(loc) >= 1:
-                        nLeadingSpaces = len(loc) - len(loc.lstrip(' ')) + leadingSpacesBeforeVertextShaderCode[i] + 2
-                        if lineNumber == 0:
-                            jsStringifiedVertexLinesOfCode += [''] #Empty newline at start
-
-                        #Allows us to use ' in comments without breaking the code
-                        #Also allows the use of inline variable strings to program our shaders
-                        #on the fly.
-                        if bool(re.search('\$\{.*\}', loc)):
-                            jsStringifiedVertexLinesOfCode += [(' ' * nLeadingSpaces) + "`" + loc.lstrip(' ') + "`,"]
-                        elif bool(re.search("'", loc)):
-                            jsStringifiedVertexLinesOfCode += [(' ' * nLeadingSpaces) + '"' + loc.lstrip(' ') + '",']
-                        else:
-                            jsStringifiedVertexLinesOfCode += [(' ' * nLeadingSpaces) + "'" + loc.lstrip(' ') + "',"]
-                    else:
-                        jsStringifiedVertexLinesOfCode += [loc]
-                jsStringifiedVertexCode[i] = '\r\n'.join(jsStringifiedVertexLinesOfCode)
-
-                codeLines = updatedFragmentFileCodeStrings[i].splitlines()
-                jsStringifiedFragmentLinesOfCode = []
-                for lineNumber, loc in enumerate(codeLines):
-                    if len(loc) >= 1:
-                        nLeadingSpaces = len(loc) - len(loc.lstrip(' ')) + leadingSpacesBeforeFragmentShaderCode[i] + 2
-                        if lineNumber == 0:
-                            jsStringifiedFragmentLinesOfCode += [''] #Empty newline at start
-
-                        #Allows us to use ' in comments without breaking the code
-                        #Also allows the use of inline variable strings to program our shaders
-                        #on the fly.
-                        if bool(re.search('\$\{.*\}', loc)):
-                            jsStringifiedFragmentLinesOfCode += [(' ' * nLeadingSpaces) + "`" + loc.lstrip(' ') + "`,"]
-                        elif bool(re.search("'", loc)):
-                            jsStringifiedFragmentLinesOfCode += [(' ' * nLeadingSpaces) + '"' + loc.lstrip(' ') + '",']
-                        else:
-                            jsStringifiedFragmentLinesOfCode += [(' ' * nLeadingSpaces) + "'" + loc.lstrip(' ') + "',"]
-                    else:
-                        jsStringifiedFragmentLinesOfCode += [loc]
-                jsStringifiedFragmentCode[i] = '\r\n'.join(jsStringifiedFragmentLinesOfCode)
-
-                #Clone the template string and modify it with the imported components
-                with open(file_name, 'w') as w:
-                    shader_js_code = templateStrings[i]
-                    shader_js_code = re.sub('\s+\{vertex_glsl\}', jsStringifiedVertexCode[i], shader_js_code)
-                    shader_js_code = re.sub('\s+\{fragment_glsl\}', jsStringifiedFragmentCode[i], shader_js_code)
-                    w.write(shader_js_code)
-                    print ("Shader JS File updated at: " + time.strftime('%H:%M %Y-%m-%d'))
-                    print "-"*15
 
 #Run the main application! :D
 ShaderFileWatcher()

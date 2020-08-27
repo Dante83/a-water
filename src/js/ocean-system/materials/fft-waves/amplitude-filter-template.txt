@@ -1,0 +1,15 @@
+//This helps
+//--------------------------v
+//https://github.com/mrdoob/three.js/wiki/Uniforms-types
+AWater.AOcean.Materials.FFTWaves.amplitudeFilterShaderMaterial = {
+  uniforms: {
+    frequencyRadiusStart: {type: 'f', value: 0.00},
+    maxBandwidthStart: {type: 'f', value: 30000000.0},
+  },
+
+  fragmentShader: function(){
+    return [
+      {fragment_glsl}
+    ].join('\n');
+  }
+};

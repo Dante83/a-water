@@ -1,0 +1,27 @@
+//This helps
+//--------------------------v
+//https://github.com/mrdoob/three.js/wiki/Uniforms-types
+AWater.AOcean.Materials.FFTWaves.waveComposerShaderMaterial = {
+  uniforms: function(numberOfWaveComponents){
+    return {
+      wavetextures: {value: new Array(numberOfWaveComponents)},
+      beginFadingHeight: {value: new Array(numberOfWaveComponents)},
+      vanishingHeight: {value: new Array(numberOfWaveComponents)},
+      cornerDepth: {value: new Array(4)},
+      N: {type: 'f', value: 0.0}
+    };
+  },
+
+  fragmentShader: function(numberOfWaveComponents){
+    let originalGLSL = [
+      {fragment_glsl}
+    ];
+
+    let updatedLines = [];
+    for(let i = 0, numLines = originalGLSL.length; i < numLines; ++i){
+      updatedLines.push(originalGLSL[i].replace(/\$numwaveTextures/g, numberOfWaveComponents));
+    }
+
+    return updatedLines.join('\n');
+  }
+};
