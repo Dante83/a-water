@@ -24,6 +24,30 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
   );
   this.cameraFrustum = new THREE.Frustum();
 
+  //Set up our cube camera for reflections and refractions
+  //this.colorRenderTarget = new THREE.WebGLRenderTargetCube(512, 512);
+  this.reflectionRefractionCubeCamera = new THREE.CubeCamera(0.1, 100000.0, 512);
+  this.scene.add(this.reflectionRefractionCubeCamera);
+
+  //Set up a depth material for repeated used across the scene
+  this.depthMaterial = new THREE.MeshDepthMaterial();
+
+  //Set up another cube camera for depth
+  //this.depthRenderTarget = new THREE.WebGLRenderTargetCube(128, 128);
+  this.depthCubeCamera = new THREE.CubeCamera(0.1, 100000.0, 128);
+  this.scene.add(this.depthCubeCamera);
+
+  //Enable all layers except for the effect layer that are enabled on the primary camera
+  // for(let i = 0; i < 32; ++i){
+  //   const layerTest = camera.layers.test(i);
+  //   this.reflectionRefractionCubeCamera.layers.disableAll();
+  //   this.depthCubeCamera.layers.disableAll();
+  //   if(i !== data.effect_layer && layerTest){
+  //     this.reflectionRefractionCubeCamera.layers.enable();
+  //     this.depthCubeCamera.layers.enable();
+  //   }
+  // }
+
   //Get all ocean patch offsets
   let maxHalfPatchesPerSide = Math.ceil((this.drawDistance + this.patchSize) / this.patchSize);
   for(let x = -maxHalfPatchesPerSide; x < maxHalfPatchesPerSide; ++x){
@@ -53,9 +77,20 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
   this.oceanHeightBandLibrary = new AWater.AOcean.LUTlibraries.OceanHeightBandLibrary(this);
   let dwd = data.default_water_depth;
   let defaultHeights = [dwd, dwd, dwd, dwd];
-  this.defaultHeightMap = new AWater.AOcean.LUTlibraries.OceanHeightComposer(this, defaultHeights);
-  let self = this;
+  this.oceanHeightComposer = new AWater.AOcean.LUTlibraries.OceanHeightComposer(this, defaultHeights);
 
+  //Set up our ocean material that is used for all of our ocean patches
+  this.oceanMaterial = new THREE.ShaderMaterial({
+    vertexShader: AWater.AOcean.Materials.Ocean.waterMaterial.vertexShader,
+    fragmentShader: AWater.AOcean.Materials.Ocean.waterMaterial.fragmentShader,
+    side: THREE.DoubleSide,
+    flatShading: true,
+    transparent: true,
+    lights: false
+  });
+  this.oceanMaterial.uniforms = AWater.AOcean.Materials.Ocean.waterMaterial.uniforms;
+
+  let self = this;
   this.checkForNewGridElements = function(){
     //Grab the floor for approximate nearby coordinate center
     let globalCameraPosition = self.camera.position.clone();
@@ -156,13 +191,38 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
     //Frustum Cull our grid
     self.cameraFrustum.setFromMatrix(self.camera.children[0].projectionMatrix.clone().multiply(self.camera.children[0].matrixWorldInverse));
 
+    //Update our camera layers
+    // for(let i = 0; i < 32; ++i){
+    //   const layerTest = camera.layers.test(i);
+    //   self.reflectionRefractionCubeCamera.layers.disableAll();
+    //   self.depthCubeCamera.layers.disableAll();
+    //   if(i !== data.effect_layer && layerTest){
+    //     self.reflectionRefractionCubeCamera.layers.enable();
+    //     self.depthCubeCamera.layers.enable();
+    //   }
+    // }
+
+    //Snap a cubemap picture of our environment to create reflections and refractions
+    self.depthCubeCamera.position.copy(self.camera.position);
+    self.reflectionRefractionCubeCamera.position.copy(self.camera.position);
+    self.scene.overrideMaterial = self.depthMaterial;
+    self.depthCubeCamera.update(self.renderer, self.scene);
+    self.scene.overrideMaterial = null;
+    self.reflectionRefractionCubeCamera.update(self.renderer, self.scene);
+
+    //Update the scene fog based on whether we are above or below the
+    //water.
+
+
     //Update each of our ocean grid height maps
     self.oceanHeightBandLibrary.tick(time);
-    let defaultOceanTextures = self.defaultHeightMap.tick();
+    self.oceanHeightComposer.tick();
+
+    //Update individual changes on each of our ocean patches
     for(let i = 0, numOceanPatches = self.oceanPatches.length; i < numOceanPatches; ++i){
       //Only update our GPU shader for this mesh if it it's visible
       if(self.cameraFrustum.intersectsObject(self.oceanPatches[i].plane)){
-        self.oceanPatches[i].tick(time, defaultOceanTextures);
+        self.oceanPatches[i].tick(time);
       }
     }
   };

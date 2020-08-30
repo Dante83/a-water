@@ -10,32 +10,8 @@ AWater.AOcean.OceanPatch = function(scene, parentOceanGrid){
   this.customOceanHeightComposer = false;
 
   let geometry = new THREE.PlaneBufferGeometry(parentOceanGrid.patchSize, parentOceanGrid.patchSize, 128, 128);
-  this.oceanMaterial = new THREE.MeshPhysicalMaterial( {
-    side: THREE.BackSide,
-    transparency: 0.1,
-    transparent: true,
-    specular: 0.255,
-    roughness: 0.0,
-    metalness: 0.0,
-    flatShading: false,
-    refractionRatio: 1.33,
-    color: new THREE.Color(0x2e3f57),
-  } );
-  // this.oceanMaterial = new THREE.ShaderMaterial({
-  //   uniforms: THREE.UniformsUtils.merge([
-  //     THREE.UniformsLib['lights'],
-  //     {
-  //       lightIntensity: {type: 'f', value: 1.0},
-  //       textureSampler: {type: 't', value: null}
-  //     }
-  //   ]),
-  //   vertexShader: ,
-  //   fragmentShader: ,
-  //   transparent: true,
-  //   lights: true
-  // });
-  this.plane = new THREE.Mesh(geometry, this.oceanMaterial);
-  this.plane.rotateX(Math.PI * 0.5);
+  this.plane = new THREE.Mesh(geometry, parentOceanGrid.oceanMaterial.clone());
+  this.plane.rotateX(-Math.PI * 0.5);
   this.plane.layers.set(0);
   scene.add(this.plane);
   let self = this;
@@ -72,8 +48,11 @@ AWater.AOcean.OceanPatch = function(scene, parentOceanGrid){
     //Use our heights either way to set up the color of our material based on the water depth.
   }
 
-  this.tick = function(time, defaultOceanTextures){
-    self.oceanMaterial.displacementMap = defaultOceanTextures.heightMap;
-    self.oceanMaterial.normalMap = defaultOceanTextures.normalMap;
+  this.tick = function(time){
+    self.plane.material.uniforms.displacementMap.value = self.parentOceanGrid.oceanHeightComposer.displacementMap;
+    self.plane.material.uniforms.normalMap.value = self.parentOceanGrid.oceanHeightComposer.normalMap;
+    self.plane.material.uniforms.depthCubemap.value = self.parentOceanGrid.depthCubeCamera.renderTarget;
+    self.plane.material.uniforms.reflectionRefractionCubemap.value = self.parentOceanGrid.reflectionRefractionCubeCamera.renderTarget;
+    self.plane.material.uniforms.matrixWorld.value.copy(self.plane.matrixWorld);
   };
 }

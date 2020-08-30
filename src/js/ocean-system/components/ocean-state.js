@@ -13,6 +13,10 @@ AFRAME.registerComponent('ocean_state', {
     'default_water_depth': {type: 'number', default: 200.0},
     'surface_mesh_class': {type: 'string', default: 'static-ocean-collider'},
     'height_offset': {type: 'number', default: -10.0},
+    'effect_layer': {type: 'number', default: 1, min: 1, max: 31},
+    'underwater_fog_near': {type: 'number', default: 0.0, min: 0.0, max: 10000.0},
+    'underwater_fog_far': {type: 'number', default: 0.0, min: 0.0, max: 10000.0},
+    'underwater_fog_color': {type: 'vec3', default: new THREE.Vector3()}
   },
   init: function(){
     this.loaded = false;

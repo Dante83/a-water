@@ -1,0 +1,21 @@
+//This helps
+//--------------------------v
+//https://github.com/mrdoob/three.js/wiki/Uniforms-types
+AWater.AOcean.Materials.Ocean.waterMaterial = {
+  uniforms: {
+    displacementMap: {type: 't', value: null},
+    normalMap: {type: 't', value: null},
+    isBelowWater: {type: 'i', value: 0},
+    depthCubemap: {value: null},
+    reflectionRefractionCubemap: {value: null},
+    matrixWorld: {type: 'mat4', value: new THREE.Matrix4()},
+  },
+
+  fragmentShader: [
+    {fragment_glsl}
+  ].join('\n'),
+
+  vertexShader: [
+    {vertex_glsl}
+  ].join('\n'),
+};

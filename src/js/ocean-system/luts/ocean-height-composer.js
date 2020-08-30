@@ -10,6 +10,8 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid, patch
   this.numberOfWaveComponents = parentOceanGrid.numberOfOceanHeightBands;
   this.parentOceanGrid = parentOceanGrid;
   this.combinedWaveHeights;
+  this.displacementMap;
+  this.normalMap;
 
   //Make a shortcut to our materials namespace
   const materials = AWater.AOcean.Materials.FFTWaves;
@@ -67,15 +69,11 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid, patch
       self.waveHeightComposerVar.material.uniforms.wavetextures.value[i] = this.OceanMaterialHeightBandLibrary.wavesFilteredByAmplitude[i];
     }
     self.waveHeightComposerRenderer.compute();
-    let waveHeightTexture = self.waveHeightComposerRenderer.getCurrentRenderTarget(self.waveHeightComposerVar).texture;
+    this.displacementMap = self.waveHeightComposerRenderer.getCurrentRenderTarget(self.waveHeightComposerVar).texture;
 
     //Use this to produce our normal map
-    self.waveNormalMapTextureVar.material.uniforms.waveHeightTexture.value = waveHeightTexture;
+    self.waveNormalMapTextureVar.material.uniforms.waveHeightTexture.value = this.displacementMap;
     self.waveNormalMapRenderer.compute();
-
-    return {
-      heightMap: waveHeightTexture,
-      normalMap: self.waveNormalMapRenderer.getCurrentRenderTarget(self.waveNormalMapTextureVar).texture
-    };
+    this.normalMap = self.waveNormalMapRenderer.getCurrentRenderTarget(self.waveNormalMapTextureVar).texture
   };
 }

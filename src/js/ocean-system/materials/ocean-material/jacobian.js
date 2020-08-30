@@ -1,13 +1,12 @@
 //This helps
 //--------------------------v
 //https://github.com/mrdoob/three.js/wiki/Uniforms-types
-AWater.AOcean.Materials.Ocean.waterMaterial = {
+AWater.AOcean.Materials.Ocean.jacobianPass = {
   uniforms: {
     test: {type: 'f', value: 0.00},
   },
 
   fragmentShader: [
-    {fragment_glsl}
   ].join('\n'),
 
   vertexShader: [{
