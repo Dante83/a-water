@@ -9,7 +9,7 @@ AWater.AOcean.Materials.Ocean.jacobianPass = {
   fragmentShader: [
   ].join('\n'),
 
-  vertexShader: [{
+  vertexShader: [
     {vertex_glsl}
-  }].join('\n'),
+  ].join('\n'),
 };

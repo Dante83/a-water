@@ -52,6 +52,11 @@ groups:
         template: 'jacobian-template.txt'
         material: 'jacobian.js'
       -
+        fragment: 'position-pass.glsl'
+        vertex:   'position-pass-vertex.glsl'
+        template: 'position-pass-template.txt'
+        material: 'position-pass.js'
+      -
         fragment: 'water-shader.glsl'
         vertex:   'water-vertex.glsl'
         template: 'water-shader-template.txt'

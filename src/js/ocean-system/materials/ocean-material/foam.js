@@ -9,7 +9,7 @@ AWater.AOcean.Materials.Ocean.foamPass = {
   fragmentShader: [
   ].join('\n'),
 
-  vertexShader: [{
+  vertexShader: [
     {vertex_glsl}
-  }].join('\n'),
+  ].join('\n'),
 };

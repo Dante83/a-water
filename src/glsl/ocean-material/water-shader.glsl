@@ -7,24 +7,47 @@ varying vec2 vUv;
 
 //uniform vec3 cameraDirection;
 uniform int isBelowWater;
+uniform sampler2D bayerMatrixTexture;
 uniform samplerCube depthCubemap;
 uniform samplerCube reflectionRefractionCubemap;
 
+//R0 For Schlick's Approximation
+//With n1 = 1.33 and n0 = 1.05
+const float r0 = -0.0200593121995247656062922;
+
 void main(){
   //Get the reflected and refracted information of the scene
-  vec3 reflectedCoordinates = reflect(vWorldPosition, vNormal.rbg);
-  vec3 refractedCoordinates = refract(vWorldPosition, vNormal.rbg, 1.33);
+  vec3 fNormal = normalize(vNormal).xzy;
+  fNormal *= -1.0;
+  vec3 fWorldPosition = normalize(vWorldPosition);
+  vec3 reflectedCoordinates = reflect(fWorldPosition, fNormal);
+  vec3 refractedCoordinates = refract(fWorldPosition, -fNormal, 1.0 / 1.33);
   vec3 reflectedLight = textureCube(reflectionRefractionCubemap, reflectedCoordinates).rgb; //Reflection
   vec3 refractedLight = textureCube(reflectionRefractionCubemap, refractedCoordinates).rgb; //Refraction
+  reflectedLight = reflectedLight;
+  refractedLight = refractedLight;
 
-  //Apply fresnel to the reflection layer
+  //Apply Schlick's approximation for the fresnel amount
+  //https://en.wikipedia.org/wiki/Schlick%27s_approximation
+  float oneMinusCosTheta = 1.0 - dot(fNormal, fWorldPosition);
+  float reflectedLightPercent = clamp(r0 + (1.0 -  r0) * pow(oneMinusCosTheta, 5.0), 0.0, 1.0);
+  float refractedLightPercent = 1.0 - reflectedLightPercent;
 
   //Get the depth data for linear fog
-  float waterDepth = clamp((textureCube(reflectionRefractionCubemap, vWorldPosition).r - distance(vWorldPosition, cameraPosition)) / 10.0, 0.0, 1.0);
+  vec3 refractedRayCollisionPoint = textureCube(depthCubemap, refractedCoordinates).xyz;
+  float distanceFromSurface = distance(vWorldPosition, refractedRayCollisionPoint);
 
   //Total light
-  vec3 totalLight = reflectedLight;
+  vec3 reducedRefractedLight = refractedLight * refractedLightPercent;
+  float redAttenuatedLight = reducedRefractedLight.r * clamp((50.0 - distanceFromSurface) / 50.0, 0.0, 1.0);
+  float greenAttenuatedLight = reducedRefractedLight.g * clamp((180.0 - distanceFromSurface) / 180.0, 0.0, 1.0);
+  float blueAttenuatedLight = reducedRefractedLight.b * clamp((300.0 - distanceFromSurface) / 300.0, 0.0, 1.0);
+  vec3 totalLight = (reflectedLightPercent * reflectedLight + vec3(redAttenuatedLight, greenAttenuatedLight, blueAttenuatedLight));
+
+  vec3 filmicLight = ACESFilmicToneMapping(totalLight);
+
+  filmicLight += vec3(texture2D(bayerMatrixTexture, gl_FragCoord.xy / 8.0).r / 32.0 - (1.0 / 128.0));
 
   //Check if we are above or below the water to see what kind of fog is applied
-  gl_FragColor = vec4(vec3(0.0, 0.1, 0.9), waterDepth);
+  gl_FragColor = vec4(filmicLight, 1.0);
 }

@@ -32,6 +32,7 @@
     <script src="../../src/js/ocean-system/materials/fft-waves/wave-height.js"></script>
     <script src="../../src/js/ocean-system/materials/fft-waves/wave-normal-map.js"></script>
 
+    <script src="../../src/js/ocean-system/materials/ocean-material/position-pass.js"></script>
     <script src="../../src/js/ocean-system/materials/ocean-material/water-shader.js"></script>
 
     <script src="../../src/js/ocean-system/luts/ocean-height-band-library.js"></script>
@@ -58,10 +59,10 @@
       <a-ocean></a-ocean>
 
       <!-- The scene model for our island and buildings -->
-      <a-gltf-model src="#island" class="static-ocean-collider" position="0 -102 0"></a-gltf-model>
+      <a-gltf-model src="#island" class="static-ocean-collider" position="0 -102 0" material="shader: flat; color: red"></a-gltf-model>
 
       <!-- The sky so we can render the sky in our background -->
-      <a-sky-forge sky-time="imgDir:image-dir/;"></a-sky-forge>
+      <a-sky-forge sky-time="imgDir:image-dir/;utcOffset: 7;" geo-coordinates="lat: 35.68; long:139.69;"></a-sky-forge>
     </a-scene>
   </body>
 </html>
