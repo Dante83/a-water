@@ -41,10 +41,14 @@ void main(){
   vec2 expIwtConj = vec2(cosOfWT, -sinOfWT);
 
   //dy
-  vec2 hk_t_dy = cAdd(cMult(tilda_h0_k, expIwt), cMult(tilda_h0_minus_k_conj, expIwtConj));
+  vec2 hk_tilda = cAdd(cMult(tilda_h0_k, expIwt), cMult(tilda_h0_minus_k_conj, expIwtConj));
 
-  //We can actually pull this back in later on, because our hk_t_dx and hk_t_dz are just dependent
-  //upon the above, k and magnitude
-  //gl_FragColor =vec4(gaussianRandomNumber.xy * h0_k, gaussianRandomNumber.zw * h0_minusk);
-  gl_FragColor =vec4(hk_t_dy, 0.0, 1.0);
+  #if($isXAxis)
+    vec2 dx = vec2(0.0, -k.x / magK);
+    hk_tilda = cMult(dx, hk_tilda);
+  #elif(!$isXAxis && !$isYAxis)
+    vec2 dy = vec2(0.0, -k.y / magK);
+    hk_tilda = cMult(dy, hk_tilda);
+  #endif
+  gl_FragColor = vec4(hk_tilda, 0.0, 1.0);
 }

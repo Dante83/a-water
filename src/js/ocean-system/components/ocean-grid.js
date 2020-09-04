@@ -16,8 +16,6 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
   this.data = data;
   this.time = 0.0;
   this.staticMeshes = staticMeshes;
-  this.downVector = new THREE.Vector3(0.0, -1.0, 0.0);
-  this.defaultDepth = 500;
   this.raycaster = new THREE.Raycaster(
     new THREE.Vector3(0.0,100.0,0.0),
     this.downVector
@@ -107,9 +105,7 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
   //Initialize all shader LUTs for future ocean viewing
   //Initialize our ocean variables and all associated shaders.
   this.oceanHeightBandLibrary = new AWater.AOcean.LUTlibraries.OceanHeightBandLibrary(this);
-  let dwd = data.default_water_depth;
-  let defaultHeights = [dwd, dwd, dwd, dwd];
-  this.oceanHeightComposer = new AWater.AOcean.LUTlibraries.OceanHeightComposer(this, defaultHeights);
+  this.oceanHeightComposer = new AWater.AOcean.LUTlibraries.OceanHeightComposer(this);
 
   //Set up our ocean material that is used for all of our ocean patches
   this.oceanMaterial = new THREE.ShaderMaterial({

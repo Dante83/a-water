@@ -4,10 +4,9 @@
 AWater.AOcean.Materials.FFTWaves.waveComposerShaderMaterial = {
   uniforms: function(numberOfWaveComponents){
     return {
-      wavetextures: {value: new Array(numberOfWaveComponents)},
-      beginFadingHeight: {value: new Array(numberOfWaveComponents)},
-      vanishingHeight: {value: new Array(numberOfWaveComponents)},
-      cornerDepth: {value: new Array(4)},
+      xWavetextures: {value: new Array(numberOfWaveComponents)},
+      yWavetextures: {value: new Array(numberOfWaveComponents)},
+      zWavetextures: {value: new Array(numberOfWaveComponents)},
       N: {type: 'f', value: 0.0}
     };
   },

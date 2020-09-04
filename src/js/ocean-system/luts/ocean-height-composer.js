@@ -1,4 +1,4 @@
-AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid, patchHeights){
+AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
   let data = parentOceanGrid.data;
   this.renderer = parentOceanGrid.renderer;
   this.baseTextureWidth = data.patch_data_size;
@@ -22,22 +22,14 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid, patch
   this.waveHeightComposerTexture = this.waveHeightComposerRenderer.createTexture();
   this.waveHeightComposerVar = this.waveHeightComposerRenderer.addVariable('waveHeightTexture', materials.waveComposerShaderMaterial.fragmentShader(this.numberOfWaveComponents), this.waveHeightComposerTexture);
   let whcVar = this.waveHeightComposerVar;
-  this.waveHeightComposerVar.material.minFilter = THREE.LinearFilter;
-  this.waveHeightComposerVar.material.magFilter = THREE.LinearFilter;
-  this.waveHeightComposerVar.material.wrapS = THREE.RepeatWrapping;
-  this.waveHeightComposerVar.material.wrapT = THREE.RepeatWrapping;
+  this.waveHeightComposerVar.minFilter = THREE.LinearFilter;
+  this.waveHeightComposerVar.magFilter = THREE.LinearFilter;
+  this.waveHeightComposerVar.wrapS = THREE.RepeatWrapping;
+  this.waveHeightComposerVar.wrapT = THREE.RepeatWrapping;
   this.waveHeightComposerRenderer.setVariableDependencies(whcVar, []);//Note: We use manual texture dependency injection here.
   whcVar.material.uniforms = materials.waveComposerShaderMaterial.uniforms(this.numberOfWaveComponents);
 
   //Set our uniforms
-  for(let i = 0; i < this.numberOfWaveComponents; ++i){
-    whcVar.material.uniforms.wavetextures.value[i] = this.OceanMaterialHeightBandLibrary.wavesFilteredByAmplitude[i];
-    whcVar.material.uniforms.beginFadingHeight.value[i] = parentOceanGrid.beginsFadingOutAtHeight[i];
-    whcVar.material.uniforms.vanishingHeight.value[i] = 0.0;
-  }
-  for(let i = 0; i < 4; ++i){
-    whcVar.material.uniforms.cornerDepth.value[i] = patchHeights[i];
-  }
   whcVar.material.uniforms.N.value = this.N;
 
   let error5 = this.waveHeightComposerRenderer.init();
@@ -52,10 +44,10 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid, patch
   this.waveNormalMapRenderer.setVariableDependencies(this.waveNormalMapTextureVar, []);//Note: We use manual texture dependency injection here.
   this.waveNormalMapTextureVar.material.uniforms = JSON.parse(JSON.stringify(materials.waveNormalMapMaterialData.uniforms));
   this.waveNormalMapTextureVar.material.uniforms.waveHeightTexture.value = this.waveHeightComposerRenderer.getCurrentRenderTarget(whcVar).texture;
-  this.waveNormalMapTextureVar.material.minFilter = THREE.LinearFilter;
-  this.waveNormalMapTextureVar.material.magFilter = THREE.LinearFilter;
-  this.waveNormalMapTextureVar.material.wrapS = THREE.RepeatWrapping;
-  this.waveNormalMapTextureVar.material.wrapT = THREE.RepeatWrapping;
+  this.waveNormalMapTextureVar.minFilter = THREE.LinearFilter;
+  this.waveNormalMapTextureVar.magFilter = THREE.LinearFilter;
+  this.waveNormalMapTextureVar.wrapS = THREE.RepeatWrapping;
+  this.waveNormalMapTextureVar.wrapT = THREE.RepeatWrapping;
 
   let error6 = this.waveNormalMapRenderer.init();
   if(error6 !== null){
@@ -66,7 +58,9 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid, patch
   this.tick = function(){
     //Update our uniforms
     for(let i = 0; i < this.numberOfWaveComponents; ++i){
-      self.waveHeightComposerVar.material.uniforms.wavetextures.value[i] = this.OceanMaterialHeightBandLibrary.wavesFilteredByAmplitude[i];
+      self.waveHeightComposerVar.material.uniforms.xWavetextures.value[i] = this.OceanMaterialHeightBandLibrary.wavesXFilteredByAmplitude[i];
+      self.waveHeightComposerVar.material.uniforms.yWavetextures.value[i] = this.OceanMaterialHeightBandLibrary.wavesYFilteredByAmplitude[i];
+      self.waveHeightComposerVar.material.uniforms.zWavetextures.value[i] = this.OceanMaterialHeightBandLibrary.wavesZFilteredByAmplitude[i];
     }
     self.waveHeightComposerRenderer.compute();
     this.displacementMap = self.waveHeightComposerRenderer.getCurrentRenderTarget(self.waveHeightComposerVar).texture;
@@ -74,6 +68,6 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid, patch
     //Use this to produce our normal map
     self.waveNormalMapTextureVar.material.uniforms.waveHeightTexture.value = this.displacementMap;
     self.waveNormalMapRenderer.compute();
-    this.normalMap = self.waveNormalMapRenderer.getCurrentRenderTarget(self.waveNormalMapTextureVar).texture
+    this.normalMap = self.waveNormalMapRenderer.getCurrentRenderTarget(self.waveNormalMapTextureVar).texture;
   };
 }

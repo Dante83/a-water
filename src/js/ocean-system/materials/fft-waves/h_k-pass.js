@@ -9,7 +9,8 @@ AWater.AOcean.Materials.FFTWaves.hkShaderMaterialData = {
     uTime: {type: 'f', value: 0.0}
   },
 
-  fragmentShader: [
+  fragmentShader: function(isXAxis = false, isYAxis = false){
+    let originalGLSL = [
     'precision highp float;',
 
     '//With a lot of help from https://youtu.be/i0BPrGuOdPo',
@@ -53,12 +54,30 @@ AWater.AOcean.Materials.FFTWaves.hkShaderMaterialData = {
       'vec2 expIwtConj = vec2(cosOfWT, -sinOfWT);',
 
       '//dy',
-      'vec2 hk_t_dy = cAdd(cMult(tilda_h0_k, expIwt), cMult(tilda_h0_minus_k_conj, expIwtConj));',
+      'vec2 hk_tilda = cAdd(cMult(tilda_h0_k, expIwt), cMult(tilda_h0_minus_k_conj, expIwtConj));',
 
-      '//We can actually pull this back in later on, because our hk_t_dx and hk_t_dz are just dependent',
-      '//upon the above, k and magnitude',
-      '//gl_FragColor =vec4(gaussianRandomNumber.xy * h0_k, gaussianRandomNumber.zw * h0_minusk);',
-      'gl_FragColor =vec4(hk_t_dy, 0.0, 1.0);',
+      '#if($isXAxis)',
+        'vec2 dx = vec2(0.0, -k.x / magK);',
+        'hk_tilda = cMult(dx, hk_tilda);',
+      '#elif(!$isXAxis && !$isYAxis)',
+        'vec2 dy = vec2(0.0, -k.y / magK);',
+        'hk_tilda = cMult(dy, hk_tilda);',
+      '#endif',
+      'gl_FragColor = vec4(hk_tilda, 0.0, 1.0);',
     '}',
-  ].join('\n')
+    ];
+
+    console.log(isXAxis);
+
+    let updatedLines = [];
+    for(let i = 0, numLines = originalGLSL.length; i < numLines; ++i){
+      let updatedGLSL = originalGLSL[i].replace(/\$isXAxis/g, isXAxis ? '1' : '0');
+      updatedGLSL = updatedGLSL.replace(/\$isYAxis/g, isYAxis ? '1' : '0');
+      //Otherwise is z-axis, and sure, it is true these are dependent values but this is just easier
+
+      updatedLines.push(updatedGLSL);
+    }
+
+    return updatedLines.join('\n');
+  }
 };

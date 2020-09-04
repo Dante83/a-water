@@ -3,7 +3,6 @@ precision highp float;
 varying vec3 vWorldPosition;
 varying vec4 colorMap;
 varying vec3 vNormal;
-varying vec2 vUv;
 
 //uniform vec3 cameraDirection;
 uniform int isBelowWater;
@@ -16,12 +15,11 @@ uniform samplerCube reflectionRefractionCubemap;
 const float r0 = -0.0200593121995247656062922;
 
 void main(){
-  //Get the reflected and refracted information of the scene
-  vec3 fNormal = normalize(vNormal).xzy;
-  fNormal *= -1.0;
+  vec3 fNormal = normalize(vNormal);
+  fNormal = -fNormal;
   vec3 fWorldPosition = normalize(vWorldPosition);
   vec3 reflectedCoordinates = reflect(fWorldPosition, fNormal);
-  vec3 refractedCoordinates = refract(fWorldPosition, -fNormal, 1.0 / 1.33);
+  vec3 refractedCoordinates = refract(fWorldPosition, fNormal, 1.33);
   vec3 reflectedLight = textureCube(reflectionRefractionCubemap, reflectedCoordinates).rgb; //Reflection
   vec3 refractedLight = textureCube(reflectionRefractionCubemap, refractedCoordinates).rgb; //Refraction
   reflectedLight = reflectedLight;

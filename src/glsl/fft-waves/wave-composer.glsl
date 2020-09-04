@@ -2,10 +2,9 @@ precision highp float;
 
 varying vec3 vWorldPosition;
 
-uniform sampler2D wavetextures[$numwaveTextures];
-uniform float beginFadingHeight[$numwaveTextures];
-uniform float vanishingHeight[$numwaveTextures];
-uniform float cornerDepth[4];
+uniform sampler2D xWavetextures[$numwaveTextures];
+uniform sampler2D yWavetextures[$numwaveTextures];
+uniform sampler2D zWavetextures[$numwaveTextures];
 uniform float N;
 
 float fModulo1(float a){
@@ -17,33 +16,19 @@ void main(){
   float sizeExpansion = (resolution.x + 1.0) / resolution.x; //Expand by exactly one pixel
   vec2 uv = sizeExpansion * position;
   vec2 wrappedUV = vec2(fModulo1(uv.x), fModulo1(uv.y));
-  float combinedWaveHeight = 0.0;
-
-  //Bilinear interpolation
-  mat2 cornerDepthMatrix = mat2(
-    cornerDepth[3], cornerDepth[1],
-    cornerDepth[2], cornerDepth[0]
-  );
-  vec2 bilinearXTerm = vec2(1.0 - wrappedUV.x, wrappedUV.x);
-  vec2 bilinearYTerm = vec2(1.0 - wrappedUV.y, wrappedUV.y);
-  float waterDepth = dot((cornerDepthMatrix * bilinearYTerm), bilinearXTerm);
+  vec3 combinedWaveHeight = vec3(0.0);
 
   //Interpolations
-  float totalHeights = 0.0;
+  float totalOffsets = 0.0;
   #pragma unroll
   for(int i = 0; i < $numwaveTextures; i++){
-    float waveheight_i = texture2D(wavetextures[i], wrappedUV).r;
-
-    if(waterDepth > beginFadingHeight[i]){
-      combinedWaveHeight = waveheight_i;
-      totalHeights += 1.0;
-    }
-    else if(waterDepth > vanishingHeight[i]){
-      float heightModifier = clamp((waterDepth - vanishingHeight[i]) / (beginFadingHeight[i] - vanishingHeight[i]), 0.0, 1.0);
-      combinedWaveHeight += heightModifier * waveheight_i;
-    }
+    float waveHeight_x = texture2D(xWavetextures[i], wrappedUV).x;
+    float waveHeight_y = texture2D(yWavetextures[i], wrappedUV).x;
+    float waveHeight_z = texture2D(zWavetextures[i], wrappedUV).x;
+    combinedWaveHeight += vec3(waveHeight_x, waveHeight_y, waveHeight_z);
+    totalOffsets += 1.0;
   }
 
   //gl_FragColor = vec4(vec3(combinedWaveHeight / (N * N)), 0.0);
-  gl_FragColor = vec4(vec3(combinedWaveHeight / (totalHeights * N * N)), 1.0);
+  gl_FragColor = vec4(combinedWaveHeight / (totalOffsets * N * N), 1.0);
 }

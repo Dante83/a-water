@@ -9,7 +9,22 @@ AWater.AOcean.Materials.FFTWaves.hkShaderMaterialData = {
     uTime: {type: 'f', value: 0.0}
   },
 
-  fragmentShader: [
-    {fragment_glsl}
-  ].join('\n')
+  fragmentShader: function(isXAxis = false, isYAxis = false){
+    let originalGLSL = [
+      {fragment_glsl}
+    ];
+
+    console.log(isXAxis);
+
+    let updatedLines = [];
+    for(let i = 0, numLines = originalGLSL.length; i < numLines; ++i){
+      let updatedGLSL = originalGLSL[i].replace(/\$isXAxis/g, isXAxis ? '1' : '0');
+      updatedGLSL = updatedGLSL.replace(/\$isYAxis/g, isYAxis ? '1' : '0');
+      //Otherwise is z-axis, and sure, it is true these are dependent values but this is just easier
+
+      updatedLines.push(updatedGLSL);
+    }
+
+    return updatedLines.join('\n');
+  }
 };
