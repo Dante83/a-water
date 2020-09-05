@@ -11,10 +11,8 @@
 
     <!--External JS Files from THREE.JS -->
     <script src="https://aframe.io/releases/1.0.4/aframe.min.js"></script>
-    <script src="../../external_js/three-js/GPUComputeRenderer.js"></script>
-    <!-- <script src="../../external_js/three-js/ShaderPass.js"></script>
-    <script src="../../external_js/three-js/RenderPass.js"></script>
-    <script src="../../external_js/three-js/GPUComputeRenderer.js"></script> -->
+    <script src="../../src/js/three_js_extensions/GPUComputeRenderer.js"></script>
+    <script src="../../src/js/three_js_extensions/BufferGeometryUtils.js"></script>
 
     <!--Sky Forge -->
     <script src="./other-libraries/askyforge.v0.3.0.min.js"></script>
@@ -62,7 +60,7 @@
       <a-gltf-model src="#island" class="static-ocean-collider" position="0 -102 0" material="shader: flat; color: red"></a-gltf-model>
 
       <!-- The sky so we can render the sky in our background -->
-      <a-sky-forge sky-time="imgDir:image-dir/;utcOffset: -2;" geo-coordinates="lat: 35.68; long:139.69;"></a-sky-forge>
+      <a-sky-forge sky-time="imgDir:image-dir/;utcOffset: 8;" geo-coordinates="lat: 35.68; long:139.69;"></a-sky-forge>
     </a-scene>
   </body>
 </html>

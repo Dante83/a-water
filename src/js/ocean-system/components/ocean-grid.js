@@ -43,41 +43,6 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
   });
   this.scene.add(this.depthCubeCamera);
 
-  //Enable all layers except for the effect layer that are enabled on the primary camera
-  for(let i = 0; i < 32; ++i){
-    const layerTest = camera.layers.test(i);
-    this.reflectionRefractionCubeCamera.layers.disableAll();
-    this.depthCubeCamera.layers.disableAll();
-    if(i !== data.effect_layer && layerTest){
-      this.reflectionRefractionCubeCamera.layers.enable();
-      this.depthCubeCamera.layers.enable();
-    }
-  }
-
-  //Create our Bayer Matrix
-  //Thanks to http://www.anisopteragames.com/how-to-fix-color-banding-with-dithering/
-  const bayerMatrixData = [
-  0, 32,  8, 40,  2, 34, 10, 42,
-  48, 16, 56, 24, 50, 18, 58, 26,
-  12, 44,  4, 36, 14, 46,  6, 38,
-  60, 28, 52, 20, 62, 30, 54, 22,
-  3, 35, 11, 43,  1, 33,  9, 41,
-  51, 19, 59, 27, 49, 17, 57, 25,
-  15, 47,  7, 39, 13, 45,  5, 37,
-  63, 31, 55, 23, 61, 29, 53, 21];
-
-  let gl = renderer.getContext();
-  let bayerImage = gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, 8, 8, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, new Uint8Array(data))
-
-  let textureLoader = new THREE.TextureLoader();
-  const bayerMatrixTexture = textureLoader.load(bayerImage,  function(){
-      starColors.magFilter = THREE.NearestFilter;
-      starColors.minFilter = THREE.NearestFilter;
-      starColors.wrapS = THREE.RepeatWrapping;
-      starColors.wrapW = THREE.RepeatWrapping;
-      starColors.needsUpdate = true;
-    });
-
   //Get all ocean patch offsets
   let maxHalfPatchesPerSide = Math.ceil((this.drawDistance + this.patchSize) / this.patchSize);
   for(let x = -maxHalfPatchesPerSide; x < maxHalfPatchesPerSide; ++x){
@@ -117,7 +82,6 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
     lights: false
   });
   this.oceanMaterial.uniforms = AWater.AOcean.Materials.Ocean.waterMaterial.uniforms;
-  this.oceanMaterial.uniforms.bayerMatrixTexture = bayerMatrixTexture;
 
   let self = this;
   this.positionPassMaterial = new THREE.ShaderMaterial({
@@ -234,15 +198,9 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
     //Frustum Cull our grid
     self.cameraFrustum.setFromMatrix(self.camera.children[0].projectionMatrix.clone().multiply(self.camera.children[0].matrixWorldInverse));
 
-    //Update our camera layers
-    for(let i = 0; i < 32; ++i){
-      const layerTest = camera.layers.test(i);
-      self.reflectionRefractionCubeCamera.layers.disableAll();
-      self.depthCubeCamera.layers.disableAll();
-      if(i !== data.effect_layer && layerTest){
-        self.reflectionRefractionCubeCamera.layers.enable();
-        self.depthCubeCamera.layers.enable();
-      }
+    //Hide all of our ocean grid elements
+    for(let i = 0; i < self.oceanPatches.length; ++i){
+      self.oceanPatches[i].plane.visible = false;
     }
 
     //Snap a cubemap picture of our environment to create reflections and refractions
@@ -252,6 +210,11 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
     self.depthCubeCamera.update(self.renderer, self.scene);
     self.scene.overrideMaterial = null;
     self.reflectionRefractionCubeCamera.update(self.renderer, self.scene);
+
+    //Show all of our ocean grid elements again
+    for(let i = 0; i < self.oceanPatches.length; ++i){
+      self.oceanPatches[i].plane.visible = true;
+    }
 
     //Update the scene fog based on whether we are above or below the
     //water.

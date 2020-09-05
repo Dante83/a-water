@@ -1,27 +1,29 @@
 precision highp float;
 
-//attribute vec3 baseDepth;
-varying vec3 vWorldPosition;
+attribute vec4 tangent;
+
+varying vec3 tangentSpaceViewDirection;
+varying vec3 vViewVector;
 varying vec4 colorMap;
-varying vec3 vNormal;
+varying vec2 vUv;
+
 uniform sampler2D displacementMap;
-uniform sampler2D normalMap;
 uniform mat4 matrixWorld;
 
 void main() {
-  //Set up our normals
-  vec3 normalMapNormal = texture2D(normalMap, uv).xzy;
-  vec4 modelViewNormal = vec4(normalMapNormal, 1.0);
-  vNormal = modelViewNormal.xyz;
-
   //Set up our displacement map
   vec3 offsetPosition = position;
   vec3 displacement = texture2D(displacementMap, uv).xyz;
-  offsetPosition.x -= displacement.x;
+  displacement.x *= -1.0;
+  displacement.z *= -1.0;
+  displacement *= 16.0;
+  offsetPosition.x += displacement.x;
   offsetPosition.z += displacement.y;
-  offsetPosition.y -= displacement.z;
-  vec4 worldPosition = matrixWorld * vec4(position, 1.0);
-  vWorldPosition = worldPosition.xyz + displacement - cameraPosition;
+  offsetPosition.y += displacement.z;
+  vViewVector = (matrixWorld * vec4(displacement + position, 1.0)).xyz - cameraPosition;
+
+  //Set up our UV maps
+  vUv = uv;
 
   //Have the water fade from dark blue to teal as it approaches the shore.
   colorMap = vec4(displacement, 1.0);

@@ -9,6 +9,7 @@ AWater.AOcean.OceanPatch = function(scene, parentOceanGrid){
   this.customOceanHeightComposer = false;
 
   let geometry = new THREE.PlaneBufferGeometry(parentOceanGrid.patchSize, parentOceanGrid.patchSize, 128, 128);
+  THREE.BufferGeometryUtils.computeTangents(geometry);
   this.plane = new THREE.Mesh(geometry, parentOceanGrid.oceanMaterial.clone());
   this.plane.rotateX(-Math.PI * 0.5);
   this.plane.layers.set(0);

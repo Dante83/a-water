@@ -9,7 +9,6 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     depthCubemap: {value: null},
     reflectionRefractionCubemap: {value: null},
     matrixWorld: {type: 'mat4', value: new THREE.Matrix4()},
-    bayerMatrixTexture: {type: 't', value: null}
   },
 
   fragmentShader: [
