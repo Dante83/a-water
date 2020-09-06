@@ -4,6 +4,7 @@
 AWater.AOcean.Materials.FFTWaves.waveNormalMapMaterialData = {
   uniforms: {
     waveHeightTexture: {type: 't', value: null},
+    halfWidthOfPatchOverWaveScaleFactor: {type: 'f', value: 1.0}
   },
 
   fragmentShader: [

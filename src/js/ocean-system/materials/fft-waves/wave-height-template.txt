@@ -5,6 +5,7 @@ AWater.AOcean.Materials.FFTWaves.waveHeightShaderMaterialData = {
   uniforms: {
     combinedWaveHeights: {type: 't', value: null},
     N: {type: 'f', value: 0.0},
+    waveHeightMultiplier: {type: 'f', value: 1.0}
   },
 
   fragmentShader: [

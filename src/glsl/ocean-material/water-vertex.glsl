@@ -16,7 +16,6 @@ void main() {
   vec3 displacement = texture2D(displacementMap, uv).xyz;
   displacement.x *= -1.0;
   displacement.z *= -1.0;
-  displacement *= 16.0;
   offsetPosition.x += displacement.x;
   offsetPosition.z += displacement.y;
   offsetPosition.y += displacement.z;

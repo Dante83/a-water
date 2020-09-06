@@ -32,10 +32,9 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       '//Get the reflected and refracted information of the scene',
       'vec3 fNormal = normalize(texture2D(normalMap, vUv).xyz);',
       'vec3 normalizedViewVector = normalize(vViewVector);',
-      'vec3 reflectedCoordinates = reflect(-normalizedViewVector, fNormal);',
+      'vec3 reflectedCoordinates = reflect(normalizedViewVector, fNormal);',
       'reflectedCoordinates.y = clamp(reflectedCoordinates.y, 0.0, 1.0);',
-      'vec3 refractedCoordinates = refract(-normalizedViewVector, fNormal, 1.0 / 1.33);',
-      'refractedCoordinates.y = clamp(refractedCoordinates.y, -1.0, 0.0);',
+      'vec3 refractedCoordinates = refract(normalizedViewVector, fNormal, 1.0 / 1.33);',
       'vec3 reflectedLight = textureCube(reflectionRefractionCubemap, reflectedCoordinates).rgb; //Reflection',
       'vec3 refractedLight = textureCube(reflectionRefractionCubemap, refractedCoordinates).rgb; //Refraction',
 
@@ -43,8 +42,8 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       '//https://en.wikipedia.org/wiki/Schlick%27s_approximation',
       'float oneMinusCosTheta = 1.0 - dot(fNormal, -normalizedViewVector);',
       'float reflectedLightPercent = min(r0 + (1.0 -  r0) * pow(oneMinusCosTheta, 5.0), 1.0);',
-      'reflectedLightPercent = clamp(reflectedLightPercent, 0.4, 0.8);',
       'float refractedLightPercent = 1.0 - reflectedLightPercent;',
+      'reflectedLightPercent *= 0.92;',
 
       '//Get the depth data for linear fog',
       'vec3 refractedRayCollisionPoint = textureCube(depthCubemap, refractedCoordinates).xyz;',
@@ -58,7 +57,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       'vec3 totalLight = reflectedLightPercent * reflectedLight + vec3(redAttenuatedLight, greenAttenuatedLight, blueAttenuatedLight);',
 
       '//Check if we are above or below the water to see what kind of fog is applied',
-      'gl_FragColor = vec4(fNormal, 1.0);',
+      'gl_FragColor = vec4(totalLight, 1.0);',
     '}',
   ].join('\n'),
 
@@ -81,7 +80,6 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       'vec3 displacement = texture2D(displacementMap, uv).xyz;',
       'displacement.x *= -1.0;',
       'displacement.z *= -1.0;',
-      'displacement *= 16.0;',
       'offsetPosition.x += displacement.x;',
       'offsetPosition.z += displacement.y;',
       'offsetPosition.y += displacement.z;',
