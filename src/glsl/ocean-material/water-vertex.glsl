@@ -7,13 +7,14 @@ varying vec3 vViewVector;
 varying vec4 colorMap;
 varying vec2 vUv;
 
+uniform float sizeOfOceanPatch;
 uniform sampler2D displacementMap;
 uniform mat4 matrixWorld;
 
 void main() {
   //Set up our displacement map
   vec3 offsetPosition = position;
-  vec3 displacement = texture2D(displacementMap, uv).xyz;
+  vec3 displacement = texture2D(displacementMap, uv  + (vec2(cameraPosition.x, -cameraPosition.z) / sizeOfOceanPatch)).xyz;
   displacement.x *= -1.0;
   displacement.z *= -1.0;
   offsetPosition.x += displacement.x;

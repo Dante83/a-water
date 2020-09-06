@@ -6,6 +6,7 @@ varying vec2 vUv;
 
 //uniform vec3 cameraDirection;
 uniform int isBelowWater;
+uniform float sizeOfOceanPatch;
 uniform sampler2D normalMap;
 uniform samplerCube depthCubemap;
 uniform samplerCube reflectionRefractionCubemap;
@@ -16,7 +17,7 @@ const float r0 = 0.0200593121995247656062922;
 
 void main(){
   //Get the reflected and refracted information of the scene
-  vec3 fNormal = normalize(texture2D(normalMap, vUv).xyz);
+  vec3 fNormal = normalize(texture2D(normalMap, vUv + (vec2(cameraPosition.x, -cameraPosition.z) / sizeOfOceanPatch)).xyz);
   vec3 normalizedViewVector = normalize(vViewVector);
   vec3 reflectedCoordinates = reflect(normalizedViewVector, fNormal);
   reflectedCoordinates.y = clamp(reflectedCoordinates.y, 0.0, 1.0);
@@ -37,9 +38,9 @@ void main(){
 
   //Total light
   vec3 reducedRefractedLight = refractedLight * refractedLightPercent;
-  float redAttenuatedLight = reducedRefractedLight.r * clamp((200.0 - distanceFromSurface) / 200.0, 0.0, 1.0);
-  float greenAttenuatedLight = reducedRefractedLight.g * clamp((400.0 - distanceFromSurface) / 400.0, 0.0, 1.0);
-  float blueAttenuatedLight = reducedRefractedLight.b * clamp((500.0 - distanceFromSurface) / 500.0, 0.0, 1.0);
+  float redAttenuatedLight = reducedRefractedLight.r * clamp((100.0 - distanceFromSurface) / 100.0, 0.0, 1.0);
+  float greenAttenuatedLight = reducedRefractedLight.g * clamp((200.0 - distanceFromSurface) / 200.0, 0.0, 1.0);
+  float blueAttenuatedLight = reducedRefractedLight.b * clamp((250.0 - distanceFromSurface) / 250.0, 0.0, 1.0);
   vec3 totalLight = reflectedLightPercent * reflectedLight + vec3(redAttenuatedLight, greenAttenuatedLight, blueAttenuatedLight);
 
   //Check if we are above or below the water to see what kind of fog is applied

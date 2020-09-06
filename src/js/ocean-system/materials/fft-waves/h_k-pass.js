@@ -67,8 +67,6 @@ AWater.AOcean.Materials.FFTWaves.hkShaderMaterialData = {
     '}',
     ];
 
-    console.log(isXAxis);
-
     let updatedLines = [];
     for(let i = 0, numLines = originalGLSL.length; i < numLines; ++i){
       let updatedGLSL = originalGLSL[i].replace(/\$isXAxis/g, isXAxis ? '1' : '0');

@@ -5,10 +5,7 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
   this.renderer = renderer;
   this.camera = camera;
   this.oceanPatches = [];
-  this.oceanPatchesById = {};
-  this.oceanPatchOffsets = [];
   this.oceanPatchIsInFrustrum = [];
-  this.hasOceanPatchOffsetByOffsetId = [];
   this.drawDistance = data.draw_distance;
   this.startingPoint = [0.0, 0.0];
   this.patchSize = data.patch_size;
@@ -22,40 +19,6 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
   );
   this.cameraFrustum = new THREE.Frustum();
 
-  //Set up our cube camera for reflections and refractions
-  //this.colorRenderTarget = new THREE.WebGLRenderTargetCube(512, 512);
-  this.reflectionRefractionCubeCamera = new THREE.CubeCamera(0.1, 100000.0, 256, {
-    format: THREE.RGBFormat,
-    generateMipmaps: true,
-    minFilter: THREE.LinearMipmapLinearFilter,
-    magFilter: THREE.LinearFilter
-  });
-  this.scene.add(this.reflectionRefractionCubeCamera);
-
-  //Set up another cube camera for depth
-  //this.depthRenderTarget = new THREE.WebGLRenderTargetCube(128, 128);
-  this.depthCubeCamera = new THREE.CubeCamera(0.1, 100000.0, 128, {
-    type: THREE.FloatType,
-    format: THREE.RedFormat,
-    generateMipmaps: true,
-    minFilter: THREE.LinearMipmapLinearFilter,
-    magFilter: THREE.LinearFilter
-  });
-  this.scene.add(this.depthCubeCamera);
-
-  //Get all ocean patch offsets
-  let maxHalfPatchesPerSide = Math.ceil((this.drawDistance + this.patchSize) / this.patchSize);
-  for(let x = -maxHalfPatchesPerSide; x < maxHalfPatchesPerSide; ++x){
-    for(let y = -maxHalfPatchesPerSide; y < maxHalfPatchesPerSide; ++y){
-      let xCoord = x * this.patchSize;
-      let yCoord = y * this.patchSize;
-      if(Math.sqrt(x * x + y * y) <= this.drawDistance){
-        this.oceanPatchOffsets.push({x: xCoord, y: yCoord, x_i: x, y_i: y});
-      }
-    }
-  }
-  this.numberOfPatches = this.oceanPatchOffsets.length;
-
   //Determine what our fade out start and end heights are
   //This is a bit of a hack but we're going to leave it static for now
   this.numberOfOceanHeightBands = 5;
@@ -66,6 +29,26 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
     this.beginsFadingOutAtHeight.push(distanceBetweenBands * i);
     this.vanishingHeight.push(0.0);
   }
+
+  //Set up our cube camera for reflections and refractions
+  //this.colorRenderTarget = new THREE.WebGLRenderTargetCube(512, 512);
+  this.reflectionRefractionCubeCamera = new THREE.CubeCamera(0.1, 100000.0, 512, {
+    format: THREE.RGBFormat,
+    generateMipmaps: true,
+    minFilter: THREE.LinearMipmapLinearFilter,
+    magFilter: THREE.LinearFilter
+  });
+  this.scene.add(this.reflectionRefractionCubeCamera);
+
+  //Set up another cube camera for depth
+  //this.depthRenderTarget = new THREE.WebGLRenderTargetCube(256, 256);
+  this.depthCubeCamera = new THREE.CubeCamera(0.1, 100000.0, 256, {
+    type: THREE.FloatType,
+    format: THREE.RGBType,
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter
+  });
+  this.scene.add(this.depthCubeCamera);
 
   //Initialize all shader LUTs for future ocean viewing
   //Initialize our ocean variables and all associated shaders.
@@ -82,6 +65,7 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
     lights: false
   });
   this.oceanMaterial.uniforms = AWater.AOcean.Materials.Ocean.waterMaterial.uniforms;
+  this.oceanMaterial.uniforms.sizeOfOceanPatch.value = this.patchSize;
 
   let self = this;
   this.positionPassMaterial = new THREE.ShaderMaterial({
@@ -92,108 +76,29 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
     transparent: false,
     lights: false
   });
-  this.positionPassMaterial.uniforms = THREE.UniformsUtils.merge([
-    self.positionPassMaterial.uniforms,
-    AWater.AOcean.Materials.Ocean.waterMaterial.uniforms
-  ]);
-  this.positionPassMaterial.uniforms.worldMatrix = this.camera.matrixWorld;
+  this.positionPassMaterial.uniforms = AWater.AOcean.Materials.Ocean.positionPassMaterial.uniforms;
+  this.positionPassMaterial.uniforms.worldMatrix.value = this.camera.matrixWorld;
 
-  this.checkForNewGridElements = function(){
-    //Grab the floor for approximate nearby coordinate center
-    let globalCameraPosition = self.camera.position.clone();
-    let nearbyGridCenterX_i = Math.floor((globalCameraPosition.x - self.startingPoint[0]) / self.patchSize);
-    let nearbyGridCenterY_i = Math.floor((globalCameraPosition.z - self.startingPoint[1]) / self.patchSize);
-    let nearbyGridCenterX = nearbyGridCenterX_i * self.patchSize + self.startingPoint[0];
-    let nearbyGridCenterY = nearbyGridCenterY_i * self.patchSize + self.startingPoint[1];
-
-    //Get all of our old patches
-    let oldPatchesByAge = {};
-    let numberOfOldPatches = 0;
-    let mayHaveOldPatches = false;
-    for(let i = 0, numPatches = self.oceanPatches.length; i < numPatches; ++i){
-      let patch = self.oceanPatches[i];
-      let diffX = nearbyGridCenterX - patch.x;
-      let diffY = nearbyGridCenterY - patch.y;
-      if(Math.sqrt(diffX * diffX + diffY * diffY) > this.drawDistance){
-        patch.ageOutOfRange += 1;
-        let patchAge = Math.min(patch.ageOutOfRange, 30);
-        if(!(patchAge in oldPatchesByAge)){
-          oldPatchesByAge[patchAge] = [];
-          mayHaveOldPatches = true;
-        }
-        oldPatchesByAge[patchAge].push(patch);
-        numberOfOldPatches += 1;
-      }
-      else{
-        patch.ageOutOfRange = 0;
+  //Get all ocean patch offsets
+  let maxHalfPatchesPerSide = Math.ceil((this.drawDistance + this.patchSize) / this.patchSize);
+  let drawDistanceSquared = this.drawDistance * this.drawDistance;
+  for(let x = -maxHalfPatchesPerSide; x < maxHalfPatchesPerSide; ++x){
+    for(let y = -maxHalfPatchesPerSide; y < maxHalfPatchesPerSide; ++y){
+      let xCoord = x * this.patchSize;
+      let yCoord = y * this.patchSize;
+      if(x * x + y * y <= drawDistanceSquared){
+        this.oceanPatches.push(new AWater.AOcean.OceanPatch(this, new THREE.Vector3(xCoord, this.heightOffset, yCoord)));
       }
     }
-
-    //Creat our new patches
-    let newOceanPatchesById = {};
-    let newOceanPatches = [];
-    let numberOfOldPatchesUsed;
-    let patchAgeIterator = 30;
-    let patchCounter = patchAgeIterator in oldPatchesByAge ? oldPatchesByAge[patchAgeIterator].length - 1 : 0;
-    for(let i = 0; i < self.numberOfPatches; ++i){
-      //Get the test coordinates for the new patch
-      let newGridCoordX = nearbyGridCenterX + this.oceanPatchOffsets[i].x;
-      let newGridCoordY = nearbyGridCenterY + this.oceanPatchOffsets[i].y;
-
-      //Check for this id
-      let id = (nearbyGridCenterX_i + this.oceanPatchOffsets[i].x_i) * 65536 + nearbyGridCenterY_i + this.oceanPatchOffsets[i].y_i;
-      if(id in this.oceanPatchesById){
-        //The patch already exists, just add it into our ocean patches
-        newOceanPatches.push(this.oceanPatchesById[id]);
-        newOceanPatchesById[id] = this.oceanPatchesById[id];
-      }
-      else if(mayHaveOldPatches && numberOfOldPatchesUsed !== numberOfOldPatches){
-        //Grab an old patch
-        numberOfOldPatchesUsed += 1;
-        while(patchCounter <= 0 && patchAgeIterator > 0){
-          patchAgeIterator -= 1;
-          patchCounter = patchAgeIterator in oldPatchesByAge ? oldPatchesByAge[patchAgeIterator].length - 1 : 0;
-        }
-
-        if(patchAgeIterator > 0){
-          let patch = oldPatchesByAge[patchAgeIterator][patchCounter];
-          patch.ageOutOfRange = 0;
-          patch.position.x = newGridCoordX;
-          patch.position.y = newGridCoordY;
-          patch.update();
-          newOceanPatches.push(patch);
-          newOceanPatchesById[id] = patch;
-          patchCounter -= 1;
-        }
-
-        if(numberOfOldPatchesUsed === numberOfOldPatches){
-          mayHaveOldPatches = false;
-        }
-      }
-      else if(newOceanPatches.length < self.numberOfPatches){
-        //Create a new patch as we are out of old patches to use
-        let patch = new AWater.AOcean.OceanPatch(self.scene, self);
-        patch.position.x = newGridCoordX;
-        patch.position.y = newGridCoordY;
-        patch.update();
-        newOceanPatches.push(patch);
-        newOceanPatchesById[id] = patch;
-      }
-    }
-
-    //Replace our patch collections to remove our old patches
-    self.oceanPatches = newOceanPatches;
-    self.oceanPatchesById = newOceanPatchesById;
-
-    //NOTE: This is a good spot to update our visibility and level of detail
-
-    //NOTE: Iterate all potential animation combinations for use in our patches
-  };
+  }
+  this.numberOfPatches = this.oceanPatches.length;
 
   this.tick = function(time){
     //Update the state of our ocean grid
     self.time = time;
-    self.checkForNewGridElements();
+    for(let i = 0; i < self.oceanPatches.length; ++i){
+      self.oceanPatches[i].plane.position.copy(self.oceanPatches[i].initialPosition).add(self.camera.position);
+    }
 
     //Frustum Cull our grid
     self.cameraFrustum.setFromMatrix(self.camera.children[0].projectionMatrix.clone().multiply(self.camera.children[0].matrixWorldInverse));
@@ -206,7 +111,7 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
     //Snap a cubemap picture of our environment to create reflections and refractions
     self.depthCubeCamera.position.copy(self.camera.position);
     self.reflectionRefractionCubeCamera.position.copy(self.camera.position);
-    //self.scene.overrideMaterial = self.positionPassMaterial;
+    self.scene.overrideMaterial = self.positionPassMaterial;
     self.depthCubeCamera.update(self.renderer, self.scene);
     self.scene.overrideMaterial = null;
     self.reflectionRefractionCubeCamera.update(self.renderer, self.scene);
@@ -229,6 +134,9 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
       //Only update our GPU shader for this mesh if it it's visible
       if(self.cameraFrustum.intersectsObject(self.oceanPatches[i].plane)){
         self.oceanPatches[i].tick(time);
+      }
+      else{
+        self.oceanPatches[i].visible = false;
       }
     }
   };
