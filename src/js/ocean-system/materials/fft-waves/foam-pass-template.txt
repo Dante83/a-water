@@ -1,16 +1,12 @@
 //This helps
 //--------------------------v
 //https://github.com/mrdoob/three.js/wiki/Uniforms-types
-AWater.AOcean.Materials.Ocean.foamPass = {
+AWater.AOcean.Materials.FFTWaves.foamPass = {
   uniforms: {
-    test: {type: 'f', value: 0.00},
+    displacementMap: {type: 't', value: null},
   },
 
   fragmentShader: [
     {fragment_glsl}
-  ].join('\n'),
-
-  vertexShader: [
-    {vertex_glsl}
-  ].join('\n'),
+  ].join('\n')
 };

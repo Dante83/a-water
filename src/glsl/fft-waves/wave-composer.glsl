@@ -1,10 +1,8 @@
-precision highp float;
-
 varying vec3 vWorldPosition;
 
-uniform sampler2D xWavetextures[$numwaveTextures];
-uniform sampler2D yWavetextures[$numwaveTextures];
-uniform sampler2D zWavetextures[$numwaveTextures];
+uniform sampler2D xWavetextures[$total_offsets];
+uniform sampler2D yWavetextures[$total_offsets];
+uniform sampler2D zWavetextures[$total_offsets];
 uniform float N;
 
 float fModulo1(float a){
@@ -19,16 +17,19 @@ void main(){
   vec3 combinedWaveHeight = vec3(0.0);
 
   //Interpolations
-  float totalOffsets = 0.0;
-  #pragma unroll
-  for(int i = 0; i < $numwaveTextures; i++){
-    float waveHeight_x = texture2D(xWavetextures[i], wrappedUV).x;
-    float waveHeight_y = texture2D(yWavetextures[i], wrappedUV).x;
-    float waveHeight_z = texture2D(zWavetextures[i], wrappedUV).x;
-    combinedWaveHeight += vec3(waveHeight_x, waveHeight_y, waveHeight_z);
-    totalOffsets += 1.0;
-  }
+  float waveHeight_x;
+  float waveHeight_y;
+  float waveHeight_z;
 
-  //gl_FragColor = vec4(vec3(combinedWaveHeight / (N * N)), 0.0);
-  gl_FragColor = vec4(combinedWaveHeight / (totalOffsets * N * N), 1.0);
+  $unrolled_wave_composer
+
+  // for(int i = 0; i < numberOfWaveTextures; i++){
+  //   float waveHeight_x = texture2D(xWavetextures[i], wrappedUV).x;
+  //   float waveHeight_y = texture2D(yWavetextures[i], wrappedUV).x;
+  //   float waveHeight_z = texture2D(zWavetextures[i], wrappedUV).x;
+  //   combinedWaveHeight += vec3(waveHeight_x, waveHeight_y, waveHeight_z);
+  //   totalOffsets += 1.0;
+  // }
+
+  gl_FragColor = vec4(combinedWaveHeight / ($total_offsets_float * N * N), 1.0);
 }

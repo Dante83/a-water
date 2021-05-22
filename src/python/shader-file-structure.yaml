@@ -16,6 +16,10 @@ groups:
         template: 'fft-inverter-template.txt'
         material: 'fft-inverter.js'
       -
+        fragment: 'foam-pass.glsl'
+        template: 'foam-pass-template.txt'
+        material: 'foam-pass.js'
+      -
         fragment: 'h_0-pass.glsl'
         template: 'h_0-pass-template.txt'
         material: 'h_0-pass.js'
@@ -43,14 +47,6 @@ groups:
     base_glsl_dir: '../glsl/ocean-material'
     base_js_dir: '../js/ocean-system/materials/ocean-material'
     shaders:
-      -
-        fragment: 'foam.glsl'
-        template: 'foam-template.txt'
-        material: 'foam.js'
-      -
-        fragment: 'jacobian.glsl'
-        template: 'jacobian-template.txt'
-        material: 'jacobian.js'
       -
         fragment: 'position-pass.glsl'
         vertex:   'position-pass-vertex.glsl'

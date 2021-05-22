@@ -4,7 +4,7 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
   this.numLevels = parentOceanGrid.numberOfOceanHeightBands;
 
   //Enable the OES_texture_float_linear extension
-  if(!renderer.extensions.get("OES_texture_float_linear")){
+  if(!renderer.capabilities.isWebGL2 && !renderer.extensions.get("OES_texture_float_linear")){
     console.error("No linear interpolation of OES textures allowed.");
     return false;
   }

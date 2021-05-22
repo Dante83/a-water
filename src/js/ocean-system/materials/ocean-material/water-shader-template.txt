@@ -5,11 +5,18 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
   uniforms: {
     displacementMap: {type: 't', value: null},
     normalMap: {type: 't', value: null},
+    foamMap: {type: 't', value: null},
+    smallNormalMap: {type: 't', value: null},
+    largeNormalMap: {type: 't', value: null},
     isBelowWater: {type: 'i', value: 0},
     depthCubemap: {value: null},
     reflectionRefractionCubemap: {value: null},
     matrixWorld: {type: 'mat4', value: new THREE.Matrix4()},
-    sizeOfOceanPatch: {type: 'f', value: 1.0}
+    sizeOfOceanPatch: {type: 'f', value: 1.0},
+    fogNear: {type: 'f', value: null},
+    fogFar: {type: 'f', value: null},
+    fogDensity: {type: 'f', value: null},
+    fogColor: {type: 'v3', value: new THREE.Color()},
   },
 
   fragmentShader: [

@@ -15,8 +15,11 @@ AWater.AOcean.OceanPatch = function(parentOceanGrid, initialPosition){
   this.tick = function(time){
     self.plane.material.uniforms.displacementMap.value = self.parentOceanGrid.oceanHeightComposer.displacementMap;
     self.plane.material.uniforms.normalMap.value = self.parentOceanGrid.oceanHeightComposer.normalMap;
+    self.plane.material.uniforms.foamMap.value = self.parentOceanGrid.oceanHeightComposer.foamMap;
     self.plane.material.uniforms.depthCubemap.value = self.parentOceanGrid.depthCubeCamera.renderTarget.texture;
     self.plane.material.uniforms.reflectionRefractionCubemap.value = self.parentOceanGrid.reflectionRefractionCubeCamera.renderTarget.texture;
+    self.plane.material.uniforms.smallNormalMap.value = self.parentOceanGrid.smallNormalMap;
+    self.plane.material.uniforms.largeNormalMap.value = self.parentOceanGrid.largeNormalMap;
     self.plane.material.uniforms.matrixWorld.value.copy(self.plane.matrixWorld);
   };
 }

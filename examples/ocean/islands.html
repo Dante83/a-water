@@ -10,12 +10,14 @@
     <meta name="viewport" content="width=device-width,initial-scale=1,shrink-to-fit=no,user-scalable=no,maximum-scale=1">
 
     <!--External JS Files from THREE.JS -->
-    <script src="https://aframe.io/releases/1.0.4/aframe.min.js"></script>
-    <script src="../../src/js/three_js_extensions/GPUComputeRenderer.js"></script>
-    <script src="../../src/js/three_js_extensions/BufferGeometryUtils.js"></script>
+    <script src="https://aframe.io/releases/1.2.0/aframe.min.js"></script>
 
     <!--Sky Forge -->
-    <script src="./other-libraries/askyforge.v0.3.0.min.js"></script>
+    <script src="./other-libraries/a-starry-sky.master.min.js"></script>
+    <script src="./other-libraries/wasm/interpolation-engine.js"></script>
+
+    <script src="../../src/js/three_js_extensions/GPUComputeRenderer.js"></script>
+    <script src="../../src/js/three_js_extensions/BufferGeometryUtils.js"></script>
 
     <!--Code files for ocean -->
     <script src="../../src/js/AWater.js"></script>
@@ -29,6 +31,7 @@
     <script src="../../src/js/ocean-system/materials/fft-waves/wave-composer.js"></script>
     <script src="../../src/js/ocean-system/materials/fft-waves/wave-height.js"></script>
     <script src="../../src/js/ocean-system/materials/fft-waves/wave-normal-map.js"></script>
+    <script src="../../src/js/ocean-system/materials/fft-waves/foam-pass.js"></script>
 
     <script src="../../src/js/ocean-system/materials/ocean-material/position-pass.js"></script>
     <script src="../../src/js/ocean-system/materials/ocean-material/water-shader.js"></script>
@@ -51,7 +54,21 @@
       <a-entity camera look-controls wasd-controls="acceleration: 1000">
       </a-entity>
 
-      <!-- <a-camera></a-camera> -->
+      <a-starry-sky web-worker-src="./other-libraries/wasm/starry-sky-web-worker.js">
+        <sky-assets-dir>
+            <sky-time>
+              <sky-speed>200</sky-speed>
+            </sky-time>
+            <sky-assets-dir dir="image-dir/a-starry-sky-assets">
+              <!-- Note that 'moon_images', 'star_images', 'blue_noise_maps' and 'solar_eclipse_picture'
+              all folder names. The files themselves are expected to be found within these folders.-->
+              <sky-assets-dir dir="moon" moon-path></sky-assets-dir>
+              <sky-assets-dir dir="star_data" star-path></sky-assets-dir>
+              <sky-assets-dir dir="blue_noise" blue-noise-path></sky-assets-dir>
+              <sky-assets-dir dir="solar_eclipse" solar-eclipse-path></sky-assets-dir>
+            </sky-assets-dir>
+          </sky-assets-dir>
+      </a-starry-sky>
 
       <!-- The ocean we want to create -->
       <a-ocean></a-ocean>
@@ -60,7 +77,7 @@
       <a-gltf-model src="#island" class="static-ocean-collider" position="0 -102 0" material="shader: flat; color: red"></a-gltf-model>
 
       <!-- The sky so we can render the sky in our background -->
-      <a-sky-forge sky-time="imgDir:image-dir/;utcOffset: 6;" geo-coordinates="lat: 35.68; long:139.69;"></a-sky-forge>
+      <!-- <a-sky-forge sky-time="imgDir:image-dir/;utcOffset: -11;" geo-coordinates="lat: -35.68; long:50.69;"></a-sky-forge> -->
     </a-scene>
   </body>
 </html>

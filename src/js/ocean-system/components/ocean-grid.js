@@ -13,11 +13,47 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
   this.data = data;
   this.time = 0.0;
   this.staticMeshes = staticMeshes;
+  this.smallNormalMap;
+  this.largeNormalMap;
   this.raycaster = new THREE.Raycaster(
     new THREE.Vector3(0.0,100.0,0.0),
     this.downVector
   );
   this.cameraFrustum = new THREE.Frustum();
+
+  //Load up the textures for our ocean smaller waves
+  const textureLoader = new THREE.TextureLoader();
+  let smallNormalMapTexturePromise = new Promise(function(resolve, reject){
+    textureLoader.load(data.small_normal_map, function(texture){resolve(texture);});
+  });
+  smallNormalMapTexturePromise.then(function(texture){
+    //Fill in the details of our texture
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.encoding = THREE.LinearEncoding;
+    texture.format = THREE.RGBFormat;
+    self.smallNormalMap = texture;
+  }, function(err){
+    console.error(err);
+  });
+
+  let largeNormalMapTexturePromise = new Promise(function(resolve, reject){
+    textureLoader.load(data.large_normal_map, function(texture){resolve(texture);});
+  });
+  largeNormalMapTexturePromise.then(function(texture){
+    //Fill in the details of our texture
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.encoding = THREE.LinearEncoding;
+    texture.format = THREE.RGBFormat;
+    self.largeNormalMap = texture;
+  }, function(err){
+    console.error(err);
+  });
 
   //Determine what our fade out start and end heights are
   //This is a bit of a hack but we're going to leave it static for now
@@ -32,22 +68,23 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
 
   //Set up our cube camera for reflections and refractions
   //this.colorRenderTarget = new THREE.WebGLRenderTargetCube(512, 512);
-  this.reflectionRefractionCubeCamera = new THREE.CubeCamera(0.1, 100000.0, 512, {
-    format: THREE.RGBFormat,
+  this.reflectionRefractionCubeRenderTarget = new THREE.WebGLCubeRenderTarget(512, {
+    format: THREE.RGBAFormat,
     generateMipmaps: true,
     minFilter: THREE.LinearMipmapLinearFilter,
     magFilter: THREE.LinearFilter
   });
+  this.reflectionRefractionCubeCamera = new THREE.CubeCamera(0.1, 100000.0, this.reflectionRefractionCubeRenderTarget);
   this.scene.add(this.reflectionRefractionCubeCamera);
 
   //Set up another cube camera for depth
-  //this.depthRenderTarget = new THREE.WebGLRenderTargetCube(256, 256);
-  this.depthCubeCamera = new THREE.CubeCamera(0.1, 100000.0, 256, {
+  this.depthCubeMapRenderTarget = new THREE.WebGLCubeRenderTarget(256, {
     type: THREE.FloatType,
-    format: THREE.RGBType,
+    format: THREE.RGBAType,
     minFilter: THREE.LinearFilter,
     magFilter: THREE.LinearFilter
   });
+  this.depthCubeCamera = new THREE.CubeCamera(0.1, 100000.0, this.depthCubeMapRenderTarget);
   this.scene.add(this.depthCubeCamera);
 
   //Initialize all shader LUTs for future ocean viewing
@@ -62,8 +99,15 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
     side: THREE.DoubleSide,
     flatShading: true,
     transparent: true,
-    lights: false
+    lights: false,
+    fog: true
   });
+  this.oceanMaterial.onBeforeCompile = shader => {
+    shader.vertexShader = shader.vertexShader.replace('#include <fog_pars_vertex>', THREE.fogParsVert);
+    shader.vertexShader = shader.vertexShader.replace(`#include <fog_vertex>`, THREE.fogVert);
+    shader.fragmentShader = shader.fragmentShader.replace(`#include <fog_pars_fragment>`, THREE.fogParsFrag);
+    shader.fragmentShader = shader.fragmentShader.replace(`#include <fog_fragment>`, THREE.fogFrag);
+  };
   this.oceanMaterial.uniforms = AWater.AOcean.Materials.Ocean.waterMaterial.uniforms;
   this.oceanMaterial.uniforms.sizeOfOceanPatch.value = this.patchSize;
 
@@ -101,7 +145,7 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
     }
 
     //Frustum Cull our grid
-    self.cameraFrustum.setFromMatrix(self.camera.children[0].projectionMatrix.clone().multiply(self.camera.children[0].matrixWorldInverse));
+    self.cameraFrustum.setFromProjectionMatrix(self.camera.children[0].projectionMatrix.clone().multiply(self.camera.children[0].matrixWorldInverse));
 
     //Hide all of our ocean grid elements
     for(let i = 0; i < self.oceanPatches.length; ++i){
