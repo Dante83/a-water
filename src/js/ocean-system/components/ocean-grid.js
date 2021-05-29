@@ -15,6 +15,13 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
   this.staticMeshes = staticMeshes;
   this.smallNormalMap;
   this.largeNormalMap;
+  this.windVelocity = data.wind_velocity;
+  this.randomWindVelocities = [
+    this.windVelocity.x - Math.random() * 0.2,
+    -this.windVelocity.y - Math.random() * 0.2,
+    this.windVelocity.x - Math.random() * 0.1,
+    -this.windVelocity.y - Math.random() * 0.1
+  ];
   this.raycaster = new THREE.Raycaster(
     new THREE.Vector3(0.0,100.0,0.0),
     this.downVector
@@ -68,23 +75,35 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
 
   //Set up our cube camera for reflections and refractions
   //this.colorRenderTarget = new THREE.WebGLRenderTargetCube(512, 512);
-  this.reflectionRefractionCubeRenderTarget = new THREE.WebGLCubeRenderTarget(512, {
-    format: THREE.RGBAFormat,
+  this.reflectionCubeRenderTarget = new THREE.WebGLCubeRenderTarget(512, {
+    format: THREE.RGBFormat,
     generateMipmaps: true,
     minFilter: THREE.LinearMipmapLinearFilter,
-    magFilter: THREE.LinearFilter
+    magFilter: THREE.LinearFilter,
+    mapping: THREE.EquirectangularReflectionMapping
   });
-  this.reflectionRefractionCubeCamera = new THREE.CubeCamera(0.1, 100000.0, this.reflectionRefractionCubeRenderTarget);
-  this.scene.add(this.reflectionRefractionCubeCamera);
+  this.reflectionCubeCamera = new THREE.CubeCamera(1.0, 10000.0, this.reflectionCubeRenderTarget);
+  this.scene.add(this.reflectionCubeCamera);
+
+  this.refractionCubeRenderTarget = new THREE.WebGLCubeRenderTarget(512, {
+    format: THREE.RGBFormat,
+    generateMipmaps: true,
+    minFilter: THREE.LinearMipmapLinearFilter,
+    magFilter: THREE.LinearFilter,
+    mapping: THREE.EquirectangularRefractionMapping
+  });
+  this.refractionCubeCamera = new THREE.CubeCamera(1.0, 10000.0, this.refractionCubeRenderTarget);
+  this.scene.add(this.refractionCubeCamera);
 
   //Set up another cube camera for depth
-  this.depthCubeMapRenderTarget = new THREE.WebGLCubeRenderTarget(256, {
+  this.depthCubeMapRenderTarget = new THREE.WebGLCubeRenderTarget(512, {
     type: THREE.FloatType,
-    format: THREE.RGBAType,
+    format: THREE.DepthFormat,
     minFilter: THREE.LinearFilter,
-    magFilter: THREE.LinearFilter
+    magFilter: THREE.LinearFilter,
+    mapping: THREE.EquirectangularRefractionMapping
   });
-  this.depthCubeCamera = new THREE.CubeCamera(0.1, 100000.0, this.depthCubeMapRenderTarget);
+  this.depthCubeCamera = new THREE.CubeCamera(0.1, 512.0, this.depthCubeMapRenderTarget);
   this.scene.add(this.depthCubeCamera);
 
   //Initialize all shader LUTs for future ocean viewing
@@ -154,11 +173,13 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
 
     //Snap a cubemap picture of our environment to create reflections and refractions
     self.depthCubeCamera.position.copy(self.camera.position);
-    self.reflectionRefractionCubeCamera.position.copy(self.camera.position);
+    self.reflectionCubeCamera.position.copy(self.camera.position);
+    self.refractionCubeCamera.position.copy(self.camera.position);
     self.scene.overrideMaterial = self.positionPassMaterial;
     self.depthCubeCamera.update(self.renderer, self.scene);
     self.scene.overrideMaterial = null;
-    self.reflectionRefractionCubeCamera.update(self.renderer, self.scene);
+    self.reflectionCubeCamera.update(self.renderer, self.scene);
+    self.refractionCubeCamera.update(self.renderer, self.scene);
 
     //Show all of our ocean grid elements again
     for(let i = 0; i < self.oceanPatches.length; ++i){

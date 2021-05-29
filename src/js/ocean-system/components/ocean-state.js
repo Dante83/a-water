@@ -10,7 +10,7 @@ AFRAME.registerComponent('ocean_state', {
     'patch_data_size': {type: 'number', default: 128.0},
     'wave_scale_multiple': {type: 'number', default: 2.0},
     'number_of_octaves': {type: 'number', default: 128.0},
-    'wind_velocity': {type: 'vec2', default: {x: 7.0, y: 7.0}},
+    'wind_velocity': {type: 'vec2', default: {x: 10.0, y: 7.7}},
     'default_water_depth': {type: 'number', default: 200.0},
     'surface_mesh_class': {type: 'string', default: 'static-ocean-collider'},
     'height_offset': {type: 'number', default: -10.0},
