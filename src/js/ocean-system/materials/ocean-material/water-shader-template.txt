@@ -11,7 +11,6 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     smallNormalMapVelocity: {type: 'vec2', value: new THREE.Vector2()},
     largeNormalMapVelocity: {type: 'vec2', value: new THREE.Vector2()},
     isBelowWater: {type: 'i', value: 0},
-    depthCubemap: {value: null},
     reflectionCubeMap: {value: null},
     refractionCubeMap: {value: null},
     matrixWorld: {type: 'mat4', value: new THREE.Matrix4()},

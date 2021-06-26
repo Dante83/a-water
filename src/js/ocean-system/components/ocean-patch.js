@@ -28,7 +28,6 @@ AWater.AOcean.OceanPatch = function(parentOceanGrid, initialPosition){
     self.plane.material.uniforms.displacementMap.value = self.parentOceanGrid.oceanHeightComposer.displacementMap;
     self.plane.material.uniforms.normalMap.value = self.parentOceanGrid.oceanHeightComposer.normalMap;
     self.plane.material.uniforms.foamMap.value = self.parentOceanGrid.oceanHeightComposer.foamMap;
-    self.plane.material.uniforms.depthCubemap.value = self.parentOceanGrid.depthCubeCamera.renderTarget.texture;
     self.plane.material.uniforms.refractionCubeMap.value = self.parentOceanGrid.refractionCubeCamera.renderTarget.texture;
     self.plane.material.uniforms.reflectionCubeMap.value = self.parentOceanGrid.reflectionCubeCamera.renderTarget.texture;
     self.plane.material.uniforms.smallNormalMap.value = self.parentOceanGrid.smallNormalMap;

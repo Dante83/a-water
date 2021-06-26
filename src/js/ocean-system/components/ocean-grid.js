@@ -96,15 +96,16 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
   this.scene.add(this.refractionCubeCamera);
 
   //Set up another cube camera for depth
-  this.depthCubeMapRenderTarget = new THREE.WebGLCubeRenderTarget(512, {
-    type: THREE.FloatType,
-    format: THREE.DepthFormat,
-    minFilter: THREE.LinearFilter,
-    magFilter: THREE.LinearFilter,
-    mapping: THREE.EquirectangularRefractionMapping
-  });
-  this.depthCubeCamera = new THREE.CubeCamera(0.1, 512.0, this.depthCubeMapRenderTarget);
-  this.scene.add(this.depthCubeCamera);
+  // this.depthCubeMapRenderTarget = new THREE.WebGLCubeRenderTarget(512, {
+  //   format: THREE.RGBFormat,
+  //   generateMipmaps: false,
+  //   depthBuffer: true,
+  //   minFilter: THREE.NearestFilter,
+  //   magFilter: THREE.NearestFilter,
+  //   mapping: THREE.EquirectangularRefractionMapping,
+  // });
+  // this.depthCubeCamera = new THREE.CubeCamera(0.1, 512.0, this.depthCubeMapRenderTarget);
+  // this.scene.add(this.depthCubeCamera);
 
   //Initialize all shader LUTs for future ocean viewing
   //Initialize our ocean variables and all associated shaders.
@@ -172,12 +173,13 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
     }
 
     //Snap a cubemap picture of our environment to create reflections and refractions
-    self.depthCubeCamera.position.copy(self.camera.position);
+    // self.depthCubeCamera.position.copy(self.camera.position);
     self.reflectionCubeCamera.position.copy(self.camera.position);
     self.refractionCubeCamera.position.copy(self.camera.position);
-    self.scene.overrideMaterial = self.positionPassMaterial;
-    self.depthCubeCamera.update(self.renderer, self.scene);
-    self.scene.overrideMaterial = null;
+    //self.scene.overrideMaterial = self.positionPassMaterial;
+
+    //self.depthCubeCamera.update(self.renderer, self.scene);
+    //self.scene.overrideMaterial = null;
     self.reflectionCubeCamera.update(self.renderer, self.scene);
     self.refractionCubeCamera.update(self.renderer, self.scene);
 
