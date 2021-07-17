@@ -5,22 +5,23 @@ AFRAME.registerComponent('ocean_state', {
   staticMeshes: null,
   isMeshLoaded: false,
   schema: {
-    'draw_distance': {type: 'number', default: 512.0},
-    'patch_size': {type: 'number', default: 128.0},
-    'patch_data_size': {type: 'number', default: 128.0},
-    'wave_scale_multiple': {type: 'number', default: 2.0},
+    'draw_distance': {type: 'number', default: 1280.0},
+    'patch_size': {type: 'number', default: 256.0},
+    'patch_data_size': {type: 'number', default: 256.0},
+    'wave_scale_multiple': {type: 'number', default: 1.0},
     'number_of_octaves': {type: 'number', default: 128.0},
-    'wind_velocity': {type: 'vec2', default: {x: 5.0, y: 4.4}},
+    'wind_velocity': {type: 'vec2', default: {x: 4.0, y: 3.5}},
     'default_water_depth': {type: 'number', default: 200.0},
     'surface_mesh_class': {type: 'string', default: 'static-ocean-collider'},
-    'height_offset': {type: 'number', default: -10.0},
+    'height_offset': {type: 'number', default: 40.0},
     'effect_layer': {type: 'number', default: 1, min: 1, max: 31},
     'underwater_fog_near': {type: 'number', default: 0.0, min: 0.0, max: 10000.0},
     'underwater_fog_far': {type: 'number', default: 0.0, min: 0.0, max: 10000.0},
     'underwater_fog_color': {type: 'vec3', default: new THREE.Vector3()},
     'foam_level': {type: 'number', default: 0.1},
     'large_normal_map': {type: 'string', default: './image-dir/a-water-assets/water-normal-1.png'},
-    'small_normal_map': {type: 'string', default: './image-dir/a-water-assets/water-normal-2.png'}
+    'small_normal_map': {type: 'string', default: './image-dir/a-water-assets/water-normal-2.png'},
+    'use_reflection_cubemap_for_environment_map': {type: 'boolean', default: true}
   },
   init: function(){
     this.loaded = false;

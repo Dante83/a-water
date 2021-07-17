@@ -82,8 +82,11 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
     magFilter: THREE.LinearFilter,
     mapping: THREE.EquirectangularReflectionMapping
   });
-  this.reflectionCubeCamera = new THREE.CubeCamera(1.0, 10000.0, this.reflectionCubeRenderTarget);
+  this.reflectionCubeCamera = new THREE.CubeCamera(0.25 * this.drawDistance, 10000.0, this.reflectionCubeRenderTarget);
   this.scene.add(this.reflectionCubeCamera);
+  if(data.use_reflection_cubemap_for_environment_map){
+    this.scene.environment = this.reflectionCubeRenderTarget.texture;
+  }
 
   this.refractionCubeRenderTarget = new THREE.WebGLCubeRenderTarget(512, {
     format: THREE.RGBFormat,
@@ -92,7 +95,7 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
     magFilter: THREE.LinearFilter,
     mapping: THREE.EquirectangularRefractionMapping
   });
-  this.refractionCubeCamera = new THREE.CubeCamera(1.0, 10000.0, this.refractionCubeRenderTarget);
+  this.refractionCubeCamera = new THREE.CubeCamera(0.0, 10000.0, this.refractionCubeRenderTarget);
   this.scene.add(this.refractionCubeCamera);
 
   //Set up another cube camera for depth
@@ -160,8 +163,10 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
   this.tick = function(time){
     //Update the state of our ocean grid
     self.time = time;
+    let cameraXZOffset = self.camera.position.clone();
+    cameraXZOffset.y = this.heightOffset;
     for(let i = 0; i < self.oceanPatches.length; ++i){
-      self.oceanPatches[i].plane.position.copy(self.oceanPatches[i].initialPosition).add(self.camera.position);
+      self.oceanPatches[i].plane.position.copy(self.oceanPatches[i].initialPosition).add(cameraXZOffset);
     }
 
     //Frustum Cull our grid

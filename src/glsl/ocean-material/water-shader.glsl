@@ -51,7 +51,7 @@ void main(){
   vec2 cameraOffset = vec2(cameraPosition.x, -cameraPosition.z);
   vec2 uvOffset = vec2Modulo(vUv + (cameraOffset / sizeOfOceanPatch));
   vec2 smallNormalMapOffset = vec2Modulo((vUv * 3.0) + ((cameraOffset + t * smallNormalMapVelocity) / (sizeOfOceanPatch / 3.0)));
-  vec2 largeNormalMapOffset = vec2Modulo((vUv * 5.0) + ((cameraOffset + t * largeNormalMapVelocity) / (sizeOfOceanPatch / 5.0)));
+  vec2 largeNormalMapOffset = vec2Modulo((vUv * 5.0) + ((cameraOffset - t * largeNormalMapVelocity) / (sizeOfOceanPatch / 5.0)));
   //vec3 fNormal = normalize(texture2D(normalMap, uvOffset).xyz) * 2.0 - 1.0;
   vec3 smallNormalMap = texture2D(smallNormalMap, smallNormalMapOffset).xzy;
   float normalMapZ = smallNormalMap.y;
