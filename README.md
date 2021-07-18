@@ -40,7 +40,6 @@ This barebones code will provide you with an infinite scrolling oceans that will
 `patch_vertex_size` | The length and width of the number of vertices in each patch.
 `wave_scale_multiple` | Increases the size of the waves by a multiple of this number.
 `number_of_octaves` | The number of octaves to use in the FFT simulation.
-`use_reflection_cubemap_for_environment_map` | A nifty little property that doubles the use of the internal cubemap reflection camera texture for use as the scenes environment map for other reflections. Defaults to `false`, but enabling it can produce realtime reflections using the oceans cubemap camera.
 
 ##Setting File Locations
 
@@ -71,8 +70,6 @@ The `draw_distance` property says how far away to draw tiles, beyond this value,
   <a-ocean ocean-state="draw_distance: 2000.0"></a-ocean>
 ```
 
-A final little helper in the code, that isn't directly related to oceans, is `use_reflection_cubemap_for_environment_map`. Because `<a-ocean>` uses a reflection cubemap centered at the camera, which creates a fresh cubemap each frame, you can use this image to drive your scene environment map for use in reflections and other lighting mechanisms in your scene without having to calculate this twice.
-
 ## Author
 * **David Evans / Dante83** - *Main Developer*
 
@@ -85,4 +82,4 @@ A final little helper in the code, that isn't directly related to oceans, is `us
 * *And so many other websites and individuals. Thank you for filling our worlds with amazing oceans, deep, mysterious, and uncharted.*
 
 ## License
-This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details
+This project is licensed under the MIT License - see the [LICENSE.md](./LICENSE.md) file for details
