@@ -1,4 +1,4 @@
-AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
+AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
   //Variable for holding all of our patches
   //For now, just create 1 plane
   this.scene = scene;
@@ -7,26 +7,31 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
   this.oceanPatches = [];
   this.oceanPatchIsInFrustrum = [];
   this.drawDistance = data.draw_distance;
-  this.startingPoint = [0.0, 0.0];
   this.patchSize = data.patch_size;
+  this.dataPatchSize = data.patch_size;
+  this.patchVertexSize = data.patch_vertex_size;
   this.heightOffset = data.height_offset;
   this.data = data;
   this.time = 0.0;
-  this.staticMeshes = staticMeshes;
   this.smallNormalMap;
   this.largeNormalMap;
   this.windVelocity = data.wind_velocity;
   this.randomWindVelocities = [
-    this.windVelocity.x - Math.random() * 0.2,
-    -this.windVelocity.y - Math.random() * 0.2,
-    this.windVelocity.x - Math.random() * 0.1,
-    -this.windVelocity.y - Math.random() * 0.1
+    this.windVelocity.x - 2.0,
+    -this.windVelocity.y - 2.0,
+    this.windVelocity.x - 1.0,
+    -this.windVelocity.y - 1.0
   ];
   this.raycaster = new THREE.Raycaster(
     new THREE.Vector3(0.0,100.0,0.0),
     this.downVector
   );
   this.cameraFrustum = new THREE.Frustum();
+
+  //Make sure the magnitude of the wind velocity is greater then 0.01, otherwise
+  //set it to this to avoid data errors.
+  this.windVelocity.x = Math.abs(this.data.wind_velocity.x) < 0.01 ? 0.01 : this.windVelocity.x;
+  this.windVelocity.y = Math.abs(this.data.wind_velocity.y) < 0.01 ? 0.01 : this.windVelocity.y;
 
   //Load up the textures for our ocean smaller waves
   const textureLoader = new THREE.TextureLoader();
@@ -40,7 +45,7 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
     texture.magFilter = THREE.LinearFilter;
     texture.minFilter = THREE.LinearMipmapLinearFilter;
     texture.encoding = THREE.LinearEncoding;
-    texture.format = THREE.RGBFormat;
+    texture.format = THREE.RGBAFormat;
     self.smallNormalMap = texture;
   }, function(err){
     console.error(err);
@@ -56,7 +61,7 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
     texture.magFilter = THREE.LinearFilter;
     texture.minFilter = THREE.LinearMipmapLinearFilter;
     texture.encoding = THREE.LinearEncoding;
-    texture.format = THREE.RGBFormat;
+    texture.format = THREE.RGBAFormat;
     self.largeNormalMap = texture;
   }, function(err){
     console.error(err);
@@ -74,41 +79,23 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
   }
 
   //Set up our cube camera for reflections and refractions
-  //this.colorRenderTarget = new THREE.WebGLRenderTargetCube(512, 512);
-  this.reflectionCubeRenderTarget = new THREE.WebGLCubeRenderTarget(512, {
-    format: THREE.RGBFormat,
-    generateMipmaps: true,
-    minFilter: THREE.LinearMipmapLinearFilter,
-    magFilter: THREE.LinearFilter,
-    mapping: THREE.EquirectangularReflectionMapping
-  });
-  this.reflectionCubeCamera = new THREE.CubeCamera(0.25 * this.drawDistance, 10000.0, this.reflectionCubeRenderTarget);
+  this.reflectionCubeRenderTarget = new THREE.WebGLCubeRenderTarget(512, {});
+  this.reflectionCubeCamera = new THREE.CubeCamera(50.0, 10000, this.reflectionCubeRenderTarget);
   this.scene.add(this.reflectionCubeCamera);
-  if(data.use_reflection_cubemap_for_environment_map){
-    this.scene.environment = this.reflectionCubeRenderTarget.texture;
-  }
 
   this.refractionCubeRenderTarget = new THREE.WebGLCubeRenderTarget(512, {
-    format: THREE.RGBFormat,
-    generateMipmaps: true,
-    minFilter: THREE.LinearMipmapLinearFilter,
-    magFilter: THREE.LinearFilter,
-    mapping: THREE.EquirectangularRefractionMapping
+    mapping: THREE.CubeRefractionMapping
   });
-  this.refractionCubeCamera = new THREE.CubeCamera(0.0, 10000.0, this.refractionCubeRenderTarget);
+  this.refractionCubeCamera = new THREE.CubeCamera(0.1, 0.5 * this.drawDistance, this.refractionCubeRenderTarget);
   this.scene.add(this.refractionCubeCamera);
 
   //Set up another cube camera for depth
-  // this.depthCubeMapRenderTarget = new THREE.WebGLCubeRenderTarget(512, {
-  //   format: THREE.RGBFormat,
-  //   generateMipmaps: false,
-  //   depthBuffer: true,
-  //   minFilter: THREE.NearestFilter,
-  //   magFilter: THREE.NearestFilter,
-  //   mapping: THREE.EquirectangularRefractionMapping,
-  // });
-  // this.depthCubeCamera = new THREE.CubeCamera(0.1, 512.0, this.depthCubeMapRenderTarget);
-  // this.scene.add(this.depthCubeCamera);
+  this.depthCubeMapRenderTarget = new THREE.WebGLCubeRenderTarget(512, {
+    mapping: THREE.CubeRefractionMapping,
+    type: THREE.FloatType
+  });
+  this.depthCubeCamera = new THREE.CubeCamera(0.1, 0.5 * this.drawDistance, this.depthCubeMapRenderTarget);
+  this.scene.add(this.depthCubeCamera);
 
   //Initialize all shader LUTs for future ocean viewing
   //Initialize our ocean variables and all associated shaders.
@@ -178,13 +165,12 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
     }
 
     //Snap a cubemap picture of our environment to create reflections and refractions
-    // self.depthCubeCamera.position.copy(self.camera.position);
+    self.depthCubeCamera.position.copy(self.camera.position);
     self.reflectionCubeCamera.position.copy(self.camera.position);
     self.refractionCubeCamera.position.copy(self.camera.position);
-    //self.scene.overrideMaterial = self.positionPassMaterial;
-
-    //self.depthCubeCamera.update(self.renderer, self.scene);
-    //self.scene.overrideMaterial = null;
+    self.scene.overrideMaterial = self.positionPassMaterial;
+    self.depthCubeCamera.update(self.renderer, self.scene);
+    self.scene.overrideMaterial = null;
     self.reflectionCubeCamera.update(self.renderer, self.scene);
     self.refractionCubeCamera.update(self.renderer, self.scene);
 
@@ -192,10 +178,6 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera, staticMeshes){
     for(let i = 0; i < self.oceanPatches.length; ++i){
       self.oceanPatches[i].plane.visible = true;
     }
-
-    //Update the scene fog based on whether we are above or below the
-    //water.
-
 
     //Update each of our ocean grid height maps
     self.oceanHeightBandLibrary.tick(time);

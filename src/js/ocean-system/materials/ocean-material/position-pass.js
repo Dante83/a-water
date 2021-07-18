@@ -4,6 +4,7 @@
 AWater.AOcean.Materials.Ocean.positionPassMaterial = {
   uniforms: {
     worldMatrix: {type: 'mat4', value: new THREE.Matrix4()},
+    viewMatrix: {type: 'mat4', value: new THREE.Matrix4()},
   },
 
   fragmentShader: [
@@ -23,7 +24,7 @@ AWater.AOcean.Materials.Ocean.positionPassMaterial = {
     'uniform mat4 worldMatrix;',
 
     'void main() {',
-      'vWorldPosition = (worldMatrix * modelViewMatrix * vec4(position, 1.0)).xyz;',
+      'vWorldPosition = (modelViewMatrix * vec4(position, 1.0)).xyz;',
 
       'gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);',
     '}',

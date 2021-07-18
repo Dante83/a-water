@@ -16,10 +16,6 @@ groups:
         template: 'fft-inverter-template.txt'
         material: 'fft-inverter.js'
       -
-        fragment: 'foam-pass.glsl'
-        template: 'foam-pass-template.txt'
-        material: 'foam-pass.js'
-      -
         fragment: 'h_0-pass.glsl'
         template: 'h_0-pass-template.txt'
         material: 'h_0-pass.js'
@@ -39,10 +35,6 @@ groups:
         fragment: 'wave-height.glsl'
         template: 'wave-height-template.txt'
         material: 'wave-height.js'
-      -
-        fragment: 'wave-normal-map.glsl'
-        template: 'wave-normal-map-template.txt'
-        material: 'wave-normal-map.js'
   -
     base_glsl_dir: '../glsl/ocean-material'
     base_js_dir: '../js/ocean-system/materials/ocean-material'

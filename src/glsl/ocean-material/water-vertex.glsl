@@ -5,6 +5,7 @@ attribute vec4 tangent;
 varying float height;
 varying vec3 tangentSpaceViewDirection;
 varying vec3 vViewVector;
+varying vec3 vWorldPosition;
 varying vec4 colorMap;
 varying vec2 vUv;
 varying vec3 displacedNormal;
@@ -75,6 +76,7 @@ void main() {
 
   //Add support for three.js fog
   vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  vWorldPosition = (projectionMatrix * mvPosition).xyz;
   #include <fog_vertex>
 
   gl_Position = projectionMatrix * modelViewMatrix * vec4(offsetPosition, 1.0);

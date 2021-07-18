@@ -1,5 +1,5 @@
 AFRAME.registerPrimitive('a-ocean', {
   defaultComponents: {
-    'ocean_state': {}
+    'ocean-state': {}
   }
 });

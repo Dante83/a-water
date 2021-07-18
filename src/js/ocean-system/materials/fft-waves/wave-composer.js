@@ -58,8 +58,6 @@ AWater.AOcean.Materials.FFTWaves.waveComposerShaderMaterial = {
       numberOfWaveComponentsGLSL += "combinedWaveHeight += vec3(waveHeight_x, waveHeight_y, waveHeight_z);\n";
     }
 
-    console.log();
-
     let updatedLines = [];
 
     for(let i = 0, numLines = originalGLSL.length; i < numLines; ++i){

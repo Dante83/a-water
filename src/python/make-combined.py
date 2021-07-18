@@ -5,14 +5,32 @@ import tempfile
 def main():
     #Useful constants, what we probably want to modify in order to write out the right file names
     output_dir = '../../dist/'
-    relative_dir = output_dir + "askyforge.master.js"
+    relative_dir = output_dir + "a-starry-sky.master.js"
     file_dir = os.path.abspath(relative_dir)
-    minified_file_dir = os.path.abspath(output_dir + "askyforge.master.min.js")
+    minified_file_dir = os.path.abspath(output_dir + "a-starry-sky.master.min.js")
 
     #Directy and ordered list of files to load
     js_dir = '../js/'
-    js_fil_names = ['cloner.js', 'sky-shader.js', 'a-sky-forge.js', 'a-dynamic-sky-entity-methods.js',\
-    'a-frame-components.js', 'a-sky-interpolator.js']
+    js_file_names = ['three_js_extensions/GPUComputeRenderer.js',\
+    'three_js_extensions/BufferGeometryUtils.js',\
+    'AWater.js',\
+    'ocean-system/materials/noise-pass.js',\
+    'ocean-system/materials/h_0-pass.js',\
+    'ocean-system/materials/h_k-pass.js',\
+    'ocean-system/materials/fft-inverter.js',\
+    'ocean-system/materials/compute-twiddle-indices.js',\
+    'ocean-system/materials/butterfly-pass.js',\
+    'ocean-system/materials/amplitude-filter.js',\
+    'ocean-system/materials/wave-composer.js',\
+    'ocean-system/materials/wave-height.js',\
+    'ocean-system/ocean-material/position-pass.js',\
+    'ocean-system/luts/ocean-height-band-library.js',\
+    'ocean-system/luts/ocean-height-composer.js',\
+    'ocean-system/ocean-material/water-shader.js',\
+    'ocean-system/components/ocean-patch.js',\
+    'ocean-system/components/ocean-grid.js',\
+    'ocean-system/components/ocean-state.js',\
+    'ocean-system/components/a-ocean.js',\]
 
     #Grab the strings for each of these files, and pull out any branches of code related to if(typeof exports !== 'undefined') {..}
     code_blocks = []
@@ -50,7 +68,7 @@ def main():
         tmp.seek(0)
 
         #Use that temporary file in our sub process
-        proc = subprocess.Popen(['uglifyjs', tmp.name], stdout=subprocess.PIPE, shell=True)
+        proc = subprocess.Popen(['terser', tmp.name], stdout=subprocess.PIPE, shell=True)
         (uglified_js, err) = proc.communicate()
         if err == None:
             with open(minified_file_dir, 'w') as w:
