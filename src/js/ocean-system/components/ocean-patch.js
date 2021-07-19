@@ -26,6 +26,15 @@ AWater.AOcean.OceanPatch = function(parentOceanGrid, initialPosition){
     self.plane.material.uniforms.smallNormalMap.value = self.parentOceanGrid.smallNormalMap;
     self.plane.material.uniforms.largeNormalMap.value = self.parentOceanGrid.largeNormalMap;
     self.plane.material.uniforms.matrixWorld.value.copy(self.plane.matrixWorld);
+    if(self.parentOceanGrid.brightestDirectionalLight){
+      const brightestDirectionalLight = self.parentOceanGrid.brightestDirectionalLight;
+      const color = brightestDirectionalLight.color;
+      const intensity = brightestDirectionalLight.intensity;
+      self.plane.material.uniforms.brightestDirectionalLight.value.set(color.r * intensity, color.g * intensity, color.b * intensity);
+    }
+    else{
+      self.plane.material.uniforms.brightestDirectionalLight.value.set(1.0,1.0,1.0);
+    }
     self.plane.material.uniforms.t.value = time * 0.001;
   };
 }

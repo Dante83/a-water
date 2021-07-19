@@ -10,7 +10,6 @@ varying vec4 colorMap;
 varying vec2 vUv;
 varying vec3 displacedNormal;
 varying mat3 modelMatrixMat3;
-varying mat3 tbnMatrix;
 
 uniform float sizeOfOceanPatch;
 uniform sampler2D displacementMap;
@@ -28,45 +27,25 @@ void main() {
   vViewVector = worldPosition.xyz - cameraPosition;
   modelMatrixMat3 = mat3(modelMatrix[0].xyz, modelMatrix[1].xyz, modelMatrix[2].xyz );
 
-  vec2 uvOffset = vec2Modulo(uv + (vec2(cameraPosition.x, -cameraPosition.z) / sizeOfOceanPatch));
-  vec4 displacement = texture2D(displacementMap, uvOffset);
-  displacement.x *= -1.0;
-  displacement.z *= -1.0;
-  offsetPosition.x += displacement.x;
-  offsetPosition.z += displacement.y;
-  offsetPosition.y += displacement.z;
+  vec2 cameraOffset = (vec2(cameraPosition.x, -cameraPosition.z) / sizeOfOceanPatch);
+  vec2 uvOffset = uv + cameraOffset;
+  vec3 displacement = texture2D(displacementMap, uvOffset).xyz;
+  offsetPosition += modelMatrixMat3 * displacement;
 
   //Normal map
+  vec3 scaledDisplacement = displacement / sizeOfOceanPatch;
+  height = (offsetPosition.z  + 10.0) / 20.0;
   vec3 bitangent = cross(normal.xyz, tangent.xyz);
-  tbnMatrix = mat3(tangent.xyz, bitangent.xyz, normal.xyz);
-  vec3 v0 = vec3(uv, 0.0);
-  vec3 vt = v0 + (1.0 / 128.0) * tangent.xyz;
-  vec3 vb = v0 + (1.0 / 128.0) * bitangent;
+  vec3 v0 = vec3(uvOffset, 0.0);
+  v0 = v0 + scaledDisplacement;
+  vec3 vt = v0 + (1.0 / 10.0) * normalize(tangent.xyz);
+  vec3 vb = v0 + (1.0 / 10.0) * normalize(bitangent.xyz);
 
-  vec3 displacementV0 = texture2D(displacementMap, vec2Modulo(v0.xy + (vec2(cameraPosition.x, -cameraPosition.z) / sizeOfOceanPatch))).xyz;
-  displacementV0.x *= -1.0;
-  displacementV0.z *= -1.0;
-  v0.x += displacementV0.x / sizeOfOceanPatch;
-  v0.z += displacementV0.y / sizeOfOceanPatch;
-  v0.y += displacementV0.z / sizeOfOceanPatch;
-  vec3 displacementVT = texture2D(displacementMap, vec2Modulo(vt.xy + (vec2(cameraPosition.x, -cameraPosition.z) / sizeOfOceanPatch))).xyz;
-  displacementVT.x *= -1.0;
-  displacementVT.z *= -1.0;
-  vt.x += displacementVT.x / sizeOfOceanPatch;
-  vt.z += displacementVT.y / sizeOfOceanPatch;
-  vt.y += displacementVT.z / sizeOfOceanPatch;
-  vec3 displacementVB = texture2D(displacementMap, vec2Modulo(vb.xy + (vec2(cameraPosition.x, -cameraPosition.z) / sizeOfOceanPatch))).xyz;
-  displacementVB.x *= -1.0;
-  displacementVB.z *= -1.0;
-  vb.x += displacementVB.x / sizeOfOceanPatch;
-  vb.z += displacementVB.y / sizeOfOceanPatch;
-  vb.y += displacementVB.z / sizeOfOceanPatch;
-
+  vec3 displacementVT = texture2D(displacementMap, vt.xy).xyz;
+  vt = vt + scaledDisplacement;
+  vec3 displacementVB = texture2D(displacementMap, vb.xy).xyz;
+  vb = vb + scaledDisplacement;
   displacedNormal = normalize(cross(vt - v0, vb - v0));
-  displacedNormal = displacedNormal.xzy;
-  displacedNormal.x *= -1.0;
-  displacedNormal.z *= -1.0;
-
 
   //Set up our UV maps
   vUv = uv;

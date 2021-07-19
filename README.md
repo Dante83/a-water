@@ -78,6 +78,7 @@ The `draw_distance` property says how far away to draw tiles, beyond this value,
 * The [Crest](https://github.com/wave-harmonic/crest) Library is the inspiration for using an static plane centered around the camera with a scrolling texture to drive the heights.
 * The normal maps from [Water Simulation](https://watersimulation.tumblr.com/post/115928250077/scrolling-normal-maps), are used as the surface details for the waves in this component.
 * The normal map techniques from [Blending in Detail](https://blog.selfshadow.com/publications/blending-in-detail/) were critical to providing detailing on the wave surfaces.
+* The height based 'glow' in the water is a trick that is thanks to the tutorial, [Ocean Shader With Gerstner Waves](https://80.lv/articles/tutorial-ocean-shader-with-gerstner-waves/).
 * All the amazing work that has gone into [THREE.JS](https://threejs.org/) and [A-Frame](https://aframe.io/).
 * *And so many other websites and individuals. Thank you for filling our worlds with amazing oceans, deep, mysterious, and uncharted.*
 

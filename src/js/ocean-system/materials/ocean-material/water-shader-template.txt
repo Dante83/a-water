@@ -18,7 +18,8 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     fogFar: {type: 'f', value: null},
     fogDensity: {type: 'f', value: null},
     fogColor: {type: 'v3', value: new THREE.Color()},
-    t: {type: 'f', value: 0.0}
+    t: {type: 'f', value: 0.0},
+    brightestDirectionalLight: {type: 'vec3', value: new THREE.Vector3(1.0,1.0,1.0)}
   },
 
   fragmentShader: [

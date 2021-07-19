@@ -16,17 +16,21 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
   this.smallNormalMap;
   this.largeNormalMap;
   this.windVelocity = data.wind_velocity;
+  const randomAngle1 = Math.random() * 2.0 * Math.PI;
+  const randomAngle2 = Math.random() * 2.0 * Math.PI;
   this.randomWindVelocities = [
-    this.windVelocity.x - 2.0,
-    -this.windVelocity.y - 2.0,
-    this.windVelocity.x - 1.0,
-    -this.windVelocity.y - 1.0
+    2.0 * Math.cos(randomAngle1),
+    2.0 * Math.sin(randomAngle1),
+    1.0 * Math.cos(randomAngle2),
+    1.0 * Math.sin(randomAngle2),
   ];
   this.raycaster = new THREE.Raycaster(
     new THREE.Vector3(0.0,100.0,0.0),
     this.downVector
   );
   this.cameraFrustum = new THREE.Frustum();
+
+  this.brightestDirectionalLight = false;
 
   //Make sure the magnitude of the wind velocity is greater then 0.01, otherwise
   //set it to this to avoid data errors.
@@ -148,6 +152,18 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
   this.numberOfPatches = this.oceanPatches.length;
 
   this.tick = function(time){
+    //Update the brightest directional light if we don't have one
+    if(this.brightestDirectionalLight === false){
+      for(let i = 0, numItems = self.scene.children.length; i < numItems; ++i){
+        let child = self.scene.children[i];
+        if(child.type === 'DirectionalLight' &&
+        (this.brightestDirectionalLight === false ||
+          child.intensity > self.brightestDirectionalLight.intensity)){
+          self.brightestDirectionalLight = child;
+        }
+      }
+    }
+
     //Update the state of our ocean grid
     self.time = time;
     let cameraXZOffset = self.camera.position.clone();
