@@ -16,6 +16,11 @@ AWater.AOcean.OceanPatch = function(parentOceanGrid, initialPosition){
   const windVelocityDirection = windVelocity.divideScalar(windVelocityMagnitude)
   this.plane.material.uniforms.smallNormalMapVelocity.value.set(this.parentOceanGrid.randomWindVelocities[0], this.parentOceanGrid.randomWindVelocities[1]);
   this.plane.material.uniforms.largeNormalMapVelocity.value.set(this.parentOceanGrid.randomWindVelocities[2], this.parentOceanGrid.randomWindVelocities[3]);
+  this.plane.material.uniforms.lightScatteringAmounts.value.copy(this.parentOceanGrid.data.light_scattering_amounts);
+  this.plane.material.uniforms.smallNormalMapStrength.value = this.parentOceanGrid.data.small_normal_map_strength;
+  this.plane.material.uniforms.largeNormalMapStrength.value = this.parentOceanGrid.data.large_normal_map_strength;
+  this.plane.material.uniforms.linearScatteringHeightOffset.value = this.parentOceanGrid.data.linear_scattering_height_offset;
+  this.plane.material.uniforms.linearScatteringTotalScatteringWaveHeight.value = this.parentOceanGrid.data.linear_scattering_total_wave_height;
 
   let self = this;
   this.tick = function(time){

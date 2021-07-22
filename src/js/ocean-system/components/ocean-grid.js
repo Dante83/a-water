@@ -4,6 +4,7 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
   this.scene = scene;
   this.renderer = renderer;
   this.camera = camera;
+  this.cameraWorldPosition = new THREE.Vector3();
   this.oceanPatches = [];
   this.oceanPatchIsInFrustrum = [];
   this.drawDistance = data.draw_distance;
@@ -164,9 +165,12 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
       }
     }
 
+    //Copy the camera position in the world...
+    self.cameraWorldPosition.setFromMatrixPosition(self.camera.matrixWorld);
+
     //Update the state of our ocean grid
     self.time = time;
-    let cameraXZOffset = self.camera.position.clone();
+    let cameraXZOffset = self.cameraWorldPosition.clone();
     cameraXZOffset.y = this.heightOffset;
     for(let i = 0; i < self.oceanPatches.length; ++i){
       self.oceanPatches[i].plane.position.copy(self.oceanPatches[i].initialPosition).add(cameraXZOffset);
@@ -181,9 +185,9 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
     }
 
     //Snap a cubemap picture of our environment to create reflections and refractions
-    self.depthCubeCamera.position.copy(self.camera.position);
-    self.reflectionCubeCamera.position.copy(self.camera.position);
-    self.refractionCubeCamera.position.copy(self.camera.position);
+    self.depthCubeCamera.position.copy(self.cameraWorldPosition);
+    self.reflectionCubeCamera.position.copy(self.cameraWorldPosition);
+    self.refractionCubeCamera.position.copy(self.cameraWorldPosition);
     self.scene.overrideMaterial = self.positionPassMaterial;
     self.depthCubeCamera.update(self.renderer, self.scene);
     self.scene.overrideMaterial = null;

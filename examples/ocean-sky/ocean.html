@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+
+<html>
+  <head>
+
+    <meta charset="UTF-8">
+    <title>Island Retreat</title>
+
+    <!--Meta-->
+    <meta name="viewport" content="width=device-width,initial-scale=1,shrink-to-fit=no,user-scalable=no,maximum-scale=1">
+
+    <!--External JS Files from THREE.JS -->
+    <script src="https://aframe.io/releases/1.2.0/aframe.min.js"></script>
+
+    <!-- Our Minified Library -->
+
+
+    <!-- If you're using this library, include it after <a-water> as it also includes an <a-ocean> tag and will break the library. -->
+    <script src="https://cdn.jsdelivr.net/gh/donmccurdy/aframe-extras@v6.1.1/dist/aframe-extras.min.js"></script>
+
+    <!-- Let's add a sky for a background -->
+    <script src="https://unpkg.com/aframe-sun-sky@3.0.3/dist/aframe-sun-sky.min.js"></script>
+  <!--Scene Scripts-->
+  </head>
+  <body>
+    <a-scene id="scene-root" light="defaultLightsEnabled: true;" renderer="antialias: true; sortObjects: true;">
+      <a-entity id="rig" movement-controls="speed: 4;" position="0 150 0;">
+        <a-entity camera="near: 0.1; far: 7000.0;" look-controls="pointerLockEnabled: true" wasd-controls="acceleration: 300" position="0 1.6 0"></a-entity>
+      </a-entity>
+
+      <!-- A default sky -->
+      <a-sun-sky></a-sun-sky>
+
+      <!-- The ocean we want to create -->
+      <a-ocean></a-ocean>
+    </a-scene>
+  </body>
+</html>

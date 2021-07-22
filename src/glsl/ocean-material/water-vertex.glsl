@@ -12,6 +12,8 @@ varying vec3 displacedNormal;
 varying mat3 modelMatrixMat3;
 
 uniform float sizeOfOceanPatch;
+uniform float linearScatteringTotalScatteringWaveHeight;
+uniform float linearScatteringHeightOffset;
 uniform sampler2D displacementMap;
 uniform mat4 matrixWorld;
 #include <fog_pars_vertex>
@@ -34,12 +36,12 @@ void main() {
 
   //Normal map
   vec3 scaledDisplacement = displacement / sizeOfOceanPatch;
-  height = (offsetPosition.z  + 10.0) / 20.0;
-  vec3 bitangent = cross(normal.xyz, tangent.xyz);
+  height = (offsetPosition.z  + linearScatteringHeightOffset) / linearScatteringTotalScatteringWaveHeight;
+  vec3 bitangent = cross(normalize(normal.xyz), normalize(tangent.xyz));
   vec3 v0 = vec3(uvOffset, 0.0);
   v0 = v0 + scaledDisplacement;
-  vec3 vt = v0 + (1.0 / 10.0) * normalize(tangent.xyz);
-  vec3 vb = v0 + (1.0 / 10.0) * normalize(bitangent.xyz);
+  vec3 vt = v0 + (1.0 / 12.0) * normalize(tangent.xyz);
+  vec3 vb = v0 + (1.0 / 12.0) * normalize(bitangent.xyz);
 
   vec3 displacementVT = texture2D(displacementMap, vt.xy).xyz;
   vt = vt + scaledDisplacement;

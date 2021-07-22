@@ -19,7 +19,12 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     fogDensity: {type: 'f', value: null},
     fogColor: {type: 'v3', value: new THREE.Color()},
     t: {type: 'f', value: 0.0},
-    brightestDirectionalLight: {type: 'vec3', value: new THREE.Vector3(1.0,1.0,1.0)}
+    brightestDirectionalLight: {type: 'vec3', value: new THREE.Vector3(1.0,1.0,1.0)},
+    largeNormalMapStrength: {type: 'f', value: 0.45},
+    smallNormalMapStrength: {type: 'f', value: 0.35},
+    lightScatteringAmounts: {type: 'vec3', value: new THREE.Vector3(88.0, 108.0, 112.0)},
+    linearScatteringHeightOffset: {type: 'f', value: 10.0},
+    linearScatteringTotalScatteringWaveHeight: {type: 'f', value: 20.0}
   },
 
   fragmentShader: [
@@ -36,6 +41,8 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     '//uniform vec3 cameraDirection;',
     'uniform int isBelowWater;',
     'uniform float sizeOfOceanPatch;',
+    'uniform float largeNormalMapStrength;',
+    'uniform float smallNormalMapStrength;',
     'uniform sampler2D smallNormalMap;',
     'uniform sampler2D largeNormalMap;',
     'uniform samplerCube reflectionCubeMap;',
@@ -46,6 +53,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     'uniform vec2 largeNormalMapVelocity;',
 
     'uniform vec3 brightestDirectionalLight;',
+    'uniform vec3 lightScatteringAmounts;',
 
     'uniform float t;',
 
@@ -84,10 +92,17 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       'vec2 smallNormalMapOffset = (vUv * 3.0) + ((cameraOffset + t * smallNormalMapVelocity) / (sizeOfOceanPatch / 3.0));',
       'vec2 largeNormalMapOffset = (vUv * 5.0) + ((cameraOffset - t * largeNormalMapVelocity) / (sizeOfOceanPatch / 5.0));',
       'vec3 smallNormalMap = texture2D(smallNormalMap, smallNormalMapOffset).xyz;',
+      'smallNormalMap = 2.0 * smallNormalMap - 1.0;',
+      'smallNormalMap.xy *= smallNormalMapStrength;',
+      'smallNormalMap = normalize(smallNormalMap);',
+      'smallNormalMap = (smallNormalMap + 1.0) * 0.5;',
       'vec3 largeNormalMap = texture2D(largeNormalMap, largeNormalMapOffset).xyz;',
+      'largeNormalMap = 2.0 * largeNormalMap - 1.0;',
+      'largeNormalMap.xy *= largeNormalMapStrength;',
+      'largeNormalMap = normalize(largeNormalMap);',
+      'largeNormalMap = (largeNormalMap + 1.0) * 0.5;',
       'vec3 combinedNormalMap = combineNormals(smallNormalMap, largeNormalMap);',
       'vec3 normalizedDisplacedNormalMap = (normalize(displacedNormal.xyz) + vec3(1.0)) * 0.5;',
-      '//vec3 normalizedDisplacedNormalMap = (vec3(0.0, 0.0, 1.0) + vec3(1.0)) * 0.5;',
       'combinedNormalMap = combineNormals(normalizedDisplacedNormalMap, combinedNormalMap);',
       'combinedNormalMap = combinedNormalMap * 2.0 - vec3(1.0);',
       'combinedNormalMap = normalize(modelMatrixMat3 * combinedNormalMap);',
@@ -98,9 +113,8 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       'vec3 refractedLight = textureCube(refractionCubeMap, refractedCoordinates).rgb; //Refraction',
       'vec3 pointXYZ = textureCube(depthCubeMap, refractedCoordinates).rgb; //Scattering',
       'float distanceToPoint = distance(pointXYZ, vWorldPosition);',
-      'vec3 transmittanceLightPercents = vec3(22.0, 27.0, 28.0) * 4.0;',
-      'vec3 normalizedTransmittancePercentColor = normalize(transmittanceLightPercents);',
-      'vec3 percentOfSourceLight = clamp(exp(-distanceToPoint / transmittanceLightPercents), 0.0, 1.0);',
+      'vec3 normalizedTransmittancePercentColor = normalize(lightScatteringAmounts);',
+      'vec3 percentOfSourceLight = clamp(exp(-distanceToPoint / lightScatteringAmounts), 0.0, 1.0);',
       'refractedLight = percentOfSourceLight * pow(refractedLight, gamma);',
       '//Increasing brightness with height inspired by, https://80.lv/articles/tutorial-ocean-shader-with-gerstner-waves/',
       'vec3 inscatterLight = pow(max(height, 0.0) * length(vec3(1.0) - percentOfSourceLight) * pow(normalizedTransmittancePercentColor, vec3(2.5))  * brightestDirectionalLight, gamma);',
@@ -108,7 +122,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       "//Apply Schlick's approximation for the fresnel amount",
       '//https://en.wikipedia.org/wiki/Schlick%27s_approximation',
       'float oneMinusCosTheta = 1.0 - dot(combinedNormalMap, -normalizedViewVector);',
-      'float reflectedLightPercent = clamp(r0 + (1.0 -  r0) * pow(oneMinusCosTheta, 5.0), 0.0, 1.0);',
+      'float reflectedLightPercent = clamp(r0 + (1.0 -  r0) * pow(0.9 * oneMinusCosTheta, 5.0), 0.0, 1.0);',
       'reflectedLight = pow(reflectedLight, gamma);',
 
       '//Total light',
@@ -135,6 +149,8 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     'varying mat3 modelMatrixMat3;',
 
     'uniform float sizeOfOceanPatch;',
+    'uniform float linearScatteringTotalScatteringWaveHeight;',
+    'uniform float linearScatteringHeightOffset;',
     'uniform sampler2D displacementMap;',
     'uniform mat4 matrixWorld;',
     '#include <fog_pars_vertex>',
@@ -157,12 +173,12 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
 
       '//Normal map',
       'vec3 scaledDisplacement = displacement / sizeOfOceanPatch;',
-      'height = (offsetPosition.z  + 10.0) / 20.0;',
-      'vec3 bitangent = cross(normal.xyz, tangent.xyz);',
+      'height = (offsetPosition.z  + linearScatteringHeightOffset) / linearScatteringTotalScatteringWaveHeight;',
+      'vec3 bitangent = cross(normalize(normal.xyz), normalize(tangent.xyz));',
       'vec3 v0 = vec3(uvOffset, 0.0);',
       'v0 = v0 + scaledDisplacement;',
-      'vec3 vt = v0 + (1.0 / 10.0) * normalize(tangent.xyz);',
-      'vec3 vb = v0 + (1.0 / 10.0) * normalize(bitangent.xyz);',
+      'vec3 vt = v0 + (1.0 / 12.0) * normalize(tangent.xyz);',
+      'vec3 vb = v0 + (1.0 / 12.0) * normalize(bitangent.xyz);',
 
       'vec3 displacementVT = texture2D(displacementMap, vt.xy).xyz;',
       'vt = vt + scaledDisplacement;',

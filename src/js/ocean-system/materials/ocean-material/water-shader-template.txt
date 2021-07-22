@@ -19,7 +19,12 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     fogDensity: {type: 'f', value: null},
     fogColor: {type: 'v3', value: new THREE.Color()},
     t: {type: 'f', value: 0.0},
-    brightestDirectionalLight: {type: 'vec3', value: new THREE.Vector3(1.0,1.0,1.0)}
+    brightestDirectionalLight: {type: 'vec3', value: new THREE.Vector3(1.0,1.0,1.0)},
+    largeNormalMapStrength: {type: 'f', value: 0.45},
+    smallNormalMapStrength: {type: 'f', value: 0.35},
+    lightScatteringAmounts: {type: 'vec3', value: new THREE.Vector3(88.0, 108.0, 112.0)},
+    linearScatteringHeightOffset: {type: 'f', value: 10.0},
+    linearScatteringTotalScatteringWaveHeight: {type: 'f', value: 20.0}
   },
 
   fragmentShader: [
