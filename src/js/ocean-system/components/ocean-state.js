@@ -10,7 +10,7 @@ AFRAME.registerComponent('ocean-state', {
     'wave_scale_multiple': {type: 'number', default: 1.0},
     'number_of_octaves': {type: 'number', default: 128.0},
     'wind_velocity': {type: 'vec2', default: {x: 4.0, y: 3.5}},
-    'height_offset': {type: 'number', default: 40.0},
+    'height_offset': {type: 'number', default: 0.0},
     'large_normal_map': {type: 'string', default: './image-dir/a-water-assets/water-normal-1.png'},
     'small_normal_map': {type: 'string', default: './image-dir/a-water-assets/water-normal-2.png'},
     'large_normal_map_strength': {type: 'number', default: 0.45},

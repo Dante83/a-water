@@ -1,6 +1,6 @@
 # A-Water
 
-A-Water is a tad bit of a misnomer, as the library, presently, only contains code for adding an infinite procedural ocean for the [A-Frame Web Framework](https://aframe.io/). It is a simple drop-in component that allows you produce animated rolling ocean waves in your creations. Click [here](https://code-panda.com/pages/projects/a_ocean/v_0_1_0/a_ocean_example) to see this project in action (**Warning: requires a powerful GPU - do not open on a mobile phone**).
+A-Water is a tad bit of a misnomer, as the library, presently, only contains code for adding an infinite procedural ocean for the [A-Frame Web Framework](https://aframe.io/). It is a simple drop-in component that allows you produce animated rolling ocean waves in your creations. Click [here](https://code-panda.com/pages/projects/a_ocean/v_0_1_0) to see this project in action (**Warning: requires a powerful GPU - do not open on a mobile phone**).
 
 ## Prerequisites
 
