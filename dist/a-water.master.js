@@ -1199,24 +1199,42 @@ AWater.AOcean.Materials.FFTWaves.noiseShaderMaterialData = {
     offset: {type: 'f', value: 1.0},
   },
 
-  fragmentShader: [
-    'precision highp float;',
-
-    'uniform float offset;',
-
-    '//From http://byteblacksmith.com/improvements-to-the-canonical-one-liner-glsl-rand-for-opengl-es-2-0/',
-    'float rand(float x){',
-        'float a = 12.9898;',
-        'float b = 78.233;',
-        'float c = 43758.5453;',
-        'float dt= dot(vec2(x, x) ,vec2(a,b));',
-        'float sn= mod(dt,3.14);',
-        'return fract(sin(sn) * c);',
-    '}',
-
-    'void main(){',
-      'vec2 uv = gl_FragCoord.xy / resolution.xy;',
-      'gl_FragColor = vec4(vec3(rand((resolution.x * (uv.x + uv.y * resolution.y)) * offset)), 1.0);',
+  fragmentShader: [
+
+    'precision highp float;',
+
+
+
+    'uniform float offset;',
+
+
+
+    '//From http://byteblacksmith.com/improvements-to-the-canonical-one-liner-glsl-rand-for-opengl-es-2-0/',
+
+    'float rand(float x){',
+
+        'float a = 12.9898;',
+
+        'float b = 78.233;',
+
+        'float c = 43758.5453;',
+
+        'float dt= dot(vec2(x, x) ,vec2(a,b));',
+
+        'float sn= mod(dt,3.14);',
+
+        'return fract(sin(sn) * c);',
+
+    '}',
+
+
+
+    'void main(){',
+
+      'vec2 uv = gl_FragCoord.xy / resolution.xy;',
+
+      'gl_FragColor = vec4(vec3(rand((resolution.x * (uv.x + uv.y * resolution.y)) * offset)), 1.0);',
+
     '}',
   ].join('\n')
 };
@@ -1233,56 +1251,106 @@ AWater.AOcean.Materials.FFTWaves.h0ShaderMaterialData = {
     w: {type: 'v2', value: new THREE.Vector2(1.0, 0.0)}
   },
 
-  fragmentShader: [
-    'precision highp float;',
-
-    '//With a lot of help from https://youtu.be/i0BPrGuOdPo',
-    'uniform float N; //256.0',
-    'uniform float L; //1000.0',
-    'uniform float A; //20',
-    'uniform vec2 w;//(1,0)',
-    'uniform float L_; //Windspeed squared over the gravitational acceleration',
-
-    'const float g = 9.80665;',
-    'const float pi = 3.141592653589793238462643383279502884197169;',
-    'const float piTimes2 = 6.283185307179586476925286766559005768394338798750211641949;',
-    'const float oneOverSqrtOf2 = 0.707106781186547524400844362104849039284835937688474036588;',
-
-    '//Box-Muller Method',
-    'vec4 gaussRand(vec2 uv){',
-      'vec2 texCoord = vec2(uv.xy);',
-      'float noise00 = clamp(texture2D(textureNoise1, texCoord).r + 0.00001, 0.0, 1.0);',
-      'float noise01 = clamp(texture2D(textureNoise2, texCoord).r + 0.00001, 0.0, 1.0);',
-      'float noise02 = clamp(texture2D(textureNoise3, texCoord).r + 0.00001, 0.0, 1.0);',
-      'float noise03 = clamp(texture2D(textureNoise4, texCoord).r + 0.00001, 0.0, 1.0);',
-
-      'float u0 = piTimes2 * noise00;',
-      'float v0 = sqrt(-2.0 * log(noise01));',
-      'float u1 = piTimes2 * noise02;',
-      'float v1 = sqrt(-2.0 * log(noise03));',
-
-      'return vec4(v0 * cos(u0), v0 * sin(u0), v1 * cos(u1), v1 * sin(u1));',
-    '}',
-
-    'void main(){',
-      'vec2 uv = gl_FragCoord.xy / resolution.xy;',
-      'vec2 x = uv.xy * N;',
-      'vec2 k = vec2(piTimes2 / L) * x;',
-      'float magK = length(k);',
-      'if (magK < 0.0001) magK = 0.0001;',
-      'float magSq = magK * magK;',
-      'float L_ = 26.0 * 26.0 / 9.80665;',
-      'float h0_coeficient = sqrt(A / (magSq * magSq)) * exp(-1.0/(magSq * L_ * L_)) * exp(-magSq * pow(L / 2000.0, 2.0)) / sqrt(2.0);',
-
-      '//sqrt(Ph(k) / sqrt(2))',
-      'float h0_k = clamp(h0_coeficient * pow(dot(normalize(k), normalize(w)), 2.0), 0.0, 1000000.0);',
-
-      '//sqrt(Ph(-k) / sqrt(2))',
-      'float h0_minus_k = clamp(h0_coeficient * pow(dot(normalize(-k), normalize(w)), 2.0), 0.0, 1000000.0);',
-
-      'vec4 gaussianRandomNumber = gaussRand(uv);',
-
-      'gl_FragColor =vec4(gaussianRandomNumber.xy * h0_k, gaussianRandomNumber.zw * h0_minus_k);',
+  fragmentShader: [
+
+    'precision highp float;',
+
+
+
+    '//With a lot of help from https://youtu.be/i0BPrGuOdPo',
+
+    'uniform float N; //256.0',
+
+    'uniform float L; //1000.0',
+
+    'uniform float A; //20',
+
+    'uniform vec2 w;//(1,0)',
+
+    'uniform float L_; //Windspeed squared over the gravitational acceleration',
+
+
+
+    'const float g = 9.80665;',
+
+    'const float pi = 3.141592653589793238462643383279502884197169;',
+
+    'const float piTimes2 = 6.283185307179586476925286766559005768394338798750211641949;',
+
+    'const float oneOverSqrtOf2 = 0.707106781186547524400844362104849039284835937688474036588;',
+
+
+
+    '//Box-Muller Method',
+
+    'vec4 gaussRand(vec2 uv){',
+
+      'vec2 texCoord = vec2(uv.xy);',
+
+      'float noise00 = clamp(texture2D(textureNoise1, texCoord).r + 0.00001, 0.0, 1.0);',
+
+      'float noise01 = clamp(texture2D(textureNoise2, texCoord).r + 0.00001, 0.0, 1.0);',
+
+      'float noise02 = clamp(texture2D(textureNoise3, texCoord).r + 0.00001, 0.0, 1.0);',
+
+      'float noise03 = clamp(texture2D(textureNoise4, texCoord).r + 0.00001, 0.0, 1.0);',
+
+
+
+      'float u0 = piTimes2 * noise00;',
+
+      'float v0 = sqrt(-2.0 * log(noise01));',
+
+      'float u1 = piTimes2 * noise02;',
+
+      'float v1 = sqrt(-2.0 * log(noise03));',
+
+
+
+      'return vec4(v0 * cos(u0), v0 * sin(u0), v1 * cos(u1), v1 * sin(u1));',
+
+    '}',
+
+
+
+    'void main(){',
+
+      'vec2 uv = gl_FragCoord.xy / resolution.xy;',
+
+      'vec2 x = uv.xy * N;',
+
+      'vec2 k = vec2(piTimes2 / L) * x;',
+
+      'float magK = length(k);',
+
+      'if (magK < 0.0001) magK = 0.0001;',
+
+      'float magSq = magK * magK;',
+
+      'float L_ = 26.0 * 26.0 / 9.80665;',
+
+      'float h0_coeficient = sqrt(A / (magSq * magSq)) * exp(-1.0/(magSq * L_ * L_)) * exp(-magSq * pow(L / 2000.0, 2.0)) / sqrt(2.0);',
+
+
+
+      '//sqrt(Ph(k) / sqrt(2))',
+
+      'float h0_k = clamp(h0_coeficient * pow(dot(normalize(k), normalize(w)), 2.0), 0.0, 1000000.0);',
+
+
+
+      '//sqrt(Ph(-k) / sqrt(2))',
+
+      'float h0_minus_k = clamp(h0_coeficient * pow(dot(normalize(-k), normalize(w)), 2.0), 0.0, 1000000.0);',
+
+
+
+      'vec4 gaussianRandomNumber = gaussRand(uv);',
+
+
+
+      'gl_FragColor =vec4(gaussianRandomNumber.xy * h0_k, gaussianRandomNumber.zw * h0_minus_k);',
+
     '}',
   ].join('\n')
 };
@@ -1299,60 +1367,114 @@ AWater.AOcean.Materials.FFTWaves.hkShaderMaterialData = {
   },
 
   fragmentShader: function(isXAxis = false, isYAxis = false){
-    let originalGLSL = [
-    'precision highp float;',
-
-    '//With a lot of help from https://youtu.be/i0BPrGuOdPo',
-    'uniform sampler2D textureH0;',
-    'uniform float L; //1000.0',
-    'uniform float N; //256.0',
-    'uniform float uTime; //0.0',
-    'const float g = 9.80665;',
-    'const float piTimes2 = 6.283185307179586476925286766559005768394338798750211641949;',
-    'const float pi = 3.141592653589793238462643383279502884197169;',
-
-    'vec2 cMult(vec2 a, vec2 b){',
-      'return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);',
-    '}',
-
-    'vec2 cAdd(vec2 a, vec2 b){',
-      'return vec2(a.x + b.x, a.y + b.y);',
-    '}',
-
-    'vec2 conjugate(vec2 a){',
-      'return vec2(a.x, -1.0 * a.y);',
-    '}',
-
-    'void main(){',
-      'vec2 uv = gl_FragCoord.xy / resolution.xy;',
-      'vec2 x = uv.xy * N;',
-      'vec2 k = vec2(piTimes2 / L) * x;',
-      'float magK = length(k);',
-      'if (magK < 0.0001) magK = 0.0001;',
-      'float w = sqrt(g * magK);',
-
-      'vec4 tilda_h0 = texture2D(textureH0, uv.xy);',
-      'vec2 tilda_h0_k = tilda_h0.rg;',
-      'vec2 tilda_h0_minus_k_conj = conjugate(tilda_h0.ba);',
-
-      'float cosOfWT = cos(w * uTime);',
-      'float sinOfWT = sin(w * uTime);',
-
-      '//Euler Formula',
-      'vec2 expIwt = vec2(cosOfWT, sinOfWT);',
-      'vec2 expIwtConj = vec2(cosOfWT, -sinOfWT);',
-
-      '//dy',
-      'vec2 hk_tilda = cAdd(cMult(tilda_h0_k, expIwt), cMult(tilda_h0_minus_k_conj, expIwtConj));',
-
-      '#if($isXAxis)',
-        'vec2 dx = vec2(0.0, -k.x / magK);',
-        'hk_tilda = cMult(dx, hk_tilda);',
-      '#elif(!$isXAxis && !$isYAxis)',
-        'vec2 dy = vec2(0.0, -k.y / magK);',
-        'hk_tilda = cMult(dy, hk_tilda);',
-      '#endif',
-      'gl_FragColor = vec4(hk_tilda, 0.0, 1.0);',
+    let originalGLSL = [
+
+    'precision highp float;',
+
+
+
+    '//With a lot of help from https://youtu.be/i0BPrGuOdPo',
+
+    'uniform sampler2D textureH0;',
+
+    'uniform float L; //1000.0',
+
+    'uniform float N; //256.0',
+
+    'uniform float uTime; //0.0',
+
+    'const float g = 9.80665;',
+
+    'const float piTimes2 = 6.283185307179586476925286766559005768394338798750211641949;',
+
+    'const float pi = 3.141592653589793238462643383279502884197169;',
+
+
+
+    'vec2 cMult(vec2 a, vec2 b){',
+
+      'return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);',
+
+    '}',
+
+
+
+    'vec2 cAdd(vec2 a, vec2 b){',
+
+      'return vec2(a.x + b.x, a.y + b.y);',
+
+    '}',
+
+
+
+    'vec2 conjugate(vec2 a){',
+
+      'return vec2(a.x, -1.0 * a.y);',
+
+    '}',
+
+
+
+    'void main(){',
+
+      'vec2 uv = gl_FragCoord.xy / resolution.xy;',
+
+      'vec2 x = uv.xy * N;',
+
+      'vec2 k = vec2(piTimes2 / L) * x;',
+
+      'float magK = length(k);',
+
+      'if (magK < 0.0001) magK = 0.0001;',
+
+      'float w = sqrt(g * magK);',
+
+
+
+      'vec4 tilda_h0 = texture2D(textureH0, uv.xy);',
+
+      'vec2 tilda_h0_k = tilda_h0.rg;',
+
+      'vec2 tilda_h0_minus_k_conj = conjugate(tilda_h0.ba);',
+
+
+
+      'float cosOfWT = cos(w * uTime);',
+
+      'float sinOfWT = sin(w * uTime);',
+
+
+
+      '//Euler Formula',
+
+      'vec2 expIwt = vec2(cosOfWT, sinOfWT);',
+
+      'vec2 expIwtConj = vec2(cosOfWT, -sinOfWT);',
+
+
+
+      '//dy',
+
+      'vec2 hk_tilda = cAdd(cMult(tilda_h0_k, expIwt), cMult(tilda_h0_minus_k_conj, expIwtConj));',
+
+
+
+      '#if($isXAxis)',
+
+        'vec2 dx = vec2(0.0, -k.x / magK);',
+
+        'hk_tilda = cMult(dx, hk_tilda);',
+
+      '#elif(!$isXAxis && !$isYAxis)',
+
+        'vec2 dy = vec2(0.0, -k.y / magK);',
+
+        'hk_tilda = cMult(dy, hk_tilda);',
+
+      '#endif',
+
+      'gl_FragColor = vec4(hk_tilda, 0.0, 1.0);',
+
     '}',
     ];
 
@@ -1378,20 +1500,34 @@ AWater.AOcean.Materials.FFTWaves.heightMapShaderData = {
     oneOverNSquared: {type: 'f', value: 1.0},
   },
 
-  fragmentShader: [
-    'precision highp float;',
-
-    '//With a lot of help from https://youtu.be/8kgpxtggFog',
-    'uniform sampler2D pingpongTexture;',
-    'uniform float oneOverNSquared;',
-
-    '//We might want to do this in the vertex shader rather then',
-    '//running through another shader pass for this.',
-    'void main(){',
-      'vec2 uv = vWorldPosition.xy;',
-      '//float h = texture2D(pingpongTexture, position).r;',
-      '//gl_FragColor = vec4(vec3(h * oneOverNSquared), 1.0);',
-      'gl_FragColor = vec4(texture2D(pingpongTexture, position).r, 0.0, 0.0, 1.0);',
+  fragmentShader: [
+
+    'precision highp float;',
+
+
+
+    '//With a lot of help from https://youtu.be/8kgpxtggFog',
+
+    'uniform sampler2D pingpongTexture;',
+
+    'uniform float oneOverNSquared;',
+
+
+
+    '//We might want to do this in the vertex shader rather then',
+
+    '//running through another shader pass for this.',
+
+    'void main(){',
+
+      'vec2 uv = vWorldPosition.xy;',
+
+      '//float h = texture2D(pingpongTexture, position).r;',
+
+      '//gl_FragColor = vec4(vec3(h * oneOverNSquared), 1.0);',
+
+      'gl_FragColor = vec4(texture2D(pingpongTexture, position).r, 0.0, 0.0, 1.0);',
+
     '}',
   ].join('\n')
 };
@@ -1514,62 +1650,118 @@ AWater.AOcean.Materials.FFTWaves.butterflyTextureData = {
   },
 
   fragmentShader: function(pingpong_id, injectVariable = false){
-    let glsl = [
-    'precision highp float;',
-
-    'varying vec3 vWorldPosition;',
-
-    '//With a lot of help from https://youtu.be/i0BPrGuOdPo',
-    'uniform sampler2D twiddleTexture;',
-    'uniform float stageFraction;',
-    'uniform int direction;',
-
-    'const float pi = 3.141592653589793238462643383279502884197169;',
-
-    'vec2 cMult(vec2 a, vec2 b){',
-      'return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);',
-    '}',
-
-    'vec2 cAdd(vec2 a, vec2 b){',
-      'return vec2(a.x + b.x, a.y + b.y);',
-    '}',
-
-    'vec4 horizontalButterflies(vec2 position){',
-      'vec4 data = texture2D(twiddleTexture, vec2(stageFraction, position.x));',
-
-      `vec2 p = texture2D(pingpong_${pingpong_id}, vec2(data.z, position.y)).rg;`,
-      `vec2 q = texture2D(pingpong_${pingpong_id}, vec2(data.w, position.y)).rg;`,
-      'vec2 w = vec2(data.x, data.y);',
-
-      'vec2 H = cAdd(p, cMult(w, q));',
-      'return vec4(H, 0.0, 1.0);',
-    '}',
-
-    'vec4 verticalButterflies(vec2 position){',
-      'vec4 data = texture2D(twiddleTexture, vec2(stageFraction, position.y));',
-
-      `vec2 p = texture2D(pingpong_${pingpong_id}, vec2(position.x, data.z)).rg;`,
-      `vec2 q = texture2D(pingpong_${pingpong_id}, vec2(position.x, data.w)).rg;`,
-      'vec2 w = vec2(data.x, data.y);',
-
-      'vec2 H = cAdd(p, cMult(w, q));',
-      'return vec4(H, 0.0, 1.0);',
-    '}',
-
-    'void main(){',
-      'vec2 position = gl_FragCoord.xy / resolution.xy;',
-      'vec4 result;',
-
-      '//If horizontal butterfly',
-      '//(Note: We should probably pull this into another shader later.)',
-      'if(direction == 0){',
-    '		result = horizontalButterflies(position);',
-      '}',
-    '	else if(direction == 1){',
-    '		result = verticalButterflies(position);',
-      '}',
-
-      'gl_FragColor = result;',
+    let glsl = [
+
+    'precision highp float;',
+
+
+
+    'varying vec3 vWorldPosition;',
+
+
+
+    '//With a lot of help from https://youtu.be/i0BPrGuOdPo',
+
+    'uniform sampler2D twiddleTexture;',
+
+    'uniform float stageFraction;',
+
+    'uniform int direction;',
+
+
+
+    'const float pi = 3.141592653589793238462643383279502884197169;',
+
+
+
+    'vec2 cMult(vec2 a, vec2 b){',
+
+      'return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);',
+
+    '}',
+
+
+
+    'vec2 cAdd(vec2 a, vec2 b){',
+
+      'return vec2(a.x + b.x, a.y + b.y);',
+
+    '}',
+
+
+
+    'vec4 horizontalButterflies(vec2 position){',
+
+      'vec4 data = texture2D(twiddleTexture, vec2(stageFraction, position.x));',
+
+
+
+      `vec2 p = texture2D(pingpong_${pingpong_id}, vec2(data.z, position.y)).rg;`,
+
+      `vec2 q = texture2D(pingpong_${pingpong_id}, vec2(data.w, position.y)).rg;`,
+
+      'vec2 w = vec2(data.x, data.y);',
+
+
+
+      'vec2 H = cAdd(p, cMult(w, q));',
+
+      'return vec4(H, 0.0, 1.0);',
+
+    '}',
+
+
+
+    'vec4 verticalButterflies(vec2 position){',
+
+      'vec4 data = texture2D(twiddleTexture, vec2(stageFraction, position.y));',
+
+
+
+      `vec2 p = texture2D(pingpong_${pingpong_id}, vec2(position.x, data.z)).rg;`,
+
+      `vec2 q = texture2D(pingpong_${pingpong_id}, vec2(position.x, data.w)).rg;`,
+
+      'vec2 w = vec2(data.x, data.y);',
+
+
+
+      'vec2 H = cAdd(p, cMult(w, q));',
+
+      'return vec4(H, 0.0, 1.0);',
+
+    '}',
+
+
+
+    'void main(){',
+
+      'vec2 position = gl_FragCoord.xy / resolution.xy;',
+
+      'vec4 result;',
+
+
+
+      '//If horizontal butterfly',
+
+      '//(Note: We should probably pull this into another shader later.)',
+
+      'if(direction == 0){',
+
+    '		result = horizontalButterflies(position);',
+
+      '}',
+
+    '	else if(direction == 1){',
+
+    '		result = verticalButterflies(position);',
+
+      '}',
+
+
+
+      'gl_FragColor = result;',
+
     '}',
     ];
 
@@ -1591,37 +1783,68 @@ AWater.AOcean.Materials.FFTWaves.amplitudeFilterShaderMaterial = {
   },
 
   fragmentShader: function(){
-    return [
-    'precision highp float;',
-
-    'varying vec3 vWorldPosition;',
-
-    'uniform float frequencyRadiusStart;',
-    'uniform float maxBandwidthStart;',
-
-    'void main(){',
-      'vec2 position = gl_FragCoord.xy / resolution.xy;',
-      'vec2 hkTexel = texture2D(textureHk, position).rg;',
-
-      '//Low has a radius greater than 0.05 and a band limit of 10000',
-      '//Low medium has a radius greater than 0.01 and a band limit of 750000',
-      '//medium has a radius greater than 0.002 and a band limit of 10000000.0',
-      '//medium high as a radius greater than 0.0014 and a band limit of 30000000.0',
-
-      "//This could use fading... but for now, we don't need fading, we need this to work",
-      '//So our filters are hard.',
-      'float redChannelOut = 0.0;',
-      'float greenChannelOut = 0.0;',
-      'float radiusOfFrequency = sqrt(position.x * position.x + position.y * position.y);',
-      'bool frequencyInRange = radiusOfFrequency > frequencyRadiusStart;',
-      'if(abs(hkTexel.r) < maxBandwidthStart && frequencyInRange){',
-        'redChannelOut = hkTexel.r;',
-      '}',
-      'if(abs(hkTexel.g) < maxBandwidthStart && frequencyInRange){',
-        'greenChannelOut = hkTexel.g;',
-      '}',
-
-      'gl_FragColor = vec4(redChannelOut, greenChannelOut, 0.0, 1.0);',
+    return [
+
+    'precision highp float;',
+
+
+
+    'varying vec3 vWorldPosition;',
+
+
+
+    'uniform float frequencyRadiusStart;',
+
+    'uniform float maxBandwidthStart;',
+
+
+
+    'void main(){',
+
+      'vec2 position = gl_FragCoord.xy / resolution.xy;',
+
+      'vec2 hkTexel = texture2D(textureHk, position).rg;',
+
+
+
+      '//Low has a radius greater than 0.05 and a band limit of 10000',
+
+      '//Low medium has a radius greater than 0.01 and a band limit of 750000',
+
+      '//medium has a radius greater than 0.002 and a band limit of 10000000.0',
+
+      '//medium high as a radius greater than 0.0014 and a band limit of 30000000.0',
+
+
+
+      "//This could use fading... but for now, we don't need fading, we need this to work",
+
+      '//So our filters are hard.',
+
+      'float redChannelOut = 0.0;',
+
+      'float greenChannelOut = 0.0;',
+
+      'float radiusOfFrequency = sqrt(position.x * position.x + position.y * position.y);',
+
+      'bool frequencyInRange = radiusOfFrequency > frequencyRadiusStart;',
+
+      'if(abs(hkTexel.r) < maxBandwidthStart && frequencyInRange){',
+
+        'redChannelOut = hkTexel.r;',
+
+      '}',
+
+      'if(abs(hkTexel.g) < maxBandwidthStart && frequencyInRange){',
+
+        'greenChannelOut = hkTexel.g;',
+
+      '}',
+
+
+
+      'gl_FragColor = vec4(redChannelOut, greenChannelOut, 0.0, 1.0);',
+
     '}',
     ].join('\n');
   }
@@ -1641,41 +1864,76 @@ AWater.AOcean.Materials.FFTWaves.waveComposerShaderMaterial = {
   },
 
   fragmentShader: function(numberOfWaveComponents){
-    let originalGLSL = [
-    'varying vec3 vWorldPosition;',
-
-    'uniform sampler2D xWavetextures[$total_offsets];',
-    'uniform sampler2D yWavetextures[$total_offsets];',
-    'uniform sampler2D zWavetextures[$total_offsets];',
-    'uniform float N;',
-
-    'float fModulo1(float a){',
-      'return (a - floor(a));',
-    '}',
-
-    'void main(){',
-      'vec2 position = gl_FragCoord.xy / resolution.xy;',
-      'float sizeExpansion = (resolution.x + 1.0) / resolution.x; //Expand by exactly one pixel',
-      'vec2 uv = sizeExpansion * position;',
-      'vec2 wrappedUV = vec2(fModulo1(uv.x), fModulo1(uv.y));',
-      'vec3 combinedWaveHeight = vec3(0.0);',
-
-      '//Interpolations',
-      'float waveHeight_x;',
-      'float waveHeight_y;',
-      'float waveHeight_z;',
-
-      '$unrolled_wave_composer',
-
-      '// for(int i = 0; i < numberOfWaveTextures; i++){',
-      '//   float waveHeight_x = texture2D(xWavetextures[i], wrappedUV).x;',
-      '//   float waveHeight_y = texture2D(yWavetextures[i], wrappedUV).x;',
-      '//   float waveHeight_z = texture2D(zWavetextures[i], wrappedUV).x;',
-      '//   combinedWaveHeight += vec3(waveHeight_x, waveHeight_y, waveHeight_z);',
-      '//   totalOffsets += 1.0;',
-      '// }',
-
-      'gl_FragColor = vec4(combinedWaveHeight / ($total_offsets_float * N * N), 1.0);',
+    let originalGLSL = [
+
+    'varying vec3 vWorldPosition;',
+
+
+
+    'uniform sampler2D xWavetextures[$total_offsets];',
+
+    'uniform sampler2D yWavetextures[$total_offsets];',
+
+    'uniform sampler2D zWavetextures[$total_offsets];',
+
+    'uniform float N;',
+
+
+
+    'float fModulo1(float a){',
+
+      'return (a - floor(a));',
+
+    '}',
+
+
+
+    'void main(){',
+
+      'vec2 position = gl_FragCoord.xy / resolution.xy;',
+
+      'float sizeExpansion = (resolution.x + 1.0) / resolution.x; //Expand by exactly one pixel',
+
+      'vec2 uv = sizeExpansion * position;',
+
+      'vec2 wrappedUV = vec2(fModulo1(uv.x), fModulo1(uv.y));',
+
+      'vec3 combinedWaveHeight = vec3(0.0);',
+
+
+
+      '//Interpolations',
+
+      'float waveHeight_x;',
+
+      'float waveHeight_y;',
+
+      'float waveHeight_z;',
+
+
+
+      '$unrolled_wave_composer',
+
+
+
+      '// for(int i = 0; i < numberOfWaveTextures; i++){',
+
+      '//   float waveHeight_x = texture2D(xWavetextures[i], wrappedUV).x;',
+
+      '//   float waveHeight_y = texture2D(yWavetextures[i], wrappedUV).x;',
+
+      '//   float waveHeight_z = texture2D(zWavetextures[i], wrappedUV).x;',
+
+      '//   combinedWaveHeight += vec3(waveHeight_x, waveHeight_y, waveHeight_z);',
+
+      '//   totalOffsets += 1.0;',
+
+      '// }',
+
+
+
+      'gl_FragColor = vec4(combinedWaveHeight / ($total_offsets_float * N * N), 1.0);',
+
     '}',
     ];
 
@@ -1711,17 +1969,28 @@ AWater.AOcean.Materials.FFTWaves.waveHeightShaderMaterialData = {
     waveHeightMultiplier: {type: 'f', value: 1.0}
   },
 
-  fragmentShader: [
-    'precision highp float;',
-
-    'uniform sampler2D combinedWaveHeights;',
-    'uniform float N;',
-    'uniform float waveHeightMultiplier;',
-
-    'void main(){',
-      'vec2 uv = gl_FragCoord.xy / resolution.xy;',
-      'float outputputColor = waveHeightMultiplier * texture2D(combinedWaveHeights, uv).xyz / (N * N);',
-      'gl_FragColor = vec4(vec3(outputColor), 1.0);',
+  fragmentShader: [
+
+    'precision highp float;',
+
+
+
+    'uniform sampler2D combinedWaveHeights;',
+
+    'uniform float N;',
+
+    'uniform float waveHeightMultiplier;',
+
+
+
+    'void main(){',
+
+      'vec2 uv = gl_FragCoord.xy / resolution.xy;',
+
+      'float outputputColor = waveHeightMultiplier * texture2D(combinedWaveHeights, uv).xyz / (N * N);',
+
+      'gl_FragColor = vec4(vec3(outputColor), 1.0);',
+
     '}',
   ].join('\n')
 };
@@ -1735,26 +2004,43 @@ AWater.AOcean.Materials.Ocean.positionPassMaterial = {
     viewMatrix: {type: 'mat4', value: new THREE.Matrix4()},
   },
 
-  fragmentShader: [
-    'varying vec3 vWorldPosition;',
-
-    'void main(){',
-      '//Check if we are above or below the water to see what kind of fog is applied',
-      'gl_FragColor = vec4(vWorldPosition, 1.0);',
+  fragmentShader: [
+
+    'varying vec3 vWorldPosition;',
+
+
+
+    'void main(){',
+
+      '//Check if we are above or below the water to see what kind of fog is applied',
+
+      'gl_FragColor = vec4(vWorldPosition, 1.0);',
+
     '}',
   ].join('\n'),
 
-  vertexShader: [
-    'precision highp float;',
-
-    '//attribute vec3 baseDepth;',
-    'varying vec3 vWorldPosition;',
-    'uniform mat4 worldMatrix;',
-
-    'void main() {',
-      'vWorldPosition = (modelViewMatrix * vec4(position, 1.0)).xyz;',
-
-      'gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);',
+  vertexShader: [
+
+    'precision highp float;',
+
+
+
+    '//attribute vec3 baseDepth;',
+
+    'varying vec3 vWorldPosition;',
+
+    'uniform mat4 worldMatrix;',
+
+
+
+    'void main() {',
+
+      'vWorldPosition = (modelViewMatrix * vec4(position, 1.0)).xyz;',
+
+
+
+      'gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);',
+
     '}',
   ].join('\n'),
 };
@@ -2151,177 +2437,345 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     linearScatteringTotalScatteringWaveHeight: {type: 'f', value: 20.0}
   },
 
-  fragmentShader: [
-    'precision highp float;',
-
-    'varying float height;',
-    'varying vec3 vViewVector;',
-    'varying vec3 vWorldPosition;',
-    'varying vec4 colorMap;',
-    'varying vec2 vUv;',
-    'varying vec3 displacedNormal;',
-    'varying mat3 modelMatrixMat3;',
-
-    '//uniform vec3 cameraDirection;',
-    'uniform int isBelowWater;',
-    'uniform float sizeOfOceanPatch;',
-    'uniform float largeNormalMapStrength;',
-    'uniform float smallNormalMapStrength;',
-    'uniform sampler2D smallNormalMap;',
-    'uniform sampler2D largeNormalMap;',
-    'uniform samplerCube reflectionCubeMap;',
-    'uniform samplerCube refractionCubeMap;',
-    'uniform samplerCube depthCubeMap;',
-
-    'uniform vec2 smallNormalMapVelocity;',
-    'uniform vec2 largeNormalMapVelocity;',
-
-    'uniform vec3 brightestDirectionalLight;',
-    'uniform vec3 lightScatteringAmounts;',
-
-    'uniform float t;',
-
-    '//Fog variables',
-    '#include <fog_pars_fragment>',
-
-    'uniform vec4 directLightingColor;',
-
-    "//R0 For Schlick's Approximation",
-    '//With n1 = 1.33 and n0 = 1.05',
-    'const float r0 = 0.01968152171;',
-    'const vec3 inverseGamma = vec3(0.454545454545454545454545);',
-    'const vec3 gamma = vec3(2.2);',
-
-    'vec2 vec2Modulo(vec2 inputUV){',
-        'return (inputUV - floor(inputUV));',
-    '}',
-
-    '//From https://blog.selfshadow.com/publications/blending-in-detail/',
-    'vec3 combineNormals(vec3 normal1, vec3 normal2){',
-      'vec3 t = normal1.xyz * vec3(2.0,  2.0, 2.0) + vec3(-1.0, -1.0,  0.0);',
-      'vec3 u = normal2.xyz * vec3(-2.0, -2.0, 2.0) + vec3(1.0,  1.0, -1.0);',
-      'vec3 r = t * dot(t, u) - u * t.z;',
-      'return (normalize(r) + vec3(1.0)) * 0.5;',
-    '}',
-
-    '//Including this because someone removed this in a future versio of THREE. Why?!',
-    'vec3 MyAESFilmicToneMapping(vec3 color) {',
-      'return clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), 0.0, 1.0);',
-    '}',
-
-    'void main(){',
-      '//Get the reflected and refracted information of the scene',
-      'vec2 cameraOffset = vec2(cameraPosition.x, -cameraPosition.z);',
-      'vec2 uvOffset = vec2Modulo(vUv + (cameraOffset / sizeOfOceanPatch));',
-      'vec2 smallNormalMapOffset = (vUv * 3.0) + ((cameraOffset + t * smallNormalMapVelocity) / (sizeOfOceanPatch / 3.0));',
-      'vec2 largeNormalMapOffset = (vUv * 5.0) + ((cameraOffset - t * largeNormalMapVelocity) / (sizeOfOceanPatch / 5.0));',
-      'vec3 smallNormalMap = texture2D(smallNormalMap, smallNormalMapOffset).xyz;',
-      'smallNormalMap = 2.0 * smallNormalMap - 1.0;',
-      'smallNormalMap.xy *= smallNormalMapStrength;',
-      'smallNormalMap = normalize(smallNormalMap);',
-      'smallNormalMap = (smallNormalMap + 1.0) * 0.5;',
-      'vec3 largeNormalMap = texture2D(largeNormalMap, largeNormalMapOffset).xyz;',
-      'largeNormalMap = 2.0 * largeNormalMap - 1.0;',
-      'largeNormalMap.xy *= largeNormalMapStrength;',
-      'largeNormalMap = normalize(largeNormalMap);',
-      'largeNormalMap = (largeNormalMap + 1.0) * 0.5;',
-      'vec3 combinedNormalMap = combineNormals(smallNormalMap, largeNormalMap);',
-      'vec3 normalizedDisplacedNormalMap = (normalize(displacedNormal.xyz) + vec3(1.0)) * 0.5;',
-      'combinedNormalMap = combineNormals(normalizedDisplacedNormalMap, combinedNormalMap);',
-      'combinedNormalMap = combinedNormalMap * 2.0 - vec3(1.0);',
-      'combinedNormalMap = normalize(modelMatrixMat3 * combinedNormalMap);',
-      'vec3 normalizedViewVector = normalize(vViewVector);',
-      'vec3 reflectedCoordinates = reflect(normalizedViewVector, combinedNormalMap);',
-      'vec3 refractedCoordinates = refract(normalizedViewVector, combinedNormalMap, 1.005 / 1.333);',
-      'vec3 reflectedLight = textureCube(reflectionCubeMap, reflectedCoordinates).rgb; //Reflection',
-      'vec3 refractedLight = textureCube(refractionCubeMap, refractedCoordinates).rgb; //Refraction',
-      'vec3 pointXYZ = textureCube(depthCubeMap, refractedCoordinates).rgb; //Scattering',
-      'float distanceToPoint = distance(pointXYZ, vWorldPosition);',
-      'vec3 normalizedTransmittancePercentColor = normalize(lightScatteringAmounts);',
-      'vec3 percentOfSourceLight = clamp(exp(-distanceToPoint / lightScatteringAmounts), 0.0, 1.0);',
-      'refractedLight = percentOfSourceLight * pow(refractedLight, gamma);',
-      '//Increasing brightness with height inspired by, https://80.lv/articles/tutorial-ocean-shader-with-gerstner-waves/',
-      'vec3 inscatterLight = pow(max(height, 0.0) * length(vec3(1.0) - percentOfSourceLight) * pow(normalizedTransmittancePercentColor, vec3(2.5))  * brightestDirectionalLight, gamma);',
-
-      "//Apply Schlick's approximation for the fresnel amount",
-      '//https://en.wikipedia.org/wiki/Schlick%27s_approximation',
-      'float oneMinusCosTheta = 1.0 - dot(combinedNormalMap, -normalizedViewVector);',
-      'float reflectedLightPercent = clamp(r0 + (1.0 -  r0) * pow(0.9 * oneMinusCosTheta, 5.0), 0.0, 1.0);',
-      'reflectedLight = pow(reflectedLight, gamma);',
-
-      '//Total light',
-      'vec3 totalLight = inscatterLight + mix(refractedLight, reflectedLight, reflectedLightPercent);',
-
-      'gl_FragColor = vec4(pow(MyAESFilmicToneMapping(totalLight), inverseGamma), 1.0);',
-
-      '#include <fog_fragment>',
+  fragmentShader: [
+
+    'precision highp float;',
+
+
+
+    'varying float height;',
+
+    'varying vec3 vViewVector;',
+
+    'varying vec3 vWorldPosition;',
+
+    'varying vec4 colorMap;',
+
+    'varying vec2 vUv;',
+
+    'varying vec3 displacedNormal;',
+
+    'varying mat3 modelMatrixMat3;',
+
+
+
+    '//uniform vec3 cameraDirection;',
+
+    'uniform int isBelowWater;',
+
+    'uniform float sizeOfOceanPatch;',
+
+    'uniform float largeNormalMapStrength;',
+
+    'uniform float smallNormalMapStrength;',
+
+    'uniform sampler2D smallNormalMap;',
+
+    'uniform sampler2D largeNormalMap;',
+
+    'uniform samplerCube reflectionCubeMap;',
+
+    'uniform samplerCube refractionCubeMap;',
+
+    'uniform samplerCube depthCubeMap;',
+
+
+
+    'uniform vec2 smallNormalMapVelocity;',
+
+    'uniform vec2 largeNormalMapVelocity;',
+
+
+
+    'uniform vec3 brightestDirectionalLight;',
+
+    'uniform vec3 lightScatteringAmounts;',
+
+
+
+    'uniform float t;',
+
+
+
+    '//Fog variables',
+
+    '#include <fog_pars_fragment>',
+
+
+
+    'uniform vec4 directLightingColor;',
+
+
+
+    "//R0 For Schlick's Approximation",
+
+    '//With n1 = 1.33 and n0 = 1.05',
+
+    'const float r0 = 0.01968152171;',
+
+    'const vec3 inverseGamma = vec3(0.454545454545454545454545);',
+
+    'const vec3 gamma = vec3(2.2);',
+
+
+
+    'vec2 vec2Modulo(vec2 inputUV){',
+
+        'return (inputUV - floor(inputUV));',
+
+    '}',
+
+
+
+    '//From https://blog.selfshadow.com/publications/blending-in-detail/',
+
+    'vec3 combineNormals(vec3 normal1, vec3 normal2){',
+
+      'vec3 t = normal1.xyz * vec3(2.0,  2.0, 2.0) + vec3(-1.0, -1.0,  0.0);',
+
+      'vec3 u = normal2.xyz * vec3(-2.0, -2.0, 2.0) + vec3(1.0,  1.0, -1.0);',
+
+      'vec3 r = t * dot(t, u) - u * t.z;',
+
+      'return (normalize(r) + vec3(1.0)) * 0.5;',
+
+    '}',
+
+
+
+    '//Including this because someone removed this in a future versio of THREE. Why?!',
+
+    'vec3 MyAESFilmicToneMapping(vec3 color) {',
+
+      'return clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), 0.0, 1.0);',
+
+    '}',
+
+
+
+    'void main(){',
+
+      '//Get the reflected and refracted information of the scene',
+
+      'vec2 cameraOffset = vec2(cameraPosition.x, -cameraPosition.z);',
+
+      'vec2 uvOffset = vec2Modulo(vUv + (cameraOffset / sizeOfOceanPatch));',
+
+      'vec2 smallNormalMapOffset = (vUv * 3.0) + ((cameraOffset + t * smallNormalMapVelocity) / (sizeOfOceanPatch / 3.0));',
+
+      'vec2 largeNormalMapOffset = (vUv * 5.0) + ((cameraOffset - t * largeNormalMapVelocity) / (sizeOfOceanPatch / 5.0));',
+
+      'vec3 smallNormalMap = texture2D(smallNormalMap, smallNormalMapOffset).xyz;',
+
+      'smallNormalMap = 2.0 * smallNormalMap - 1.0;',
+
+      'smallNormalMap.xy *= smallNormalMapStrength;',
+
+      'smallNormalMap = normalize(smallNormalMap);',
+
+      'smallNormalMap = (smallNormalMap + 1.0) * 0.5;',
+
+      'vec3 largeNormalMap = texture2D(largeNormalMap, largeNormalMapOffset).xyz;',
+
+      'largeNormalMap = 2.0 * largeNormalMap - 1.0;',
+
+      'largeNormalMap.xy *= largeNormalMapStrength;',
+
+      'largeNormalMap = normalize(largeNormalMap);',
+
+      'largeNormalMap = (largeNormalMap + 1.0) * 0.5;',
+
+      'vec3 combinedNormalMap = combineNormals(smallNormalMap, largeNormalMap);',
+
+      'vec3 normalizedDisplacedNormalMap = (normalize(displacedNormal.xyz) + vec3(1.0)) * 0.5;',
+
+      'combinedNormalMap = combineNormals(normalizedDisplacedNormalMap, combinedNormalMap);',
+
+      'combinedNormalMap = combinedNormalMap * 2.0 - vec3(1.0);',
+
+      'combinedNormalMap = normalize(modelMatrixMat3 * combinedNormalMap);',
+
+      'vec3 normalizedViewVector = normalize(vViewVector);',
+
+      'vec3 reflectedCoordinates = reflect(normalizedViewVector, combinedNormalMap);',
+
+      'vec3 refractedCoordinates = refract(normalizedViewVector, combinedNormalMap, 1.005 / 1.333);',
+
+      'vec3 reflectedLight = textureCube(reflectionCubeMap, reflectedCoordinates).rgb; //Reflection',
+
+      'vec3 refractedLight = textureCube(refractionCubeMap, refractedCoordinates).rgb; //Refraction',
+
+      'vec3 pointXYZ = textureCube(depthCubeMap, refractedCoordinates).rgb; //Scattering',
+
+      'float distanceToPoint = distance(pointXYZ, vWorldPosition);',
+
+      'vec3 normalizedTransmittancePercentColor = normalize(lightScatteringAmounts);',
+
+      'vec3 percentOfSourceLight = clamp(exp(-distanceToPoint / lightScatteringAmounts), 0.0, 1.0);',
+
+      'refractedLight = percentOfSourceLight * pow(refractedLight, gamma);',
+
+      '//Increasing brightness with height inspired by, https://80.lv/articles/tutorial-ocean-shader-with-gerstner-waves/',
+
+      'vec3 inscatterLight = pow(max(height, 0.0) * length(vec3(1.0) - percentOfSourceLight) * pow(normalizedTransmittancePercentColor, vec3(2.5))  * brightestDirectionalLight, gamma);',
+
+
+
+      "//Apply Schlick's approximation for the fresnel amount",
+
+      '//https://en.wikipedia.org/wiki/Schlick%27s_approximation',
+
+      'float oneMinusCosTheta = 1.0 - dot(combinedNormalMap, -normalizedViewVector);',
+
+      'float reflectedLightPercent = clamp(r0 + (1.0 -  r0) * pow(0.9 * oneMinusCosTheta, 5.0), 0.0, 1.0);',
+
+      'reflectedLight = pow(reflectedLight, gamma);',
+
+
+
+      '//Total light',
+
+      'vec3 totalLight = inscatterLight + mix(refractedLight, reflectedLight, reflectedLightPercent);',
+
+
+
+      'gl_FragColor = vec4(pow(MyAESFilmicToneMapping(totalLight), inverseGamma), 1.0);',
+
+
+
+      '#include <fog_fragment>',
+
     '}',
   ].join('\n'),
 
-  vertexShader: [
-    'precision highp float;',
-
-    'attribute vec4 tangent;',
-
-    'varying float height;',
-    'varying vec3 tangentSpaceViewDirection;',
-    'varying vec3 vViewVector;',
-    'varying vec3 vWorldPosition;',
-    'varying vec4 colorMap;',
-    'varying vec2 vUv;',
-    'varying vec3 displacedNormal;',
-    'varying mat3 modelMatrixMat3;',
-
-    'uniform float sizeOfOceanPatch;',
-    'uniform float linearScatteringTotalScatteringWaveHeight;',
-    'uniform float linearScatteringHeightOffset;',
-    'uniform sampler2D displacementMap;',
-    'uniform mat4 matrixWorld;',
-    '#include <fog_pars_vertex>',
-
-    'vec2 vec2Modulo(vec2 inputUV){',
-        'return (inputUV - floor(inputUV));',
-    '}',
-
-    'void main() {',
-      '//Set up our displacement map',
-      'vec3 offsetPosition = position;',
-      'vec4 worldPosition = modelMatrix * vec4( position, 1.0 );',
-      'vViewVector = worldPosition.xyz - cameraPosition;',
-      'modelMatrixMat3 = mat3(modelMatrix[0].xyz, modelMatrix[1].xyz, modelMatrix[2].xyz );',
-
-      'vec2 cameraOffset = (vec2(cameraPosition.x, -cameraPosition.z) / sizeOfOceanPatch);',
-      'vec2 uvOffset = uv + cameraOffset;',
-      'vec3 displacement = texture2D(displacementMap, uvOffset).xyz;',
-      'offsetPosition += modelMatrixMat3 * displacement;',
-
-      '//Normal map',
-      'vec3 scaledDisplacement = displacement / sizeOfOceanPatch;',
-      'height = (offsetPosition.z  + linearScatteringHeightOffset) / linearScatteringTotalScatteringWaveHeight;',
-      'vec3 bitangent = cross(normalize(normal.xyz), normalize(tangent.xyz));',
-      'vec3 v0 = vec3(uvOffset, 0.0);',
-      'v0 = v0 + scaledDisplacement;',
-      'vec3 vt = v0 + (1.0 / 12.0) * normalize(tangent.xyz);',
-      'vec3 vb = v0 + (1.0 / 12.0) * normalize(bitangent.xyz);',
-
-      'vec3 displacementVT = texture2D(displacementMap, vt.xy).xyz;',
-      'vt = vt + scaledDisplacement;',
-      'vec3 displacementVB = texture2D(displacementMap, vb.xy).xyz;',
-      'vb = vb + scaledDisplacement;',
-      'displacedNormal = normalize(cross(vt - v0, vb - v0));',
-
-      '//Set up our UV maps',
-      'vUv = uv;',
-
-      '//Have the water fade from dark blue to teal as it approaches the shore.',
-      'colorMap = vec4(displacement.xyz, 1.0);',
-
-      '//Add support for three.js fog',
-      'vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);',
-      'vWorldPosition = (projectionMatrix * mvPosition).xyz;',
-      '#include <fog_vertex>',
-
-      'gl_Position = projectionMatrix * modelViewMatrix * vec4(offsetPosition, 1.0);',
+  vertexShader: [
+
+    'precision highp float;',
+
+
+
+    'attribute vec4 tangent;',
+
+
+
+    'varying float height;',
+
+    'varying vec3 tangentSpaceViewDirection;',
+
+    'varying vec3 vViewVector;',
+
+    'varying vec3 vWorldPosition;',
+
+    'varying vec4 colorMap;',
+
+    'varying vec2 vUv;',
+
+    'varying vec3 displacedNormal;',
+
+    'varying mat3 modelMatrixMat3;',
+
+
+
+    'uniform float sizeOfOceanPatch;',
+
+    'uniform float linearScatteringTotalScatteringWaveHeight;',
+
+    'uniform float linearScatteringHeightOffset;',
+
+    'uniform sampler2D displacementMap;',
+
+    'uniform mat4 matrixWorld;',
+
+    '#include <fog_pars_vertex>',
+
+
+
+    'vec2 vec2Modulo(vec2 inputUV){',
+
+        'return (inputUV - floor(inputUV));',
+
+    '}',
+
+
+
+    'void main() {',
+
+      '//Set up our displacement map',
+
+      'vec3 offsetPosition = position;',
+
+      'vec4 worldPosition = modelMatrix * vec4( position, 1.0 );',
+
+      'vViewVector = worldPosition.xyz - cameraPosition;',
+
+      'modelMatrixMat3 = mat3(modelMatrix[0].xyz, modelMatrix[1].xyz, modelMatrix[2].xyz );',
+
+
+
+      'vec2 cameraOffset = (vec2(cameraPosition.x, -cameraPosition.z) / sizeOfOceanPatch);',
+
+      'vec2 uvOffset = uv + cameraOffset;',
+
+      'vec3 displacement = texture2D(displacementMap, uvOffset).xyz;',
+
+      'offsetPosition += modelMatrixMat3 * displacement;',
+
+
+
+      '//Normal map',
+
+      'vec3 scaledDisplacement = displacement / sizeOfOceanPatch;',
+
+      'height = (offsetPosition.z  + linearScatteringHeightOffset) / linearScatteringTotalScatteringWaveHeight;',
+
+      'vec3 bitangent = cross(normalize(normal.xyz), normalize(tangent.xyz));',
+
+      'vec3 v0 = vec3(uvOffset, 0.0);',
+
+      'v0 = v0 + scaledDisplacement;',
+
+      'vec3 vt = v0 + (1.0 / 12.0) * normalize(tangent.xyz);',
+
+      'vec3 vb = v0 + (1.0 / 12.0) * normalize(bitangent.xyz);',
+
+
+
+      'vec3 displacementVT = texture2D(displacementMap, vt.xy).xyz;',
+
+      'vt = vt + scaledDisplacement;',
+
+      'vec3 displacementVB = texture2D(displacementMap, vb.xy).xyz;',
+
+      'vb = vb + scaledDisplacement;',
+
+      'displacedNormal = normalize(cross(vt - v0, vb - v0));',
+
+
+
+      '//Set up our UV maps',
+
+      'vUv = uv;',
+
+
+
+      '//Have the water fade from dark blue to teal as it approaches the shore.',
+
+      'colorMap = vec4(displacement.xyz, 1.0);',
+
+
+
+      '//Add support for three.js fog',
+
+      'vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);',
+
+      'vWorldPosition = (projectionMatrix * mvPosition).xyz;',
+
+      '#include <fog_vertex>',
+
+
+
+      'gl_Position = projectionMatrix * modelViewMatrix * vec4(offsetPosition, 1.0);',
+
     '}',
   ].join('\n'),
 };
@@ -2486,7 +2940,6 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
     vertexShader: AWater.AOcean.Materials.Ocean.waterMaterial.vertexShader,
     fragmentShader: AWater.AOcean.Materials.Ocean.waterMaterial.fragmentShader,
     side: THREE.DoubleSide,
-    flatShading: true,
     transparent: true,
     lights: false,
     fog: true
@@ -2505,7 +2958,6 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
     vertexShader: AWater.AOcean.Materials.Ocean.positionPassMaterial.vertexShader,
     fragmentShader: AWater.AOcean.Materials.Ocean.positionPassMaterial.fragmentShader,
     side: THREE.DoubleSide,
-    flatShading: true,
     transparent: false,
     lights: false
   });

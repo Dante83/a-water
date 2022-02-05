@@ -1,3 +1,6 @@
+**Version 0.1.1**
+* Fixed issues associated with build 137 of THREE which is found in A-Frame Version 1.3.0.
+
 **Version 0.1.0**
 * Implemented ocean FFT heightmap based on [Oreon Engine FFT Waves Tutorial](https://youtu.be/B3YOLg0sA2g).
 * Emulated infinite ocean with a viewport-oriented approach (follows the camera) with motion emulated by moving the uv-coordinates.

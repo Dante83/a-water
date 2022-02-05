@@ -6,15 +6,15 @@ A-Water is a tad bit of a misnomer, as the library, presently, only contains cod
 
 This is built for the [A-Frame Web Framework](https://aframe.io/) version 1.2.0+. It also requires a Web XR compatible web browser.
 
-`https://aframe.io/releases/1.2.0/aframe.min.js`
+`https://aframe.io/releases/1.3.0/aframe.min.js`
 
 ## Installing
 
 When installing A-Ocean, you'll want to copy the *a-water.v0.1.0.min.js* file, along with the *assets** folder into their own directory in your JavaScript folder. Afterwards, add the minified file into a script tag in your html.
 
 ```html
-<script src="https://aframe.io/releases/1.2.0/aframe.min.js"></script>
-<script src="{PATH_TO_JS_FOLDER}/a-water.v0.1.0.min.js"></script>
+<script src="https://aframe.io/releases/1.3.0/aframe.min.js"></script>
+<script src="{PATH_TO_JS_FOLDER}/a-water.v0.1.1.min.js"></script>
 ```
 
 Once these references are set up, add the `<a-ocean>` component into your `<a-scene>` tag from A-Frame like so and make sure to include a camera element so the ocean can track along your position. `<a-ocean>` uses a static mesh plane around your camera, and then modifies the surface of that ocean by varying your position on the displacement map procedurally, giving you the 'appearance' of an infinite ocean without popping artifacts that occur from adding new mesh along the horizon.
