@@ -112,7 +112,6 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
     vertexShader: AWater.AOcean.Materials.Ocean.waterMaterial.vertexShader,
     fragmentShader: AWater.AOcean.Materials.Ocean.waterMaterial.fragmentShader,
     side: THREE.DoubleSide,
-    flatShading: true,
     transparent: true,
     lights: false,
     fog: true
@@ -131,7 +130,6 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
     vertexShader: AWater.AOcean.Materials.Ocean.positionPassMaterial.vertexShader,
     fragmentShader: AWater.AOcean.Materials.Ocean.positionPassMaterial.fragmentShader,
     side: THREE.DoubleSide,
-    flatShading: true,
     transparent: false,
     lights: false
   });
