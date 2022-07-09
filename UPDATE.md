@@ -1,3 +1,6 @@
+**Version 0.2.0**
+* Added support for simple ocean masking using the technique described by [How to hide a water plane inside a floating boat in threejs](https://woodenraft.games/blog/how-to-hide-water-plane-inside-hollow-boat-threejs).
+
 **Version 0.1.1**
 * Fixed issues associated with build 137 of THREE which is found in A-Frame Version 1.3.0.
 

@@ -5,9 +5,9 @@ import tempfile
 def main():
     #Useful constants, what we probably want to modify in order to write out the right file names
     output_dir = '../../dist/'
-    relative_dir = output_dir + "a-water.v0.1.1.js"
+    relative_dir = output_dir + "a-water.master.js"
     file_dir = os.path.abspath(relative_dir)
-    minified_file_dir = os.path.abspath(output_dir + "a-water.v0.1.1.min.js")
+    minified_file_dir = os.path.abspath(output_dir + "a-water.master.min.js")
 
     #Directy and ordered list of files to load
     js_dir = '../js/'
@@ -30,6 +30,7 @@ def main():
     'ocean-system/components/ocean-patch.js',\
     'ocean-system/components/ocean-grid.js',\
     'ocean-system/components/ocean-state.js',\
+    'ocean-system/components/ocean-static-mask.js',\
     'ocean-system/components/a-ocean.js']
 
     #Grab the strings for each of these files, and pull out any branches of code related to if(typeof exports !== 'undefined') {..}

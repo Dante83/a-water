@@ -108,6 +108,23 @@ The `linear_scattering_height_offset` and `linear_scattering_total_wave_height` 
   linear_scattering_total_wave_height: 30;"></a-ocean>
 ```
 
+##Making Things Transparent
+
+For semi-distant objects, like non-rideable boats, whose decks are always above water, but below your camera, or regions of land that go below sea-level, you can emulate masking parts of the ocean tiles off by importing a mesh in the shape of the mask you wish to add to the scene and then adding the `ocean-static-mask` attribute to the property.
+
+This feature is dependent upon a couple of special circumstances. The mesh underneath the mesh must not be transparent, or else it will be masked as well. Also, the mesh region you wish to mask out must always be below the mask, but the mask must always be above the water. That is to say, this is useful if you have a boat in light waves, but not for a large ship, if you wish to enter into the cargo hold. It also won't work if the ship has windows that require the materials to have transparency enabled as unfortunately this messes with the draw order and breaks this technique.
+
+```html
+  <!-- Our Ocean Planes -->
+  <a-ocean ocean-state="height_offset: 35;"></a-ocean>
+
+  <!--The mask that hides the ocean or anything transparent beneath it-->
+  <a-plane height="40" width="200" position="-450.0 125.0 0.0" rotation="-90 0 0" ocean-static-mask></a-plane>
+
+  <!-- The object we want visible beneath the ocean -->
+  <a-box height="40" depth="40" width="40" position="-450.0 25.0 0.0"></a-box>
+```
+
 ## Author
 * **David Evans / Dante83** - *Main Developer*
 
@@ -117,6 +134,7 @@ The `linear_scattering_height_offset` and `linear_scattering_total_wave_height` 
 * The normal maps from [Water Simulation](https://watersimulation.tumblr.com/post/115928250077/scrolling-normal-maps), are used as the surface details for the waves in this component.
 * The normal map techniques from [Blending in Detail](https://blog.selfshadow.com/publications/blending-in-detail/) were critical to providing detailing on the wave surfaces.
 * The height based 'glow' in the water is a trick that is thanks to the tutorial, [Ocean Shader With Gerstner Waves](https://80.lv/articles/tutorial-ocean-shader-with-gerstner-waves/).
+* Simple ocean transparency component is an implementation of [How to hide a water plane inside a floating boat in threejs](https://woodenraft.games/blog/how-to-hide-water-plane-inside-hollow-boat-threejs).
 * All the amazing work that has gone into [THREE.JS](https://threejs.org/) and [A-Frame](https://aframe.io/).
 * *And so many other websites and individuals. Thank you for filling our worlds with amazing oceans, deep, mysterious, and uncharted.*
 
