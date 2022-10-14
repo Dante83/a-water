@@ -7,7 +7,6 @@ AFRAME.registerComponent('ocean-static-mask', {
       transparent: false,
       colorWrite: false,
     });
-    maskMaterial.needsUpdate = true;
     let mesh = this.el.getObject3D('mesh');
     mesh.traverse( node => {
         if(!node.isMesh){
