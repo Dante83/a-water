@@ -36,7 +36,7 @@ void main() {
 
   //Normal map
   vec3 scaledDisplacement = displacement / sizeOfOceanPatch;
-  height = (offsetPosition.z  + linearScatteringHeightOffset) / linearScatteringTotalScatteringWaveHeight;
+  height = (offsetPosition.y  + linearScatteringHeightOffset) / linearScatteringTotalScatteringWaveHeight;
   vec3 bitangent = cross(normalize(normal.xyz), normalize(tangent.xyz));
   vec3 v0 = vec3(uvOffset, 0.0);
   v0 = v0 + scaledDisplacement;

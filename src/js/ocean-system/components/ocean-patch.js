@@ -4,9 +4,7 @@ AWater.AOcean.OceanPatch = function(parentOceanGrid, initialPosition, lod, topLO
   this.position = new THREE.Vector3();
   this.parentOceanGrid = parentOceanGrid;
 
-  console.log({lod, topLOD, rightLOD, bottomLOD, leftLOD})
   const geometry = AWater.OceanTile(parentOceanGrid.patchSize, lod, topLOD, rightLOD, bottomLOD, leftLOD);
-  THREE.BufferGeometryUtils.computeTangents(geometry);
   this.plane = new THREE.Mesh(geometry, parentOceanGrid.oceanMaterial.clone());
   scene.add(this.plane);
 

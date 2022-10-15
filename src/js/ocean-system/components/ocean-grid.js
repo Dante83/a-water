@@ -10,7 +10,6 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
   this.drawDistance = data.draw_distance;
   this.patchSize = data.patch_size;
   this.dataPatchSize = data.patch_size;
-  this.patchVertexSize = data.patch_vertex_size;
   this.heightOffset = data.height_offset;
   this.data = data;
   this.time = 0.0;
@@ -158,8 +157,8 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
         const bucketID = xForID | (4294901760 & (yForID * 65536));
         const distanceToPlane = Math.sqrt(distToPlaneSquared);
         //Not sure why this works best when draw distance is at a 1/4. Maybe it's just the angle? But not sure...
-        const tesselationFactor = Math.round(4 * (1.0 - (Math.max(distanceToPlane - this.patchSize, 0.0) / (0.25 * this.drawDistance - this.patchSize))) + 1);
-        patchLODByBucketID[bucketID] = Math.max(Math.min(2 ** tesselationFactor, 64), 1);
+        const tesselationFactor = Math.round(4 * (1.0 - (Math.max(distanceToPlane, 0.0) / (this.drawDistance))));
+        patchLODByBucketID[bucketID] = Math.max(Math.min(2 ** tesselationFactor, 16), 1);
       }
     }
   }
