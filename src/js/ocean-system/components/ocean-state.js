@@ -3,7 +3,7 @@ AFRAME.registerComponent('ocean-state', {
   oceanGrid: null,
   oceanRenderer: null,
   schema: {
-    'draw_distance': {type: 'number', default: 1280.0},
+    'draw_distance': {type: 'number', default: 5000.0},
     'patch_size': {type: 'number', default: 256.0},
     'patch_data_size': {type: 'number', default: 256.0},
     'patch_vertex_size': {type: 'number', default: 140},

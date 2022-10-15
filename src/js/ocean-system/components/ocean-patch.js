@@ -1,13 +1,13 @@
-AWater.AOcean.OceanPatch = function(parentOceanGrid, initialPosition){
-  let scene = parentOceanGrid.scene;
+AWater.AOcean.OceanPatch = function(parentOceanGrid, initialPosition, lod, topLOD, rightLOD, bottomLOD, leftLOD){
+  const scene = parentOceanGrid.scene;
   this.initialPosition = initialPosition;
   this.position = new THREE.Vector3();
   this.parentOceanGrid = parentOceanGrid;
 
-  let geometry = new THREE.PlaneBufferGeometry(parentOceanGrid.patchSize, parentOceanGrid.patchSize, parentOceanGrid.patchVertexSize, parentOceanGrid.patchVertexSize);
+  console.log({lod, topLOD, rightLOD, bottomLOD, leftLOD})
+  const geometry = AWater.OceanTile(parentOceanGrid.patchSize, lod, topLOD, rightLOD, bottomLOD, leftLOD);
   THREE.BufferGeometryUtils.computeTangents(geometry);
   this.plane = new THREE.Mesh(geometry, parentOceanGrid.oceanMaterial.clone());
-  this.plane.rotateX(-Math.PI * 0.5);
   scene.add(this.plane);
 
   //Set the velocity of the small water waves on the surface

@@ -139,17 +139,55 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
   this.positionPassMaterial.uniforms.worldMatrix.value = this.camera.matrixWorld;
 
   //Get all ocean patch offsets
-  let maxHalfPatchesPerSide = Math.ceil((this.drawDistance + this.patchSize) / this.patchSize);
-  let drawDistanceSquared = this.drawDistance * this.drawDistance;
+  const maxHalfPatchesPerSide = Math.ceil((this.drawDistance + this.patchSize) / this.patchSize);
+  const drawDistanceSquared = this.drawDistance * this.drawDistance;
+  const minDistanceForUpdatedLOD = this.patchSize;
+  let patchLODByBucketID = {};
+  const cameraPosition = self.cameraWorldPosition.clone();
+  const zDiff = Math.abs(cameraPosition.y - this.heightOffset);
   for(let x = -maxHalfPatchesPerSide; x < maxHalfPatchesPerSide; ++x){
+    const xForID = x + maxHalfPatchesPerSide;
     for(let y = -maxHalfPatchesPerSide; y < maxHalfPatchesPerSide; ++y){
-      let xCoord = x * this.patchSize;
-      let yCoord = y * this.patchSize;
-      if(x * x + y * y <= drawDistanceSquared){
-        this.oceanPatches.push(new AWater.AOcean.OceanPatch(this, new THREE.Vector3(xCoord, this.heightOffset, yCoord)));
+      const yForID = y + maxHalfPatchesPerSide;
+      const xCoord = x * this.patchSize + maxHalfPatchesPerSide;
+      const yCoord = y * this.patchSize + maxHalfPatchesPerSide;
+      const xyDistToPlaneSquared = xCoord * xCoord + yCoord * yCoord;
+      const distToPlaneSquared = xCoord * xCoord + yCoord * yCoord + zDiff * zDiff;
+      if(xyDistToPlaneSquared <= drawDistanceSquared){
+        //Bit mask these into the same number to make a unique 32 bit integer id
+        const bucketID = xForID | (4294901760 & (yForID * 65536));
+        const distanceToPlane = Math.sqrt(distToPlaneSquared);
+        //Not sure why this works best when draw distance is at a 1/4. Maybe it's just the angle? But not sure...
+        const tesselationFactor = Math.round(4 * (1.0 - (Math.max(distanceToPlane - this.patchSize, 0.0) / (0.25 * this.drawDistance - this.patchSize))) + 1);
+        patchLODByBucketID[bucketID] = Math.max(Math.min(2 ** tesselationFactor, 64), 1);
       }
     }
   }
+
+  //Go through each patches neighbors and find their LODs and then create an ocean patch for each position.
+  for(let x = -maxHalfPatchesPerSide; x < maxHalfPatchesPerSide; ++x){
+    const xForID = x + maxHalfPatchesPerSide;
+    for(let y = -maxHalfPatchesPerSide; y < maxHalfPatchesPerSide; ++y){
+      const yForID = y + maxHalfPatchesPerSide;
+      const xCoord = x * this.patchSize;
+      const yCoord = y * this.patchSize;
+      const distToPlaneSquared = (xCoord * xCoord + yCoord * yCoord);
+      if(distToPlaneSquared <= drawDistanceSquared){
+        //Bit mask these into the same number to make a unique 32 bit integer id
+        const LOD = patchLODByBucketID[xForID | (4294901760 & (yForID * 65536))];
+        const LODTopID = xForID | (4294901760 & ((yForID + 1) * 65536));
+        const LODTop = LODTopID in patchLODByBucketID ? patchLODByBucketID[LODTopID] >= LOD : true;
+        const LODRightID = (xForID + 1) | (4294901760 & (yForID * 65536));
+        const LODRight = LODRightID in patchLODByBucketID ? patchLODByBucketID[LODRightID] >= LOD : true;
+        const LODBottomID = xForID | (4294901760 & ((yForID - 1) * 65536));
+        const LODBottom = LODBottomID in patchLODByBucketID ? patchLODByBucketID[LODBottomID] >= LOD : true;
+        const LODLeftID = (xForID - 1) | (4294901760 & (yForID * 65536));
+        const LODLeft = LODLeftID in patchLODByBucketID ? patchLODByBucketID[LODLeftID] >= LOD : true;
+        this.oceanPatches.push(new AWater.AOcean.OceanPatch(this, new THREE.Vector3(xCoord, this.heightOffset, yCoord), LOD, LODTop, LODRight, LODBottom, LODLeft));
+      }
+    }
+  }
+
   this.numberOfPatches = this.oceanPatches.length;
 
   this.tick = function(time){

@@ -1,3 +1,7 @@
+**Version 0.2.0**
+* Added a new attribute for making the water vertices transparent, which is useful for simple open boats, but is not useful for boats with transparency, or where the camera might go underwater.
+* Implemented a basic LOD system for the water surface to reduce the number of triangle in the scene to allow for greater draw distances.
+
 **Version 0.1.0**
 * Implemented ocean FFT heightmap based on [Oreon Engine FFT Waves Tutorial](https://youtu.be/B3YOLg0sA2g).
 * Emulated infinite ocean with a viewport-oriented approach (follows the camera) with motion emulated by moving the uv-coordinates.
