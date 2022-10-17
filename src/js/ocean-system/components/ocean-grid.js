@@ -1,10 +1,11 @@
-AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
+AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //Variable for holding all of our patches
   //For now, just create 1 plane
   this.scene = scene;
+  data = parentComponent.data;
+  this.parentComponent = parentComponent;
   this.renderer = renderer;
   this.camera = camera;
-  this.cameraWorldPosition = new THREE.Vector3();
   this.oceanPatches = [];
   this.oceanPatchIsInFrustrum = [];
   this.drawDistance = data.draw_distance;
@@ -110,7 +111,7 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
   this.oceanMaterial = new THREE.ShaderMaterial({
     vertexShader: AWater.AOcean.Materials.Ocean.waterMaterial.vertexShader,
     fragmentShader: AWater.AOcean.Materials.Ocean.waterMaterial.fragmentShader,
-    side: THREE.DoubleSide,
+    side: THREE.FrontSide,
     flatShading: true,
     transparent: true,
     lights: false,
@@ -142,23 +143,21 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
   const drawDistanceSquared = this.drawDistance * this.drawDistance;
   const minDistanceForUpdatedLOD = this.patchSize;
   let patchLODByBucketID = {};
-  const cameraPosition = self.cameraWorldPosition.clone();
-  const zDiff = Math.abs(cameraPosition.y - this.heightOffset);
+  const numberOfLODs = 7;
   for(let x = -maxHalfPatchesPerSide; x < maxHalfPatchesPerSide; ++x){
     const xForID = x + maxHalfPatchesPerSide;
     for(let y = -maxHalfPatchesPerSide; y < maxHalfPatchesPerSide; ++y){
       const yForID = y + maxHalfPatchesPerSide;
-      const xCoord = x * this.patchSize + maxHalfPatchesPerSide;
-      const yCoord = y * this.patchSize + maxHalfPatchesPerSide;
+      const xCoord = (x - 0.5) * this.patchSize;
+      const yCoord = (y - 0.5) * this.patchSize;
       const xyDistToPlaneSquared = xCoord * xCoord + yCoord * yCoord;
-      const distToPlaneSquared = xCoord * xCoord + yCoord * yCoord + zDiff * zDiff;
       if(xyDistToPlaneSquared <= drawDistanceSquared){
         //Bit mask these into the same number to make a unique 32 bit integer id
         const bucketID = xForID | (4294901760 & (yForID * 65536));
-        const distanceToPlane = Math.sqrt(distToPlaneSquared);
+        const distanceToPlane = Math.sqrt(xyDistToPlaneSquared);
         //Not sure why this works best when draw distance is at a 1/4. Maybe it's just the angle? But not sure...
-        const tesselationFactor = Math.round(4 * (1.0 - (Math.max(distanceToPlane, 0.0) / (this.drawDistance))));
-        patchLODByBucketID[bucketID] = Math.max(Math.min(2 ** tesselationFactor, 16), 1);
+        const tesselationFactor = Math.min(Math.max(Math.round(numberOfLODs * (1.0 - ( distanceToPlane / (this.patchSize * numberOfLODs) ) )), 1), numberOfLODs);
+        patchLODByBucketID[bucketID] = 2 ** tesselationFactor;
       }
     }
   }
@@ -168,10 +167,10 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
     const xForID = x + maxHalfPatchesPerSide;
     for(let y = -maxHalfPatchesPerSide; y < maxHalfPatchesPerSide; ++y){
       const yForID = y + maxHalfPatchesPerSide;
-      const xCoord = x * this.patchSize;
-      const yCoord = y * this.patchSize;
-      const distToPlaneSquared = (xCoord * xCoord + yCoord * yCoord);
-      if(distToPlaneSquared <= drawDistanceSquared){
+      const xCoord = (x - 0.5) * this.patchSize;
+      const yCoord = (y - 0.5) * this.patchSize;
+      const xyDistToPlaneSquared = xCoord * xCoord + yCoord * yCoord;
+      if(xyDistToPlaneSquared <= drawDistanceSquared){
         //Bit mask these into the same number to make a unique 32 bit integer id
         const LOD = patchLODByBucketID[xForID | (4294901760 & (yForID * 65536))];
         const LODTopID = xForID | (4294901760 & ((yForID + 1) * 65536));
@@ -188,7 +187,7 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
   }
 
   this.numberOfPatches = this.oceanPatches.length;
-
+  this.globalCameraPosition = new THREE.Vector3();
   this.tick = function(time){
     //Update the brightest directional light if we don't have one
     if(this.brightestDirectionalLight === false){
@@ -203,18 +202,23 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
     }
 
     //Copy the camera position in the world...
-    self.cameraWorldPosition.setFromMatrixPosition(self.camera.matrixWorld);
+    if(self.camera !== self.parentComponent.el.sceneEl.camera){
+      //Attach the scene camera if it does not exist yet
+      self.camera = self.parentComponent.el.sceneEl.camera;
+    }
+    const sceneCamera = self.camera;
+    sceneCamera.getWorldPosition(self.globalCameraPosition);
 
     //Update the state of our ocean grid
     self.time = time;
-    let cameraXZOffset = self.cameraWorldPosition.clone();
+    let cameraXZOffset = self.globalCameraPosition.clone();
     cameraXZOffset.y = this.heightOffset;
     for(let i = 0; i < self.oceanPatches.length; ++i){
       self.oceanPatches[i].plane.position.copy(self.oceanPatches[i].initialPosition).add(cameraXZOffset);
     }
 
     //Frustum Cull our grid
-    self.cameraFrustum.setFromProjectionMatrix(self.camera.children[0].projectionMatrix.clone().multiply(self.camera.children[0].matrixWorldInverse));
+    self.cameraFrustum.setFromProjectionMatrix(self.camera.projectionMatrix.clone().multiply(self.camera.matrixWorldInverse));
 
     //Hide all of our ocean grid elements
     for(let i = 0; i < self.oceanPatches.length; ++i){
@@ -222,9 +226,9 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
     }
 
     //Snap a cubemap picture of our environment to create reflections and refractions
-    self.depthCubeCamera.position.copy(self.cameraWorldPosition);
-    self.reflectionCubeCamera.position.copy(self.cameraWorldPosition);
-    self.refractionCubeCamera.position.copy(self.cameraWorldPosition);
+    self.depthCubeCamera.position.copy(self.globalCameraPosition);
+    self.reflectionCubeCamera.position.copy(self.globalCameraPosition);
+    self.refractionCubeCamera.position.copy(self.globalCameraPosition);
     self.scene.overrideMaterial = self.positionPassMaterial;
     self.depthCubeCamera.update(self.renderer, self.scene);
     self.scene.overrideMaterial = null;

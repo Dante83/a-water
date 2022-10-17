@@ -22,14 +22,14 @@ AFRAME.registerComponent('ocean-state', {
     //Get our renderer to pass in
     let renderer = this.el.sceneEl.renderer;
     let scene = this.el.sceneEl.object3D;
-    let camera = this.el.sceneEl.camera.el.object3D;
+    let camera = this.el.sceneEl.camera;
     let self = this;
 
     //Update the position of the objects
     scene.updateMatrixWorld();
 
     //Set up our ocean grid
-    this.oceanGrid = new AWater.AOcean.OceanGrid(this.data, scene, renderer, camera);
+    this.oceanGrid = new AWater.AOcean.OceanGrid(scene, renderer, camera, this);
 
     //When we've finished loading, now we can commence ticking our grid
     this.tick = function(time, timeDelta){

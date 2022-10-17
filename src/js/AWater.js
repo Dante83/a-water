@@ -8,5 +8,16 @@ AWater = {
     },
     Renderers: {},
     LUTlibraries: {},
-  }
+  },
+  setActiveCamera: (camera) => {
+      if(AWater.AOcean.OceanGrid !== null){
+        AWater.AOcean.OceanGrid.camera = camera;
+      }
+    },
+    getActiveCamera: () => {s
+      if(AWater.AOcean.OceanGrid !== null){
+        return AWater.AOcean.OceanGrid.camera;
+      }
+      return false;
+    }
 };

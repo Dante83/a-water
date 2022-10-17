@@ -87,10 +87,10 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
 
     'void main(){',
       '//Get the reflected and refracted information of the scene',
-      'vec2 cameraOffset = vec2(cameraPosition.x, -cameraPosition.z);',
+      'vec2 cameraOffset = vec2(cameraPosition.z, cameraPosition.x);',
       'vec2 uvOffset = vec2Modulo(vUv + (cameraOffset / sizeOfOceanPatch));',
-      'vec2 smallNormalMapOffset = (vUv * 3.0) + ((cameraOffset + t * smallNormalMapVelocity) / (sizeOfOceanPatch / 3.0));',
-      'vec2 largeNormalMapOffset = (vUv * 5.0) + ((cameraOffset - t * largeNormalMapVelocity) / (sizeOfOceanPatch / 5.0));',
+      'vec2 smallNormalMapOffset = (vUv * 3.0) - ((cameraOffset + t * smallNormalMapVelocity) / (sizeOfOceanPatch / 3.0));',
+      'vec2 largeNormalMapOffset = (vUv * 5.0) - ((cameraOffset - t * largeNormalMapVelocity) / (sizeOfOceanPatch / 5.0));',
       'vec3 smallNormalMap = texture2D(smallNormalMap, smallNormalMapOffset).xyz;',
       'smallNormalMap = 2.0 * smallNormalMap - 1.0;',
       'smallNormalMap.xy *= smallNormalMapStrength;',
@@ -138,6 +138,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     'precision highp float;',
 
     'attribute vec4 tangent;',
+    'attribute vec4 bitangent;',
 
     'varying float height;',
     'varying vec3 tangentSpaceViewDirection;',
@@ -166,9 +167,9 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       'vViewVector = worldPosition.xyz - cameraPosition;',
       'modelMatrixMat3 = mat3(modelMatrix[0].xyz, modelMatrix[1].xyz, modelMatrix[2].xyz );',
 
-      'vec2 cameraOffset = (vec2(cameraPosition.x, -cameraPosition.z) / sizeOfOceanPatch);',
-      'vec2 uvOffset = uv + cameraOffset;',
+      'vec2 uvOffset = uv + (worldPosition.xz / sizeOfOceanPatch);',
       'vec3 displacement = texture2D(displacementMap, uvOffset).xyz;',
+      'displacement = vec3(0.0);',
       'offsetPosition += modelMatrixMat3 * displacement;',
 
       '//Normal map',
@@ -185,6 +186,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       'vec3 displacementVB = texture2D(displacementMap, vb.xy).xyz;',
       'vb = vb + scaledDisplacement;',
       'displacedNormal = normalize(cross(vt - v0, vb - v0));',
+      'displacedNormal = vec3(0.0,1.0,0.0);',
 
       '//Set up our UV maps',
       'vUv = uv;',

@@ -52,19 +52,12 @@ AWater.AOcean.Materials.FFTWaves.butterflyTextureData = {
     '}',
 
     'void main(){',
-      'vec2 position = gl_FragCoord.xy / resolution.xy;',
-      'vec4 result;',
-
-      '//If horizontal butterfly',
-      '//(Note: We should probably pull this into another shader later.)',
       'if(direction == 0){',
-    '		result = horizontalButterflies(position);',
+    '		gl_FragColor = horizontalButterflies(gl_FragCoord.xy / resolution.xy);',
       '}',
     '	else if(direction == 1){',
-    '		result = verticalButterflies(position);',
+    '		gl_FragColor = verticalButterflies(gl_FragCoord.xy / resolution.xy);',
       '}',
-
-      'gl_FragColor = result;',
     '}',
     ];
 

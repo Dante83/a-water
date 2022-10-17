@@ -57,10 +57,10 @@ vec3 MyAESFilmicToneMapping(vec3 color) {
 
 void main(){
   //Get the reflected and refracted information of the scene
-  vec2 cameraOffset = vec2(cameraPosition.x, -cameraPosition.z);
+  vec2 cameraOffset = vec2(cameraPosition.z, cameraPosition.x);
   vec2 uvOffset = vec2Modulo(vUv + (cameraOffset / sizeOfOceanPatch));
-  vec2 smallNormalMapOffset = (vUv * 3.0) + ((cameraOffset + t * smallNormalMapVelocity) / (sizeOfOceanPatch / 3.0));
-  vec2 largeNormalMapOffset = (vUv * 5.0) + ((cameraOffset - t * largeNormalMapVelocity) / (sizeOfOceanPatch / 5.0));
+  vec2 smallNormalMapOffset = (vUv * 3.0) - ((cameraOffset + t * smallNormalMapVelocity) / (sizeOfOceanPatch / 3.0));
+  vec2 largeNormalMapOffset = (vUv * 5.0) - ((cameraOffset - t * largeNormalMapVelocity) / (sizeOfOceanPatch / 5.0));
   vec3 smallNormalMap = texture2D(smallNormalMap, smallNormalMapOffset).xyz;
   smallNormalMap = 2.0 * smallNormalMap - 1.0;
   smallNormalMap.xy *= smallNormalMapStrength;

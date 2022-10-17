@@ -11,13 +11,12 @@ AWater.OceanTile = function(size, numTiles, top, right, bottom, left){
   const vertexCoordinates = new Float32Array(numberOfVertices * 3);
   const normals = new Float32Array(numberOfVertices * 3);
   const uvs = new Float32Array(numberOfVertices * 2);
-  const triIndices = new Float32Array(numberOfVertices * 3);
   const tangents = new Float32Array(numberOfVertices * 3);
   const bitangents = new Float32Array(numberOfVertices * 3);
   for(let i = 0; i < numberOfVertices; ++i){
-    normals[i * 3 + 2] = -1.0;
-    tangents[i * 3] = 1.0;
-    bitangents[i * 3 + 1] = -1.0;
+    normals[i * 3 + 1] = 1.0; //Y is Normal
+    tangents[i * 3] = 1.0; //X is Tangent
+    bitangents[i * 3 + 2] = 1.0; //Z is bitangent
   }
   const numTilesMinusOne = numTiles - 1;
   let vindex = 0;
@@ -44,9 +43,6 @@ AWater.OceanTile = function(size, numTiles, top, right, bottom, left){
           vertexCoordinates[vindex + 2 * flipXY] = scaler * (1.0 + 2 * (flipXY ? y : x) + (flipXY ? ySign : xSign) * ((triV === 0) || (triV === 5)));
           //vertexCoordinates[vindex] = 0.0 - Y is zero
           vertexCoordinates[vindex + 2 * (!flipXY)] = scaler * (1.0 + 2 * (flipXY ? x : y) + (flipXY ? xSign : ySign) * ((triV + (!segment)) % 2));
-          triIndices[triIndex] = vindex + 2 * flipXY;
-          triIndices[triIndex + 1] = vindex;
-          triIndices[triIndex + 2] = vindex + 2 * (!flipXY);
           vindex += 3;
         }
 
@@ -58,11 +54,10 @@ AWater.OceanTile = function(size, numTiles, top, right, bottom, left){
   //Set up all UV-Coordinates
   for(let i = 0; i < numberOfVertices; ++i){
     uvs[i * 2] = vertexCoordinates[i * 3] / size;
-    uvs[i * 2 + 1] = (1.0 - vertexCoordinates[i * 3 + 2]) / size;
+    uvs[i * 2 + 1] = vertexCoordinates[i * 3 + 2] / size;
   }
 
   //Set up all indices
-
 
   this.vertexCoordinates = vertexCoordinates;
   geometry = new THREE.BufferGeometry();

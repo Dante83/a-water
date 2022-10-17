@@ -1,6 +1,7 @@
 precision highp float;
 
 attribute vec4 tangent;
+attribute vec4 bitangent;
 
 varying float height;
 varying vec3 tangentSpaceViewDirection;
@@ -29,9 +30,9 @@ void main() {
   vViewVector = worldPosition.xyz - cameraPosition;
   modelMatrixMat3 = mat3(modelMatrix[0].xyz, modelMatrix[1].xyz, modelMatrix[2].xyz );
 
-  vec2 cameraOffset = (vec2(cameraPosition.x, -cameraPosition.z) / sizeOfOceanPatch);
-  vec2 uvOffset = uv + cameraOffset;
+  vec2 uvOffset = uv + (worldPosition.xz / sizeOfOceanPatch);
   vec3 displacement = texture2D(displacementMap, uvOffset).xyz;
+  displacement = vec3(0.0);
   offsetPosition += modelMatrixMat3 * displacement;
 
   //Normal map
@@ -48,6 +49,7 @@ void main() {
   vec3 displacementVB = texture2D(displacementMap, vb.xy).xyz;
   vb = vb + scaledDisplacement;
   displacedNormal = normalize(cross(vt - v0, vb - v0));
+  displacedNormal = vec3(0.0,1.0,0.0);
 
   //Set up our UV maps
   vUv = uv;
