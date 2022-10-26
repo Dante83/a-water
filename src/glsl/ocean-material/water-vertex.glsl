@@ -1,22 +1,21 @@
 precision highp float;
 
-attribute vec4 tangent;
-attribute vec4 bitangent;
+attribute vec3 tangent;
+attribute vec3 bitangent;
 
-varying float height;
-varying vec3 tangentSpaceViewDirection;
-varying vec3 vViewVector;
 varying vec3 vWorldPosition;
-varying vec4 colorMap;
 varying vec2 vUv;
-varying vec3 displacedNormal;
 varying mat3 modelMatrixMat3;
+varying float vHeight;
+varying vec3 vDisplacedNormal;
+varying vec3 vDisplacement;
+varying vec3 vViewVector;
 
 uniform float sizeOfOceanPatch;
-uniform float linearScatteringTotalScatteringWaveHeight;
-uniform float linearScatteringHeightOffset;
 uniform sampler2D displacementMap;
-uniform mat4 matrixWorld;
+uniform float linearScatteringHeightOffset;
+uniform float linearScatteringTotalScatteringWaveHeight;
+
 #include <fog_pars_vertex>
 
 vec2 vec2Modulo(vec2 inputUV){
@@ -26,40 +25,64 @@ vec2 vec2Modulo(vec2 inputUV){
 void main() {
   //Set up our displacement map
   vec3 offsetPosition = position;
-  vec4 worldPosition = modelMatrix * vec4( position, 1.0 );
-  vViewVector = worldPosition.xyz - cameraPosition;
   modelMatrixMat3 = mat3(modelMatrix[0].xyz, modelMatrix[1].xyz, modelMatrix[2].xyz );
 
-  vec2 uvOffset = uv + (worldPosition.xz / sizeOfOceanPatch);
+  vec2 cameraOffset = vec2(cameraPosition.x, cameraPosition.z);
+  vec2 uvOffset = (uv * sizeOfOceanPatch + cameraOffset) / sizeOfOceanPatch;
   vec3 displacement = texture2D(displacementMap, uvOffset).xyz;
-  displacement = vec3(0.0);
-  offsetPosition += modelMatrixMat3 * displacement;
+  displacement.x *= -1.0;
+  displacement.z *= -1.0;
+  offsetPosition += displacement;
 
-  //Normal map
-  vec3 scaledDisplacement = displacement / sizeOfOceanPatch;
-  height = (offsetPosition.y  + linearScatteringHeightOffset) / linearScatteringTotalScatteringWaveHeight;
-  vec3 bitangent = cross(normalize(normal.xyz), normalize(tangent.xyz));
-  vec3 v0 = vec3(uvOffset, 0.0);
-  v0 = v0 + scaledDisplacement;
-  vec3 vt = v0 + (1.0 / 12.0) * normalize(tangent.xyz);
-  vec3 vb = v0 + (1.0 / 12.0) * normalize(bitangent.xyz);
+  vec4 worldPosition = modelMatrix * vec4(offsetPosition, 1.0);
+  float distanceToWorldPosition = distance(worldPosition.xyz, cameraPosition.xyz);
+  float LOD = pow(2.0, 8.0 - 8.0 * clamp(distanceToWorldPosition / 3000.0, 0.0, 1.0));
+  offsetPosition = position + displacement;
 
-  vec3 displacementVT = texture2D(displacementMap, vt.xy).xyz;
-  vt = vt + scaledDisplacement;
-  vec3 displacementVB = texture2D(displacementMap, vb.xy).xyz;
-  vb = vb + scaledDisplacement;
-  displacedNormal = normalize(cross(vt - v0, vb - v0));
-  displacedNormal = vec3(0.0,1.0,0.0);
+  //Calculate our normal for this vertex
+  vec3 deltaTangent = tangent / LOD;
+  vec2 tangentUVOffset = (uv * sizeOfOceanPatch + cameraOffset + deltaTangent.xz * sizeOfOceanPatch) / sizeOfOceanPatch;
+  vec3 vt = texture2D(displacementMap, tangentUVOffset).xyz;
+  vt.x *= -1.0;
+  vt.z *= -1.0;
+  vec3 deltaBitangent = bitangent / LOD;
+  vec2 biTangentUVOffset = (uv * sizeOfOceanPatch + cameraOffset + deltaBitangent.xz * sizeOfOceanPatch) / sizeOfOceanPatch;
+  vec3 vb = texture2D(displacementMap, biTangentUVOffset).xyz;
+  vb.x *= -1.0;
+  vb.z *= -1.0;
+  //Change in height with respect to x
+  vec3 dhDt = normalize((vt + deltaTangent * sizeOfOceanPatch) - displacement);
+  //Change in height with respect to z
+  vec3 dhDbt = normalize((vb + deltaBitangent * sizeOfOceanPatch) - displacement);
+  vec3 displacedNormal = cross(dhDt, dhDbt);
+
+  tangentUVOffset = (uv * sizeOfOceanPatch + cameraOffset - deltaTangent.xz * sizeOfOceanPatch) / sizeOfOceanPatch;
+  vt = texture2D(displacementMap, tangentUVOffset).xyz;
+  vt.x *= -1.0;
+  vt.z *= -1.0;
+  deltaBitangent = bitangent / LOD;
+  biTangentUVOffset = (uv * sizeOfOceanPatch + cameraOffset - deltaBitangent.xz * sizeOfOceanPatch) / sizeOfOceanPatch;
+  vb = texture2D(displacementMap, biTangentUVOffset).xyz;
+  vb.x *= -1.0;
+  vb.z *= -1.0;
+  //Change in height with respect to x
+  dhDt = normalize((vt - deltaTangent * sizeOfOceanPatch) - displacement);
+  //Change in height with respect to z
+  dhDbt = normalize((vb - deltaBitangent * sizeOfOceanPatch) - displacement);
+  displacedNormal = (cross(dhDt, dhDbt) + displacedNormal) * 0.5;
+  vDisplacedNormal = displacedNormal.xzy;
 
   //Set up our UV maps
   vUv = uv;
 
-  //Have the water fade from dark blue to teal as it approaches the shore.
-  colorMap = vec4(displacement.xyz, 1.0);
+  vec3 cameraSpacePosition = modelMatrixMat3 * worldPosition.xyz;
+  vWorldPosition = worldPosition.xyz;
+  vHeight = (offsetPosition.y  + linearScatteringHeightOffset) / linearScatteringTotalScatteringWaveHeight;
+
+  //Calculate our view vector in tangent space
+  vViewVector = normalize(cameraSpacePosition.xyz - cameraPosition);
 
   //Add support for three.js fog
-  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-  vWorldPosition = (projectionMatrix * mvPosition).xyz;
   #include <fog_vertex>
 
   gl_Position = projectionMatrix * modelViewMatrix * vec4(offsetPosition, 1.0);

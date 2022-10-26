@@ -24,8 +24,14 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
   this.waveHeightComposerVar.material.uniforms.waveHeightMultiplier = data.wave_scale_multiple;
   this.waveHeightComposerVar.minFilter = THREE.LinearFilter;
   this.waveHeightComposerVar.magFilter = THREE.LinearFilter;
+  this.waveHeightComposerVar.format = THREE.RGBAFormat;
+  this.waveHeightComposerVar.type = THREE.FloatType;
+  this.waveHeightComposerVar.anisotropy = 4;
+  this.waveHeightComposerVar.samples = 8;
   this.waveHeightComposerVar.wrapS = THREE.RepeatWrapping;
   this.waveHeightComposerVar.wrapT = THREE.RepeatWrapping;
+  this.waveHeightComposerVar.generateMipmaps = true;
+  this.waveHeightComposerVar.needsUpdate = true;
   this.waveHeightComposerRenderer.setVariableDependencies(whcVar, []);//Note: We use manual texture dependency injection here.
   whcVar.material.uniforms = materials.waveComposerShaderMaterial.uniforms(this.numberOfWaveComponents);
 

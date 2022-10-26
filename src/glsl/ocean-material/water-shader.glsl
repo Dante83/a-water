@@ -1,18 +1,19 @@
 precision highp float;
 
-varying float height;
-varying vec3 vViewVector;
 varying vec3 vWorldPosition;
-varying vec4 colorMap;
 varying vec2 vUv;
-varying vec3 displacedNormal;
 varying mat3 modelMatrixMat3;
+varying float vHeight;
+varying vec3 vDisplacedNormal;
+varying vec3 vDisplacement;
+varying vec3 vViewVector;
 
 //uniform vec3 cameraDirection;
 uniform int isBelowWater;
 uniform float sizeOfOceanPatch;
 uniform float largeNormalMapStrength;
 uniform float smallNormalMapStrength;
+uniform sampler2D displacementMap;
 uniform sampler2D smallNormalMap;
 uniform sampler2D largeNormalMap;
 uniform samplerCube reflectionCubeMap;
@@ -24,6 +25,9 @@ uniform vec2 largeNormalMapVelocity;
 
 uniform vec3 brightestDirectionalLight;
 uniform vec3 lightScatteringAmounts;
+
+uniform float linearScatteringHeightOffset;
+uniform float linearScatteringTotalScatteringWaveHeight;
 
 uniform float t;
 
@@ -56,11 +60,12 @@ vec3 MyAESFilmicToneMapping(vec3 color) {
 }
 
 void main(){
+  vec2 cameraOffset = vec2(cameraPosition.x, cameraPosition.z);
+  float height = (vDisplacement.y  + linearScatteringHeightOffset) / linearScatteringTotalScatteringWaveHeight;
+
   //Get the reflected and refracted information of the scene
-  vec2 cameraOffset = vec2(cameraPosition.z, cameraPosition.x);
-  vec2 uvOffset = vec2Modulo(vUv + (cameraOffset / sizeOfOceanPatch));
-  vec2 smallNormalMapOffset = (vUv * 3.0) - ((cameraOffset + t * smallNormalMapVelocity) / (sizeOfOceanPatch / 3.0));
-  vec2 largeNormalMapOffset = (vUv * 5.0) - ((cameraOffset - t * largeNormalMapVelocity) / (sizeOfOceanPatch / 5.0));
+  vec2 smallNormalMapOffset = (((vUv * 3.0) * (sizeOfOceanPatch / 3.0) + cameraOffset + t * smallNormalMapVelocity) / (sizeOfOceanPatch / 3.0));
+  vec2 largeNormalMapOffset = (((vUv * 5.0) * (sizeOfOceanPatch / 5.0) + cameraOffset - t * largeNormalMapVelocity) / (sizeOfOceanPatch / 5.0));
   vec3 smallNormalMap = texture2D(smallNormalMap, smallNormalMapOffset).xyz;
   smallNormalMap = 2.0 * smallNormalMap - 1.0;
   smallNormalMap.xy *= smallNormalMapStrength;
@@ -72,11 +77,11 @@ void main(){
   largeNormalMap = normalize(largeNormalMap);
   largeNormalMap = (largeNormalMap + 1.0) * 0.5;
   vec3 combinedNormalMap = combineNormals(smallNormalMap, largeNormalMap);
-  vec3 normalizedDisplacedNormalMap = (normalize(displacedNormal.xyz) + vec3(1.0)) * 0.5;
+  vec3 normalizedDisplacedNormalMap = (normalize(vDisplacedNormal.xyz) + vec3(1.0)) * 0.5;
   combinedNormalMap = combineNormals(normalizedDisplacedNormalMap, combinedNormalMap);
   combinedNormalMap = combinedNormalMap * 2.0 - vec3(1.0);
-  combinedNormalMap = normalize(modelMatrixMat3 * combinedNormalMap);
-  vec3 normalizedViewVector = normalize(vViewVector);
+  combinedNormalMap = combinedNormalMap.xzy;
+  vec3 normalizedViewVector = normalize(vViewVector.xyz);
   vec3 reflectedCoordinates = reflect(normalizedViewVector, combinedNormalMap);
   vec3 refractedCoordinates = refract(normalizedViewVector, combinedNormalMap, 1.005 / 1.333);
   vec3 reflectedLight = textureCube(reflectionCubeMap, reflectedCoordinates).rgb; //Reflection
@@ -87,7 +92,7 @@ void main(){
   vec3 percentOfSourceLight = clamp(exp(-distanceToPoint / lightScatteringAmounts), 0.0, 1.0);
   refractedLight = percentOfSourceLight * pow(refractedLight, gamma);
   //Increasing brightness with height inspired by, https://80.lv/articles/tutorial-ocean-shader-with-gerstner-waves/
-  vec3 inscatterLight = pow(max(height, 0.0) * length(vec3(1.0) - percentOfSourceLight) * pow(normalizedTransmittancePercentColor, vec3(2.5))  * brightestDirectionalLight, gamma);
+  vec3 inscatterLight = pow(max(vHeight, 0.0) * length(vec3(1.0) - percentOfSourceLight) * pow(normalizedTransmittancePercentColor, vec3(2.5))  * brightestDirectionalLight, gamma);
 
   //Apply Schlick's approximation for the fresnel amount
   //https://en.wikipedia.org/wiki/Schlick%27s_approximation

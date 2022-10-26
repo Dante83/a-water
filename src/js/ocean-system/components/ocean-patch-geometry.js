@@ -16,7 +16,7 @@ AWater.OceanTile = function(size, numTiles, top, right, bottom, left){
   for(let i = 0; i < numberOfVertices; ++i){
     normals[i * 3 + 1] = 1.0; //Y is Normal
     tangents[i * 3] = 1.0; //X is Tangent
-    bitangents[i * 3 + 2] = 1.0; //Z is bitangent
+    bitangents[i * 3 + 2] = -1.0; //Z is bitangent
   }
   const numTilesMinusOne = numTiles - 1;
   let vindex = 0;
