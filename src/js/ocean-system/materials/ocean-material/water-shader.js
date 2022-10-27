@@ -8,11 +8,9 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     largeNormalMap: {type: 't', value: null},
     smallNormalMapVelocity: {type: 'vec2', value: new THREE.Vector2()},
     largeNormalMapVelocity: {type: 'vec2', value: new THREE.Vector2()},
-    isBelowWater: {type: 'i', value: 0},
     reflectionCubeMap: {value: null},
     refractionCubeMap: {value: null},
     depthCubeMap: {value: null},
-    matrixWorld: {type: 'mat4', value: new THREE.Matrix4()},
     sizeOfOceanPatch: {type: 'f', value: 1.0},
     fogNear: {type: 'f', value: null},
     fogFar: {type: 'f', value: null},
@@ -32,14 +30,12 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
 
     'varying vec3 vWorldPosition;',
     'varying vec2 vUv;',
-    'varying mat3 modelMatrixMat3;',
     'varying float vHeight;',
     'varying vec3 vDisplacedNormal;',
     'varying vec3 vDisplacement;',
     'varying vec3 vViewVector;',
 
     '//uniform vec3 cameraDirection;',
-    'uniform int isBelowWater;',
     'uniform float sizeOfOceanPatch;',
     'uniform float largeNormalMapStrength;',
     'uniform float smallNormalMapStrength;',
@@ -147,7 +143,6 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
 
     'varying vec3 vWorldPosition;',
     'varying vec2 vUv;',
-    'varying mat3 modelMatrixMat3;',
     'varying float vHeight;',
     'varying vec3 vDisplacedNormal;',
     'varying vec3 vDisplacement;',
@@ -167,7 +162,8 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     'void main() {',
       '//Set up our displacement map',
       'vec3 offsetPosition = position;',
-      'modelMatrixMat3 = mat3(modelMatrix[0].xyz, modelMatrix[1].xyz, modelMatrix[2].xyz );',
+      'mat3 instanceMatrixMat3 = mat3(instanceMatrix[0].xyz, instanceMatrix[1].xyz, instanceMatrix[2].xyz );',
+      'mat3 modelMatrixMat3 = mat3(modelMatrix[0].xyz, modelMatrix[1].xyz, modelMatrix[2].xyz );',
 
       'vec2 cameraOffset = vec2(cameraPosition.x, cameraPosition.z);',
       'vec2 uvOffset = (uv * sizeOfOceanPatch + cameraOffset) / sizeOfOceanPatch;',
@@ -176,7 +172,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       'displacement.z *= -1.0;',
       'offsetPosition += displacement;',
 
-      'vec4 worldPosition = modelMatrix * vec4(offsetPosition, 1.0);',
+      'vec4 worldPosition = modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);',
       'float distanceToWorldPosition = distance(worldPosition.xyz, cameraPosition.xyz);',
       'float LOD = pow(2.0, 8.0 - 8.0 * clamp(distanceToWorldPosition / 3000.0, 0.0, 1.0));',
       'offsetPosition = position + displacement;',
@@ -227,7 +223,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       '//Add support for three.js fog',
       '#include <fog_vertex>',
 
-      'gl_Position = projectionMatrix * modelViewMatrix * vec4(offsetPosition, 1.0);',
+      'gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);',
     '}',
   ].join('\n'),
 };

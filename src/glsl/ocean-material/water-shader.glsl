@@ -2,14 +2,12 @@ precision highp float;
 
 varying vec3 vWorldPosition;
 varying vec2 vUv;
-varying mat3 modelMatrixMat3;
 varying float vHeight;
 varying vec3 vDisplacedNormal;
 varying vec3 vDisplacement;
 varying vec3 vViewVector;
 
 //uniform vec3 cameraDirection;
-uniform int isBelowWater;
 uniform float sizeOfOceanPatch;
 uniform float largeNormalMapStrength;
 uniform float smallNormalMapStrength;

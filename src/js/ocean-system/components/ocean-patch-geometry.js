@@ -1,6 +1,6 @@
 //A false for any of the top, right, bottom or left values
 //means we're transitioning to a lower value.
-AWater.OceanTile = function(size, numTiles, top, right, bottom, left){
+AWater.OceanTile = function(size, numTiles, top, right, bottom, left, count){
   const totalNumberOfTiles = numTiles * numTiles;
   const numberOfInnerTiles = Math.max(numTiles - 2, 0) * (numTiles - 2);
   const numberOfEdgeTiles = totalNumberOfTiles - numberOfInnerTiles;

@@ -112,7 +112,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     vertexShader: AWater.AOcean.Materials.Ocean.waterMaterial.vertexShader,
     fragmentShader: AWater.AOcean.Materials.Ocean.waterMaterial.fragmentShader,
     side: THREE.FrontSide,
-    transparent: true,
+    transparent: false,
     lights: false,
     fog: true
   });
@@ -160,7 +160,53 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     }
   }
 
-  //Go through each patches neighbors and find their LODs and then create an ocean patch for each position.
+  //Get the instance count for each tile type with all down grades to enable instanced meshes
+  let instanceCount = {};
+  for(let x = -maxHalfPatchesPerSide; x < maxHalfPatchesPerSide; ++x){
+    const xForID = x + maxHalfPatchesPerSide;
+    for(let y = -maxHalfPatchesPerSide; y < maxHalfPatchesPerSide; ++y){
+      const yForID = y + maxHalfPatchesPerSide;
+      const xCoord = (x - 0.5) * this.patchSize;
+      const yCoord = (y - 0.5) * this.patchSize;
+      const xyDistToPlaneSquared = xCoord * xCoord + yCoord * yCoord;
+      if(xyDistToPlaneSquared <= drawDistanceSquared){
+        //Bit mask these into the same number to make a unique 32 bit integer id
+        const LODID = xForID | (4294901760 & (yForID * 65536));
+        const LOD = patchLODByBucketID[LODID];
+        const LODTopID = xForID | (4294901760 & ((yForID + 1) * 65536));
+        const LODTop = LODTopID in patchLODByBucketID ? patchLODByBucketID[LODTopID] >= LOD : true;
+        const LODRightID = (xForID + 1) | (4294901760 & (yForID * 65536));
+        const LODRight = LODRightID in patchLODByBucketID ? patchLODByBucketID[LODRightID] >= LOD : true;
+        const LODBottomID = xForID | (4294901760 & ((yForID - 1) * 65536));
+        const LODBottom = LODBottomID in patchLODByBucketID ? patchLODByBucketID[LODBottomID] >= LOD : true;
+        const LODLeftID = (xForID - 1) | (4294901760 & (yForID * 65536));
+        const LODLeft = LODLeftID in patchLODByBucketID ? patchLODByBucketID[LODLeftID] >= LOD : true;
+
+        //I'm just going to presume our LODs will never be beyond 128
+        //Which would have so many triangles, it would be silly.
+        //We then just go down by one or stay the same, so we can add on
+        //a couple of binary flags like so.
+        let instanceCountID = Math.round(Math.log(LOD) / Math.log(2));
+        instanceCountID += LODTop * 256;
+        instanceCountID += LODRight * 512;
+        instanceCountID += LODBottom * 1024;
+        instanceCountID += LODLeft * 2048;
+        if(!instanceCount.hasOwnProperty(instanceCountID)){
+          instanceCount[instanceCountID] = 1;
+        }
+        else{
+          instanceCount[instanceCountID]++;
+        }
+      }
+    }
+  }
+
+  let oceanPatchGeometryInstances = {};
+  let instanceIterations = {};
+  let oceanGridInstanceKeys = [];
+  const windVelocity = new THREE.Vector2(this.windVelocity.x, this.windVelocity.y);
+  const windVelocityMagnitude = windVelocity.length();
+  const windVelocityDirection = windVelocity.divideScalar(windVelocityMagnitude);
   for(let x = -maxHalfPatchesPerSide; x < maxHalfPatchesPerSide; ++x){
     const xForID = x + maxHalfPatchesPerSide;
     for(let y = -maxHalfPatchesPerSide; y < maxHalfPatchesPerSide; ++y){
@@ -179,13 +225,39 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         const LODBottom = LODBottomID in patchLODByBucketID ? patchLODByBucketID[LODBottomID] >= LOD : true;
         const LODLeftID = (xForID - 1) | (4294901760 & (yForID * 65536));
         const LODLeft = LODLeftID in patchLODByBucketID ? patchLODByBucketID[LODLeftID] >= LOD : true;
-        this.oceanPatches.push(new AWater.AOcean.OceanPatch(this, new THREE.Vector3(xCoord, this.heightOffset, yCoord), LOD, LODTop, LODRight, LODBottom, LODLeft));
+
+        let instanceCountID = Math.round(Math.log(LOD) / Math.log(2));
+        instanceCountID += LODTop * 256;
+        instanceCountID += LODRight * 512;
+        instanceCountID += LODBottom * 1024;
+        instanceCountID += LODLeft * 2048;
+        if(!oceanPatchGeometryInstances.hasOwnProperty(instanceCountID)){
+          oceanGridInstanceKeys.push(instanceCountID);
+          const geometry = AWater.OceanTile(this.patchSize, LOD, LODTop, LODRight, LODBottom, LODLeft);
+          oceanPatchGeometryInstances[instanceCountID] = new THREE.InstancedMesh(geometry, this.oceanMaterial.clone(), instanceCount[instanceCountID]);
+          instanceIterations[instanceCountID] = 0;
+          scene.add(oceanPatchGeometryInstances[instanceCountID]);
+
+          //Set the velocity of the small water waves on the surface
+          const uniformsRef = oceanPatchGeometryInstances[instanceCountID].material.uniforms;
+          uniformsRef.smallNormalMapVelocity.value.set(this.randomWindVelocities[0], this.randomWindVelocities[1]);
+          uniformsRef.largeNormalMapVelocity.value.set(this.randomWindVelocities[2], this.randomWindVelocities[3]);
+          uniformsRef.lightScatteringAmounts.value.copy(this.data.light_scattering_amounts);
+          uniformsRef.smallNormalMapStrength.value = this.data.small_normal_map_strength;
+          uniformsRef.largeNormalMapStrength.value = this.data.large_normal_map_strength;
+          uniformsRef.linearScatteringHeightOffset.value = this.data.linear_scattering_height_offset;
+          uniformsRef.linearScatteringTotalScatteringWaveHeight.value = this.data.linear_scattering_total_wave_height;
+        }
+        const instanceIteration = instanceIterations[instanceCountID];
+        this.oceanPatches.push(new AWater.AOcean.OceanPatch(this, new THREE.Vector3(xCoord, this.heightOffset, yCoord), oceanPatchGeometryInstances[instanceCountID], instanceIteration));
+        instanceIterations[instanceCountID] += 1;
       }
     }
   }
 
   this.numberOfPatches = this.oceanPatches.length;
   this.globalCameraPosition = new THREE.Vector3();
+  const patchOffsetMatrix = new THREE.Matrix4();
   this.tick = function(time){
     //Update the brightest directional light if we don't have one
     if(this.brightestDirectionalLight === false){
@@ -209,18 +281,27 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
     //Update the state of our ocean grid
     self.time = time;
-    let cameraXZOffset = self.globalCameraPosition.clone();
-    cameraXZOffset.y = this.heightOffset;
-    for(let i = 0; i < self.oceanPatches.length; ++i){
-      self.oceanPatches[i].plane.position.copy(self.oceanPatches[i].initialPosition).add(cameraXZOffset);
+    for(let i = 0; numOceanPatches = self.oceanPatches.length, i < numOceanPatches; ++i){
+      const oceanPatch = self.oceanPatches[i];
+      const xOffset = oceanPatch.initialPosition.x + self.globalCameraPosition.x;
+      const yOffset = oceanPatch.initialPosition.y + self.heightOffset;
+      const zOffset = oceanPatch.initialPosition.z + self.globalCameraPosition.z;
+      let newMatrix = new THREE.Matrix4();
+      newMatrix.makeTranslation(xOffset, yOffset, zOffset);
+      self.oceanPatches[i].instanceMeshRef.setMatrixAt(oceanPatch.instanceID, newMatrix);
+    }
+
+    //Inform the system that we need to update all the instance matrices every frame
+    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].instanceMatrix.needsUpdate = true;
     }
 
     //Frustum Cull our grid
-    self.cameraFrustum.setFromProjectionMatrix(self.camera.projectionMatrix.clone().multiply(self.camera.matrixWorldInverse));
+    //self.cameraFrustum.setFromProjectionMatrix(self.camera.projectionMatrix.clone().multiply(self.camera.matrixWorldInverse));
 
     //Hide all of our ocean grid elements
-    for(let i = 0; i < self.oceanPatches.length; ++i){
-      self.oceanPatches[i].plane.visible = false;
+    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].visible = false;
     }
 
     //Snap a cubemap picture of our environment to create reflections and refractions
@@ -234,23 +315,36 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     self.refractionCubeCamera.update(self.renderer, self.scene);
 
     //Show all of our ocean grid elements again
-    for(let i = 0; i < self.oceanPatches.length; ++i){
-      self.oceanPatches[i].plane.visible = true;
+    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].visible = true;
     }
 
     //Update each of our ocean grid height maps
     self.oceanHeightBandLibrary.tick(time);
     self.oceanHeightComposer.tick();
 
-    //Update individual changes on each of our ocean patches
-    for(let i = 0, numOceanPatches = self.oceanPatches.length; i < numOceanPatches; ++i){
-      //Only update our GPU shader for this mesh if it it's visible
-      if(self.cameraFrustum.intersectsObject(self.oceanPatches[i].plane)){
-        self.oceanPatches[i].tick(time);
+    //Update all of our uniforms
+    let brightestDirectionalLight;
+    if(self.brightestDirectionalLight){
+      brightestDirectionalLight = self.brightestDirectionalLight;
+    }
+    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+      const uniformsRef = oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms;
+      uniformsRef.displacementMap.value = self.oceanHeightComposer.displacementMap;
+      uniformsRef.refractionCubeMap.value = self.refractionCubeCamera.renderTarget.texture;
+      uniformsRef.reflectionCubeMap.value = self.reflectionCubeCamera.renderTarget.texture;
+      uniformsRef.depthCubeMap.value = self.depthCubeCamera.renderTarget.texture;
+      uniformsRef.smallNormalMap.value = self.smallNormalMap;
+      uniformsRef.largeNormalMap.value = self.largeNormalMap;
+      if(self.brightestDirectionalLight){
+        const intensity = brightestDirectionalLight.intensity;
+        const color = brightestDirectionalLight.color;
+        uniformsRef.brightestDirectionalLight.value.set(color.r * intensity, color.g * intensity, color.b * intensity);
       }
       else{
-        self.oceanPatches[i].visible = false;
+        uniformsRef.brightestDirectionalLight.value.set(1.0,1.0,1.0);
       }
+      uniformsRef.t.value = time * 0.001;
     }
   };
 }
