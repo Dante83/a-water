@@ -174,7 +174,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
 
       'vec4 worldPosition = modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);',
       'float distanceToWorldPosition = distance(worldPosition.xyz, cameraPosition.xyz);',
-      'float LOD = pow(2.0, 8.0 - 8.0 * clamp(distanceToWorldPosition / 3000.0, 0.0, 1.0));',
+      'float LOD = pow(2.0, clamp(7.0 - (distanceToWorldPosition / (sizeOfOceanPatch * 7.0)), 1.0, 7.0));',
       'offsetPosition = position + displacement;',
 
       '//Calculate our normal for this vertex',
@@ -198,7 +198,6 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       'vt = texture2D(displacementMap, tangentUVOffset).xyz;',
       'vt.x *= -1.0;',
       'vt.z *= -1.0;',
-      'deltaBitangent = bitangent / LOD;',
       'biTangentUVOffset = (uv * sizeOfOceanPatch + cameraOffset - deltaBitangent.xz * sizeOfOceanPatch) / sizeOfOceanPatch;',
       'vb = texture2D(displacementMap, biTangentUVOffset).xyz;',
       'vb.x *= -1.0;',
