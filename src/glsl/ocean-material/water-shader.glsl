@@ -1,10 +1,9 @@
 precision highp float;
 
-varying vec3 vWorldPosition;
 varying vec2 vUv;
-varying float vHeight;
-varying vec3 vDisplacement;
-varying vec3 vViewVector;
+
+uniform mat4 instanceMatrix;
+uniform mat4 modelMatrix;
 
 //uniform vec3 cameraDirection;
 uniform float sizeOfOceanPatch;
@@ -72,7 +71,7 @@ void main(){
   vec4 worldPosition = modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);
   float distanceToWorldPosition = distance(worldPosition.xyz, cameraPosition.xyz);
   float LOD = pow(2.0, clamp(7.0 - (distanceToWorldPosition / (sizeOfOceanPatch * 7.0)), 1.0, 7.0));
-  offsetPosition = vPosition + displacement;
+  offsetPosition = vUv * sizeOfOceanPatch + displacement;
 
   //Calculate our normal for this vertex
   vec3 deltaTangent = tangent / LOD;
