@@ -3,7 +3,6 @@ precision highp float;
 varying vec3 vWorldPosition;
 varying vec2 vUv;
 varying float vHeight;
-varying vec3 vDisplacedNormal;
 varying vec3 vDisplacement;
 varying vec3 vViewVector;
 
@@ -58,8 +57,54 @@ vec3 MyAESFilmicToneMapping(vec3 color) {
 }
 
 void main(){
+  mat3 instanceMatrixMat3 = mat3(instanceMatrix[0].xyz, instanceMatrix[1].xyz, instanceMatrix[2].xyz );
+  mat3 modelMatrixMat3 = mat3(modelMatrix[0].xyz, modelMatrix[1].xyz, modelMatrix[2].xyz );
   vec2 cameraOffset = vec2(cameraPosition.x, cameraPosition.z);
   float height = (vDisplacement.y  + linearScatteringHeightOffset) / linearScatteringTotalScatteringWaveHeight;
+
+  vec2 uvOffset = (vUv * sizeOfOceanPatch + cameraOffset) / sizeOfOceanPatch;
+  vec3 displacement = texture2D(displacementMap, uvOffset).xyz;
+  displacement.x *= -1.0;
+  displacement.z *= -1.0;
+
+  vec3 offsetPosition = displacement;
+
+  vec4 worldPosition = modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);
+  float distanceToWorldPosition = distance(worldPosition.xyz, cameraPosition.xyz);
+  float LOD = pow(2.0, clamp(7.0 - (distanceToWorldPosition / (sizeOfOceanPatch * 7.0)), 1.0, 7.0));
+  offsetPosition = vPosition + displacement;
+
+  //Calculate our normal for this vertex
+  vec3 deltaTangent = tangent / LOD;
+  vec2 tangentUVOffset = (vUv * sizeOfOceanPatch + cameraOffset + deltaTangent.xz * sizeOfOceanPatch) / sizeOfOceanPatch;
+  vec3 vt = texture2D(displacementMap, tangentUVOffset).xyz;
+  vt.x *= -1.0;
+  vt.z *= -1.0;
+  vec3 deltaBitangent = bitangent / LOD;
+  vec2 biTangentUVOffset = (vUv * sizeOfOceanPatch + cameraOffset + deltaBitangent.xz * sizeOfOceanPatch) / sizeOfOceanPatch;
+  vec3 vb = texture2D(displacementMap, biTangentUVOffset).xyz;
+  vb.x *= -1.0;
+  vb.z *= -1.0;
+  //Change in height with respect to x
+  vec3 dhDt = normalize((vt + deltaTangent * sizeOfOceanPatch) - displacement);
+  //Change in height with respect to z
+  vec3 dhDbt = normalize((vb + deltaBitangent * sizeOfOceanPatch) - displacement);
+  vec3 displacedNormal = cross(dhDt, dhDbt);
+
+  tangentUVOffset = (vUv * sizeOfOceanPatch + cameraOffset - deltaTangent.xz * sizeOfOceanPatch) / sizeOfOceanPatch;
+  vt = texture2D(displacementMap, tangentUVOffset).xyz;
+  vt.x *= -1.0;
+  vt.z *= -1.0;
+  biTangentUVOffset = (vUv * sizeOfOceanPatch + cameraOffset - deltaBitangent.xz * sizeOfOceanPatch) / sizeOfOceanPatch;
+  vb = texture2D(displacementMap, biTangentUVOffset).xyz;
+  vb.x *= -1.0;
+  vb.z *= -1.0;
+  //Change in height with respect to x
+  dhDt = normalize((vt - deltaTangent * sizeOfOceanPatch) - displacement);
+  //Change in height with respect to z
+  dhDbt = normalize((vb - deltaBitangent * sizeOfOceanPatch) - displacement);
+  displacedNormal = (cross(dhDt, dhDbt) + displacedNormal) * 0.5;
+  displacedNormal = displacedNormal.xzy;
 
   //Get the reflected and refracted information of the scene
   vec2 smallNormalMapOffset = (((vUv * 3.0) * (sizeOfOceanPatch / 3.0) + cameraOffset + t * smallNormalMapVelocity) / (sizeOfOceanPatch / 3.0));
@@ -75,7 +120,7 @@ void main(){
   largeNormalMap = normalize(largeNormalMap);
   largeNormalMap = (largeNormalMap + 1.0) * 0.5;
   vec3 combinedNormalMap = combineNormals(smallNormalMap, largeNormalMap);
-  vec3 normalizedDisplacedNormalMap = (normalize(vDisplacedNormal.xyz) + vec3(1.0)) * 0.5;
+  vec3 normalizedDisplacedNormalMap = (normalize(displacedNormal) + vec3(1.0)) * 0.5;
   combinedNormalMap = combineNormals(normalizedDisplacedNormalMap, combinedNormalMap);
   combinedNormalMap = combinedNormalMap * 2.0 - vec3(1.0);
   combinedNormalMap = combinedNormalMap.xzy;

@@ -6,9 +6,9 @@ attribute vec3 bitangent;
 varying vec3 vWorldPosition;
 varying vec2 vUv;
 varying float vHeight;
-varying vec3 vDisplacedNormal;
 varying vec3 vDisplacement;
 varying vec3 vViewVector;
+varying vec3 vPosition;
 
 uniform float sizeOfOceanPatch;
 uniform sampler2D displacementMap;
@@ -23,6 +23,7 @@ vec2 vec2Modulo(vec2 inputUV){
 
 void main() {
   //Set up our displacement map
+  vPosition = position;
   vec3 offsetPosition = position;
   mat3 instanceMatrixMat3 = mat3(instanceMatrix[0].xyz, instanceMatrix[1].xyz, instanceMatrix[2].xyz );
   mat3 modelMatrixMat3 = mat3(modelMatrix[0].xyz, modelMatrix[1].xyz, modelMatrix[2].xyz );
@@ -39,42 +40,10 @@ void main() {
   float LOD = pow(2.0, clamp(7.0 - (distanceToWorldPosition / (sizeOfOceanPatch * 7.0)), 1.0, 7.0));
   offsetPosition = position + displacement;
 
-  //Calculate our normal for this vertex
-  vec3 deltaTangent = tangent / LOD;
-  vec2 tangentUVOffset = (uv * sizeOfOceanPatch + cameraOffset + deltaTangent.xz * sizeOfOceanPatch) / sizeOfOceanPatch;
-  vec3 vt = texture2D(displacementMap, tangentUVOffset).xyz;
-  vt.x *= -1.0;
-  vt.z *= -1.0;
-  vec3 deltaBitangent = bitangent / LOD;
-  vec2 biTangentUVOffset = (uv * sizeOfOceanPatch + cameraOffset + deltaBitangent.xz * sizeOfOceanPatch) / sizeOfOceanPatch;
-  vec3 vb = texture2D(displacementMap, biTangentUVOffset).xyz;
-  vb.x *= -1.0;
-  vb.z *= -1.0;
-  //Change in height with respect to x
-  vec3 dhDt = normalize((vt + deltaTangent * sizeOfOceanPatch) - displacement);
-  //Change in height with respect to z
-  vec3 dhDbt = normalize((vb + deltaBitangent * sizeOfOceanPatch) - displacement);
-  vec3 displacedNormal = cross(dhDt, dhDbt);
-
-  tangentUVOffset = (uv * sizeOfOceanPatch + cameraOffset - deltaTangent.xz * sizeOfOceanPatch) / sizeOfOceanPatch;
-  vt = texture2D(displacementMap, tangentUVOffset).xyz;
-  vt.x *= -1.0;
-  vt.z *= -1.0;
-  biTangentUVOffset = (uv * sizeOfOceanPatch + cameraOffset - deltaBitangent.xz * sizeOfOceanPatch) / sizeOfOceanPatch;
-  vb = texture2D(displacementMap, biTangentUVOffset).xyz;
-  vb.x *= -1.0;
-  vb.z *= -1.0;
-  //Change in height with respect to x
-  dhDt = normalize((vt - deltaTangent * sizeOfOceanPatch) - displacement);
-  //Change in height with respect to z
-  dhDbt = normalize((vb - deltaBitangent * sizeOfOceanPatch) - displacement);
-  displacedNormal = (cross(dhDt, dhDbt) + displacedNormal) * 0.5;
-  vDisplacedNormal = displacedNormal.xzy;
-
   //Set up our UV maps
   vUv = uv;
 
-  vec3 cameraSpacePosition = modelMatrixMat3 * worldPosition.xyz;
+  vec3 cameraSpacePosition = worldPosition.xyz;
   vWorldPosition = worldPosition.xyz;
   vHeight = (offsetPosition.y  + linearScatteringHeightOffset) / linearScatteringTotalScatteringWaveHeight;
 
