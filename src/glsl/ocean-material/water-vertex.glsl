@@ -3,12 +3,12 @@ precision highp float;
 attribute vec3 tangent;
 attribute vec3 bitangent;
 
-varying vec3 vWorldPosition;
 varying vec2 vUv;
-varying float vHeight;
-varying vec3 vDisplacement;
-varying vec3 vViewVector;
 varying vec3 vPosition;
+varying vec3 vTangent;
+varying vec3 vBitangent;
+varying mat4 vInstanceMatrix;
+varying mat4 vModelMatrix;
 
 uniform float sizeOfOceanPatch;
 uniform sampler2D displacementMap;
@@ -23,7 +23,6 @@ vec2 vec2Modulo(vec2 inputUV){
 
 void main() {
   //Set up our displacement map
-  vPosition = position;
   vec3 offsetPosition = position;
   mat3 instanceMatrixMat3 = mat3(instanceMatrix[0].xyz, instanceMatrix[1].xyz, instanceMatrix[2].xyz );
   mat3 modelMatrixMat3 = mat3(modelMatrix[0].xyz, modelMatrix[1].xyz, modelMatrix[2].xyz );
@@ -35,12 +34,13 @@ void main() {
   displacement.z *= -1.0;
   offsetPosition += displacement;
 
-  vec4 worldPosition = modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);
-  float distanceToWorldPosition = distance(worldPosition.xyz, cameraPosition.xyz);
-  float LOD = pow(2.0, clamp(7.0 - (distanceToWorldPosition / (sizeOfOceanPatch * 7.0)), 1.0, 7.0));
-
-  //Set up our UV maps
+  //Set up our varyings
   vUv = uv;
+  vTangent = tangent;
+  vBitangent = bitangent;
+  vPosition = position;
+  vInstanceMatrix = instanceMatrix;
+  vModelMatrix = modelMatrix;
 
   //Add support for three.js fog
   #include <fog_vertex>

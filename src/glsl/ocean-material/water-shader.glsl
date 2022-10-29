@@ -1,9 +1,11 @@
 precision highp float;
 
 varying vec2 vUv;
-
-uniform mat4 instanceMatrix;
-uniform mat4 modelMatrix;
+varying vec3 vPosition;
+varying vec3 vTangent;
+varying vec3 vBitangent;
+varying mat4 vInstanceMatrix;
+varying mat4 vModelMatrix;
 
 //uniform vec3 cameraDirection;
 uniform float sizeOfOceanPatch;
@@ -56,24 +58,24 @@ vec3 MyAESFilmicToneMapping(vec3 color) {
 }
 
 void main(){
-  mat3 instanceMatrixMat3 = mat3(instanceMatrix[0].xyz, instanceMatrix[1].xyz, instanceMatrix[2].xyz );
-  mat3 modelMatrixMat3 = mat3(modelMatrix[0].xyz, modelMatrix[1].xyz, modelMatrix[2].xyz );
+  mat3 instanceMatrixMat3 = mat3(vInstanceMatrix[0].xyz, vInstanceMatrix[1].xyz, vInstanceMatrix[2].xyz );
+  mat3 modelMatrixMat3 = mat3(vModelMatrix[0].xyz, vModelMatrix[1].xyz, vModelMatrix[2].xyz );
   vec2 cameraOffset = vec2(cameraPosition.x, cameraPosition.z);
-  float height = (vDisplacement.y  + linearScatteringHeightOffset) / linearScatteringTotalScatteringWaveHeight;
 
   vec2 uvOffset = (vUv * sizeOfOceanPatch + cameraOffset) / sizeOfOceanPatch;
   vec3 displacement = texture2D(displacementMap, uvOffset).xyz;
   displacement.x *= -1.0;
   displacement.z *= -1.0;
+  vec3 offsetPosition = vPosition + displacement;
+  float height = (offsetPosition.y  + linearScatteringHeightOffset) / linearScatteringTotalScatteringWaveHeight;
 
-  vec3 offsetPosition = displacement;
-
-  vec4 worldPosition = modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);
+  vec4 worldPosition = vModelMatrix * vInstanceMatrix * vec4(offsetPosition, 1.0);
   float distanceToWorldPosition = distance(worldPosition.xyz, cameraPosition.xyz);
-  float LOD = pow(2.0, clamp(7.0 - (distanceToWorldPosition / (sizeOfOceanPatch * 7.0)), 1.0, 7.0));
-  offsetPosition = vUv * sizeOfOceanPatch + displacement;
+  float LOD = pow(2.0, clamp(7.0 - (distanceToWorldPosition / (sizeOfOceanPatch * 7.0)), 2.0, 7.0));
 
   //Calculate our normal for this vertex
+  vec3 tangent = vTangent;
+  vec3 bitangent = vBitangent;
   vec3 deltaTangent = tangent / LOD;
   vec2 tangentUVOffset = (vUv * sizeOfOceanPatch + cameraOffset + deltaTangent.xz * sizeOfOceanPatch) / sizeOfOceanPatch;
   vec3 vt = texture2D(displacementMap, tangentUVOffset).xyz;
@@ -103,7 +105,7 @@ void main(){
   //Change in height with respect to z
   dhDbt = normalize((vb - deltaBitangent * sizeOfOceanPatch) - displacement);
   displacedNormal = (cross(dhDt, dhDbt) + displacedNormal) * 0.5;
-  displacedNormal = displacedNormal.xzy;
+  displacedNormal = normalize(displacedNormal.xzy);
 
   //Get the reflected and refracted information of the scene
   vec2 smallNormalMapOffset = (((vUv * 3.0) * (sizeOfOceanPatch / 3.0) + cameraOffset + t * smallNormalMapVelocity) / (sizeOfOceanPatch / 3.0));
@@ -123,18 +125,18 @@ void main(){
   combinedNormalMap = combineNormals(normalizedDisplacedNormalMap, combinedNormalMap);
   combinedNormalMap = combinedNormalMap * 2.0 - vec3(1.0);
   combinedNormalMap = combinedNormalMap.xzy;
-  vec3 normalizedViewVector = normalize(vViewVector.xyz);
+  vec3 normalizedViewVector = normalize(worldPosition.xyz - cameraPosition.xyz);
   vec3 reflectedCoordinates = reflect(normalizedViewVector, combinedNormalMap);
   vec3 refractedCoordinates = refract(normalizedViewVector, combinedNormalMap, 1.005 / 1.333);
   vec3 reflectedLight = textureCube(reflectionCubeMap, reflectedCoordinates).rgb; //Reflection
   vec3 refractedLight = textureCube(refractionCubeMap, refractedCoordinates).rgb; //Refraction
   vec3 pointXYZ = textureCube(depthCubeMap, refractedCoordinates).rgb; //Scattering
-  float distanceToPoint = distance(pointXYZ, vWorldPosition);
+  float distanceToPoint = distance(pointXYZ, worldPosition.xyz);
   vec3 normalizedTransmittancePercentColor = normalize(lightScatteringAmounts);
   vec3 percentOfSourceLight = clamp(exp(-distanceToPoint / lightScatteringAmounts), 0.0, 1.0);
   refractedLight = percentOfSourceLight * pow(refractedLight, gamma);
   //Increasing brightness with height inspired by, https://80.lv/articles/tutorial-ocean-shader-with-gerstner-waves/
-  vec3 inscatterLight = pow(max(vHeight, 0.0) * length(vec3(1.0) - percentOfSourceLight) * pow(normalizedTransmittancePercentColor, vec3(2.5))  * brightestDirectionalLight, gamma);
+  vec3 inscatterLight = pow(max(height, 0.0) * length(vec3(1.0) - percentOfSourceLight) * pow(normalizedTransmittancePercentColor, vec3(2.5))  * brightestDirectionalLight, gamma);
 
   //Apply Schlick's approximation for the fresnel amount
   //https://en.wikipedia.org/wiki/Schlick%27s_approximation
