@@ -1,0 +1,71 @@
+AWater.AOcean.Materials.Ocean.transmittanceMaterial = {
+  uniforms: {},
+  fragmentShader: function(numberOfPoints, scatteringFunctions){
+    let originalGLSL = [
+    '//Based on the work of Oskar Elek',
+    '//http://old.cescg.org/CESCG-2009/papers/PragueCUNI-Elek-Oskar09.pdf',
+    '//and the thesis from http://publications.lib.chalmers.se/records/fulltext/203057/203057.pdf',
+    '//by Gustav Bodare and Edvard Sandberg',
+
+    '$scatteringFunctions',
+
+    'void main(){',
+      'vec2 uv = gl_FragCoord.xy / resolution.xy;',
+      'float r = inverseParameterizationOfYToRPlusRe(uv.y);',
+      'float h = r - RADIUS_OF_EARTH;',
+      'vec2 pA = vec2(0.0, r);',
+      'vec2 p = pA;',
+      'float cosOfViewZenith = inverseParameterizationOfXToCosOfViewZenith(uv.x);',
+      '//sqrt(1.0 - cos(zenith)^2) = sin(zenith), which is the view direction',
+      'vec2 cameraDirection = vec2(sqrt(1.0 - cosOfViewZenith * cosOfViewZenith), cosOfViewZenith);',
+
+      '//Check if we intersect the earth. If so, return a transmittance of zero.',
+      '//Otherwise, intersect our ray with the atmosphere.',
+      'vec2 pB = intersectRaySphere(vec2(0.0, r), cameraDirection);',
+      'vec3 transmittance = vec3(0.0);',
+      'float distFromPaToPb = 0.0;',
+      'bool intersectsEarth = intersectsSphere(p, cameraDirection, RADIUS_OF_EARTH);',
+      'if(!intersectsEarth){',
+        'distFromPaToPb = distance(pA, pB);',
+        'float chunkLength = distFromPaToPb / $numberOfChunks;',
+        'vec2 direction = (pB - pA) / distFromPaToPb;',
+        'vec2 deltaP = direction * chunkLength;',
+
+        '//Prime our trapezoidal rule',
+        'float previousRayleighDensity = exp(-h * ONE_OVER_RAYLEIGH_SCALE_HEIGHT);',
+        'float totalDensityRayleigh = 0.0;',
+
+        '//Integrate from Pa to Pb to determine the total transmittance',
+        '//Using the trapezoidal rule.',
+        'float rayleighDensity;',
+        '#pragma unroll',
+        'for(int i = 1; i < $numberOfChunksInt; i++){',
+          'p += deltaP;',
+          'h = length(p) - RADIUS_OF_EARTH;',
+          'rayleighDensity = exp(-h * ONE_OVER_RAYLEIGH_SCALE_HEIGHT);',
+          'totalDensityRayleigh += (previousRayleighDensity + rayleighDensity) * chunkLength;',
+
+          '//Store our values for the next iteration',
+          'previousRayleighDensity = rayleighDensity;',
+        '}',
+        'totalDensityRayleigh *= 0.5;',
+        'transmittance = exp(-1.0 * totalDensityRayleigh * RAYLEIGH_BETA);',
+      '}',
+
+      'gl_FragColor = vec4(transmittance, 1.0);',
+    '}',
+    ];
+
+    let updatedLines = [];
+    let numberOfChunks = numberOfPoints - 1;
+    for(let i = 0, numLines = originalGLSL.length; i < numLines; ++i){
+      let updatedGLSL = originalGLSL[i].replace(/\$numberOfChunksInt/g, numberOfChunks);
+      updatedGLSL = updatedGLSL.replace(/\$numberOfChunks/g, numberOfChunks.toFixed(1));
+      updatedGLSL = updatedGLSL.replace(/\$scatteringFunctions/g, scatteringFunctions);
+
+      updatedLines.push(updatedGLSL);
+    }
+
+    return updatedLines.join('\n');
+  }
+};

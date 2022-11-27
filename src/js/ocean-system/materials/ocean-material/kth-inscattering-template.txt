@@ -1,0 +1,37 @@
+AWater.AOcean.Materials.Ocean.kthInscatteringMaterial = {
+  uniforms: {
+    transmittanceTexture: {value: null},
+    inscatteredLightLUT: {value: null},
+  },
+  fragmentShader: function(textureWidth, textureHeight, packingWidth, packingHeight, isRayleigh, scatteringFunctions, oceanParameters){
+    const originalGLSL = [
+      {fragment_glsl}
+    ];
+
+    let updatedLines = [];
+    const numberOfChunks = oceanParameters.numberOfRaySteps - 1;
+    const numberOfGatheringChunks = oceanParameters.numberOfGatheringSteps - 1;
+    const textureDepth = packingWidth * packingHeight;
+    for(let i = 0, numLines = originalGLSL.length; i < numLines; ++i){
+      let updatedGLSL = originalGLSL[i].replace(/\$numberOfChunksInt/g, numberOfChunks);
+      updatedGLSL = updatedGLSL.replace(/\$numberOfGatheringChunksInt/g, numberOfGatheringChunks);
+      updatedGLSL = updatedGLSL.replace(/\$atmosphericFunctions/g, scatteringFunctions);
+      updatedGLSL = updatedGLSL.replace(/\$numberOfChunks/g, numberOfChunks.toFixed(1));
+
+      //Texture constants
+      updatedGLSL = updatedGLSL.replace(/\$textureDepth/g, textureDepth.toFixed(1));
+      updatedGLSL = updatedGLSL.replace(/\$textureWidth/g, textureWidth.toFixed(1));
+      updatedGLSL = updatedGLSL.replace(/\$textureHeight/g, textureHeight.toFixed(1));
+      updatedGLSL = updatedGLSL.replace(/\$textureZed/g, textureHeight.toFixed(1));
+      updatedGLSL = updatedGLSL.replace(/\$packingWidth/g, packingWidth.toFixed(1));
+      updatedGLSL = updatedGLSL.replace(/\$packingHeight/g, packingHeight.toFixed(1));
+      updatedGLSL = updatedGLSL.replace(/\$packingDepth/g, packingHeight.toFixed(1));
+
+
+      //Choose which texture to use
+      updatedLines.push(updatedGLSL);
+    }
+
+    return updatedLines.join('\n');
+  }
+};

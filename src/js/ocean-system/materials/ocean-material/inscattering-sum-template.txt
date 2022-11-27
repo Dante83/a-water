@@ -1,0 +1,10 @@
+AWater.AOcean.Materials.Ocean.inscatteringSumMaterial = {
+  uniforms: {
+    previousInscatteringSum: {'value': null},
+    inscatteringTexture : {'value': null},
+    isNotFirstIteration: {'value': false}
+  },
+  fragmentShader: [
+    {fragment_glsl}
+  ].join('\n')
+};

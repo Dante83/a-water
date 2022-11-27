@@ -1,0 +1,20 @@
+AWater.AOcean.Materials.Ocean.transmittanceMaterial = {
+  uniforms: {},
+  fragmentShader: function(numberOfPoints, scatteringFunctions){
+    let originalGLSL = [
+      {fragment_glsl}
+    ];
+
+    let updatedLines = [];
+    let numberOfChunks = numberOfPoints - 1;
+    for(let i = 0, numLines = originalGLSL.length; i < numLines; ++i){
+      let updatedGLSL = originalGLSL[i].replace(/\$numberOfChunksInt/g, numberOfChunks);
+      updatedGLSL = updatedGLSL.replace(/\$numberOfChunks/g, numberOfChunks.toFixed(1));
+      updatedGLSL = updatedGLSL.replace(/\$scatteringFunctions/g, scatteringFunctions);
+
+      updatedLines.push(updatedGLSL);
+    }
+
+    return updatedLines.join('\n');
+  }
+};

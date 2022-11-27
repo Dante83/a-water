@@ -1,0 +1,30 @@
+//This is not your usual file, instead it is a kind of fragment file that contains
+//a partial glsl fragment file with functions that are used in multiple locations
+AWater.AOcean.Materials.Ocean.AtmosphereFunctions = {
+  partialFragmentShader: function(textureWidth, textureHeight, textureDepth, textureZed, packingWidth, packingHeight, packingDepth, oceanParameters){
+    let originalGLSL = [
+      {fragment_glsl}
+    ];
+
+    const rayBet = oceanParameters.rayleighBeta;
+    const rayleighBeta = `vec3(${rayBet.red.toFixed(16)}, ${rayBet.green.toFixed(16)}, ${rayBet.blue.toFixed(16)})`;
+    const oneOverRayleighScaleHeight = 1.0 / oceanParameters.rayleighScaleHeight;
+
+    let updatedLines = [];
+    for(let i = 0, numLines = originalGLSL.length; i < numLines; ++i){
+      let updatedGLSL = originalGLSL[i].replace(/\$textureWidth/g, textureWidth.toFixed(1));
+      updatedGLSL = updatedGLSL.replace(/\$textureHeight/g, textureHeight.toFixed(1));
+      updatedGLSL = updatedGLSL.replace(/\$textureDepth/g, textureDepth.toFixed(1));
+      updatedGLSL = updatedGLSL.replace(/\$textureZed/g, textureZed.toFixed(1));
+      updatedGLSL = updatedGLSL.replace(/\$packingWidth/g, packingWidth.toFixed(1));
+      updatedGLSL = updatedGLSL.replace(/\$packingHeight/g, packingHeight.toFixed(1));
+      updatedGLSL = updatedGLSL.replace(/\$packingDepth/g, packingDepth.toFixed(1));
+      updatedGLSL = updatedGLSL.replace(/\$oneOverRayleighScaleHeight/g, oneOverRayleighScaleHeight.toFixed(16));
+      updatedGLSL = updatedGLSL.replace(/\$rayleighBeta/g, rayleighBeta);
+
+      updatedLines.push(updatedGLSL);
+    }
+
+    return updatedLines.join('\n');
+  }
+}
