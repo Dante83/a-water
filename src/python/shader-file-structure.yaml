@@ -49,3 +49,23 @@ groups:
         vertex:   'water-vertex.glsl'
         template: 'water-shader-template.txt'
         material: 'water-shader.js'
+      -
+        fragment: 'inscattering-sum.glsl'
+        template: 'inscattering-sum-template.txt'
+        material: 'inscattering-sum.js'
+      -
+        fragment: 'kth-inscattering.glsl'
+        template: 'kth-inscattering-template.txt'
+        material: 'kth-inscattering.js'
+      -
+        fragment: 'scattering-functions.glsl'
+        template: 'scattering-functions-template.txt'
+        material: 'scattering-functions.js'
+      -
+        fragment: 'single-scattering.glsl'
+        template: 'single-scattering-template.txt'
+        material: 'single-scattering.js'
+      -
+        fragment: 'transmittance.glsl'
+        template: 'transmittance-template.txt'
+        material: 'transmittance.js'
