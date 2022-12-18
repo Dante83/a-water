@@ -5,9 +5,9 @@ AFRAME.registerComponent('ocean-state', {
   schema: {
     'draw_distance': {type: 'number', default: 5000.0},
     'patch_size': {type: 'number', default: 256.0},
-    'patch_data_size': {type: 'number', default: 256.0},
+    'patch_data_size': {type: 'number', default: 512.0},
     'wave_scale_multiple': {type: 'number', default: 1.0},
-    'number_of_octaves': {type: 'number', default: 128.0},
+    'number_of_octaves': {type: 'number', default: 256.0},
     'wind_velocity': {type: 'vec2', default: {x: 4.0, y: 3.5}},
     'height_offset': {type: 'number', default: 0.0},
     'large_normal_map': {type: 'string', default: './image-dir/a-water-assets/water-normal-1.png'},

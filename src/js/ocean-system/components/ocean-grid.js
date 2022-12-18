@@ -17,6 +17,10 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.smallNormalMap;
   this.largeNormalMap;
   this.windVelocity = data.wind_velocity;
+  this.reflectionClipPlane = new THREE.Plane();
+  this.reflectionClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, this.heightOffset * 2.0, 0));
+  this.refractionClipPlane = new THREE.Plane();
+  this.refractionClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, -1, 0), new THREE.Vector3(0, this.heightOffset * 2.0, 0));
   const randomAngle1 = Math.random() * 2.0 * Math.PI;
   const randomAngle2 = Math.random() * 2.0 * Math.PI;
   this.randomWindVelocities = [
@@ -85,13 +89,13 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
   //Set up our cube camera for reflections and refractions
   this.reflectionCubeRenderTarget = new THREE.WebGLCubeRenderTarget(512, {});
-  this.reflectionCubeCamera = new THREE.CubeCamera(50.0, 10000, this.reflectionCubeRenderTarget);
+  this.reflectionCubeCamera = new THREE.CubeCamera(0.1, 10000.0, this.reflectionCubeRenderTarget);
   this.scene.add(this.reflectionCubeCamera);
 
   this.refractionCubeRenderTarget = new THREE.WebGLCubeRenderTarget(512, {
     mapping: THREE.CubeRefractionMapping
   });
-  this.refractionCubeCamera = new THREE.CubeCamera(0.1, 0.5 * this.drawDistance, this.refractionCubeRenderTarget);
+  this.refractionCubeCamera = new THREE.CubeCamera(0.1, 1000.0, this.refractionCubeRenderTarget);
   this.scene.add(this.refractionCubeCamera);
 
   //Set up another cube camera for depth
@@ -99,7 +103,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     mapping: THREE.CubeRefractionMapping,
     type: THREE.FloatType
   });
-  this.depthCubeCamera = new THREE.CubeCamera(0.1, 0.5 * this.drawDistance, this.depthCubeMapRenderTarget);
+  this.depthCubeCamera = new THREE.CubeCamera(0.1, 1000.0, this.depthCubeMapRenderTarget);
   this.scene.add(this.depthCubeCamera);
 
   //Initialize all shader LUTs for future ocean viewing
@@ -307,12 +311,19 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //Snap a cubemap picture of our environment to create reflections and refractions
     self.depthCubeCamera.position.copy(self.globalCameraPosition);
     self.reflectionCubeCamera.position.copy(self.globalCameraPosition);
+    self.reflectionCubeCamera.position.y = 2.0 * self.heightOffset - self.globalCameraPosition.y;
     self.refractionCubeCamera.position.copy(self.globalCameraPosition);
+    self.reflectionCubeCamera.position.y = 0.0;
     self.scene.overrideMaterial = self.positionPassMaterial;
     self.depthCubeCamera.update(self.renderer, self.scene);
     self.scene.overrideMaterial = null;
+    const rendererClippingEnabledBefore = self.renderer.localClippingEnabled;
+    const originalGlobalClipPlane = self.renderer.clippingPlanes.length > 0 ? [...self.renderer.clippingPlanes] : [];
+    self.renderer.clippingPlanes = [self.reflectionClipPlane];
     self.reflectionCubeCamera.update(self.renderer, self.scene);
+    self.renderer.clippingPlanes = [self.refractionClipPlane];
     self.refractionCubeCamera.update(self.renderer, self.scene);
+    self.renderer.clippingPlanes = originalGlobalClipPlane;
 
     //Show all of our ocean grid elements again
     for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){

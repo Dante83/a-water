@@ -7,8 +7,10 @@ varying vec2 vUv;
 varying vec3 vPosition;
 varying vec3 vTangent;
 varying vec3 vBitangent;
+varying vec3 vInView;
 varying mat4 vInstanceMatrix;
 varying mat4 vModelMatrix;
+varying mat3 vNormalMatrix;
 
 uniform float sizeOfOceanPatch;
 uniform sampler2D displacementMap;
@@ -28,8 +30,11 @@ void main() {
   mat3 modelMatrixMat3 = mat3(modelMatrix[0].xyz, modelMatrix[1].xyz, modelMatrix[2].xyz );
 
   vec2 cameraOffset = vec2(cameraPosition.x, cameraPosition.z);
+  vec4 worldPositionOfVertex = (modelMatrix * instanceMatrix * vec4(position, 1.0));
+  float distanceToVertex = distance(cameraPosition.xyz, worldPositionOfVertex.xyz);
   vec2 uvOffset = (uv * sizeOfOceanPatch + cameraOffset) / sizeOfOceanPatch;
-  vec3 displacement = texture2D(displacementMap, uvOffset).xyz;
+  float displacementFadeout = clamp((2500.0 - distanceToVertex) / 2500.0, 0.0, 1.0);
+  vec3 displacement = texture2D(displacementMap, uvOffset).xyz * displacementFadeout;
   displacement.x *= -1.0;
   displacement.z *= -1.0;
   offsetPosition += displacement;
@@ -39,8 +44,13 @@ void main() {
   vTangent = tangent;
   vBitangent = bitangent;
   vPosition = position;
+  //From https://stackoverflow.com/questions/59492385/angle-between-view-vector-and-normal
+  vec4 posInView = (modelViewMatrix * instanceMatrix * vec4(offsetPosition, 1.0));
+  posInView /= posInView[3];
+  vInView = normalize(-posInView.xyz);
   vInstanceMatrix = instanceMatrix;
   vModelMatrix = modelMatrix;
+  vNormalMatrix = normalMatrix;
 
   //Add support for three.js fog
   #include <fog_vertex>
