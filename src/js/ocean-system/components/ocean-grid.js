@@ -16,6 +16,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.time = 0.0;
   this.smallNormalMap;
   this.largeNormalMap;
+  this.causticMap;
   this.windVelocity = data.wind_velocity;
   this.reflectionClipPlane = new THREE.Plane();
   this.reflectionClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, this.heightOffset * 2.0, 0));
@@ -76,6 +77,22 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     console.error(err);
   });
 
+  let causticMapTexturePromise = new Promise(function(resolve, reject){
+    textureLoader.load(data.ocean_caustics_map, function(texture){resolve(texture);});
+  });
+  causticMapTexturePromise.then(function(texture){
+    //Fill in the details of our texture
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.encoding = THREE.LinearEncoding;
+    texture.format = THREE.RGBAFormat;
+    self.causticMap = texture;
+  }, function(err){
+    console.error(err);
+  });
+
   //Determine what our fade out start and end heights are
   //This is a bit of a hack but we're going to leave it static for now
   this.numberOfOceanHeightBands = 5;
@@ -95,7 +112,8 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.refractionCubeRenderTarget = new THREE.WebGLCubeRenderTarget(512, {
     mapping: THREE.CubeRefractionMapping
   });
-  this.refractionCubeCamera = new THREE.CubeCamera(0.1, 1000.0, this.refractionCubeRenderTarget);
+  this.refractionCubeRenderTarget.needsUpdate = true;
+  this.refractionCubeCamera = new THREE.CubeCamera(0.1, 10000.0, this.refractionCubeRenderTarget);
   this.scene.add(this.refractionCubeCamera);
 
   //Set up another cube camera for depth
@@ -103,7 +121,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     mapping: THREE.CubeRefractionMapping,
     type: THREE.FloatType
   });
-  this.depthCubeCamera = new THREE.CubeCamera(0.1, 1000.0, this.depthCubeMapRenderTarget);
+  this.depthCubeCamera = new THREE.CubeCamera(0.1, 10000.0, this.depthCubeMapRenderTarget);
   this.scene.add(this.depthCubeCamera);
 
   //Initialize all shader LUTs for future ocean viewing
@@ -133,7 +151,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.positionPassMaterial = new THREE.ShaderMaterial({
     vertexShader: AWater.AOcean.Materials.Ocean.positionPassMaterial.vertexShader,
     fragmentShader: AWater.AOcean.Materials.Ocean.positionPassMaterial.fragmentShader,
-    side: THREE.FrontSide,
+    side: THREE.DoubleSide,
     transparent: false,
     lights: false
   });
@@ -311,18 +329,17 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //Snap a cubemap picture of our environment to create reflections and refractions
     self.depthCubeCamera.position.copy(self.globalCameraPosition);
     self.reflectionCubeCamera.position.copy(self.globalCameraPosition);
-    self.reflectionCubeCamera.position.y = 2.0 * self.heightOffset - self.globalCameraPosition.y;
-    self.refractionCubeCamera.position.copy(self.globalCameraPosition);
     self.reflectionCubeCamera.position.y = 0.0;
-    self.scene.overrideMaterial = self.positionPassMaterial;
-    self.depthCubeCamera.update(self.renderer, self.scene);
-    self.scene.overrideMaterial = null;
+    self.refractionCubeCamera.position.copy(self.globalCameraPosition);
     const rendererClippingEnabledBefore = self.renderer.localClippingEnabled;
     const originalGlobalClipPlane = self.renderer.clippingPlanes.length > 0 ? [...self.renderer.clippingPlanes] : [];
     self.renderer.clippingPlanes = [self.reflectionClipPlane];
     self.reflectionCubeCamera.update(self.renderer, self.scene);
     self.renderer.clippingPlanes = [self.refractionClipPlane];
     self.refractionCubeCamera.update(self.renderer, self.scene);
+    self.scene.overrideMaterial = self.positionPassMaterial;
+    self.depthCubeCamera.update(self.renderer, self.scene);
+    self.scene.overrideMaterial = null;
     self.renderer.clippingPlanes = originalGlobalClipPlane;
 
     //Show all of our ocean grid elements again
@@ -347,10 +364,15 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       uniformsRef.depthCubeMap.value = self.depthCubeCamera.renderTarget.texture;
       uniformsRef.smallNormalMap.value = self.smallNormalMap;
       uniformsRef.largeNormalMap.value = self.largeNormalMap;
+      uniformsRef.causticMap.value = self.causticMap;
       if(self.brightestDirectionalLight){
         const intensity = brightestDirectionalLight.intensity;
         const color = brightestDirectionalLight.color;
         uniformsRef.brightestDirectionalLight.value.set(color.r * intensity, color.g * intensity, color.b * intensity);
+        const directionalLightDirection = new THREE.Vector3();
+        directionalLightDirection.set(brightestDirectionalLight.position.x, brightestDirectionalLight.position.y, brightestDirectionalLight.position.z);
+        directionalLightDirection.sub(brightestDirectionalLight.target.position).negate().normalize();
+        uniformsRef.brightestDirectionalLightDirection.value.set(directionalLightDirection.x, directionalLightDirection.y, directionalLightDirection.z);
       }
       else{
         uniformsRef.brightestDirectionalLight.value.set(1.0,1.0,1.0);

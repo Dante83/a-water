@@ -16,6 +16,7 @@ uniform float smallNormalMapStrength;
 uniform sampler2D displacementMap;
 uniform sampler2D smallNormalMap;
 uniform sampler2D largeNormalMap;
+uniform sampler2D causticMap;
 uniform samplerCube reflectionCubeMap;
 uniform samplerCube refractionCubeMap;
 uniform samplerCube depthCubeMap;
@@ -24,6 +25,7 @@ uniform vec2 smallNormalMapVelocity;
 uniform vec2 largeNormalMapVelocity;
 
 uniform vec3 brightestDirectionalLight;
+uniform vec3 brightestDirectionalLightDirection;
 uniform vec3 lightScatteringAmounts;
 
 uniform float linearScatteringHeightOffset;
@@ -71,6 +73,15 @@ vec3 combineNormals(vec3 normal1, vec3 normal2){
 //Including this because someone removed this in a future versio of THREE. Why?!
 vec3 MyAESFilmicToneMapping(vec3 color) {
   return clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), 0.0, 1.0);
+}
+
+float causticShader(vec2 uv, float t){
+  float tModified = (t / 20.0);
+  vec2 uv1 = uv + vec2(0.8, 0.1) * tModified;
+  vec2 uv2 = uv - vec2(0.2, 0.7) * tModified;
+  float aSample1 = texture(causticMap, uv1).r;
+  float aSample2 = texture(causticMap, uv2).g;
+  return min(aSample1, aSample2);
 }
 
 void main(){
@@ -137,7 +148,7 @@ void main(){
   smallNormalMap = (smallNormalMap + 1.0) * 0.5;
   vec3 largeNormalMap = texture2D(largeNormalMap, largeNormalMapOffset).xyz;
   largeNormalMap = 2.0 * largeNormalMap - 1.0;
-  float largeNormalMapFadeout = clamp((1000.0 - distanceToWorldPosition) / 500.0, 0.0, 1.0);
+  float largeNormalMapFadeout = clamp((3000.0 - distanceToWorldPosition) / 2500.0, 0.0, 1.0);
   largeNormalMap.x *= largeNormalMapStrength * largeNormalMapFadeout;
   largeNormalMap.y *= largeNormalMapStrength * largeNormalMapFadeout;
   largeNormalMap = normalize(largeNormalMap);
@@ -148,16 +159,21 @@ void main(){
   combinedNormalMap = combinedNormalMap * 2.0 - vec3(1.0);
   combinedNormalMap = normalize(combinedNormalMap);
   combinedNormalMap = combinedNormalMap.xzy;
+
   vec3 normalizedViewVector = normalize(worldPosition.xyz - cameraPosition);
   vec3 reflectedCoordinates = reflect(normalizedViewVector, combinedNormalMap);
-  vec3 refractedCoordinates = refract(normalizedViewVector, combinedNormalMap, 1.0/1.333);
+  //Why?! O_O, ok, so I grabbed this from https://www.youtube.com/watch?v=kXH1-uY0wjY
+  //and... it makes absolutely no sense, but apparently 1.0/1.333 - the actual
+  //refraction coeficient for water is way too high. Is this not physically based
+  //or maybe I am thinking about cubemaps wrong?
+  vec3 refractedCoordinates = refract(normalizedViewVector, combinedNormalMap, 1.0 / 1.025);
   vec3 reflectedLight = textureCube(reflectionCubeMap, reflectedCoordinates).rgb; //Reflection
   vec3 refractedLight = textureCube(refractionCubeMap, refractedCoordinates).rgb; //Refraction
-  vec3 pointXYZ = textureCube(depthCubeMap, refractedCoordinates).rgb; //Scattering
+  vec3 pointXYZ = textureCube(depthCubeMap, refractedCoordinates).xyz; //Scattering
   float distanceToPoint = distance(pointXYZ, worldPosition.xyz);
   vec3 normalizedTransmittancePercentColor = normalize(lightScatteringAmounts);
-  vec3 percentOfSourceLight = clamp(exp(-distanceToPoint / (lightScatteringAmounts * 6.0)), 0.0, 1.0);
-  refractedLight = percentOfSourceLight * sRGBToLinear(vec4(refractedLight, 1.0)).rgb;
+  vec3 percentOfSourceLight = clamp(exp(-2.25 * distanceToPoint / (lightScatteringAmounts)), 0.0, 1.0);
+  refractedLight = sRGBToLinear(vec4(refractedLight, 1.0)).rgb;
   //Increasing brightness with height inspired by, https://80.lv/articles/tutorial-ocean-shader-with-gerstner-waves/
   vec3 inscatterLight = pow(max(height, 0.0) * length(vec3(1.0) - percentOfSourceLight) * pow(normalizedTransmittancePercentColor, vec3(2.5))  * brightestDirectionalLight, gamma);
 
@@ -166,12 +182,28 @@ void main(){
 
   //Weird hack because of our odd anysotropy, I shouldn't have to clamp or normalize this...
   vec3 NinView = normalize(vNormalMatrix * combinedNormalMap);
-  float oneMinusCosTheta = clamp(1.0 - dot(NinView, vInView), 0.0, 0.87) / 0.87;
+  float oneMinusCosTheta = 1.0 - dot(NinView, vInView);
   float fresnelFactor = r0 + (1.0 -  r0) * pow(oneMinusCosTheta, 5.0);
   reflectedLight = sRGBToLinear(vec4(reflectedLight, 1.0)).rgb;
 
+  //Caculate caustic lighting
+  //Probably needs offsetting based on height but let's just see how this is
+  float causticLightingR = causticShader(0.01 * pointXYZ.xz + 0.005, t);
+  float causticLightingG = causticShader(0.01 * pointXYZ.xz, t);
+  float causticLightingB = causticShader(0.01 * pointXYZ.xz - 0.005, t);
+  vec3 causticLighting = 20.0 * vec3(causticLightingR, causticLightingG, causticLightingB);
+  if(distance(cameraPosition, pointXYZ.xyz) > 2500.0){
+    causticLighting = vec3(1.0);
+  }
+  refractedLight *= (0.5 + causticLighting);
+  refractedLight *= percentOfSourceLight;
+
+  //Calculate specular lighting and surface lighting
+  vec3 directionalSurfaceLighting = max(sRGBToLinear(vec4(brightestDirectionalLight * dot(combinedNormalMap, -brightestDirectionalLightDirection), 1.0)).rgb, vec3(0.0));
+  vec3 specular = 1.7 * brightestDirectionalLight * clamp((dot(reflectedCoordinates, -brightestDirectionalLightDirection) - 0.995) / 0.005, 0.0, 1.0);
+
   //Total light
-  vec3 totalLight = (inscatterLight + refractedLight) * (1.0 - fresnelFactor) + reflectedLight * fresnelFactor;
+  vec3 totalLight = specular + (2.0 / 255.0) * directionalSurfaceLighting + (253.0 / 255.0) * ((inscatterLight + refractedLight) * (1.0 - fresnelFactor) + reflectedLight * fresnelFactor);
 
   gl_FragColor = linearTosRGB(vec4(MyAESFilmicToneMapping(totalLight), 1.0));
 

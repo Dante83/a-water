@@ -12,6 +12,7 @@ AFRAME.registerComponent('ocean-state', {
     'height_offset': {type: 'number', default: 0.0},
     'large_normal_map': {type: 'string', default: './image-dir/a-water-assets/water-normal-1.png'},
     'small_normal_map': {type: 'string', default: './image-dir/a-water-assets/water-normal-2.png'},
+    'ocean_caustics_map': {type: 'string', default: './image-dir/a-water-assets/caustic-map.webp'},
     'large_normal_map_strength': {type: 'number', default: 0.45},
     'small_normal_map_strength': {type: 'number', default: 0.35},
     'light_scattering_amounts': {type: 'vec3', default: {x: 88.0, y: 108.0, z: 112.0}},

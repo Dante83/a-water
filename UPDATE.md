@@ -3,6 +3,9 @@
 * Implemented a basic LOD system for the water surface to reduce the number of triangle in the scene to allow for greater draw distances, including instanced mesh to reduce the number of draw calls.
 * Swapped out per vertex normals with per fragment normals for less shimmering per pixel for distant tiles.
 * Added clip planes for reflections and refractions for improved reflections.
+* Implemented normal and height map fading to alleviate edge conditions (weird normal map behaviors) and
+* Added basic specular sparkles and surface lighting from the sun.
+* Fixed a bug with reflection cubemap camera positioning for better reflections.
 
 **Version 0.1.0**
 * Implemented ocean FFT heightmap based on [Oreon Engine FFT Waves Tutorial](https://youtu.be/B3YOLg0sA2g).

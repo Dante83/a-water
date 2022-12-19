@@ -24,7 +24,8 @@ AWater.AOcean.Materials.Ocean.positionPassMaterial = {
     'uniform mat4 worldMatrix;',
 
     'void main() {',
-      'vWorldPosition = (modelViewMatrix * vec4(position, 1.0)).xyz;',
+      'vec4 worldPosition = modelMatrix * vec4(position, 1.0);',
+      'vWorldPosition = worldPosition.xyz / worldPosition.w;',
 
       'gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);',
     '}',

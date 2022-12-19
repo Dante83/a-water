@@ -273,9 +273,9 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
   let self = this;
   this.tick = function(time, activeTextures){
     //Update the time variable of our phillipse spectrum and update hk
-    self.hkXVar.material.uniforms.uTime.value = time / 1000.0;
-    self.hkYVar.material.uniforms.uTime.value = time / 1000.0;
-    self.hkZVar.material.uniforms.uTime.value = time / 1000.0;
+    self.hkXVar.material.uniforms.uTime.value = time / 512.0;
+    self.hkYVar.material.uniforms.uTime.value = time / 512.0;
+    self.hkZVar.material.uniforms.uTime.value = time / 512.0;
     self.hkRenderer.compute();
 
     //Grab each of the textures from each of our filters
