@@ -17,6 +17,10 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.smallNormalMap;
   this.largeNormalMap;
   this.causticMap;
+  this.foamColorMap;
+  this.foamOpacityMap;
+  this.foamNormalMap;
+  this.foamRoughnessMap;
   this.windVelocity = data.wind_velocity;
   this.reflectionClipPlane = new THREE.Plane();
   this.reflectionClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, this.heightOffset * 2.0, 0));
@@ -77,6 +81,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     console.error(err);
   });
 
+  //Load our caustics texture
   let causticMapTexturePromise = new Promise(function(resolve, reject){
     textureLoader.load(data.ocean_caustics_map, function(texture){resolve(texture);});
   });
@@ -89,6 +94,71 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     texture.encoding = THREE.LinearEncoding;
     texture.format = THREE.RGBAFormat;
     self.causticMap = texture;
+  }, function(err){
+    console.error(err);
+  });
+
+  //Pull in each of our foam textures
+  let foamColorPromise = new Promise(function(resolve, reject){
+    textureLoader.load(data.ocean_foam_color, function(texture){resolve(texture);});
+  });
+  foamColorPromise.then(function(texture){
+    //Fill in the details of our texture
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.encoding = THREE.LinearEncoding;
+    texture.format = THREE.RGBAFormat;
+    self.foamColorMap = texture;
+  }, function(err){
+    console.error(err);
+  });
+
+  let foamOpacityPromise = new Promise(function(resolve, reject){
+    textureLoader.load(data.ocean_foam_opacity, function(texture){resolve(texture);});
+  });
+  foamOpacityPromise.then(function(texture){
+    //Fill in the details of our texture
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.encoding = THREE.LinearEncoding;
+    texture.format = THREE.RGBAFormat;
+    self.foamOpacityMap = texture;
+  }, function(err){
+    console.error(err);
+  });
+
+  let foamNormalMapPromise = new Promise(function(resolve, reject){
+    textureLoader.load(data.ocean_foam_normal_map, function(texture){resolve(texture);});
+  });
+  foamNormalMapPromise.then(function(texture){
+    //Fill in the details of our texture
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.encoding = THREE.LinearEncoding;
+    texture.format = THREE.RGBAFormat;
+    self.foamNormalMap = texture;
+  }, function(err){
+    console.error(err);
+  });
+
+  let foamRoughnessMapPromise = new Promise(function(resolve, reject){
+    textureLoader.load(data.ocean_foam_rougness_map, function(texture){resolve(texture);});
+  });
+  foamRoughnessMapPromise.then(function(texture){
+    //Fill in the details of our texture
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.encoding = THREE.LinearEncoding;
+    texture.format = THREE.RGBAFormat;
+    self.foamRoughnessMap = texture;
   }, function(err){
     console.error(err);
   });
@@ -365,6 +435,10 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       uniformsRef.smallNormalMap.value = self.smallNormalMap;
       uniformsRef.largeNormalMap.value = self.largeNormalMap;
       uniformsRef.causticMap.value = self.causticMap;
+      uniformsRef.foamDiffuseMap.value = self.foamColorMap;
+      uniformsRef.foamOpacityMap.value = self.foamOpacityMap;
+      uniformsRef.foamNormalMap.value = self.foamNormalMap;
+      uniformsRef.foamRoughnessMap.value = self.foamRoughnessMap;
       if(self.brightestDirectionalLight){
         const intensity = brightestDirectionalLight.intensity;
         const color = brightestDirectionalLight.color;

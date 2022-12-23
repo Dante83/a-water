@@ -38,14 +38,6 @@ AWater.AOcean.Materials.FFTWaves.waveComposerShaderMaterial = {
 
       '$unrolled_wave_composer',
 
-      '// for(int i = 0; i < numberOfWaveTextures; i++){',
-      '//   float waveHeight_x = texture2D(xWavetextures[i], wrappedUV).x;',
-      '//   float waveHeight_y = texture2D(yWavetextures[i], wrappedUV).x;',
-      '//   float waveHeight_z = texture2D(zWavetextures[i], wrappedUV).x;',
-      '//   combinedWaveHeight += vec3(waveHeight_x, waveHeight_y, waveHeight_z);',
-      '//   totalOffsets += 1.0;',
-      '// }',
-
       'gl_FragColor = vec4(combinedWaveHeight / ($total_offsets_float * N * N), 1.0);',
     '}',
     ];
