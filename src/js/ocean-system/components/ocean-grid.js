@@ -21,11 +21,15 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.foamOpacityMap;
   this.foamNormalMap;
   this.foamRoughnessMap;
+  this.foamRenderMap;
+  this.exclusionMap;
   this.windVelocity = data.wind_velocity;
   this.reflectionClipPlane = new THREE.Plane();
   this.reflectionClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, this.heightOffset * 2.0, 0));
   this.refractionClipPlane = new THREE.Plane();
   this.refractionClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, -1, 0), new THREE.Vector3(0, this.heightOffset * 2.0, 0));
+  this.foamClipPlane = new THREE.Plane();
+  this.foamClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, -1, 0), new THREE.Vector3(0, this.heightOffset * 2.0 + 1.0, 0));
   const randomAngle1 = Math.random() * 2.0 * Math.PI;
   const randomAngle2 = Math.random() * 2.0 * Math.PI;
   this.randomWindVelocities = [
@@ -175,11 +179,11 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   }
 
   //Set up our cube camera for reflections and refractions
-  this.reflectionCubeRenderTarget = new THREE.WebGLCubeRenderTarget(512, {});
+  this.reflectionCubeRenderTarget = new THREE.WebGLCubeRenderTarget(1024, {});
   this.reflectionCubeCamera = new THREE.CubeCamera(0.1, 10000.0, this.reflectionCubeRenderTarget);
   this.scene.add(this.reflectionCubeCamera);
 
-  this.refractionCubeRenderTarget = new THREE.WebGLCubeRenderTarget(512, {
+  this.refractionCubeRenderTarget = new THREE.WebGLCubeRenderTarget(1024, {
     mapping: THREE.CubeRefractionMapping
   });
   this.refractionCubeRenderTarget.needsUpdate = true;
@@ -187,12 +191,28 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.scene.add(this.refractionCubeCamera);
 
   //Set up another cube camera for depth
-  this.depthCubeMapRenderTarget = new THREE.WebGLCubeRenderTarget(512, {
+  this.depthCubeMapRenderTarget = new THREE.WebGLCubeRenderTarget(1024, {
     mapping: THREE.CubeRefractionMapping,
     type: THREE.FloatType
   });
   this.depthCubeCamera = new THREE.CubeCamera(0.1, 10000.0, this.depthCubeMapRenderTarget);
   this.scene.add(this.depthCubeCamera);
+
+  //Set up depth camera pointing down for edge foam
+  this.foamRenderTarget = new THREE.WebGLRenderTarget(4096, 4096, {
+    type: THREE.FloatType
+  });
+  this.foamCamera = new THREE.OrthographicCamera(-2048.0, 2048.0, 2048.0, -2048.0, 0.1, 1000.0);
+  this.scene.add(this.foamCamera);
+
+  //Set up a depth camera pointing down for ocean exclusion mapping
+  this.exclusionRenderTarget = new THREE.WebGLRenderTarget(4096, 4096, {
+    type: THREE.FloatType
+  });
+  this.exclusionCamera = new THREE.OrthographicCamera(-1024.0, 1024.0, 1024.0, -1024.0, 0.1, 1000.0);
+  this.exclusionCamera.layers.disableAll();
+  this.exclusionCamera.layers.set(30);
+  this.scene.add(this.exclusionCamera);
 
   //Initialize all shader LUTs for future ocean viewing
   //Initialize our ocean variables and all associated shaders.
@@ -221,7 +241,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.positionPassMaterial = new THREE.ShaderMaterial({
     vertexShader: AWater.AOcean.Materials.Ocean.positionPassMaterial.vertexShader,
     fragmentShader: AWater.AOcean.Materials.Ocean.positionPassMaterial.fragmentShader,
-    side: THREE.DoubleSide,
+    side: THREE.FrontSide,
     transparent: false,
     lights: false
   });
@@ -350,6 +370,11 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.numberOfPatches = this.oceanPatches.length;
   this.globalCameraPosition = new THREE.Vector3();
   const patchOffsetMatrix = new THREE.Matrix4();
+  const oceanPatchTranslationMatrices = [];
+  for(let i = 0; numOceanPatches = self.oceanPatches.length, i < numOceanPatches; ++i){
+    oceanPatchTranslationMatrices.push(new THREE.Matrix4());
+  }
+  const directionalLightDirection = new THREE.Vector3();
   this.tick = function(time){
     //Update the brightest directional light if we don't have one
     if(this.brightestDirectionalLight === false){
@@ -378,9 +403,9 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       const xOffset = oceanPatch.initialPosition.x + self.globalCameraPosition.x;
       const yOffset = oceanPatch.initialPosition.y + self.heightOffset;
       const zOffset = oceanPatch.initialPosition.z + self.globalCameraPosition.z;
-      let newMatrix = new THREE.Matrix4();
-      newMatrix.makeTranslation(xOffset, yOffset, zOffset);
-      self.oceanPatches[i].instanceMeshRef.setMatrixAt(oceanPatch.instanceID, newMatrix);
+      const translationMatrix = oceanPatchTranslationMatrices[i];
+      translationMatrix.makeTranslation(xOffset, yOffset, zOffset);
+      self.oceanPatches[i].instanceMeshRef.setMatrixAt(oceanPatch.instanceID, translationMatrix);
     }
 
     //Inform the system that we need to update all the instance matrices every frame
@@ -402,15 +427,44 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     self.reflectionCubeCamera.position.y = 0.0;
     self.refractionCubeCamera.position.copy(self.globalCameraPosition);
     const rendererClippingEnabledBefore = self.renderer.localClippingEnabled;
-    const originalGlobalClipPlane = self.renderer.clippingPlanes.length > 0 ? [...self.renderer.clippingPlanes] : [];
+    const originalGlobalClipPlane = self.renderer.clippingPlanes.length > 0 ? self.renderer.clippingPlanes : [];
     self.renderer.clippingPlanes = [self.reflectionClipPlane];
     self.reflectionCubeCamera.update(self.renderer, self.scene);
     self.renderer.clippingPlanes = [self.refractionClipPlane];
     self.refractionCubeCamera.update(self.renderer, self.scene);
     self.scene.overrideMaterial = self.positionPassMaterial;
     self.depthCubeCamera.update(self.renderer, self.scene);
-    self.scene.overrideMaterial = null;
     self.renderer.clippingPlanes = originalGlobalClipPlane;
+
+    //Update our sea foam camera
+    self.renderer.setClearAlpha(0.0);
+    const currentRenderTarget = self.renderer.getRenderTarget();
+    self.foamCamera.position.copy(self.globalCameraPosition);
+    self.foamCamera.position.y = this.heightOffset + 100.0;
+    self.foamCamera.lookAt(self.globalCameraPosition.x, this.heightOffset - 1.0, self.globalCameraPosition.z);
+    self.foamCamera.updateProjectionMatrix();
+    self.renderer.setRenderTarget(self.foamRenderTarget);
+    const clearAlpha = renderer.getClearAlpha();
+    self.renderer.clear();
+    self.renderer.render(scene, self.foamCamera);
+    this.foamRenderMap = self.foamRenderTarget.texture;
+    self.renderer.setRenderTarget(null);
+
+    //Update our exclusion camera
+    self.exclusionCamera.position.copy(self.globalCameraPosition);
+    self.exclusionCamera.position.y = this.heightOffset + 100.0;
+    self.exclusionCamera.lookAt(self.globalCameraPosition.x, this.heightOffset - 1.0, self.globalCameraPosition.z);
+    self.exclusionCamera.updateProjectionMatrix();
+    self.renderer.setRenderTarget(self.exclusionRenderTarget);
+    self.renderer.clear();
+    self.renderer.render(scene, self.exclusionCamera);
+    this.exclusionMap = self.exclusionRenderTarget.texture;
+    self.renderer.setRenderTarget(null);
+
+    //Restore our original materials
+    self.scene.overrideMaterial = null;
+    self.renderer.setRenderTarget(currentRenderTarget);
+    self.renderer.setClearAlpha(clearAlpha);
 
     //Show all of our ocean grid elements again
     for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
@@ -439,11 +493,13 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       uniformsRef.foamOpacityMap.value = self.foamOpacityMap;
       uniformsRef.foamNormalMap.value = self.foamNormalMap;
       uniformsRef.foamRoughnessMap.value = self.foamRoughnessMap;
+      uniformsRef.foamRenderMap.value = self.foamRenderMap;
+      uniformsRef.exclusionMap.value = self.exclusionMap;
+      uniformsRef.baseHeightOffset.value = self.heightOffset;
       if(self.brightestDirectionalLight){
         const intensity = brightestDirectionalLight.intensity;
         const color = brightestDirectionalLight.color;
         uniformsRef.brightestDirectionalLight.value.set(color.r * intensity, color.g * intensity, color.b * intensity);
-        const directionalLightDirection = new THREE.Vector3();
         directionalLightDirection.set(brightestDirectionalLight.position.x, brightestDirectionalLight.position.y, brightestDirectionalLight.position.z);
         directionalLightDirection.sub(brightestDirectionalLight.target.position).negate().normalize();
         uniformsRef.brightestDirectionalLightDirection.value.set(directionalLightDirection.x, directionalLightDirection.y, directionalLightDirection.z);

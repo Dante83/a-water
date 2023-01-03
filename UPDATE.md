@@ -6,6 +6,10 @@
 * Implemented normal and height map fading to alleviate edge conditions (weird normal map behaviors) and
 * Added basic specular sparkles and surface lighting from the sun.
 * Fixed a bug with reflection cubemap camera positioning for better reflections.
+* Added support for water caustic lighting in the refraction mapper.
+* Added support for jacobian based foam.
+* Added the ability to create custom heightmaps for ocean fragment exclusion for removing the ocean from certain regions of the world, particularly indents on terrain or inside the hulls of ships.
+* Included heightmap based foam for edge foam around islands and other terrain features near the shoreline.
 
 **Version 0.1.0**
 * Implemented ocean FFT heightmap based on [Oreon Engine FFT Waves Tutorial](https://youtu.be/B3YOLg0sA2g).

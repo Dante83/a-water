@@ -13,10 +13,13 @@ varying mat3 vNormalMatrix;
 uniform float sizeOfOceanPatch;
 uniform float largeNormalMapStrength;
 uniform float smallNormalMapStrength;
+uniform float baseHeightOffset;
 uniform sampler2D displacementMap;
 uniform sampler2D smallNormalMap;
 uniform sampler2D largeNormalMap;
 uniform sampler2D causticMap;
+uniform sampler2D foamRenderMap;
+uniform sampler2D exclusionMap;
 uniform samplerCube reflectionCubeMap;
 uniform samplerCube refractionCubeMap;
 uniform samplerCube depthCubeMap;
@@ -122,7 +125,7 @@ float foamAmount(vec2 vUv, float textureSize){
 	float turb = max(0.0, 1.0 - jacobian);
 	float xx = 1.0 + 3.0 * smoothstep(1.2, 1.8, turb);
 	xx = min(turb, 1.0);
-	xx = smoothstep(0.0, 1.0, turb);
+	xx = smoothstep(0.0, 1.0, turb + 0.15); //Added the +0.15 for increased foam amount
 	return xx;
 }
 
@@ -137,8 +140,16 @@ void main(){
   displacement.z *= -1.0;
   vec3 offsetPosition = vPosition + displacement;
   float height = (offsetPosition.y  + linearScatteringHeightOffset) / linearScatteringTotalScatteringWaveHeight;
-
   vec4 worldPosition = vModelMatrix * vInstanceMatrix * vec4(offsetPosition, 1.0);
+  vec2 exclusionPosition = 0.5 * (((worldPosition.xz - cameraPosition.xz) / vec2(1024.0)) + 1.0);
+  exclusionPosition = vec2(exclusionPosition.x, 1.0 - exclusionPosition.y);
+  if(exclusionPosition.x < 1.0 && exclusionPosition.x > 0.0 && exclusionPosition.y < 1.0 && exclusionPosition.y > 0.0){
+    vec2 discardHeightData = texture2D(exclusionMap, exclusionPosition).ga;
+    float discardHeight = discardHeightData.x;
+    if((discardHeightData.y > 0.5) && worldPosition.y > discardHeight){
+      discard;
+    }
+  }
   float distanceToWorldPosition = distance(worldPosition.xyz, cameraPosition.xyz);
   float LOD = pow(2.0, clamp(7.0 - (distanceToWorldPosition / (sizeOfOceanPatch * 7.0)), 2.0, 7.0));
 
@@ -199,6 +210,14 @@ void main(){
   vec3 foamNormal = texture2D(foamNormalMap, smallNormalMapOffset).xyz;
   foamNormal = 2.0 * smallNormalMap - 1.0;
   float foamAmount = foamAmount(uvOffset, 25.0);
+  vec2 foamPosition = 0.5 * (((worldPosition.xz - cameraPosition.xz) / vec2(2048.0)) + 1.0);
+  foamPosition = vec2(foamPosition.x, 1.0 - foamPosition.y);
+  if(foamPosition.x < 1.0 && foamPosition.x > 0.0 && foamPosition.y < 1.0 && foamPosition.y > 0.0){
+    vec2 foamHeightData = texture2D(foamRenderMap, foamPosition).ga;
+    if((foamHeightData.y > 0.5)){
+      foamAmount = max(foamAmount, 1.0 - abs(clamp(worldPosition.y - foamHeightData.x - 10.0, 0.0, 10.0) / 10.0));
+    }
+  }
   foamNormal.x *= foamAmount * largeNormalMapFadeout;
   foamNormal.y *= foamAmount * largeNormalMapFadeout;
   foamNormal = normalize(foamNormal);
@@ -225,7 +244,8 @@ void main(){
   vec3 percentOfSourceLight = clamp(exp(-2.25 * distanceToPoint / (lightScatteringAmounts)), 0.0, 1.0);
   refractedLight = sRGBToLinear(vec4(refractedLight, 1.0)).rgb;
   //Increasing brightness with height inspired by, https://80.lv/articles/tutorial-ocean-shader-with-gerstner-waves/
-  vec3 inscatterLight = pow(max(height, 0.0) * length(vec3(1.0) - percentOfSourceLight) * pow(normalizedTransmittancePercentColor, vec3(2.5))  * brightestDirectionalLight, gamma);
+  vec3 normalizedLightIntensity = normalize(brightestDirectionalLight);
+  vec3 inscatterLight = pow(max(height, 0.0) * length(vec3(1.0) - percentOfSourceLight) * pow(normalizedTransmittancePercentColor, vec3(2.5)) * normalizedLightIntensity, gamma);
 
   //Apply Schlick's approximation for the fresnel amount
   //https://graphicscompendium.com/raytracing/11-fresnel-beer
@@ -245,18 +265,18 @@ void main(){
   if(distance(cameraPosition, pointXYZ.xyz) > 2500.0){
     causticLighting = vec3(1.0);
   }
-  refractedLight *= (0.5 + causticLighting);
+  refractedLight *= (causticLighting);
   refractedLight *= percentOfSourceLight;
 
   //Calculate specular lighting and surface lighting
-  vec3 directionalSurfaceLighting = max(sRGBToLinear(vec4(brightestDirectionalLight * dot(combinedNormalMap, -brightestDirectionalLightDirection), 1.0)).rgb, vec3(0.0));
-  vec3 specular = 1.7 * brightestDirectionalLight * clamp((dot(reflectedCoordinates, -brightestDirectionalLightDirection) - 0.995) / 0.005, 0.0, 1.0);
+  vec3 directionalSurfaceLighting = max(sRGBToLinear(vec4(normalizedLightIntensity * dot(combinedNormalMap, -brightestDirectionalLightDirection), 1.0)).rgb, vec3(0.0));
+  vec3 specular = 1.7 * normalizedLightIntensity * clamp((dot(reflectedCoordinates, -brightestDirectionalLightDirection) - 0.995) / 0.005, 0.0, 1.0);
 
   //Total light
   vec3 totalLight = specular + (2.0 / 255.0) * directionalSurfaceLighting + (253.0 / 255.0) * ((inscatterLight + refractedLight) * (1.0 - fresnelFactor) + reflectedLight * fresnelFactor);
   float foamOpacity = foamAmount * texture2D(foamOpacityMap, smallNormalMapOffset).r;
   vec3 foamLight = texture2D(foamDiffuseMap, smallNormalMapOffset).rgb;
-  totalLight += (1.0 + texture2D(foamRoughnessMap, smallNormalMapOffset).rgb) * mix(vec3(0.0), directionalSurfaceLighting, foamOpacity * foamAmount);
+  totalLight = mix(totalLight, 2.0 * directionalSurfaceLighting, (foamOpacity * foamAmount));
 
   gl_FragColor = linearTosRGB(vec4(MyAESFilmicToneMapping(totalLight), 1.0));
 
