@@ -12,6 +12,10 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.patchSize = data.patch_size;
   this.dataPatchSize = data.patch_size;
   this.heightOffset = data.height_offset;
+  this.causticsEnabled = data.caustics_enabled;
+  this.causticsStrength = data.caustics_strength;
+  this.foamEnabled = data.foam_enabled;
+  this.foamStart = data.foam_start;
   this.data = data;
   this.time = 0.0;
   this.smallNormalMap;
@@ -62,7 +66,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     texture.wrapT = THREE.RepeatWrapping;
     texture.magFilter = THREE.LinearFilter;
     texture.minFilter = THREE.LinearMipmapLinearFilter;
-    texture.encoding = THREE.LinearEncoding;
+    texture.colorSpace = THREE.LinearSRGBColorSpace;
     texture.format = THREE.RGBAFormat;
     self.smallNormalMap = texture;
   }, function(err){
@@ -78,7 +82,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     texture.wrapT = THREE.RepeatWrapping;
     texture.magFilter = THREE.LinearFilter;
     texture.minFilter = THREE.LinearMipmapLinearFilter;
-    texture.encoding = THREE.LinearEncoding;
+    texture.colorSpace = THREE.LinearSRGBColorSpace;
     texture.format = THREE.RGBAFormat;
     self.largeNormalMap = texture;
   }, function(err){
@@ -87,7 +91,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
   //Load our caustics texture
   let causticMapTexturePromise = new Promise(function(resolve, reject){
-    textureLoader.load(data.ocean_caustics_map, function(texture){resolve(texture);});
+    textureLoader.load(data.caustics_map, function(texture){resolve(texture);});
   });
   causticMapTexturePromise.then(function(texture){
     //Fill in the details of our texture
@@ -95,7 +99,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     texture.wrapT = THREE.RepeatWrapping;
     texture.magFilter = THREE.LinearFilter;
     texture.minFilter = THREE.LinearMipmapLinearFilter;
-    texture.encoding = THREE.LinearEncoding;
+    texture.colorSpace = THREE.LinearSRGBColorSpace;
     texture.format = THREE.RGBAFormat;
     self.causticMap = texture;
   }, function(err){
@@ -104,7 +108,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
   //Pull in each of our foam textures
   let foamColorPromise = new Promise(function(resolve, reject){
-    textureLoader.load(data.ocean_foam_color, function(texture){resolve(texture);});
+    textureLoader.load(data.foam_color_map, function(texture){resolve(texture);});
   });
   foamColorPromise.then(function(texture){
     //Fill in the details of our texture
@@ -112,7 +116,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     texture.wrapT = THREE.RepeatWrapping;
     texture.magFilter = THREE.LinearFilter;
     texture.minFilter = THREE.LinearMipmapLinearFilter;
-    texture.encoding = THREE.LinearEncoding;
+    texture.colorSpace = THREE.LinearSRGBColorSpace;
     texture.format = THREE.RGBAFormat;
     self.foamColorMap = texture;
   }, function(err){
@@ -120,7 +124,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   });
 
   let foamOpacityPromise = new Promise(function(resolve, reject){
-    textureLoader.load(data.ocean_foam_opacity, function(texture){resolve(texture);});
+    textureLoader.load(data.foam_opacity_map, function(texture){resolve(texture);});
   });
   foamOpacityPromise.then(function(texture){
     //Fill in the details of our texture
@@ -128,7 +132,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     texture.wrapT = THREE.RepeatWrapping;
     texture.magFilter = THREE.LinearFilter;
     texture.minFilter = THREE.LinearMipmapLinearFilter;
-    texture.encoding = THREE.LinearEncoding;
+    texture.colorSpace = THREE.LinearSRGBColorSpace;
     texture.format = THREE.RGBAFormat;
     self.foamOpacityMap = texture;
   }, function(err){
@@ -136,7 +140,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   });
 
   let foamNormalMapPromise = new Promise(function(resolve, reject){
-    textureLoader.load(data.ocean_foam_normal_map, function(texture){resolve(texture);});
+    textureLoader.load(data.foam_normal_map, function(texture){resolve(texture);});
   });
   foamNormalMapPromise.then(function(texture){
     //Fill in the details of our texture
@@ -144,7 +148,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     texture.wrapT = THREE.RepeatWrapping;
     texture.magFilter = THREE.LinearFilter;
     texture.minFilter = THREE.LinearMipmapLinearFilter;
-    texture.encoding = THREE.LinearEncoding;
+    texture.colorSpace = THREE.LinearSRGBColorSpace;
     texture.format = THREE.RGBAFormat;
     self.foamNormalMap = texture;
   }, function(err){
@@ -160,7 +164,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     texture.wrapT = THREE.RepeatWrapping;
     texture.magFilter = THREE.LinearFilter;
     texture.minFilter = THREE.LinearMipmapLinearFilter;
-    texture.encoding = THREE.LinearEncoding;
+    texture.colorSpace = THREE.LinearSRGBColorSpace;
     texture.format = THREE.RGBAFormat;
     self.foamRoughnessMap = texture;
   }, function(err){

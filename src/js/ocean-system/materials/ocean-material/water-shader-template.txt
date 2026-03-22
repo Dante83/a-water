@@ -7,11 +7,13 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     smallNormalMap: {type: 't', value: null},
     largeNormalMap: {type: 't', value: null},
     causticMap: {type: 't', value: null},
+    causticIntensityMultiplier: {type: 'f', value: null},
     foamDiffuseMap: {type: 't', value: null},
     foamOpacityMap: {type: 't', value: null},
     foamNormalMap: {type: 't', value: null},
     foamRoughnessMap: {type: 't', value: null},
     foamRenderMap: {type: 't', value: null},
+    foamStartLevel: {type: 'f', value: 0.0},
     exclusionMap: {type: 't', value: null},
     smallNormalMapVelocity: {type: 'vec2', value: new THREE.Vector2()},
     largeNormalMapVelocity: {type: 'vec2', value: new THREE.Vector2()},
@@ -34,9 +36,21 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     linearScatteringTotalScatteringWaveHeight: {type: 'f', value: 20.0}
   },
 
-  fragmentShader: [
-    {fragment_glsl}
-  ].join('\n'),
+  fragmentShader: function(causticsEnabled, foamEnabled){
+    let originalGLSL = [
+      {fragment_glsl}
+    ];
+
+    let updatedLines = [];
+    for(let i = 0, numLines = originalGLSL.length; i < numLines; ++i){
+      let updatedCode = originalGLSL[i];
+      updatedCode = updatedCode.replace(/\$foam_enabled/g, foamEnabled ? '1' : '0');
+      updatedCode = updatedCode.replace(/\$caustics_enabled/g, causticsEnabled ? '1' : '0');
+      updatedLines.push(updatedCode);
+    }
+
+    return updatedLines.join('\n');
+  },
 
   vertexShader: [
     {vertex_glsl}

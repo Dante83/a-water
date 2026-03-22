@@ -30,8 +30,13 @@ This barebones code will provide you with an infinite scrolling oceans that will
 
 **Property** | **Description**
 :--- | :---
-`large_normal_map` | The location of the large wave normal map used for surface details relative to the webpage folder.
-`small_normal_map` | The location of the small wave normal map used for surface details relative to the webpage folder.
+`large_normal_map` | The location of the large wave normal map used for surface details. All file locations are relative to the library minified file folder.
+`small_normal_map` | The location of the small wave normal map used for surface details. All file locations are relative to the library minified file folder.
+`foam_color_map` | The location of the foam color map used to create the foam on the surface of the water. All file locations are relative to the library minified file folder.
+`foam_normal_map` | The location of the foam normal map used to create the foam on the surface of the water. All file locations are relative to the library minified file folder.
+`foam_opacity_map` | The location of the foam opacity map used to create the foam on the surface of the water. All file locations are relative to the library minified file folder.
+`foam_roughness_map` | The location of the foam roughness map used to create the foam on the surface of the water. All file locations are relative to the library minified file folder.
+`caustics_map` | The location of the caustics color map used for creating the caustic projection underneath the water. All file locations are relative to the library minified file folder.
 `height_offset` | The height, in world coordinates, of the infinite water plane relative to 0m.
 `wind_velocity` | The velocity of the wind, higher wind speeds result in larger waves.
 `draw_distance` | The maximum distance away from the camera, for which wave tiles will be added.
@@ -45,6 +50,11 @@ This barebones code will provide you with an infinite scrolling oceans that will
 `light_scattering_amounts` | A 3-Vector that gives the amount of each light absorbed/scattered for each color component, red, green and blue. Higher values result in water that looks more clear, while lower values make the water look murkier. The relative values for these decides the overall color for the water and is also used to decide the base scattering for direct light based on wave height.
 `linear_scattering_height_offset` | Gives the starting point for the fake wave-height scattering to begin.
 `linear_scattering_total_wave_height` | Gives the total approximate height for your wave which is used as a multiple in the linear effect.
+`foam_enabled` | Turns ocean foam on or off.
+`foam_start` | Describes when the foam begins to show up on the ocean surface.
+`foam_strength` | Describes the strength of the ocean foam once it begins to show up.
+`caustics_enabled` | Turns underwater caustics on or off.
+`caustics_strength` | Multiplies the intensity of the caustics project mapping.
 
 ##Setting File Locations
 
@@ -108,6 +118,8 @@ The `linear_scattering_height_offset` and `linear_scattering_total_wave_height` 
   linear_scattering_total_wave_height: 30;"></a-ocean>
 ```
 
+
+
 ## Author
 * **David Evans / Dante83** - *Main Developer*
 
@@ -118,6 +130,8 @@ The `linear_scattering_height_offset` and `linear_scattering_total_wave_height` 
 * The normal map techniques from [Blending in Detail](https://blog.selfshadow.com/publications/blending-in-detail/) were critical to providing detailing on the wave surfaces.
 * The height based 'glow' in the water is a trick that is thanks to the tutorial, [Ocean Shader With Gerstner Waves](https://80.lv/articles/tutorial-ocean-shader-with-gerstner-waves/).
 * All the amazing work that has gone into [THREE.JS](https://threejs.org/) and [A-Frame](https://aframe.io/).
+* Caustics texture is from a variation of [Caustics Texture](https://opengameart.org/content/water-caustics-effect-small).
+* Foam texture is from [Foam 2 Texture](ambientCG.com/a/Foam002).
 * *And so many other websites and individuals. Thank you for filling our worlds with amazing oceans, deep, mysterious, and uncharted.*
 
 ## License

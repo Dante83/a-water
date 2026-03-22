@@ -17,18 +17,25 @@ uniform float baseHeightOffset;
 uniform sampler2D displacementMap;
 uniform sampler2D smallNormalMap;
 uniform sampler2D largeNormalMap;
-uniform sampler2D causticMap;
-uniform sampler2D foamRenderMap;
 uniform sampler2D exclusionMap;
 uniform samplerCube reflectionCubeMap;
 uniform samplerCube refractionCubeMap;
 uniform samplerCube depthCubeMap;
 
-//Foam maps
-uniform sampler2D foamDiffuseMap;
-uniform sampler2D foamOpacityMap;
-uniform sampler2D foamNormalMap;
-uniform sampler2D foamRoughnessMap;
+#if($caustics_enabled)
+  uniform sampler2D causticMap;
+  uniform float causticIntensityMultiplier;
+#endif
+
+#if($foam_enabled)
+  //Foam maps
+  uniform sampler2D foamRenderMap;
+  uniform sampler2D foamDiffuseMap;
+  uniform sampler2D foamOpacityMap;
+  uniform sampler2D foamNormalMap;
+  uniform sampler2D foamRoughnessMap;
+  uniform float foamStartLevel;
+#endif
 
 uniform vec2 smallNormalMapVelocity;
 uniform vec2 largeNormalMapVelocity;
@@ -84,14 +91,16 @@ vec3 MyAESFilmicToneMapping(vec3 color) {
   return clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), 0.0, 1.0);
 }
 
-float causticShader(vec2 uv, float t){
-  float tModified = (t / 20.0);
-  vec2 uv1 = uv + vec2(0.8, 0.1) * tModified;
-  vec2 uv2 = uv - vec2(0.2, 0.7) * tModified;
-  float aSample1 = texture(causticMap, uv1).r;
-  float aSample2 = texture(causticMap, uv2).g;
-  return min(aSample1, aSample2);
-}
+#if($caustics_enabled)
+  float causticShader(vec2 uv, float t){
+    float tModified = (t / 20.0);
+    vec2 uv1 = uv + vec2(0.8, 0.1) * tModified;
+    vec2 uv2 = uv - vec2(0.2, 0.7) * tModified;
+    float aSample1 = texture(causticMap, uv1).r;
+    float aSample2 = texture(causticMap, uv2).g;
+    return min(aSample1, aSample2);
+  }
+#endif
 
 //Converted from the Minstrel Water Engine
 /*
@@ -117,17 +126,19 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
-float foamAmount(vec2 vUv, float textureSize){
-  float texelSize = 1.0 / textureSize;
-	vec2 dDdy = -0.5 * (texture2D(displacementMap, vUv + vec2(0.0, texelSize)).xz - texture2D(displacementMap, vUv + vec2(0.0, -texelSize)).xz) / 8.0;
-	vec2 dDdx = -0.5 * (texture2D(displacementMap, vUv + vec2(texelSize, 0.0)).xz - texture2D(displacementMap, vUv + vec2(-texelSize, 0.0)).xz) / 8.0;
-	float jacobian = (1.0 + dDdx.x) * (1.0 + dDdy.y) - dDdx.y * dDdy.x;
-	float turb = max(0.0, 1.0 - jacobian);
-	float xx = 1.0 + 3.0 * smoothstep(1.2, 1.8, turb);
-	xx = min(turb, 1.0);
-	xx = smoothstep(0.0, 1.0, turb + 0.15); //Added the +0.15 for increased foam amount
-	return xx;
-}
+#if($foam_enabled)
+  float foamAmount(vec2 vUv, float textureSize){
+    float texelSize = 1.0 / textureSize;
+  	vec2 dDdy = -0.5 * (texture2D(displacementMap, vUv + vec2(0.0, texelSize)).xz - texture2D(displacementMap, vUv + vec2(0.0, -texelSize)).xz) / 8.0;
+  	vec2 dDdx = -0.5 * (texture2D(displacementMap, vUv + vec2(texelSize, 0.0)).xz - texture2D(displacementMap, vUv + vec2(-texelSize, 0.0)).xz) / 8.0;
+  	float jacobian = (1.0 + dDdx.x) * (1.0 + dDdy.y) - dDdx.y * dDdy.x;
+  	float turb = max(0.0, 1.0 - jacobian);
+  	float xx = 1.0 + 3.0 * smoothstep(1.2, 1.8, turb);
+  	xx = min(turb, 1.0);
+  	xx = smoothstep(0.0, 1.0, turb + 0.15); //Added the +0.15 for increased foam amount
+  	return xx;
+  }
+#endif
 
 void main(){
   mat3 instanceMatrixMat3 = mat3(vInstanceMatrix[0].xyz, vInstanceMatrix[1].xyz, vInstanceMatrix[2].xyz );
@@ -207,22 +218,24 @@ void main(){
   largeNormalMap = normalize(largeNormalMap);
   largeNormalMap = (largeNormalMap + 1.0) * 0.5;
   vec3 combinedNormalMap = combineNormals(smallNormalMap, largeNormalMap);
-  vec3 foamNormal = texture2D(foamNormalMap, smallNormalMapOffset).xyz;
-  foamNormal = 2.0 * smallNormalMap - 1.0;
-  float foamAmount = foamAmount(uvOffset, 25.0);
-  vec2 foamPosition = 0.5 * (((worldPosition.xz - cameraPosition.xz) / vec2(2048.0)) + 1.0);
-  foamPosition = vec2(foamPosition.x, 1.0 - foamPosition.y);
-  if(foamPosition.x < 1.0 && foamPosition.x > 0.0 && foamPosition.y < 1.0 && foamPosition.y > 0.0){
-    vec2 foamHeightData = texture2D(foamRenderMap, foamPosition).ga;
-    if((foamHeightData.y > 0.5)){
-      foamAmount = max(foamAmount, 1.0 - abs(clamp(worldPosition.y - foamHeightData.x - 10.0, 0.0, 10.0) / 10.0));
+  #if($foam_enabled)
+    vec3 foamNormal = texture2D(foamNormalMap, smallNormalMapOffset).xyz;
+    foamNormal = 2.0 * smallNormalMap - 1.0;
+    float foamAmount = foamAmount(uvOffset, 25.0);
+    vec2 foamPosition = 0.5 * (((worldPosition.xz - cameraPosition.xz) / vec2(2048.0)) + 1.0);
+    foamPosition = vec2(foamPosition.x, 1.0 - foamPosition.y);
+    if(foamPosition.x < 1.0 && foamPosition.x > 0.0 && foamPosition.y < 1.0 && foamPosition.y > 0.0){
+      vec2 foamHeightData = texture2D(foamRenderMap, foamPosition).ga;
+      if((foamHeightData.y > 0.5)){
+        foamAmount = max(foamAmount, 1.0 - abs(clamp(worldPosition.y - foamHeightData.x - 10.0, 0.0, 10.0) / 10.0));
+      }
     }
-  }
-  foamNormal.x *= foamAmount * largeNormalMapFadeout;
-  foamNormal.y *= foamAmount * largeNormalMapFadeout;
-  foamNormal = normalize(foamNormal);
-  foamNormal = (foamNormal + 1.0) * 0.5;
-  combinedNormalMap = combineNormals(combinedNormalMap, foamNormal);
+    foamNormal.x *= foamAmount * largeNormalMapFadeout;
+    foamNormal.y *= foamAmount * largeNormalMapFadeout;
+    foamNormal = normalize(foamNormal);
+    foamNormal = (foamNormal + 1.0) * 0.5;
+    combinedNormalMap = combineNormals(combinedNormalMap, foamNormal);
+  #endif
   vec3 normalizedDisplacedNormalMap = (normalize(displacedNormal) + vec3(1.0)) * 0.5;
   combinedNormalMap = combineNormals(normalizedDisplacedNormalMap, combinedNormalMap);
   combinedNormalMap = combinedNormalMap * 2.0 - vec3(1.0);
@@ -256,16 +269,18 @@ void main(){
   float fresnelFactor = r0 + (1.0 -  r0) * pow(oneMinusCosTheta, 5.0);
   reflectedLight = sRGBToLinear(vec4(reflectedLight, 1.0)).rgb;
 
-  //Caculate caustic lighting
-  //Probably needs offsetting based on height but let's just see how this is
-  float causticLightingR = causticShader(0.01 * pointXYZ.xz + 0.005, t);
-  float causticLightingG = causticShader(0.01 * pointXYZ.xz, t);
-  float causticLightingB = causticShader(0.01 * pointXYZ.xz - 0.005, t);
-  vec3 causticLighting = 20.0 * vec3(causticLightingR, causticLightingG, causticLightingB);
-  if(distance(cameraPosition, pointXYZ.xyz) > 2500.0){
-    causticLighting = vec3(1.0);
-  }
-  refractedLight *= (causticLighting);
+  #if($caustics_enabled)
+    //Caculate caustic lighting
+    //Probably needs offsetting based on height but let's just see how this is
+    float causticLightingR = causticShader(0.01 * pointXYZ.xz + 0.005, t);
+    float causticLightingG = causticShader(0.01 * pointXYZ.xz, t);
+    float causticLightingB = causticShader(0.01 * pointXYZ.xz - 0.005, t);
+    vec3 causticLighting = causticIntensityMultiplier * 20.0 * vec3(causticLightingR, causticLightingG, causticLightingB);
+    if(distance(cameraPosition, pointXYZ.xyz) > 2500.0){
+      causticLighting = vec3(1.0);
+    }
+    refractedLight *= (causticLighting);
+  #endif
   refractedLight *= percentOfSourceLight;
 
   //Calculate specular lighting and surface lighting
@@ -274,9 +289,11 @@ void main(){
 
   //Total light
   vec3 totalLight = specular + (2.0 / 255.0) * directionalSurfaceLighting + (253.0 / 255.0) * ((inscatterLight + refractedLight) * (1.0 - fresnelFactor) + reflectedLight * fresnelFactor);
-  float foamOpacity = foamAmount * texture2D(foamOpacityMap, smallNormalMapOffset).r;
-  vec3 foamLight = texture2D(foamDiffuseMap, smallNormalMapOffset).rgb;
-  totalLight = mix(totalLight, 2.0 * directionalSurfaceLighting, (foamOpacity * foamAmount));
+  #if($foam_enabled)
+    float foamOpacity = foamAmount * texture2D(foamOpacityMap, smallNormalMapOffset).r;
+    vec3 foamLight = texture2D(foamDiffuseMap, smallNormalMapOffset).rgb;
+    totalLight = mix(totalLight, 2.0 * directionalSurfaceLighting * foamLight, (foamOpacity * foamAmount));
+  #endif
 
   gl_FragColor = linearTosRGB(vec4(MyAESFilmicToneMapping(totalLight), 1.0));
 
