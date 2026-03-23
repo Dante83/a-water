@@ -52,7 +52,6 @@ uniform float t;
 //Fog variables
 #include <fog_pars_fragment>
 
-uniform vec4 directLightingColor;
 
 //R0 For Schlick's Approximation
 //With n1 = 1.33 and n0 = 1.0
@@ -133,9 +132,7 @@ SOFTWARE.
   	vec2 dDdx = -0.5 * (texture2D(displacementMap, vUv + vec2(texelSize, 0.0)).xz - texture2D(displacementMap, vUv + vec2(-texelSize, 0.0)).xz) / 8.0;
   	float jacobian = (1.0 + dDdx.x) * (1.0 + dDdy.y) - dDdx.y * dDdy.x;
   	float turb = max(0.0, 1.0 - jacobian);
-  	float xx = 1.0 + 3.0 * smoothstep(1.2, 1.8, turb);
-  	xx = min(turb, 1.0);
-  	xx = smoothstep(0.0, 1.0, turb + 0.15); //Added the +0.15 for increased foam amount
+  	float xx = smoothstep(0.0, 1.0, turb);
   	return xx;
   }
 #endif
@@ -220,8 +217,8 @@ void main(){
   vec3 combinedNormalMap = combineNormals(smallNormalMap, largeNormalMap);
   #if($foam_enabled)
     vec3 foamNormal = texture2D(foamNormalMap, smallNormalMapOffset).xyz;
-    foamNormal = 2.0 * smallNormalMap - 1.0;
-    float foamAmount = foamAmount(uvOffset, 25.0);
+    foamNormal = 2.0 * foamNormal - 1.0;
+    float foamAmount = foamAmount(uvOffset, 512.0);
     vec2 foamPosition = 0.5 * (((worldPosition.xz - cameraPosition.xz) / vec2(2048.0)) + 1.0);
     foamPosition = vec2(foamPosition.x, 1.0 - foamPosition.y);
     if(foamPosition.x < 1.0 && foamPosition.x > 0.0 && foamPosition.y < 1.0 && foamPosition.y > 0.0){
@@ -230,8 +227,8 @@ void main(){
         foamAmount = max(foamAmount, 1.0 - abs(clamp(worldPosition.y - foamHeightData.x - 10.0, 0.0, 10.0) / 10.0));
       }
     }
-    foamNormal.x *= foamAmount * largeNormalMapFadeout;
-    foamNormal.y *= foamAmount * largeNormalMapFadeout;
+    foamNormal.x *= 0.5 * foamAmount * largeNormalMapFadeout;
+    foamNormal.y *= 0.5 * foamAmount * largeNormalMapFadeout;
     foamNormal = normalize(foamNormal);
     foamNormal = (foamNormal + 1.0) * 0.5;
     combinedNormalMap = combineNormals(combinedNormalMap, foamNormal);
@@ -253,6 +250,11 @@ void main(){
   vec3 refractedLight = textureCube(refractionCubeMap, refractedCoordinates).rgb; //Refraction
   vec3 pointXYZ = textureCube(depthCubeMap, refractedCoordinates).xyz; //Scattering
   float distanceToPoint = distance(pointXYZ, worldPosition.xyz);
+  // When the depth cubemap misses geometry (hits sky/background), it returns (0,0,0).
+  // distance(worldPos, vec3(0)) for distant vertices becomes hundreds of meters,
+  // driving percentOfSourceLight to zero and maximising inscatterLight everywhere.
+  // Cap at a physically reasonable ocean depth to prevent this haze.
+  distanceToPoint = min(distanceToPoint, 100.0);
   vec3 normalizedTransmittancePercentColor = normalize(lightScatteringAmounts);
   vec3 percentOfSourceLight = clamp(exp(-2.25 * distanceToPoint / (lightScatteringAmounts)), 0.0, 1.0);
   refractedLight = sRGBToLinear(vec4(refractedLight, 1.0)).rgb;
@@ -263,10 +265,8 @@ void main(){
   //Apply Schlick's approximation for the fresnel amount
   //https://graphicscompendium.com/raytracing/11-fresnel-beer
 
-  //Weird hack because of our odd anysotropy, I shouldn't have to clamp or normalize this...
-  vec3 NinView = normalize(vNormalMatrix * combinedNormalMap);
-  float oneMinusCosTheta = 1.0 - dot(NinView, vInView);
-  float fresnelFactor = r0 + (1.0 -  r0) * pow(oneMinusCosTheta, 5.0);
+  float cosTheta = clamp(dot(combinedNormalMap, -normalizedViewVector), 0.0, 1.0);
+  float fresnelFactor = r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
   reflectedLight = sRGBToLinear(vec4(reflectedLight, 1.0)).rgb;
 
   #if($caustics_enabled)
@@ -284,7 +284,7 @@ void main(){
   refractedLight *= percentOfSourceLight;
 
   //Calculate specular lighting and surface lighting
-  vec3 directionalSurfaceLighting = max(sRGBToLinear(vec4(normalizedLightIntensity * dot(combinedNormalMap, -brightestDirectionalLightDirection), 1.0)).rgb, vec3(0.0));
+  vec3 directionalSurfaceLighting = normalizedLightIntensity * max(dot(combinedNormalMap, -brightestDirectionalLightDirection), 0.0);
   vec3 specular = 1.7 * normalizedLightIntensity * clamp((dot(reflectedCoordinates, -brightestDirectionalLightDirection) - 0.995) / 0.005, 0.0, 1.0);
 
   //Total light

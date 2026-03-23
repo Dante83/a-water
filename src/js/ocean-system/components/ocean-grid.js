@@ -156,7 +156,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   });
 
   let foamRoughnessMapPromise = new Promise(function(resolve, reject){
-    textureLoader.load(data.ocean_foam_rougness_map, function(texture){resolve(texture);});
+    textureLoader.load(data.foam_roughness_map, function(texture){resolve(texture);});
   });
   foamRoughnessMapPromise.then(function(texture){
     //Fill in the details of our texture
@@ -226,7 +226,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //Set up our ocean material that is used for all of our ocean patches
   this.oceanMaterial = new THREE.ShaderMaterial({
     vertexShader: AWater.AOcean.Materials.Ocean.waterMaterial.vertexShader,
-    fragmentShader: AWater.AOcean.Materials.Ocean.waterMaterial.fragmentShader,
+    fragmentShader: AWater.AOcean.Materials.Ocean.waterMaterial.fragmentShader(this.causticsEnabled, this.foamEnabled),
     side: THREE.FrontSide,
     transparent: false,
     lights: false,
@@ -351,6 +351,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           oceanGridInstanceKeys.push(instanceCountID);
           const geometry = AWater.OceanTile(this.patchSize, LOD, LODTop, LODRight, LODBottom, LODLeft);
           oceanPatchGeometryInstances[instanceCountID] = new THREE.InstancedMesh(geometry, this.oceanMaterial.clone(), instanceCount[instanceCountID]);
+          oceanPatchGeometryInstances[instanceCountID].frustumCulled = false;
           instanceIterations[instanceCountID] = 0;
           scene.add(oceanPatchGeometryInstances[instanceCountID]);
 
@@ -405,7 +406,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     for(let i = 0; numOceanPatches = self.oceanPatches.length, i < numOceanPatches; ++i){
       const oceanPatch = self.oceanPatches[i];
       const xOffset = oceanPatch.initialPosition.x + self.globalCameraPosition.x;
-      const yOffset = oceanPatch.initialPosition.y + self.heightOffset;
+      const yOffset = oceanPatch.initialPosition.y;
       const zOffset = oceanPatch.initialPosition.z + self.globalCameraPosition.z;
       const translationMatrix = oceanPatchTranslationMatrices[i];
       translationMatrix.makeTranslation(xOffset, yOffset, zOffset);

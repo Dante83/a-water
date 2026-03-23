@@ -114,7 +114,7 @@ THREE.GPUComputationRenderer = function ( sizeX, sizeY, renderer ) {
 
 	var passThruShader = createShaderMaterial( getPassThroughFragmentShader(), passThruUniforms );
 
-	var mesh = new THREE.Mesh( new THREE.PlaneBufferGeometry( 2, 2 ), passThruShader );
+	var mesh = new THREE.Mesh( new THREE.PlaneGeometry( 2, 2 ), passThruShader );
 	scene.add( mesh );
 
 
@@ -1188,7 +1188,18 @@ AWater = {
     },
     Renderers: {},
     LUTlibraries: {},
-  }
+  },
+  setActiveCamera: (camera) => {
+      if(AWater.AOcean.OceanGrid !== null){
+        AWater.AOcean.OceanGrid.camera = camera;
+      }
+    },
+    getActiveCamera: () => {s
+      if(AWater.AOcean.OceanGrid !== null){
+        return AWater.AOcean.OceanGrid.camera;
+      }
+      return false;
+    }
 };
 
 //This helps
@@ -1199,24 +1210,24 @@ AWater.AOcean.Materials.FFTWaves.noiseShaderMaterialData = {
     offset: {type: 'f', value: 1.0},
   },
 
-  fragmentShader: [
-    'precision highp float;',
-
-    'uniform float offset;',
-
-    '//From http://byteblacksmith.com/improvements-to-the-canonical-one-liner-glsl-rand-for-opengl-es-2-0/',
-    'float rand(float x){',
-        'float a = 12.9898;',
-        'float b = 78.233;',
-        'float c = 43758.5453;',
-        'float dt= dot(vec2(x, x) ,vec2(a,b));',
-        'float sn= mod(dt,3.14);',
-        'return fract(sin(sn) * c);',
-    '}',
-
-    'void main(){',
-      'vec2 uv = gl_FragCoord.xy / resolution.xy;',
-      'gl_FragColor = vec4(vec3(rand((resolution.x * (uv.x + uv.y * resolution.y)) * offset)), 1.0);',
+  fragmentShader: [
+    'precision highp float;',
+
+    'uniform float offset;',
+
+    '//From http://byteblacksmith.com/improvements-to-the-canonical-one-liner-glsl-rand-for-opengl-es-2-0/',
+    'float rand(float x){',
+        'float a = 12.9898;',
+        'float b = 78.233;',
+        'float c = 43758.5453;',
+        'float dt= dot(vec2(x, x) ,vec2(a,b));',
+        'float sn= mod(dt,3.14);',
+        'return fract(sin(sn) * c);',
+    '}',
+
+    'void main(){',
+      'vec2 uv = gl_FragCoord.xy / resolution.xy;',
+      'gl_FragColor = vec4(vec3(rand((resolution.x * (uv.x + uv.y * resolution.y)) * offset)), 1.0);',
     '}',
   ].join('\n')
 };
@@ -1233,56 +1244,56 @@ AWater.AOcean.Materials.FFTWaves.h0ShaderMaterialData = {
     w: {type: 'v2', value: new THREE.Vector2(1.0, 0.0)}
   },
 
-  fragmentShader: [
-    'precision highp float;',
-
-    '//With a lot of help from https://youtu.be/i0BPrGuOdPo',
-    'uniform float N; //256.0',
-    'uniform float L; //1000.0',
-    'uniform float A; //20',
-    'uniform vec2 w;//(1,0)',
-    'uniform float L_; //Windspeed squared over the gravitational acceleration',
-
-    'const float g = 9.80665;',
-    'const float pi = 3.141592653589793238462643383279502884197169;',
-    'const float piTimes2 = 6.283185307179586476925286766559005768394338798750211641949;',
-    'const float oneOverSqrtOf2 = 0.707106781186547524400844362104849039284835937688474036588;',
-
-    '//Box-Muller Method',
-    'vec4 gaussRand(vec2 uv){',
-      'vec2 texCoord = vec2(uv.xy);',
-      'float noise00 = clamp(texture2D(textureNoise1, texCoord).r + 0.00001, 0.0, 1.0);',
-      'float noise01 = clamp(texture2D(textureNoise2, texCoord).r + 0.00001, 0.0, 1.0);',
-      'float noise02 = clamp(texture2D(textureNoise3, texCoord).r + 0.00001, 0.0, 1.0);',
-      'float noise03 = clamp(texture2D(textureNoise4, texCoord).r + 0.00001, 0.0, 1.0);',
-
-      'float u0 = piTimes2 * noise00;',
-      'float v0 = sqrt(-2.0 * log(noise01));',
-      'float u1 = piTimes2 * noise02;',
-      'float v1 = sqrt(-2.0 * log(noise03));',
-
-      'return vec4(v0 * cos(u0), v0 * sin(u0), v1 * cos(u1), v1 * sin(u1));',
-    '}',
-
-    'void main(){',
-      'vec2 uv = gl_FragCoord.xy / resolution.xy;',
-      'vec2 x = uv.xy * N;',
-      'vec2 k = vec2(piTimes2 / L) * x;',
-      'float magK = length(k);',
-      'if (magK < 0.0001) magK = 0.0001;',
-      'float magSq = magK * magK;',
-      'float L_ = 26.0 * 26.0 / 9.80665;',
-      'float h0_coeficient = sqrt(A / (magSq * magSq)) * exp(-1.0/(magSq * L_ * L_)) * exp(-magSq * pow(L / 2000.0, 2.0)) / sqrt(2.0);',
-
-      '//sqrt(Ph(k) / sqrt(2))',
-      'float h0_k = clamp(h0_coeficient * pow(dot(normalize(k), normalize(w)), 2.0), 0.0, 1000000.0);',
-
-      '//sqrt(Ph(-k) / sqrt(2))',
-      'float h0_minus_k = clamp(h0_coeficient * pow(dot(normalize(-k), normalize(w)), 2.0), 0.0, 1000000.0);',
-
-      'vec4 gaussianRandomNumber = gaussRand(uv);',
-
-      'gl_FragColor =vec4(gaussianRandomNumber.xy * h0_k, gaussianRandomNumber.zw * h0_minus_k);',
+  fragmentShader: [
+    'precision highp float;',
+
+    '//With a lot of help from https://youtu.be/i0BPrGuOdPo',
+    'uniform float N; //256.0',
+    'uniform float L; //1000.0',
+    'uniform float A; //20',
+    'uniform vec2 w;//(1,0)',
+    'uniform float L_; //Windspeed squared over the gravitational acceleration',
+
+    'const float g = 9.80665;',
+    'const float pi = 3.141592653589793238462643383279502884197169;',
+    'const float piTimes2 = 6.283185307179586476925286766559005768394338798750211641949;',
+    'const float oneOverSqrtOf2 = 0.707106781186547524400844362104849039284835937688474036588;',
+
+    '//Box-Muller Method',
+    'vec4 gaussRand(vec2 uv){',
+      'vec2 texCoord = vec2(uv.xy);',
+      'float noise00 = clamp(texture2D(textureNoise1, texCoord).r + 0.00001, 0.0, 1.0);',
+      'float noise01 = clamp(texture2D(textureNoise2, texCoord).r + 0.00001, 0.0, 1.0);',
+      'float noise02 = clamp(texture2D(textureNoise3, texCoord).r + 0.00001, 0.0, 1.0);',
+      'float noise03 = clamp(texture2D(textureNoise4, texCoord).r + 0.00001, 0.0, 1.0);',
+
+      'float u0 = piTimes2 * noise00;',
+      'float v0 = sqrt(-2.0 * log(noise01));',
+      'float u1 = piTimes2 * noise02;',
+      'float v1 = sqrt(-2.0 * log(noise03));',
+
+      'return vec4(v0 * cos(u0), v0 * sin(u0), v1 * cos(u1), v1 * sin(u1));',
+    '}',
+
+    'void main(){',
+      'vec2 uv = gl_FragCoord.xy / resolution.xy;',
+      'vec2 x = uv.xy * N;',
+      'vec2 k = vec2(piTimes2 / L) * x;',
+      'float magK = length(k);',
+      'if (magK < 0.0001) magK = 0.0001;',
+      'float magSq = magK * magK;',
+      'float L_ = 26.0 * 26.0 / 9.80665;',
+      'float h0_coeficient = sqrt(A / (magSq * magSq)) * exp(-1.0/(magSq * L_ * L_)) * exp(-magSq * pow(L / 2000.0, 2.0)) / sqrt(2.0);',
+
+      '//sqrt(Ph(k) / sqrt(2))',
+      'float h0_k = clamp(h0_coeficient * pow(dot(normalize(k), normalize(w)), 2.0), 0.0, 1000000.0);',
+
+      '//sqrt(Ph(-k) / sqrt(2))',
+      'float h0_minus_k = clamp(h0_coeficient * pow(dot(normalize(-k), normalize(w)), 2.0), 0.0, 1000000.0);',
+
+      'vec4 gaussianRandomNumber = gaussRand(uv);',
+
+      'gl_FragColor =vec4(gaussianRandomNumber.xy * h0_k, gaussianRandomNumber.zw * h0_minus_k);',
     '}',
   ].join('\n')
 };
@@ -1299,60 +1310,60 @@ AWater.AOcean.Materials.FFTWaves.hkShaderMaterialData = {
   },
 
   fragmentShader: function(isXAxis = false, isYAxis = false){
-    let originalGLSL = [
-    'precision highp float;',
-
-    '//With a lot of help from https://youtu.be/i0BPrGuOdPo',
-    'uniform sampler2D textureH0;',
-    'uniform float L; //1000.0',
-    'uniform float N; //256.0',
-    'uniform float uTime; //0.0',
-    'const float g = 9.80665;',
-    'const float piTimes2 = 6.283185307179586476925286766559005768394338798750211641949;',
-    'const float pi = 3.141592653589793238462643383279502884197169;',
-
-    'vec2 cMult(vec2 a, vec2 b){',
-      'return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);',
-    '}',
-
-    'vec2 cAdd(vec2 a, vec2 b){',
-      'return vec2(a.x + b.x, a.y + b.y);',
-    '}',
-
-    'vec2 conjugate(vec2 a){',
-      'return vec2(a.x, -1.0 * a.y);',
-    '}',
-
-    'void main(){',
-      'vec2 uv = gl_FragCoord.xy / resolution.xy;',
-      'vec2 x = uv.xy * N;',
-      'vec2 k = vec2(piTimes2 / L) * x;',
-      'float magK = length(k);',
-      'if (magK < 0.0001) magK = 0.0001;',
-      'float w = sqrt(g * magK);',
-
-      'vec4 tilda_h0 = texture2D(textureH0, uv.xy);',
-      'vec2 tilda_h0_k = tilda_h0.rg;',
-      'vec2 tilda_h0_minus_k_conj = conjugate(tilda_h0.ba);',
-
-      'float cosOfWT = cos(w * uTime);',
-      'float sinOfWT = sin(w * uTime);',
-
-      '//Euler Formula',
-      'vec2 expIwt = vec2(cosOfWT, sinOfWT);',
-      'vec2 expIwtConj = vec2(cosOfWT, -sinOfWT);',
-
-      '//dy',
-      'vec2 hk_tilda = cAdd(cMult(tilda_h0_k, expIwt), cMult(tilda_h0_minus_k_conj, expIwtConj));',
-
-      '#if($isXAxis)',
-        'vec2 dx = vec2(0.0, -k.x / magK);',
-        'hk_tilda = cMult(dx, hk_tilda);',
-      '#elif(!$isXAxis && !$isYAxis)',
-        'vec2 dy = vec2(0.0, -k.y / magK);',
-        'hk_tilda = cMult(dy, hk_tilda);',
-      '#endif',
-      'gl_FragColor = vec4(hk_tilda, 0.0, 1.0);',
+    let originalGLSL = [
+    'precision highp float;',
+
+    '//With a lot of help from https://youtu.be/i0BPrGuOdPo',
+    'uniform sampler2D textureH0;',
+    'uniform float L; //1000.0',
+    'uniform float N; //256.0',
+    'uniform float uTime; //0.0',
+    'const float g = 9.80665;',
+    'const float piTimes2 = 6.283185307179586476925286766559005768394338798750211641949;',
+    'const float pi = 3.141592653589793238462643383279502884197169;',
+
+    'vec2 cMult(vec2 a, vec2 b){',
+      'return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);',
+    '}',
+
+    'vec2 cAdd(vec2 a, vec2 b){',
+      'return vec2(a.x + b.x, a.y + b.y);',
+    '}',
+
+    'vec2 conjugate(vec2 a){',
+      'return vec2(a.x, -1.0 * a.y);',
+    '}',
+
+    'void main(){',
+      'vec2 uv = gl_FragCoord.xy / resolution.xy;',
+      'vec2 x = uv.xy * N;',
+      'vec2 k = vec2(piTimes2 / L) * x;',
+      'float magK = length(k);',
+      'if (magK < 0.0001) magK = 0.0001;',
+      'float w = sqrt(g * magK);',
+
+      'vec4 tilda_h0 = texture2D(textureH0, uv.xy);',
+      'vec2 tilda_h0_k = tilda_h0.rg;',
+      'vec2 tilda_h0_minus_k_conj = conjugate(tilda_h0.ba);',
+
+      'float cosOfWT = cos(w * uTime);',
+      'float sinOfWT = sin(w * uTime);',
+
+      '//Euler Formula',
+      'vec2 expIwt = vec2(cosOfWT, sinOfWT);',
+      'vec2 expIwtConj = vec2(cosOfWT, -sinOfWT);',
+
+      '//dy',
+      'vec2 hk_tilda = cAdd(cMult(tilda_h0_k, expIwt), cMult(tilda_h0_minus_k_conj, expIwtConj));',
+
+      '#if($isXAxis)',
+        'vec2 dx = vec2(0.0, -k.x / magK);',
+        'hk_tilda = cMult(dx, hk_tilda);',
+      '#elif(!$isXAxis && !$isYAxis)',
+        'vec2 dy = vec2(0.0, -k.y / magK);',
+        'hk_tilda = cMult(dy, hk_tilda);',
+      '#endif',
+      'gl_FragColor = vec4(hk_tilda, 0.0, 1.0);',
     '}',
     ];
 
@@ -1378,20 +1389,20 @@ AWater.AOcean.Materials.FFTWaves.heightMapShaderData = {
     oneOverNSquared: {type: 'f', value: 1.0},
   },
 
-  fragmentShader: [
-    'precision highp float;',
-
-    '//With a lot of help from https://youtu.be/8kgpxtggFog',
-    'uniform sampler2D pingpongTexture;',
-    'uniform float oneOverNSquared;',
-
-    '//We might want to do this in the vertex shader rather then',
-    '//running through another shader pass for this.',
-    'void main(){',
-      'vec2 uv = vWorldPosition.xy;',
-      '//float h = texture2D(pingpongTexture, position).r;',
-      '//gl_FragColor = vec4(vec3(h * oneOverNSquared), 1.0);',
-      'gl_FragColor = vec4(texture2D(pingpongTexture, position).r, 0.0, 0.0, 1.0);',
+  fragmentShader: [
+    'precision highp float;',
+
+    '//With a lot of help from https://youtu.be/8kgpxtggFog',
+    'uniform sampler2D pingpongTexture;',
+    'uniform float oneOverNSquared;',
+
+    '//We might want to do this in the vertex shader rather then',
+    '//running through another shader pass for this.',
+    'void main(){',
+      'vec2 uv = vWorldPosition.xy;',
+      '//float h = texture2D(pingpongTexture, position).r;',
+      '//gl_FragColor = vec4(vec3(h * oneOverNSquared), 1.0);',
+      'gl_FragColor = vec4(texture2D(pingpongTexture, position).r, 0.0, 0.0, 1.0);',
     '}',
   ].join('\n')
 };
@@ -1514,62 +1525,55 @@ AWater.AOcean.Materials.FFTWaves.butterflyTextureData = {
   },
 
   fragmentShader: function(pingpong_id, injectVariable = false){
-    let glsl = [
-    'precision highp float;',
-
-    'varying vec3 vWorldPosition;',
-
-    '//With a lot of help from https://youtu.be/i0BPrGuOdPo',
-    'uniform sampler2D twiddleTexture;',
-    'uniform float stageFraction;',
-    'uniform int direction;',
-
-    'const float pi = 3.141592653589793238462643383279502884197169;',
-
-    'vec2 cMult(vec2 a, vec2 b){',
-      'return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);',
-    '}',
-
-    'vec2 cAdd(vec2 a, vec2 b){',
-      'return vec2(a.x + b.x, a.y + b.y);',
-    '}',
-
-    'vec4 horizontalButterflies(vec2 position){',
-      'vec4 data = texture2D(twiddleTexture, vec2(stageFraction, position.x));',
-
-      `vec2 p = texture2D(pingpong_${pingpong_id}, vec2(data.z, position.y)).rg;`,
-      `vec2 q = texture2D(pingpong_${pingpong_id}, vec2(data.w, position.y)).rg;`,
-      'vec2 w = vec2(data.x, data.y);',
-
-      'vec2 H = cAdd(p, cMult(w, q));',
-      'return vec4(H, 0.0, 1.0);',
-    '}',
-
-    'vec4 verticalButterflies(vec2 position){',
-      'vec4 data = texture2D(twiddleTexture, vec2(stageFraction, position.y));',
-
-      `vec2 p = texture2D(pingpong_${pingpong_id}, vec2(position.x, data.z)).rg;`,
-      `vec2 q = texture2D(pingpong_${pingpong_id}, vec2(position.x, data.w)).rg;`,
-      'vec2 w = vec2(data.x, data.y);',
-
-      'vec2 H = cAdd(p, cMult(w, q));',
-      'return vec4(H, 0.0, 1.0);',
-    '}',
-
-    'void main(){',
-      'vec2 position = gl_FragCoord.xy / resolution.xy;',
-      'vec4 result;',
-
-      '//If horizontal butterfly',
-      '//(Note: We should probably pull this into another shader later.)',
-      'if(direction == 0){',
-    '		result = horizontalButterflies(position);',
-      '}',
-    '	else if(direction == 1){',
-    '		result = verticalButterflies(position);',
-      '}',
-
-      'gl_FragColor = result;',
+    let glsl = [
+    'precision highp float;',
+
+    'varying vec3 vWorldPosition;',
+
+    '//With a lot of help from https://youtu.be/i0BPrGuOdPo',
+    'uniform sampler2D twiddleTexture;',
+    'uniform float stageFraction;',
+    'uniform int direction;',
+
+    'const float pi = 3.141592653589793238462643383279502884197169;',
+
+    'vec2 cMult(vec2 a, vec2 b){',
+      'return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);',
+    '}',
+
+    'vec2 cAdd(vec2 a, vec2 b){',
+      'return vec2(a.x + b.x, a.y + b.y);',
+    '}',
+
+    'vec4 horizontalButterflies(vec2 position){',
+      'vec4 data = texture2D(twiddleTexture, vec2(stageFraction, position.x));',
+
+      `vec2 p = texture2D(pingpong_${pingpong_id}, vec2(data.z, position.y)).rg;`,
+      `vec2 q = texture2D(pingpong_${pingpong_id}, vec2(data.w, position.y)).rg;`,
+      'vec2 w = vec2(data.x, data.y);',
+
+      'vec2 H = cAdd(p, cMult(w, q));',
+      'return vec4(H, 0.0, 1.0);',
+    '}',
+
+    'vec4 verticalButterflies(vec2 position){',
+      'vec4 data = texture2D(twiddleTexture, vec2(stageFraction, position.y));',
+
+      `vec2 p = texture2D(pingpong_${pingpong_id}, vec2(position.x, data.z)).rg;`,
+      `vec2 q = texture2D(pingpong_${pingpong_id}, vec2(position.x, data.w)).rg;`,
+      'vec2 w = vec2(data.x, data.y);',
+
+      'vec2 H = cAdd(p, cMult(w, q));',
+      'return vec4(H, 0.0, 1.0);',
+    '}',
+
+    'void main(){',
+      'if(direction == 0){',
+    '		gl_FragColor = horizontalButterflies(gl_FragCoord.xy / resolution.xy);',
+      '}',
+    '	else if(direction == 1){',
+    '		gl_FragColor = verticalButterflies(gl_FragCoord.xy / resolution.xy);',
+      '}',
     '}',
     ];
 
@@ -1591,37 +1595,37 @@ AWater.AOcean.Materials.FFTWaves.amplitudeFilterShaderMaterial = {
   },
 
   fragmentShader: function(){
-    return [
-    'precision highp float;',
-
-    'varying vec3 vWorldPosition;',
-
-    'uniform float frequencyRadiusStart;',
-    'uniform float maxBandwidthStart;',
-
-    'void main(){',
-      'vec2 position = gl_FragCoord.xy / resolution.xy;',
-      'vec2 hkTexel = texture2D(textureHk, position).rg;',
-
-      '//Low has a radius greater than 0.05 and a band limit of 10000',
-      '//Low medium has a radius greater than 0.01 and a band limit of 750000',
-      '//medium has a radius greater than 0.002 and a band limit of 10000000.0',
-      '//medium high as a radius greater than 0.0014 and a band limit of 30000000.0',
-
-      "//This could use fading... but for now, we don't need fading, we need this to work",
-      '//So our filters are hard.',
-      'float redChannelOut = 0.0;',
-      'float greenChannelOut = 0.0;',
-      'float radiusOfFrequency = sqrt(position.x * position.x + position.y * position.y);',
-      'bool frequencyInRange = radiusOfFrequency > frequencyRadiusStart;',
-      'if(abs(hkTexel.r) < maxBandwidthStart && frequencyInRange){',
-        'redChannelOut = hkTexel.r;',
-      '}',
-      'if(abs(hkTexel.g) < maxBandwidthStart && frequencyInRange){',
-        'greenChannelOut = hkTexel.g;',
-      '}',
-
-      'gl_FragColor = vec4(redChannelOut, greenChannelOut, 0.0, 1.0);',
+    return [
+    'precision highp float;',
+
+    'varying vec3 vWorldPosition;',
+
+    'uniform float frequencyRadiusStart;',
+    'uniform float maxBandwidthStart;',
+
+    'void main(){',
+      'vec2 position = gl_FragCoord.xy / resolution.xy;',
+      'vec2 hkTexel = texture2D(textureHk, position).rg;',
+
+      '//Low has a radius greater than 0.05 and a band limit of 10000',
+      '//Low medium has a radius greater than 0.01 and a band limit of 750000',
+      '//medium has a radius greater than 0.002 and a band limit of 10000000.0',
+      '//medium high as a radius greater than 0.0014 and a band limit of 30000000.0',
+
+      "//This could use fading... but for now, we don't need fading, we need this to work",
+      '//So our filters are hard.',
+      'float redChannelOut = 0.0;',
+      'float greenChannelOut = 0.0;',
+      'float radiusOfFrequency = sqrt(position.x * position.x + position.y * position.y);',
+      'bool frequencyInRange = radiusOfFrequency > frequencyRadiusStart;',
+      'if(abs(hkTexel.r) < maxBandwidthStart && frequencyInRange){',
+        'redChannelOut = hkTexel.r;',
+      '}',
+      'if(abs(hkTexel.g) < maxBandwidthStart && frequencyInRange){',
+        'greenChannelOut = hkTexel.g;',
+      '}',
+
+      'gl_FragColor = vec4(redChannelOut, greenChannelOut, 0.0, 1.0);',
     '}',
     ].join('\n');
   }
@@ -1641,41 +1645,33 @@ AWater.AOcean.Materials.FFTWaves.waveComposerShaderMaterial = {
   },
 
   fragmentShader: function(numberOfWaveComponents){
-    let originalGLSL = [
-    'varying vec3 vWorldPosition;',
-
-    'uniform sampler2D xWavetextures[$total_offsets];',
-    'uniform sampler2D yWavetextures[$total_offsets];',
-    'uniform sampler2D zWavetextures[$total_offsets];',
-    'uniform float N;',
-
-    'float fModulo1(float a){',
-      'return (a - floor(a));',
-    '}',
-
-    'void main(){',
-      'vec2 position = gl_FragCoord.xy / resolution.xy;',
-      'float sizeExpansion = (resolution.x + 1.0) / resolution.x; //Expand by exactly one pixel',
-      'vec2 uv = sizeExpansion * position;',
-      'vec2 wrappedUV = vec2(fModulo1(uv.x), fModulo1(uv.y));',
-      'vec3 combinedWaveHeight = vec3(0.0);',
-
-      '//Interpolations',
-      'float waveHeight_x;',
-      'float waveHeight_y;',
-      'float waveHeight_z;',
-
-      '$unrolled_wave_composer',
-
-      '// for(int i = 0; i < numberOfWaveTextures; i++){',
-      '//   float waveHeight_x = texture2D(xWavetextures[i], wrappedUV).x;',
-      '//   float waveHeight_y = texture2D(yWavetextures[i], wrappedUV).x;',
-      '//   float waveHeight_z = texture2D(zWavetextures[i], wrappedUV).x;',
-      '//   combinedWaveHeight += vec3(waveHeight_x, waveHeight_y, waveHeight_z);',
-      '//   totalOffsets += 1.0;',
-      '// }',
-
-      'gl_FragColor = vec4(combinedWaveHeight / ($total_offsets_float * N * N), 1.0);',
+    let originalGLSL = [
+    'varying vec3 vWorldPosition;',
+
+    'uniform sampler2D xWavetextures[$total_offsets];',
+    'uniform sampler2D yWavetextures[$total_offsets];',
+    'uniform sampler2D zWavetextures[$total_offsets];',
+    'uniform float N;',
+
+    'float fModulo1(float a){',
+      'return (a - floor(a));',
+    '}',
+
+    'void main(){',
+      'vec2 position = gl_FragCoord.xy / resolution.xy;',
+      'float sizeExpansion = (resolution.x + 1.0) / resolution.x; //Expand by exactly one pixel',
+      'vec2 uv = sizeExpansion * position;',
+      'vec2 wrappedUV = vec2(fModulo1(uv.x), fModulo1(uv.y));',
+      'vec3 combinedWaveHeight = vec3(0.0);',
+
+      '//Interpolations',
+      'float waveHeight_x;',
+      'float waveHeight_y;',
+      'float waveHeight_z;',
+
+      '$unrolled_wave_composer',
+
+      'gl_FragColor = vec4(combinedWaveHeight / ($total_offsets_float * N * N), 1.0);',
     '}',
     ];
 
@@ -1711,17 +1707,18 @@ AWater.AOcean.Materials.FFTWaves.waveHeightShaderMaterialData = {
     waveHeightMultiplier: {type: 'f', value: 1.0}
   },
 
-  fragmentShader: [
-    'precision highp float;',
-
-    'uniform sampler2D combinedWaveHeights;',
-    'uniform float N;',
-    'uniform float waveHeightMultiplier;',
-
-    'void main(){',
-      'vec2 uv = gl_FragCoord.xy / resolution.xy;',
-      'float outputputColor = waveHeightMultiplier * texture2D(combinedWaveHeights, uv).xyz / (N * N);',
-      'gl_FragColor = vec4(vec3(outputColor), 1.0);',
+  fragmentShader: [
+    'precision highp float;',
+
+    'uniform sampler2D combinedWaveHeights;',
+    'uniform float N;',
+    'uniform float waveHeightMultiplier;',
+
+    'void main(){',
+      'vec2 uv = gl_FragCoord.xy / resolution.xy;',
+      'float outputputColor = waveHeightMultiplier * texture2D(combinedWaveHeights, uv).xyz / (N * N);',
+
+      'gl_FragColor = vec4(vec3(outputColor), determinant);',
     '}',
   ].join('\n')
 };
@@ -1735,26 +1732,27 @@ AWater.AOcean.Materials.Ocean.positionPassMaterial = {
     viewMatrix: {type: 'mat4', value: new THREE.Matrix4()},
   },
 
-  fragmentShader: [
-    'varying vec3 vWorldPosition;',
-
-    'void main(){',
-      '//Check if we are above or below the water to see what kind of fog is applied',
-      'gl_FragColor = vec4(vWorldPosition, 1.0);',
+  fragmentShader: [
+    'varying vec3 vWorldPosition;',
+
+    'void main(){',
+      '//Check if we are above or below the water to see what kind of fog is applied',
+      'gl_FragColor = vec4(vWorldPosition, 1.0);',
     '}',
   ].join('\n'),
 
-  vertexShader: [
-    'precision highp float;',
-
-    '//attribute vec3 baseDepth;',
-    'varying vec3 vWorldPosition;',
-    'uniform mat4 worldMatrix;',
-
-    'void main() {',
-      'vWorldPosition = (modelViewMatrix * vec4(position, 1.0)).xyz;',
-
-      'gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);',
+  vertexShader: [
+    'precision highp float;',
+
+    '//attribute vec3 baseDepth;',
+    'varying vec3 vWorldPosition;',
+    'uniform mat4 worldMatrix;',
+
+    'void main() {',
+      'vec4 worldPosition = modelMatrix * vec4(position, 1.0);',
+      'vWorldPosition = worldPosition.xyz / worldPosition.w;',
+
+      'gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);',
     '}',
   ].join('\n'),
 };
@@ -2034,9 +2032,9 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
   let self = this;
   this.tick = function(time, activeTextures){
     //Update the time variable of our phillipse spectrum and update hk
-    self.hkXVar.material.uniforms.uTime.value = time / 1000.0;
-    self.hkYVar.material.uniforms.uTime.value = time / 1000.0;
-    self.hkZVar.material.uniforms.uTime.value = time / 1000.0;
+    self.hkXVar.material.uniforms.uTime.value = time / 512.0;
+    self.hkYVar.material.uniforms.uTime.value = time / 512.0;
+    self.hkZVar.material.uniforms.uTime.value = time / 512.0;
     self.hkRenderer.compute();
 
     //Grab each of the textures from each of our filters
@@ -2095,8 +2093,14 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
   this.waveHeightComposerVar.material.uniforms.waveHeightMultiplier = data.wave_scale_multiple;
   this.waveHeightComposerVar.minFilter = THREE.LinearFilter;
   this.waveHeightComposerVar.magFilter = THREE.LinearFilter;
+  this.waveHeightComposerVar.format = THREE.RGBAFormat;
+  this.waveHeightComposerVar.type = THREE.FloatType;
+  this.waveHeightComposerVar.anisotropy = 4;
+  this.waveHeightComposerVar.samples = 8;
   this.waveHeightComposerVar.wrapS = THREE.RepeatWrapping;
   this.waveHeightComposerVar.wrapT = THREE.RepeatWrapping;
+  this.waveHeightComposerVar.generateMipmaps = true;
+  this.waveHeightComposerVar.needsUpdate = true;
   this.waveHeightComposerRenderer.setVariableDependencies(whcVar, []);//Note: We use manual texture dependency injection here.
   whcVar.material.uniforms = materials.waveComposerShaderMaterial.uniforms(this.numberOfWaveComponents);
 
@@ -2130,20 +2134,29 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     displacementMap: {type: 't', value: null},
     smallNormalMap: {type: 't', value: null},
     largeNormalMap: {type: 't', value: null},
+    causticMap: {type: 't', value: null},
+    causticIntensityMultiplier: {type: 'f', value: null},
+    foamDiffuseMap: {type: 't', value: null},
+    foamOpacityMap: {type: 't', value: null},
+    foamNormalMap: {type: 't', value: null},
+    foamRoughnessMap: {type: 't', value: null},
+    foamRenderMap: {type: 't', value: null},
+    foamStartLevel: {type: 'f', value: 0.0},
+    exclusionMap: {type: 't', value: null},
     smallNormalMapVelocity: {type: 'vec2', value: new THREE.Vector2()},
     largeNormalMapVelocity: {type: 'vec2', value: new THREE.Vector2()},
-    isBelowWater: {type: 'i', value: 0},
     reflectionCubeMap: {value: null},
     refractionCubeMap: {value: null},
     depthCubeMap: {value: null},
-    matrixWorld: {type: 'mat4', value: new THREE.Matrix4()},
     sizeOfOceanPatch: {type: 'f', value: 1.0},
+    baseHeightOffset: {type: 'f', value: 0.0},
     fogNear: {type: 'f', value: null},
     fogFar: {type: 'f', value: null},
     fogDensity: {type: 'f', value: null},
     fogColor: {type: 'v3', value: new THREE.Color()},
     t: {type: 'f', value: 0.0},
     brightestDirectionalLight: {type: 'vec3', value: new THREE.Vector3(1.0,1.0,1.0)},
+    brightestDirectionalLightDirection: {type: 'vec3', value: new THREE.Vector3(1.0,1.0,1.0)},
     largeNormalMapStrength: {type: 'f', value: 0.45},
     smallNormalMapStrength: {type: 'f', value: 0.35},
     lightScatteringAmounts: {type: 'vec3', value: new THREE.Vector3(88.0, 108.0, 112.0)},
@@ -2151,246 +2164,430 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     linearScatteringTotalScatteringWaveHeight: {type: 'f', value: 20.0}
   },
 
-  fragmentShader: [
-    'precision highp float;',
-
-    'varying float height;',
-    'varying vec3 vViewVector;',
-    'varying vec3 vWorldPosition;',
-    'varying vec4 colorMap;',
-    'varying vec2 vUv;',
-    'varying vec3 displacedNormal;',
-    'varying mat3 modelMatrixMat3;',
-
-    '//uniform vec3 cameraDirection;',
-    'uniform int isBelowWater;',
-    'uniform float sizeOfOceanPatch;',
-    'uniform float largeNormalMapStrength;',
-    'uniform float smallNormalMapStrength;',
-    'uniform sampler2D smallNormalMap;',
-    'uniform sampler2D largeNormalMap;',
-    'uniform samplerCube reflectionCubeMap;',
-    'uniform samplerCube refractionCubeMap;',
-    'uniform samplerCube depthCubeMap;',
-
-    'uniform vec2 smallNormalMapVelocity;',
-    'uniform vec2 largeNormalMapVelocity;',
-
-    'uniform vec3 brightestDirectionalLight;',
-    'uniform vec3 lightScatteringAmounts;',
-
-    'uniform float t;',
-
-    '//Fog variables',
-    '#include <fog_pars_fragment>',
-
-    'uniform vec4 directLightingColor;',
-
-    "//R0 For Schlick's Approximation",
-    '//With n1 = 1.33 and n0 = 1.05',
-    'const float r0 = 0.01968152171;',
-    'const vec3 inverseGamma = vec3(0.454545454545454545454545);',
-    'const vec3 gamma = vec3(2.2);',
-
-    'vec2 vec2Modulo(vec2 inputUV){',
-        'return (inputUV - floor(inputUV));',
-    '}',
-
-    '//From https://blog.selfshadow.com/publications/blending-in-detail/',
-    'vec3 combineNormals(vec3 normal1, vec3 normal2){',
-      'vec3 t = normal1.xyz * vec3(2.0,  2.0, 2.0) + vec3(-1.0, -1.0,  0.0);',
-      'vec3 u = normal2.xyz * vec3(-2.0, -2.0, 2.0) + vec3(1.0,  1.0, -1.0);',
-      'vec3 r = t * dot(t, u) - u * t.z;',
-      'return (normalize(r) + vec3(1.0)) * 0.5;',
-    '}',
-
-    '//Including this because someone removed this in a future versio of THREE. Why?!',
-    'vec3 MyAESFilmicToneMapping(vec3 color) {',
-      'return clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), 0.0, 1.0);',
-    '}',
-
-    'void main(){',
-      '//Get the reflected and refracted information of the scene',
-      'vec2 cameraOffset = vec2(cameraPosition.x, -cameraPosition.z);',
-      'vec2 uvOffset = vec2Modulo(vUv + (cameraOffset / sizeOfOceanPatch));',
-      'vec2 smallNormalMapOffset = (vUv * 3.0) + ((cameraOffset + t * smallNormalMapVelocity) / (sizeOfOceanPatch / 3.0));',
-      'vec2 largeNormalMapOffset = (vUv * 5.0) + ((cameraOffset - t * largeNormalMapVelocity) / (sizeOfOceanPatch / 5.0));',
-      'vec3 smallNormalMap = texture2D(smallNormalMap, smallNormalMapOffset).xyz;',
-      'smallNormalMap = 2.0 * smallNormalMap - 1.0;',
-      'smallNormalMap.xy *= smallNormalMapStrength;',
-      'smallNormalMap = normalize(smallNormalMap);',
-      'smallNormalMap = (smallNormalMap + 1.0) * 0.5;',
-      'vec3 largeNormalMap = texture2D(largeNormalMap, largeNormalMapOffset).xyz;',
-      'largeNormalMap = 2.0 * largeNormalMap - 1.0;',
-      'largeNormalMap.xy *= largeNormalMapStrength;',
-      'largeNormalMap = normalize(largeNormalMap);',
-      'largeNormalMap = (largeNormalMap + 1.0) * 0.5;',
-      'vec3 combinedNormalMap = combineNormals(smallNormalMap, largeNormalMap);',
-      'vec3 normalizedDisplacedNormalMap = (normalize(displacedNormal.xyz) + vec3(1.0)) * 0.5;',
-      'combinedNormalMap = combineNormals(normalizedDisplacedNormalMap, combinedNormalMap);',
-      'combinedNormalMap = combinedNormalMap * 2.0 - vec3(1.0);',
-      'combinedNormalMap = normalize(modelMatrixMat3 * combinedNormalMap);',
-      'vec3 normalizedViewVector = normalize(vViewVector);',
-      'vec3 reflectedCoordinates = reflect(normalizedViewVector, combinedNormalMap);',
-      'vec3 refractedCoordinates = refract(normalizedViewVector, combinedNormalMap, 1.005 / 1.333);',
-      'vec3 reflectedLight = textureCube(reflectionCubeMap, reflectedCoordinates).rgb; //Reflection',
-      'vec3 refractedLight = textureCube(refractionCubeMap, refractedCoordinates).rgb; //Refraction',
-      'vec3 pointXYZ = textureCube(depthCubeMap, refractedCoordinates).rgb; //Scattering',
-      'float distanceToPoint = distance(pointXYZ, vWorldPosition);',
-      'vec3 normalizedTransmittancePercentColor = normalize(lightScatteringAmounts);',
-      'vec3 percentOfSourceLight = clamp(exp(-distanceToPoint / lightScatteringAmounts), 0.0, 1.0);',
-      'refractedLight = percentOfSourceLight * pow(refractedLight, gamma);',
-      '//Increasing brightness with height inspired by, https://80.lv/articles/tutorial-ocean-shader-with-gerstner-waves/',
-      'vec3 inscatterLight = pow(max(height, 0.0) * length(vec3(1.0) - percentOfSourceLight) * pow(normalizedTransmittancePercentColor, vec3(2.5))  * brightestDirectionalLight, gamma);',
-
-      "//Apply Schlick's approximation for the fresnel amount",
-      '//https://en.wikipedia.org/wiki/Schlick%27s_approximation',
-      'float oneMinusCosTheta = 1.0 - dot(combinedNormalMap, -normalizedViewVector);',
-      'float reflectedLightPercent = clamp(r0 + (1.0 -  r0) * pow(0.9 * oneMinusCosTheta, 5.0), 0.0, 1.0);',
-      'reflectedLight = pow(reflectedLight, gamma);',
-
-      '//Total light',
-      'vec3 totalLight = inscatterLight + mix(refractedLight, reflectedLight, reflectedLightPercent);',
-
-      'gl_FragColor = vec4(pow(MyAESFilmicToneMapping(totalLight), inverseGamma), 1.0);',
-
-      '#include <fog_fragment>',
-    '}',
-  ].join('\n'),
+  fragmentShader: function(causticsEnabled, foamEnabled){
+    let originalGLSL = [
+    'precision highp float;',
 
-  vertexShader: [
-    'precision highp float;',
-
-    'attribute vec4 tangent;',
-
-    'varying float height;',
-    'varying vec3 tangentSpaceViewDirection;',
-    'varying vec3 vViewVector;',
-    'varying vec3 vWorldPosition;',
-    'varying vec4 colorMap;',
-    'varying vec2 vUv;',
-    'varying vec3 displacedNormal;',
-    'varying mat3 modelMatrixMat3;',
-
-    'uniform float sizeOfOceanPatch;',
-    'uniform float linearScatteringTotalScatteringWaveHeight;',
-    'uniform float linearScatteringHeightOffset;',
-    'uniform sampler2D displacementMap;',
-    'uniform mat4 matrixWorld;',
-    '#include <fog_pars_vertex>',
-
-    'vec2 vec2Modulo(vec2 inputUV){',
-        'return (inputUV - floor(inputUV));',
-    '}',
-
-    'void main() {',
-      '//Set up our displacement map',
-      'vec3 offsetPosition = position;',
-      'vec4 worldPosition = modelMatrix * vec4( position, 1.0 );',
-      'vViewVector = worldPosition.xyz - cameraPosition;',
-      'modelMatrixMat3 = mat3(modelMatrix[0].xyz, modelMatrix[1].xyz, modelMatrix[2].xyz );',
-
-      'vec2 cameraOffset = (vec2(cameraPosition.x, -cameraPosition.z) / sizeOfOceanPatch);',
-      'vec2 uvOffset = uv + cameraOffset;',
-      'vec3 displacement = texture2D(displacementMap, uvOffset).xyz;',
-      'offsetPosition += modelMatrixMat3 * displacement;',
-
-      '//Normal map',
-      'vec3 scaledDisplacement = displacement / sizeOfOceanPatch;',
-      'height = (offsetPosition.z  + linearScatteringHeightOffset) / linearScatteringTotalScatteringWaveHeight;',
-      'vec3 bitangent = cross(normalize(normal.xyz), normalize(tangent.xyz));',
-      'vec3 v0 = vec3(uvOffset, 0.0);',
-      'v0 = v0 + scaledDisplacement;',
-      'vec3 vt = v0 + (1.0 / 12.0) * normalize(tangent.xyz);',
-      'vec3 vb = v0 + (1.0 / 12.0) * normalize(bitangent.xyz);',
-
-      'vec3 displacementVT = texture2D(displacementMap, vt.xy).xyz;',
-      'vt = vt + scaledDisplacement;',
-      'vec3 displacementVB = texture2D(displacementMap, vb.xy).xyz;',
-      'vb = vb + scaledDisplacement;',
-      'displacedNormal = normalize(cross(vt - v0, vb - v0));',
-
-      '//Set up our UV maps',
-      'vUv = uv;',
-
-      '//Have the water fade from dark blue to teal as it approaches the shore.',
-      'colorMap = vec4(displacement.xyz, 1.0);',
-
-      '//Add support for three.js fog',
-      'vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);',
-      'vWorldPosition = (projectionMatrix * mvPosition).xyz;',
-      '#include <fog_vertex>',
-
-      'gl_Position = projectionMatrix * modelViewMatrix * vec4(offsetPosition, 1.0);',
+    'varying vec2 vUv;',
+    'varying vec3 vPosition;',
+    'varying vec3 vTangent;',
+    'varying vec3 vBitangent;',
+    'varying vec3 vInView;',
+    'varying mat4 vInstanceMatrix;',
+    'varying mat4 vModelMatrix;',
+    'varying mat3 vNormalMatrix;',
+
+    '//uniform vec3 cameraDirection;',
+    'uniform float sizeOfOceanPatch;',
+    'uniform float largeNormalMapStrength;',
+    'uniform float smallNormalMapStrength;',
+    'uniform float baseHeightOffset;',
+    'uniform sampler2D displacementMap;',
+    'uniform sampler2D smallNormalMap;',
+    'uniform sampler2D largeNormalMap;',
+    'uniform sampler2D exclusionMap;',
+    'uniform samplerCube reflectionCubeMap;',
+    'uniform samplerCube refractionCubeMap;',
+    'uniform samplerCube depthCubeMap;',
+
+    '#if($caustics_enabled)',
+      'uniform sampler2D causticMap;',
+      'uniform float causticIntensityMultiplier;',
+    '#endif',
+
+    '#if($foam_enabled)',
+      '//Foam maps',
+      'uniform sampler2D foamRenderMap;',
+      'uniform sampler2D foamDiffuseMap;',
+      'uniform sampler2D foamOpacityMap;',
+      'uniform sampler2D foamNormalMap;',
+      'uniform sampler2D foamRoughnessMap;',
+      'uniform float foamStartLevel;',
+    '#endif',
+
+    'uniform vec2 smallNormalMapVelocity;',
+    'uniform vec2 largeNormalMapVelocity;',
+
+    'uniform vec3 brightestDirectionalLight;',
+    'uniform vec3 brightestDirectionalLightDirection;',
+    'uniform vec3 lightScatteringAmounts;',
+
+    'uniform float linearScatteringHeightOffset;',
+    'uniform float linearScatteringTotalScatteringWaveHeight;',
+
+    'uniform float t;',
+
+    '//Fog variables',
+    '#include <fog_pars_fragment>',
+
+
+    "//R0 For Schlick's Approximation",
+    '//With n1 = 1.33 and n0 = 1.0',
+    'const float r0 = 0.02;',
+    'const vec3 inverseGamma = vec3(0.454545454545454545454545);',
+    'const vec3 gamma = vec3(2.2);',
+
+    'vec2 vec2Modulo(vec2 inputUV){',
+        'return (inputUV - floor(inputUV));',
+    '}',
+
+    'vec4 sRGBToLinear( in vec4 value ) {',
+    '	return vec4( mix( pow( value.rgb * 0.9478672986 + vec3( 0.0521327014 ), vec3( 2.4 ) ), value.rgb * 0.0773993808, vec3( lessThanEqual( value.rgb, vec3( 0.04045 ) ) ) ), value.a );',
+    '}',
+
+    'vec4 linearTosRGB(vec4 value ) {',
+      'return vec4( mix( pow( value.rgb, vec3( 0.41666 ) ) * 1.055 - vec3( 0.055 ), value.rgb * 12.92, vec3( lessThanEqual( value.rgb, vec3( 0.0031308 ) ) ) ), value.a );',
+    '}',
+
+    '//From https://blog.selfshadow.com/publications/blending-in-detail/',
+    'vec3 combineNormals(vec3 normal1, vec3 normal2){',
+      'vec4 n1 = vec4(normal1.xyz, 1.0);',
+      'vec4 n2 = vec4(normal2.xyz, 1.0);',
+      'n1 = n1.xyzz * vec4(2.0, 2.0, 2.0, -2.0) + vec4(-1.0, -1.0, -1.0, 1.0);',
+      'n2 = n2 * 2.0 - vec4(1.0);',
+      'vec3 r;',
+      'r.x = dot(n1.zxx,  n2.xyz);',
+      'r.y = dot(n1.yzy,  n2.xyz);',
+      'r.z = dot(n1.xyw, -n2.xyz);',
+
+      'return 0.5 * (normalize(r) + vec3(1.0));',
+    '}',
+
+    '//Including this because someone removed this in a future versio of THREE. Why?!',
+    'vec3 MyAESFilmicToneMapping(vec3 color) {',
+      'return clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), 0.0, 1.0);',
+    '}',
+
+    '#if($caustics_enabled)',
+      'float causticShader(vec2 uv, float t){',
+        'float tModified = (t / 20.0);',
+        'vec2 uv1 = uv + vec2(0.8, 0.1) * tModified;',
+        'vec2 uv2 = uv - vec2(0.2, 0.7) * tModified;',
+        'float aSample1 = texture(causticMap, uv1).r;',
+        'float aSample2 = texture(causticMap, uv2).g;',
+        'return min(aSample1, aSample2);',
+      '}',
+    '#endif',
+
+    '//Converted from the Minstrel Water Engine',
+    '/*',
+    'MIT License',
+
+    'Copyright (c) 2018 Jingping Yu',
+
+    'Permission is hereby granted, free of charge, to any person obtaining a copy',
+    'of this software and associated documentation files (the "Software"), to deal',
+    'in the Software without restriction, including without limitation the rights',
+    'to use, copy, modify, merge, publish, distribute, sublicense, and/or sell',
+    'copies of the Software, and to permit persons to whom the Software is',
+    'furnished to do so, subject to the following conditions:',
+
+    'The above copyright notice and this permission notice shall be included in all',
+    'copies or substantial portions of the Software.',
+
+    'THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR',
+    'IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,',
+    'FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE',
+    'AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER',
+    'LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,',
+    'OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE',
+    'SOFTWARE.',
+    '*/',
+    '#if($foam_enabled)',
+      'float foamAmount(vec2 vUv, float textureSize){',
+        'float texelSize = 1.0 / textureSize;',
+      '	vec2 dDdy = -0.5 * (texture2D(displacementMap, vUv + vec2(0.0, texelSize)).xz - texture2D(displacementMap, vUv + vec2(0.0, -texelSize)).xz) / 8.0;',
+      '	vec2 dDdx = -0.5 * (texture2D(displacementMap, vUv + vec2(texelSize, 0.0)).xz - texture2D(displacementMap, vUv + vec2(-texelSize, 0.0)).xz) / 8.0;',
+      '	float jacobian = (1.0 + dDdx.x) * (1.0 + dDdy.y) - dDdx.y * dDdy.x;',
+      '	float turb = max(0.0, 1.0 - jacobian);',
+      '	float xx = smoothstep(0.0, 1.0, turb);',
+      '	return xx;',
+      '}',
+    '#endif',
+
+    'void main(){',
+      'mat3 instanceMatrixMat3 = mat3(vInstanceMatrix[0].xyz, vInstanceMatrix[1].xyz, vInstanceMatrix[2].xyz );',
+      'mat3 modelMatrixMat3 = mat3(vModelMatrix[0].xyz, vModelMatrix[1].xyz, vModelMatrix[2].xyz );',
+      'vec2 cameraOffset = vec2(cameraPosition.x, cameraPosition.z);',
+
+      'vec2 uvOffset = (vUv * sizeOfOceanPatch + cameraOffset) / sizeOfOceanPatch;',
+      'vec3 displacement = texture2D(displacementMap, uvOffset).xyz;',
+      'displacement.x *= -1.0;',
+      'displacement.z *= -1.0;',
+      'vec3 offsetPosition = vPosition + displacement;',
+      'float height = (offsetPosition.y  + linearScatteringHeightOffset) / linearScatteringTotalScatteringWaveHeight;',
+      'vec4 worldPosition = vModelMatrix * vInstanceMatrix * vec4(offsetPosition, 1.0);',
+      'vec2 exclusionPosition = 0.5 * (((worldPosition.xz - cameraPosition.xz) / vec2(1024.0)) + 1.0);',
+      'exclusionPosition = vec2(exclusionPosition.x, 1.0 - exclusionPosition.y);',
+      'if(exclusionPosition.x < 1.0 && exclusionPosition.x > 0.0 && exclusionPosition.y < 1.0 && exclusionPosition.y > 0.0){',
+        'vec2 discardHeightData = texture2D(exclusionMap, exclusionPosition).ga;',
+        'float discardHeight = discardHeightData.x;',
+        'if((discardHeightData.y > 0.5) && worldPosition.y > discardHeight){',
+          'discard;',
+        '}',
+      '}',
+      'float distanceToWorldPosition = distance(worldPosition.xyz, cameraPosition.xyz);',
+      'float LOD = pow(2.0, clamp(7.0 - (distanceToWorldPosition / (sizeOfOceanPatch * 7.0)), 2.0, 7.0));',
+
+      '//Calculate our normal for this vertex',
+      'float displacementFadeout = clamp((2500.0 - distanceToWorldPosition) / 2500.0, 0.0, 1.0);',
+      'displacement *= displacementFadeout;',
+      'vec3 tangent = vTangent;',
+      'vec3 bitangent = vBitangent;',
+      'vec3 deltaTangent = tangent / LOD;',
+      'vec2 tangentUVOffset = (vUv * sizeOfOceanPatch + cameraOffset + deltaTangent.xz * sizeOfOceanPatch) / sizeOfOceanPatch;',
+      'vec3 vt = texture2D(displacementMap, tangentUVOffset).xyz * displacementFadeout;',
+      'vt.x *= -1.0;',
+      'vt.z *= -1.0;',
+      'vec3 deltaBitangent = bitangent / LOD;',
+      'vec2 biTangentUVOffset = (vUv * sizeOfOceanPatch + cameraOffset + deltaBitangent.xz * sizeOfOceanPatch) / sizeOfOceanPatch;',
+      'vec3 vb = texture2D(displacementMap, biTangentUVOffset).xyz * displacementFadeout;',
+      'vb.x *= -1.0;',
+      'vb.z *= -1.0;',
+      '//Change in height with respect to x',
+      'vec3 dhDt = normalize((vt + deltaTangent * sizeOfOceanPatch) - displacement);',
+      '//Change in height with respect to z',
+      'vec3 dhDbt = normalize((vb + deltaBitangent * sizeOfOceanPatch) - displacement);',
+      'vec3 displacedNormal = cross(dhDt, dhDbt);',
+
+      'tangentUVOffset = (vUv * sizeOfOceanPatch + cameraOffset - deltaTangent.xz * sizeOfOceanPatch) / sizeOfOceanPatch;',
+      'vt = texture2D(displacementMap, tangentUVOffset).xyz * displacementFadeout;',
+      'vt.x *= -1.0;',
+      'vt.z *= -1.0;',
+      'biTangentUVOffset = (vUv * sizeOfOceanPatch + cameraOffset - deltaBitangent.xz * sizeOfOceanPatch) / sizeOfOceanPatch;',
+      'vb = texture2D(displacementMap, biTangentUVOffset).xyz * displacementFadeout;',
+      'vb.x *= -1.0;',
+      'vb.z *= -1.0;',
+      '//Change in height with respect to x',
+      'dhDt = normalize((vt - deltaTangent * sizeOfOceanPatch) - displacement);',
+      '//Change in height with respect to z',
+      'dhDbt = normalize((vb - deltaBitangent * sizeOfOceanPatch) - displacement);',
+      'displacedNormal = (cross(dhDt, dhDbt) + displacedNormal) * 0.5;',
+      'displacedNormal = normalize(displacedNormal);',
+
+      '//Get the reflected and refracted information of the scene',
+      'vec2 smallNormalMapOffset = (((vUv * 2.0) * (sizeOfOceanPatch / 2.0) + cameraOffset + t * smallNormalMapVelocity) / (sizeOfOceanPatch / 2.0));',
+      'vec2 largeNormalMapOffset = (((vUv * 1.0) * (sizeOfOceanPatch / 1.0) + cameraOffset - t * largeNormalMapVelocity) / (sizeOfOceanPatch / 1.0));',
+      'vec3 smallNormalMap = texture2D(smallNormalMap, smallNormalMapOffset).xyz;',
+      'smallNormalMap = 2.0 * smallNormalMap - 1.0;',
+      'float smallNormalMapFadeout = clamp((500.0 - distanceToWorldPosition) / 250.0, 0.0, 1.0);',
+      'smallNormalMap.x *= smallNormalMapStrength * smallNormalMapFadeout;',
+      'smallNormalMap.y *= smallNormalMapStrength * smallNormalMapFadeout;',
+      'smallNormalMap = normalize(smallNormalMap);',
+      'smallNormalMap = (smallNormalMap + 1.0) * 0.5;',
+      'vec3 largeNormalMap = texture2D(largeNormalMap, largeNormalMapOffset).xyz;',
+      'largeNormalMap = 2.0 * largeNormalMap - 1.0;',
+      'float largeNormalMapFadeout = clamp((3000.0 - distanceToWorldPosition) / 2500.0, 0.0, 1.0);',
+      'largeNormalMap.x *= largeNormalMapStrength * largeNormalMapFadeout;',
+      'largeNormalMap.y *= largeNormalMapStrength * largeNormalMapFadeout;',
+      'largeNormalMap = normalize(largeNormalMap);',
+      'largeNormalMap = (largeNormalMap + 1.0) * 0.5;',
+      'vec3 combinedNormalMap = combineNormals(smallNormalMap, largeNormalMap);',
+      '#if($foam_enabled)',
+        'vec3 foamNormal = texture2D(foamNormalMap, smallNormalMapOffset).xyz;',
+        'foamNormal = 2.0 * foamNormal - 1.0;',
+        'float foamAmount = foamAmount(uvOffset, 512.0);',
+        'vec2 foamPosition = 0.5 * (((worldPosition.xz - cameraPosition.xz) / vec2(2048.0)) + 1.0);',
+        'foamPosition = vec2(foamPosition.x, 1.0 - foamPosition.y);',
+        'if(foamPosition.x < 1.0 && foamPosition.x > 0.0 && foamPosition.y < 1.0 && foamPosition.y > 0.0){',
+          'vec2 foamHeightData = texture2D(foamRenderMap, foamPosition).ga;',
+          'if((foamHeightData.y > 0.5)){',
+            'foamAmount = max(foamAmount, 1.0 - abs(clamp(worldPosition.y - foamHeightData.x - 10.0, 0.0, 10.0) / 10.0));',
+          '}',
+        '}',
+        'foamNormal.x *= 0.5 * foamAmount * largeNormalMapFadeout;',
+        'foamNormal.y *= 0.5 * foamAmount * largeNormalMapFadeout;',
+        'foamNormal = normalize(foamNormal);',
+        'foamNormal = (foamNormal + 1.0) * 0.5;',
+        'combinedNormalMap = combineNormals(combinedNormalMap, foamNormal);',
+      '#endif',
+      'vec3 normalizedDisplacedNormalMap = (normalize(displacedNormal) + vec3(1.0)) * 0.5;',
+      'combinedNormalMap = combineNormals(normalizedDisplacedNormalMap, combinedNormalMap);',
+      'combinedNormalMap = combinedNormalMap * 2.0 - vec3(1.0);',
+      'combinedNormalMap = normalize(combinedNormalMap);',
+      'combinedNormalMap = combinedNormalMap.xzy;',
+
+      'vec3 normalizedViewVector = normalize(worldPosition.xyz - cameraPosition);',
+      'vec3 reflectedCoordinates = reflect(normalizedViewVector, combinedNormalMap);',
+      '//Why?! O_O, ok, so I grabbed this from https://www.youtube.com/watch?v=kXH1-uY0wjY',
+      '//and... it makes absolutely no sense, but apparently 1.0/1.333 - the actual',
+      '//refraction coeficient for water is way too high. Is this not physically based',
+      '//or maybe I am thinking about cubemaps wrong?',
+      'vec3 refractedCoordinates = refract(normalizedViewVector, combinedNormalMap, 1.0 / 1.025);',
+      'vec3 reflectedLight = textureCube(reflectionCubeMap, reflectedCoordinates).rgb; //Reflection',
+      'vec3 refractedLight = textureCube(refractionCubeMap, refractedCoordinates).rgb; //Refraction',
+      'vec3 pointXYZ = textureCube(depthCubeMap, refractedCoordinates).xyz; //Scattering',
+      'float distanceToPoint = distance(pointXYZ, worldPosition.xyz);',
+      '// When the depth cubemap misses geometry (hits sky/background), it returns (0,0,0).',
+      '// distance(worldPos, vec3(0)) for distant vertices becomes hundreds of meters,',
+      '// driving percentOfSourceLight to zero and maximising inscatterLight everywhere.',
+      '// Cap at a physically reasonable ocean depth to prevent this haze.',
+      'distanceToPoint = min(distanceToPoint, 100.0);',
+      'vec3 normalizedTransmittancePercentColor = normalize(lightScatteringAmounts);',
+      'vec3 percentOfSourceLight = clamp(exp(-2.25 * distanceToPoint / (lightScatteringAmounts)), 0.0, 1.0);',
+      'refractedLight = sRGBToLinear(vec4(refractedLight, 1.0)).rgb;',
+      '//Increasing brightness with height inspired by, https://80.lv/articles/tutorial-ocean-shader-with-gerstner-waves/',
+      'vec3 normalizedLightIntensity = normalize(brightestDirectionalLight);',
+      'vec3 inscatterLight = pow(max(height, 0.0) * length(vec3(1.0) - percentOfSourceLight) * pow(normalizedTransmittancePercentColor, vec3(2.5)) * normalizedLightIntensity, gamma);',
+
+      "//Apply Schlick's approximation for the fresnel amount",
+      '//https://graphicscompendium.com/raytracing/11-fresnel-beer',
+
+      'float cosTheta = clamp(dot(combinedNormalMap, -normalizedViewVector), 0.0, 1.0);',
+      'float fresnelFactor = r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);',
+      'reflectedLight = sRGBToLinear(vec4(reflectedLight, 1.0)).rgb;',
+
+      '#if($caustics_enabled)',
+        '//Caculate caustic lighting',
+        "//Probably needs offsetting based on height but let's just see how this is",
+        'float causticLightingR = causticShader(0.01 * pointXYZ.xz + 0.005, t);',
+        'float causticLightingG = causticShader(0.01 * pointXYZ.xz, t);',
+        'float causticLightingB = causticShader(0.01 * pointXYZ.xz - 0.005, t);',
+        'vec3 causticLighting = causticIntensityMultiplier * 20.0 * vec3(causticLightingR, causticLightingG, causticLightingB);',
+        'if(distance(cameraPosition, pointXYZ.xyz) > 2500.0){',
+          'causticLighting = vec3(1.0);',
+        '}',
+        'refractedLight *= (causticLighting);',
+      '#endif',
+      'refractedLight *= percentOfSourceLight;',
+
+      '//Calculate specular lighting and surface lighting',
+      'vec3 directionalSurfaceLighting = normalizedLightIntensity * max(dot(combinedNormalMap, -brightestDirectionalLightDirection), 0.0);',
+      'vec3 specular = 1.7 * normalizedLightIntensity * clamp((dot(reflectedCoordinates, -brightestDirectionalLightDirection) - 0.995) / 0.005, 0.0, 1.0);',
+
+      '//Total light',
+      'vec3 totalLight = specular + (2.0 / 255.0) * directionalSurfaceLighting + (253.0 / 255.0) * ((inscatterLight + refractedLight) * (1.0 - fresnelFactor) + reflectedLight * fresnelFactor);',
+      '#if($foam_enabled)',
+        'float foamOpacity = foamAmount * texture2D(foamOpacityMap, smallNormalMapOffset).r;',
+        'vec3 foamLight = texture2D(foamDiffuseMap, smallNormalMapOffset).rgb;',
+        'totalLight = mix(totalLight, 2.0 * directionalSurfaceLighting * foamLight, (foamOpacity * foamAmount));',
+      '#endif',
+
+      'gl_FragColor = linearTosRGB(vec4(MyAESFilmicToneMapping(totalLight), 1.0));',
+
+      '#include <fog_fragment>',
+    '}',
+    ];
+
+    let updatedLines = [];
+    for(let i = 0, numLines = originalGLSL.length; i < numLines; ++i){
+      let updatedCode = originalGLSL[i];
+      updatedCode = updatedCode.replace(/\$foam_enabled/g, foamEnabled ? '1' : '0');
+      updatedCode = updatedCode.replace(/\$caustics_enabled/g, causticsEnabled ? '1' : '0');
+      updatedLines.push(updatedCode);
+    }
+
+    return updatedLines.join('\n');
+  },
+
+  vertexShader: [
+    'precision highp float;',
+
+    'attribute vec3 tangent;',
+    'attribute vec3 bitangent;',
+
+    'varying vec2 vUv;',
+    'varying vec3 vPosition;',
+    'varying vec3 vTangent;',
+    'varying vec3 vBitangent;',
+    'varying vec3 vInView;',
+    'varying mat4 vInstanceMatrix;',
+    'varying mat4 vModelMatrix;',
+    'varying mat3 vNormalMatrix;',
+
+    'uniform float sizeOfOceanPatch;',
+    'uniform sampler2D displacementMap;',
+    'uniform float linearScatteringHeightOffset;',
+    'uniform float linearScatteringTotalScatteringWaveHeight;',
+
+    '#include <fog_pars_vertex>',
+
+    'vec2 vec2Modulo(vec2 inputUV){',
+        'return (inputUV - floor(inputUV));',
+    '}',
+
+    'void main() {',
+      '//Set up our displacement map',
+      'vec3 offsetPosition = position;',
+      'mat3 instanceMatrixMat3 = mat3(instanceMatrix[0].xyz, instanceMatrix[1].xyz, instanceMatrix[2].xyz );',
+      'mat3 modelMatrixMat3 = mat3(modelMatrix[0].xyz, modelMatrix[1].xyz, modelMatrix[2].xyz );',
+
+      'vec2 cameraOffset = vec2(cameraPosition.x, cameraPosition.z);',
+      'vec4 worldPositionOfVertex = (modelMatrix * instanceMatrix * vec4(position, 1.0));',
+      'float distanceToVertex = distance(cameraPosition.xyz, worldPositionOfVertex.xyz);',
+      'vec2 uvOffset = (uv * sizeOfOceanPatch + cameraOffset) / sizeOfOceanPatch;',
+      'float displacementFadeout = clamp((2500.0 - distanceToVertex) / 2500.0, 0.0, 1.0);',
+      'vec3 displacement = texture2D(displacementMap, uvOffset).xyz * displacementFadeout;',
+      'displacement.x *= -1.0;',
+      'displacement.z *= -1.0;',
+      'offsetPosition += displacement;',
+
+      '//Set up our varyings',
+      'vUv = uv;',
+      'vTangent = tangent;',
+      'vBitangent = bitangent;',
+      'vPosition = position;',
+      '//From https://stackoverflow.com/questions/59492385/angle-between-view-vector-and-normal',
+      'vec4 posInView = (modelViewMatrix * instanceMatrix * vec4(offsetPosition, 1.0));',
+      'posInView /= posInView[3];',
+      'vInView = normalize(-posInView.xyz);',
+      'vInstanceMatrix = instanceMatrix;',
+      'vModelMatrix = modelMatrix;',
+      'vNormalMatrix = normalMatrix;',
+
+      '//Add support for three.js fog',
+      '#include <fog_vertex>',
+
+      'gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);',
     '}',
   ].join('\n'),
 };
 
-AWater.AOcean.OceanPatch = function(parentOceanGrid, initialPosition){
-  let scene = parentOceanGrid.scene;
+AWater.AOcean.OceanPatch = function(parentOceanGrid, initialPosition, instanceMeshRef, instanceID){
+  const scene = parentOceanGrid.scene;
   this.initialPosition = initialPosition;
   this.position = new THREE.Vector3();
   this.parentOceanGrid = parentOceanGrid;
-
-  let geometry = new THREE.PlaneBufferGeometry(parentOceanGrid.patchSize, parentOceanGrid.patchSize, parentOceanGrid.patchVertexSize, parentOceanGrid.patchVertexSize);
-  THREE.BufferGeometryUtils.computeTangents(geometry);
-  this.plane = new THREE.Mesh(geometry, parentOceanGrid.oceanMaterial.clone());
-  this.plane.rotateX(-Math.PI * 0.5);
-  scene.add(this.plane);
-
-  //Set the velocity of the small water waves on the surface
-  const windVelocity = new THREE.Vector2(this.parentOceanGrid.windVelocity.x, this.parentOceanGrid.windVelocity.y);
-  const windVelocityMagnitude = windVelocity.length();
-  const windVelocityDirection = windVelocity.divideScalar(windVelocityMagnitude)
-  this.plane.material.uniforms.smallNormalMapVelocity.value.set(this.parentOceanGrid.randomWindVelocities[0], this.parentOceanGrid.randomWindVelocities[1]);
-  this.plane.material.uniforms.largeNormalMapVelocity.value.set(this.parentOceanGrid.randomWindVelocities[2], this.parentOceanGrid.randomWindVelocities[3]);
-  this.plane.material.uniforms.lightScatteringAmounts.value.copy(this.parentOceanGrid.data.light_scattering_amounts);
-  this.plane.material.uniforms.smallNormalMapStrength.value = this.parentOceanGrid.data.small_normal_map_strength;
-  this.plane.material.uniforms.largeNormalMapStrength.value = this.parentOceanGrid.data.large_normal_map_strength;
-  this.plane.material.uniforms.linearScatteringHeightOffset.value = this.parentOceanGrid.data.linear_scattering_height_offset;
-  this.plane.material.uniforms.linearScatteringTotalScatteringWaveHeight.value = this.parentOceanGrid.data.linear_scattering_total_wave_height;
-
-  let self = this;
-  this.tick = function(time){
-    self.plane.material.uniforms.displacementMap.value = self.parentOceanGrid.oceanHeightComposer.displacementMap;
-    self.plane.material.uniforms.refractionCubeMap.value = self.parentOceanGrid.refractionCubeCamera.renderTarget.texture;
-    self.plane.material.uniforms.reflectionCubeMap.value = self.parentOceanGrid.reflectionCubeCamera.renderTarget.texture;
-    self.plane.material.uniforms.depthCubeMap.value = self.parentOceanGrid.depthCubeCamera.renderTarget.texture;
-    self.plane.material.uniforms.smallNormalMap.value = self.parentOceanGrid.smallNormalMap;
-    self.plane.material.uniforms.largeNormalMap.value = self.parentOceanGrid.largeNormalMap;
-    self.plane.material.uniforms.matrixWorld.value.copy(self.plane.matrixWorld);
-    if(self.parentOceanGrid.brightestDirectionalLight){
-      const brightestDirectionalLight = self.parentOceanGrid.brightestDirectionalLight;
-      const color = brightestDirectionalLight.color;
-      const intensity = brightestDirectionalLight.intensity;
-      self.plane.material.uniforms.brightestDirectionalLight.value.set(color.r * intensity, color.g * intensity, color.b * intensity);
-    }
-    else{
-      self.plane.material.uniforms.brightestDirectionalLight.value.set(1.0,1.0,1.0);
-    }
-    self.plane.material.uniforms.t.value = time * 0.001;
-  };
+  this.instanceMeshRef = instanceMeshRef;
+  this.instanceID = instanceID;
 }
 
-AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
+AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //Variable for holding all of our patches
   //For now, just create 1 plane
   this.scene = scene;
+  data = parentComponent.data;
+  this.parentComponent = parentComponent;
   this.renderer = renderer;
   this.camera = camera;
-  this.cameraWorldPosition = new THREE.Vector3();
   this.oceanPatches = [];
   this.oceanPatchIsInFrustrum = [];
   this.drawDistance = data.draw_distance;
   this.patchSize = data.patch_size;
   this.dataPatchSize = data.patch_size;
-  this.patchVertexSize = data.patch_vertex_size;
   this.heightOffset = data.height_offset;
+  this.causticsEnabled = data.caustics_enabled;
+  this.causticsStrength = data.caustics_strength;
+  this.foamEnabled = data.foam_enabled;
+  this.foamStart = data.foam_start;
   this.data = data;
   this.time = 0.0;
   this.smallNormalMap;
   this.largeNormalMap;
+  this.causticMap;
+  this.foamColorMap;
+  this.foamOpacityMap;
+  this.foamNormalMap;
+  this.foamRoughnessMap;
+  this.foamRenderMap;
+  this.exclusionMap;
   this.windVelocity = data.wind_velocity;
+  this.reflectionClipPlane = new THREE.Plane();
+  this.reflectionClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, this.heightOffset * 2.0, 0));
+  this.refractionClipPlane = new THREE.Plane();
+  this.refractionClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, -1, 0), new THREE.Vector3(0, this.heightOffset * 2.0, 0));
+  this.foamClipPlane = new THREE.Plane();
+  this.foamClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, -1, 0), new THREE.Vector3(0, this.heightOffset * 2.0 + 1.0, 0));
   const randomAngle1 = Math.random() * 2.0 * Math.PI;
   const randomAngle2 = Math.random() * 2.0 * Math.PI;
   this.randomWindVelocities = [
@@ -2423,7 +2620,7 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
     texture.wrapT = THREE.RepeatWrapping;
     texture.magFilter = THREE.LinearFilter;
     texture.minFilter = THREE.LinearMipmapLinearFilter;
-    texture.encoding = THREE.LinearEncoding;
+    texture.colorSpace = THREE.LinearSRGBColorSpace;
     texture.format = THREE.RGBAFormat;
     self.smallNormalMap = texture;
   }, function(err){
@@ -2439,9 +2636,91 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
     texture.wrapT = THREE.RepeatWrapping;
     texture.magFilter = THREE.LinearFilter;
     texture.minFilter = THREE.LinearMipmapLinearFilter;
-    texture.encoding = THREE.LinearEncoding;
+    texture.colorSpace = THREE.LinearSRGBColorSpace;
     texture.format = THREE.RGBAFormat;
     self.largeNormalMap = texture;
+  }, function(err){
+    console.error(err);
+  });
+
+  //Load our caustics texture
+  let causticMapTexturePromise = new Promise(function(resolve, reject){
+    textureLoader.load(data.caustics_map, function(texture){resolve(texture);});
+  });
+  causticMapTexturePromise.then(function(texture){
+    //Fill in the details of our texture
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.colorSpace = THREE.LinearSRGBColorSpace;
+    texture.format = THREE.RGBAFormat;
+    self.causticMap = texture;
+  }, function(err){
+    console.error(err);
+  });
+
+  //Pull in each of our foam textures
+  let foamColorPromise = new Promise(function(resolve, reject){
+    textureLoader.load(data.foam_color_map, function(texture){resolve(texture);});
+  });
+  foamColorPromise.then(function(texture){
+    //Fill in the details of our texture
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.colorSpace = THREE.LinearSRGBColorSpace;
+    texture.format = THREE.RGBAFormat;
+    self.foamColorMap = texture;
+  }, function(err){
+    console.error(err);
+  });
+
+  let foamOpacityPromise = new Promise(function(resolve, reject){
+    textureLoader.load(data.foam_opacity_map, function(texture){resolve(texture);});
+  });
+  foamOpacityPromise.then(function(texture){
+    //Fill in the details of our texture
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.colorSpace = THREE.LinearSRGBColorSpace;
+    texture.format = THREE.RGBAFormat;
+    self.foamOpacityMap = texture;
+  }, function(err){
+    console.error(err);
+  });
+
+  let foamNormalMapPromise = new Promise(function(resolve, reject){
+    textureLoader.load(data.foam_normal_map, function(texture){resolve(texture);});
+  });
+  foamNormalMapPromise.then(function(texture){
+    //Fill in the details of our texture
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.colorSpace = THREE.LinearSRGBColorSpace;
+    texture.format = THREE.RGBAFormat;
+    self.foamNormalMap = texture;
+  }, function(err){
+    console.error(err);
+  });
+
+  let foamRoughnessMapPromise = new Promise(function(resolve, reject){
+    textureLoader.load(data.foam_roughness_map, function(texture){resolve(texture);});
+  });
+  foamRoughnessMapPromise.then(function(texture){
+    //Fill in the details of our texture
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.colorSpace = THREE.LinearSRGBColorSpace;
+    texture.format = THREE.RGBAFormat;
+    self.foamRoughnessMap = texture;
   }, function(err){
     console.error(err);
   });
@@ -2458,23 +2737,40 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
   }
 
   //Set up our cube camera for reflections and refractions
-  this.reflectionCubeRenderTarget = new THREE.WebGLCubeRenderTarget(512, {});
-  this.reflectionCubeCamera = new THREE.CubeCamera(50.0, 10000, this.reflectionCubeRenderTarget);
+  this.reflectionCubeRenderTarget = new THREE.WebGLCubeRenderTarget(1024, {});
+  this.reflectionCubeCamera = new THREE.CubeCamera(0.1, 10000.0, this.reflectionCubeRenderTarget);
   this.scene.add(this.reflectionCubeCamera);
 
-  this.refractionCubeRenderTarget = new THREE.WebGLCubeRenderTarget(512, {
+  this.refractionCubeRenderTarget = new THREE.WebGLCubeRenderTarget(1024, {
     mapping: THREE.CubeRefractionMapping
   });
-  this.refractionCubeCamera = new THREE.CubeCamera(0.1, 0.5 * this.drawDistance, this.refractionCubeRenderTarget);
+  this.refractionCubeRenderTarget.needsUpdate = true;
+  this.refractionCubeCamera = new THREE.CubeCamera(0.1, 10000.0, this.refractionCubeRenderTarget);
   this.scene.add(this.refractionCubeCamera);
 
   //Set up another cube camera for depth
-  this.depthCubeMapRenderTarget = new THREE.WebGLCubeRenderTarget(512, {
+  this.depthCubeMapRenderTarget = new THREE.WebGLCubeRenderTarget(1024, {
     mapping: THREE.CubeRefractionMapping,
     type: THREE.FloatType
   });
-  this.depthCubeCamera = new THREE.CubeCamera(0.1, 0.5 * this.drawDistance, this.depthCubeMapRenderTarget);
+  this.depthCubeCamera = new THREE.CubeCamera(0.1, 10000.0, this.depthCubeMapRenderTarget);
   this.scene.add(this.depthCubeCamera);
+
+  //Set up depth camera pointing down for edge foam
+  this.foamRenderTarget = new THREE.WebGLRenderTarget(4096, 4096, {
+    type: THREE.FloatType
+  });
+  this.foamCamera = new THREE.OrthographicCamera(-2048.0, 2048.0, 2048.0, -2048.0, 0.1, 1000.0);
+  this.scene.add(this.foamCamera);
+
+  //Set up a depth camera pointing down for ocean exclusion mapping
+  this.exclusionRenderTarget = new THREE.WebGLRenderTarget(4096, 4096, {
+    type: THREE.FloatType
+  });
+  this.exclusionCamera = new THREE.OrthographicCamera(-1024.0, 1024.0, 1024.0, -1024.0, 0.1, 1000.0);
+  this.exclusionCamera.layers.disableAll();
+  this.exclusionCamera.layers.set(30);
+  this.scene.add(this.exclusionCamera);
 
   //Initialize all shader LUTs for future ocean viewing
   //Initialize our ocean variables and all associated shaders.
@@ -2484,10 +2780,9 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
   //Set up our ocean material that is used for all of our ocean patches
   this.oceanMaterial = new THREE.ShaderMaterial({
     vertexShader: AWater.AOcean.Materials.Ocean.waterMaterial.vertexShader,
-    fragmentShader: AWater.AOcean.Materials.Ocean.waterMaterial.fragmentShader,
-    side: THREE.DoubleSide,
-    flatShading: true,
-    transparent: true,
+    fragmentShader: AWater.AOcean.Materials.Ocean.waterMaterial.fragmentShader(this.causticsEnabled, this.foamEnabled),
+    side: THREE.FrontSide,
+    transparent: false,
     lights: false,
     fog: true
   });
@@ -2504,8 +2799,7 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
   this.positionPassMaterial = new THREE.ShaderMaterial({
     vertexShader: AWater.AOcean.Materials.Ocean.positionPassMaterial.vertexShader,
     fragmentShader: AWater.AOcean.Materials.Ocean.positionPassMaterial.fragmentShader,
-    side: THREE.DoubleSide,
-    flatShading: true,
+    side: THREE.FrontSide,
     transparent: false,
     lights: false
   });
@@ -2513,19 +2807,133 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
   this.positionPassMaterial.uniforms.worldMatrix.value = this.camera.matrixWorld;
 
   //Get all ocean patch offsets
-  let maxHalfPatchesPerSide = Math.ceil((this.drawDistance + this.patchSize) / this.patchSize);
-  let drawDistanceSquared = this.drawDistance * this.drawDistance;
+  const maxHalfPatchesPerSide = Math.ceil((this.drawDistance + this.patchSize) / this.patchSize);
+  const drawDistanceSquared = this.drawDistance * this.drawDistance;
+  const minDistanceForUpdatedLOD = this.patchSize;
+  let patchLODByBucketID = {};
+  const numberOfLODs = 7;
   for(let x = -maxHalfPatchesPerSide; x < maxHalfPatchesPerSide; ++x){
+    const xForID = x + maxHalfPatchesPerSide;
     for(let y = -maxHalfPatchesPerSide; y < maxHalfPatchesPerSide; ++y){
-      let xCoord = x * this.patchSize;
-      let yCoord = y * this.patchSize;
-      if(x * x + y * y <= drawDistanceSquared){
-        this.oceanPatches.push(new AWater.AOcean.OceanPatch(this, new THREE.Vector3(xCoord, this.heightOffset, yCoord)));
+      const yForID = y + maxHalfPatchesPerSide;
+      const xCoord = (x - 0.5) * this.patchSize;
+      const yCoord = (y - 0.5) * this.patchSize;
+      const xyDistToPlaneSquared = xCoord * xCoord + yCoord * yCoord;
+      if(xyDistToPlaneSquared <= drawDistanceSquared){
+        //Bit mask these into the same number to make a unique 32 bit integer id
+        const bucketID = xForID | (4294901760 & (yForID * 65536));
+        const distanceToPlane = Math.sqrt(xyDistToPlaneSquared);
+        //Not sure why this works best when draw distance is at a 1/4. Maybe it's just the angle? But not sure...
+        const tesselationFactor = Math.min(Math.max(Math.round(numberOfLODs * (1.0 - ( distanceToPlane / (this.patchSize * numberOfLODs) ) )), 1), numberOfLODs);
+        patchLODByBucketID[bucketID] = 2 ** tesselationFactor;
       }
     }
   }
-  this.numberOfPatches = this.oceanPatches.length;
 
+  //Get the instance count for each tile type with all down grades to enable instanced meshes
+  let instanceCount = {};
+  for(let x = -maxHalfPatchesPerSide; x < maxHalfPatchesPerSide; ++x){
+    const xForID = x + maxHalfPatchesPerSide;
+    for(let y = -maxHalfPatchesPerSide; y < maxHalfPatchesPerSide; ++y){
+      const yForID = y + maxHalfPatchesPerSide;
+      const xCoord = (x - 0.5) * this.patchSize;
+      const yCoord = (y - 0.5) * this.patchSize;
+      const xyDistToPlaneSquared = xCoord * xCoord + yCoord * yCoord;
+      if(xyDistToPlaneSquared <= drawDistanceSquared){
+        //Bit mask these into the same number to make a unique 32 bit integer id
+        const LODID = xForID | (4294901760 & (yForID * 65536));
+        const LOD = patchLODByBucketID[LODID];
+        const LODTopID = xForID | (4294901760 & ((yForID + 1) * 65536));
+        const LODTop = LODTopID in patchLODByBucketID ? patchLODByBucketID[LODTopID] >= LOD : true;
+        const LODRightID = (xForID + 1) | (4294901760 & (yForID * 65536));
+        const LODRight = LODRightID in patchLODByBucketID ? patchLODByBucketID[LODRightID] >= LOD : true;
+        const LODBottomID = xForID | (4294901760 & ((yForID - 1) * 65536));
+        const LODBottom = LODBottomID in patchLODByBucketID ? patchLODByBucketID[LODBottomID] >= LOD : true;
+        const LODLeftID = (xForID - 1) | (4294901760 & (yForID * 65536));
+        const LODLeft = LODLeftID in patchLODByBucketID ? patchLODByBucketID[LODLeftID] >= LOD : true;
+
+        //I'm just going to presume our LODs will never be beyond 128
+        //Which would have so many triangles, it would be silly.
+        //We then just go down by one or stay the same, so we can add on
+        //a couple of binary flags like so.
+        let instanceCountID = Math.round(Math.log(LOD) / Math.log(2));
+        instanceCountID += LODTop * 256;
+        instanceCountID += LODRight * 512;
+        instanceCountID += LODBottom * 1024;
+        instanceCountID += LODLeft * 2048;
+        if(!instanceCount.hasOwnProperty(instanceCountID)){
+          instanceCount[instanceCountID] = 1;
+        }
+        else{
+          instanceCount[instanceCountID]++;
+        }
+      }
+    }
+  }
+
+  let oceanPatchGeometryInstances = {};
+  let instanceIterations = {};
+  let oceanGridInstanceKeys = [];
+  const windVelocity = new THREE.Vector2(this.windVelocity.x, this.windVelocity.y);
+  const windVelocityMagnitude = windVelocity.length();
+  const windVelocityDirection = windVelocity.divideScalar(windVelocityMagnitude);
+  for(let x = -maxHalfPatchesPerSide; x < maxHalfPatchesPerSide; ++x){
+    const xForID = x + maxHalfPatchesPerSide;
+    for(let y = -maxHalfPatchesPerSide; y < maxHalfPatchesPerSide; ++y){
+      const yForID = y + maxHalfPatchesPerSide;
+      const xCoord = (x - 0.5) * this.patchSize;
+      const yCoord = (y - 0.5) * this.patchSize;
+      const xyDistToPlaneSquared = xCoord * xCoord + yCoord * yCoord;
+      if(xyDistToPlaneSquared <= drawDistanceSquared){
+        //Bit mask these into the same number to make a unique 32 bit integer id
+        const LOD = patchLODByBucketID[xForID | (4294901760 & (yForID * 65536))];
+        const LODTopID = xForID | (4294901760 & ((yForID + 1) * 65536));
+        const LODTop = LODTopID in patchLODByBucketID ? patchLODByBucketID[LODTopID] >= LOD : true;
+        const LODRightID = (xForID + 1) | (4294901760 & (yForID * 65536));
+        const LODRight = LODRightID in patchLODByBucketID ? patchLODByBucketID[LODRightID] >= LOD : true;
+        const LODBottomID = xForID | (4294901760 & ((yForID - 1) * 65536));
+        const LODBottom = LODBottomID in patchLODByBucketID ? patchLODByBucketID[LODBottomID] >= LOD : true;
+        const LODLeftID = (xForID - 1) | (4294901760 & (yForID * 65536));
+        const LODLeft = LODLeftID in patchLODByBucketID ? patchLODByBucketID[LODLeftID] >= LOD : true;
+
+        let instanceCountID = Math.round(Math.log(LOD) / Math.log(2));
+        instanceCountID += LODTop * 256;
+        instanceCountID += LODRight * 512;
+        instanceCountID += LODBottom * 1024;
+        instanceCountID += LODLeft * 2048;
+        if(!oceanPatchGeometryInstances.hasOwnProperty(instanceCountID)){
+          oceanGridInstanceKeys.push(instanceCountID);
+          const geometry = AWater.OceanTile(this.patchSize, LOD, LODTop, LODRight, LODBottom, LODLeft);
+          oceanPatchGeometryInstances[instanceCountID] = new THREE.InstancedMesh(geometry, this.oceanMaterial.clone(), instanceCount[instanceCountID]);
+          oceanPatchGeometryInstances[instanceCountID].frustumCulled = false;
+          instanceIterations[instanceCountID] = 0;
+          scene.add(oceanPatchGeometryInstances[instanceCountID]);
+
+          //Set the velocity of the small water waves on the surface
+          const uniformsRef = oceanPatchGeometryInstances[instanceCountID].material.uniforms;
+          uniformsRef.smallNormalMapVelocity.value.set(this.randomWindVelocities[0], this.randomWindVelocities[1]);
+          uniformsRef.largeNormalMapVelocity.value.set(this.randomWindVelocities[2], this.randomWindVelocities[3]);
+          uniformsRef.lightScatteringAmounts.value.copy(this.data.light_scattering_amounts);
+          uniformsRef.smallNormalMapStrength.value = this.data.small_normal_map_strength;
+          uniformsRef.largeNormalMapStrength.value = this.data.large_normal_map_strength;
+          uniformsRef.linearScatteringHeightOffset.value = this.data.linear_scattering_height_offset;
+          uniformsRef.linearScatteringTotalScatteringWaveHeight.value = this.data.linear_scattering_total_wave_height;
+        }
+        const instanceIteration = instanceIterations[instanceCountID];
+        this.oceanPatches.push(new AWater.AOcean.OceanPatch(this, new THREE.Vector3(xCoord, this.heightOffset, yCoord), oceanPatchGeometryInstances[instanceCountID], instanceIteration));
+        instanceIterations[instanceCountID] += 1;
+      }
+    }
+  }
+
+  this.numberOfPatches = this.oceanPatches.length;
+  this.globalCameraPosition = new THREE.Vector3();
+  const patchOffsetMatrix = new THREE.Matrix4();
+  const oceanPatchTranslationMatrices = [];
+  for(let i = 0; numOceanPatches = self.oceanPatches.length, i < numOceanPatches; ++i){
+    oceanPatchTranslationMatrices.push(new THREE.Matrix4());
+  }
+  const directionalLightDirection = new THREE.Vector3();
   this.tick = function(time){
     //Update the brightest directional light if we don't have one
     if(this.brightestDirectionalLight === false){
@@ -2540,52 +2948,125 @@ AWater.AOcean.OceanGrid = function(data, scene, renderer, camera){
     }
 
     //Copy the camera position in the world...
-    self.cameraWorldPosition.setFromMatrixPosition(self.camera.matrixWorld);
+    if(self.camera !== self.parentComponent.el.sceneEl.camera){
+      //Attach the scene camera if it does not exist yet
+      self.camera = self.parentComponent.el.sceneEl.camera;
+    }
+    const sceneCamera = self.camera;
+    sceneCamera.getWorldPosition(self.globalCameraPosition);
 
     //Update the state of our ocean grid
     self.time = time;
-    let cameraXZOffset = self.cameraWorldPosition.clone();
-    cameraXZOffset.y = this.heightOffset;
-    for(let i = 0; i < self.oceanPatches.length; ++i){
-      self.oceanPatches[i].plane.position.copy(self.oceanPatches[i].initialPosition).add(cameraXZOffset);
+    for(let i = 0; numOceanPatches = self.oceanPatches.length, i < numOceanPatches; ++i){
+      const oceanPatch = self.oceanPatches[i];
+      const xOffset = oceanPatch.initialPosition.x + self.globalCameraPosition.x;
+      const yOffset = oceanPatch.initialPosition.y;
+      const zOffset = oceanPatch.initialPosition.z + self.globalCameraPosition.z;
+      const translationMatrix = oceanPatchTranslationMatrices[i];
+      translationMatrix.makeTranslation(xOffset, yOffset, zOffset);
+      self.oceanPatches[i].instanceMeshRef.setMatrixAt(oceanPatch.instanceID, translationMatrix);
+    }
+
+    //Inform the system that we need to update all the instance matrices every frame
+    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].instanceMatrix.needsUpdate = true;
     }
 
     //Frustum Cull our grid
-    self.cameraFrustum.setFromProjectionMatrix(self.camera.children[0].projectionMatrix.clone().multiply(self.camera.children[0].matrixWorldInverse));
+    //self.cameraFrustum.setFromProjectionMatrix(self.camera.projectionMatrix.clone().multiply(self.camera.matrixWorldInverse));
 
     //Hide all of our ocean grid elements
-    for(let i = 0; i < self.oceanPatches.length; ++i){
-      self.oceanPatches[i].plane.visible = false;
+    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].visible = false;
     }
 
     //Snap a cubemap picture of our environment to create reflections and refractions
-    self.depthCubeCamera.position.copy(self.cameraWorldPosition);
-    self.reflectionCubeCamera.position.copy(self.cameraWorldPosition);
-    self.refractionCubeCamera.position.copy(self.cameraWorldPosition);
+    self.depthCubeCamera.position.copy(self.globalCameraPosition);
+    self.reflectionCubeCamera.position.copy(self.globalCameraPosition);
+    self.reflectionCubeCamera.position.y = 0.0;
+    self.refractionCubeCamera.position.copy(self.globalCameraPosition);
+    const rendererClippingEnabledBefore = self.renderer.localClippingEnabled;
+    const originalGlobalClipPlane = self.renderer.clippingPlanes.length > 0 ? self.renderer.clippingPlanes : [];
+    self.renderer.clippingPlanes = [self.reflectionClipPlane];
+    self.reflectionCubeCamera.update(self.renderer, self.scene);
+    self.renderer.clippingPlanes = [self.refractionClipPlane];
+    self.refractionCubeCamera.update(self.renderer, self.scene);
     self.scene.overrideMaterial = self.positionPassMaterial;
     self.depthCubeCamera.update(self.renderer, self.scene);
+    self.renderer.clippingPlanes = originalGlobalClipPlane;
+
+    //Update our sea foam camera
+    self.renderer.setClearAlpha(0.0);
+    const currentRenderTarget = self.renderer.getRenderTarget();
+    self.foamCamera.position.copy(self.globalCameraPosition);
+    self.foamCamera.position.y = this.heightOffset + 100.0;
+    self.foamCamera.lookAt(self.globalCameraPosition.x, this.heightOffset - 1.0, self.globalCameraPosition.z);
+    self.foamCamera.updateProjectionMatrix();
+    self.renderer.setRenderTarget(self.foamRenderTarget);
+    const clearAlpha = renderer.getClearAlpha();
+    self.renderer.clear();
+    self.renderer.render(scene, self.foamCamera);
+    this.foamRenderMap = self.foamRenderTarget.texture;
+    self.renderer.setRenderTarget(null);
+
+    //Update our exclusion camera
+    self.exclusionCamera.position.copy(self.globalCameraPosition);
+    self.exclusionCamera.position.y = this.heightOffset + 100.0;
+    self.exclusionCamera.lookAt(self.globalCameraPosition.x, this.heightOffset - 1.0, self.globalCameraPosition.z);
+    self.exclusionCamera.updateProjectionMatrix();
+    self.renderer.setRenderTarget(self.exclusionRenderTarget);
+    self.renderer.clear();
+    self.renderer.render(scene, self.exclusionCamera);
+    this.exclusionMap = self.exclusionRenderTarget.texture;
+    self.renderer.setRenderTarget(null);
+
+    //Restore our original materials
     self.scene.overrideMaterial = null;
-    self.reflectionCubeCamera.update(self.renderer, self.scene);
-    self.refractionCubeCamera.update(self.renderer, self.scene);
+    self.renderer.setRenderTarget(currentRenderTarget);
+    self.renderer.setClearAlpha(clearAlpha);
 
     //Show all of our ocean grid elements again
-    for(let i = 0; i < self.oceanPatches.length; ++i){
-      self.oceanPatches[i].plane.visible = true;
+    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].visible = true;
     }
 
     //Update each of our ocean grid height maps
     self.oceanHeightBandLibrary.tick(time);
     self.oceanHeightComposer.tick();
 
-    //Update individual changes on each of our ocean patches
-    for(let i = 0, numOceanPatches = self.oceanPatches.length; i < numOceanPatches; ++i){
-      //Only update our GPU shader for this mesh if it it's visible
-      if(self.cameraFrustum.intersectsObject(self.oceanPatches[i].plane)){
-        self.oceanPatches[i].tick(time);
+    //Update all of our uniforms
+    let brightestDirectionalLight;
+    if(self.brightestDirectionalLight){
+      brightestDirectionalLight = self.brightestDirectionalLight;
+    }
+    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+      const uniformsRef = oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms;
+      uniformsRef.displacementMap.value = self.oceanHeightComposer.displacementMap;
+      uniformsRef.refractionCubeMap.value = self.refractionCubeCamera.renderTarget.texture;
+      uniformsRef.reflectionCubeMap.value = self.reflectionCubeCamera.renderTarget.texture;
+      uniformsRef.depthCubeMap.value = self.depthCubeCamera.renderTarget.texture;
+      uniformsRef.smallNormalMap.value = self.smallNormalMap;
+      uniformsRef.largeNormalMap.value = self.largeNormalMap;
+      uniformsRef.causticMap.value = self.causticMap;
+      uniformsRef.foamDiffuseMap.value = self.foamColorMap;
+      uniformsRef.foamOpacityMap.value = self.foamOpacityMap;
+      uniformsRef.foamNormalMap.value = self.foamNormalMap;
+      uniformsRef.foamRoughnessMap.value = self.foamRoughnessMap;
+      uniformsRef.foamRenderMap.value = self.foamRenderMap;
+      uniformsRef.exclusionMap.value = self.exclusionMap;
+      uniformsRef.baseHeightOffset.value = self.heightOffset;
+      if(self.brightestDirectionalLight){
+        const intensity = brightestDirectionalLight.intensity;
+        const color = brightestDirectionalLight.color;
+        uniformsRef.brightestDirectionalLight.value.set(color.r * intensity, color.g * intensity, color.b * intensity);
+        directionalLightDirection.set(brightestDirectionalLight.position.x, brightestDirectionalLight.position.y, brightestDirectionalLight.position.z);
+        directionalLightDirection.sub(brightestDirectionalLight.target.position).negate().normalize();
+        uniformsRef.brightestDirectionalLightDirection.value.set(directionalLightDirection.x, directionalLightDirection.y, directionalLightDirection.z);
       }
       else{
-        self.oceanPatches[i].visible = false;
+        uniformsRef.brightestDirectionalLight.value.set(1.0,1.0,1.0);
       }
+      uniformsRef.t.value = time * 0.001;
     }
   };
 }
@@ -2595,16 +3076,24 @@ AFRAME.registerComponent('ocean-state', {
   oceanGrid: null,
   oceanRenderer: null,
   schema: {
-    'draw_distance': {type: 'number', default: 1280.0},
+    'draw_distance': {type: 'number', default: 5000.0},
     'patch_size': {type: 'number', default: 256.0},
-    'patch_data_size': {type: 'number', default: 256.0},
-    'patch_vertex_size': {type: 'number', default: 140},
+    'patch_data_size': {type: 'number', default: 512.0},
     'wave_scale_multiple': {type: 'number', default: 1.0},
-    'number_of_octaves': {type: 'number', default: 128.0},
+    'number_of_octaves': {type: 'number', default: 256.0},
     'wind_velocity': {type: 'vec2', default: {x: 4.0, y: 3.5}},
     'height_offset': {type: 'number', default: 0.0},
     'large_normal_map': {type: 'string', default: './image-dir/a-water-assets/water-normal-1.png'},
     'small_normal_map': {type: 'string', default: './image-dir/a-water-assets/water-normal-2.png'},
+    'caustics_map': {type: 'string', default: './image-dir/a-water-assets/caustic-map.webp'},
+    'foam_color_map': {type: 'string', default: './image-dir/a-water-assets/Foam002_1K_Color.png'},
+    'foam_opacity_map': {type: 'string', default: './image-dir/a-water-assets/Foam002_1K_Opacity.png'},
+    'foam_normal_map': {type: 'string', default: './image-dir/a-water-assets/Foam002_1K_NormalGL.png'},
+    'foam_roughness_map': {type: 'string', default: './image-dir/a-water-assets/Foam002_1K_Roughness.png'},
+    'caustics_enabled': {type: 'bool', default: 1},
+    'caustics_strength': {type: 'number', default: 1.0},
+    'foam_enabled': {type: 'bool', default: 1},
+    'foam_start': {type: 'number', default: 0.15},
     'large_normal_map_strength': {type: 'number', default: 0.45},
     'small_normal_map_strength': {type: 'number', default: 0.35},
     'light_scattering_amounts': {type: 'vec3', default: {x: 88.0, y: 108.0, z: 112.0}},
@@ -2615,14 +3104,14 @@ AFRAME.registerComponent('ocean-state', {
     //Get our renderer to pass in
     let renderer = this.el.sceneEl.renderer;
     let scene = this.el.sceneEl.object3D;
-    let camera = this.el.sceneEl.camera.el.object3D;
+    let camera = this.el.sceneEl.camera;
     let self = this;
 
     //Update the position of the objects
     scene.updateMatrixWorld();
 
     //Set up our ocean grid
-    this.oceanGrid = new AWater.AOcean.OceanGrid(this.data, scene, renderer, camera);
+    this.oceanGrid = new AWater.AOcean.OceanGrid(scene, renderer, camera, this);
 
     //When we've finished loading, now we can commence ticking our grid
     this.tick = function(time, timeDelta){
