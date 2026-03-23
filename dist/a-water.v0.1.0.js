@@ -1697,6 +1697,67 @@ AWater.AOcean.Materials.FFTWaves.waveComposerShaderMaterial = {
   }
 };
 
+AWater.AOcean.Materials.FFTWaves.waveNormalComposerShaderMaterial = {
+  uniforms: {
+    displacementTexture: {type: 't', value: null},
+    texelSize: {type: 'f', value: 1.0 / 512.0},
+    patchSize: {type: 'f', value: 256.0}
+  },
+
+  fragmentShader: function(){
+    let originalGLSL = [
+    'uniform sampler2D displacementTexture;',
+    'uniform float texelSize;',
+    'uniform float patchSize;',
+
+    'void main(){',
+      'vec2 uv = gl_FragCoord.xy / resolution.xy;',
+
+      '//Sample displacement at neighboring texels',
+      'vec3 rawL = texture2D(displacementTexture, uv + vec2(-texelSize, 0.0)).xyz;',
+      'vec3 rawR = texture2D(displacementTexture, uv + vec2( texelSize, 0.0)).xyz;',
+      'vec3 rawD = texture2D(displacementTexture, uv + vec2(0.0, -texelSize)).xyz;',
+      'vec3 rawU = texture2D(displacementTexture, uv + vec2(0.0,  texelSize)).xyz;',
+
+      '//Compute Jacobian for foam FIRST using raw values (before sign inversion)',
+      '//Match the original empirical scaling: -0.5 * delta / 8.0',
+      'vec2 foamDdx = -0.0625 * (rawR.xz - rawL.xz);',
+      'vec2 foamDdy = -0.0625 * (rawU.xz - rawD.xz);',
+      'float jacobian = (1.0 + foamDdx.x) * (1.0 + foamDdy.y) - foamDdx.y * foamDdy.x;',
+      'float turbulence = max(0.0, 1.0 - jacobian);',
+      'float foam = smoothstep(0.0, 1.0, turbulence);',
+
+      '//Now apply sign inversion for normals (matching water shader convention)',
+      'vec3 dispL = rawL; dispL.x *= -1.0; dispL.z *= -1.0;',
+      'vec3 dispR = rawR; dispR.x *= -1.0; dispR.z *= -1.0;',
+      'vec3 dispD = rawD; dispD.x *= -1.0; dispD.z *= -1.0;',
+      'vec3 dispU = rawU; dispU.x *= -1.0; dispU.z *= -1.0;',
+
+      '//World-space step between samples',
+      'float worldStep = patchSize * texelSize;',
+
+      '//Partial derivatives of displacement with respect to world-space x and z',
+      'vec3 dPdx = (dispR - dispL) / (2.0 * worldStep);',
+      'vec3 dPdz = (dispU - dispD) / (2.0 * worldStep);',
+
+      '//Surface tangent vectors (flat plane is XZ, height is Y)',
+      'vec3 Tx = vec3(1.0 + dPdx.x, dPdx.y, dPdx.z);',
+      'vec3 Tz = vec3(dPdz.x, dPdz.y, 1.0 + dPdz.z);',
+
+      'vec3 normal = normalize(cross(Tz, Tx));',
+
+      '//Ensure normal points upward (Y > 0)',
+      'if(normal.y < 0.0) normal = -normal;',
+
+      '//Pack normal into [0,1] range, foam in alpha',
+      'gl_FragColor = vec4(normal * 0.5 + 0.5, foam);',
+    '}',
+    ];
+
+    return originalGLSL.join('\n');
+  }
+};
+
 //This helps
 //--------------------------v
 //https://github.com/mrdoob/three.js/wiki/Uniforms-types
@@ -2080,6 +2141,7 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
   this.parentOceanGrid = parentOceanGrid;
   this.combinedWaveHeights;
   this.displacementMap;
+  this.normalMap;
 
   //Make a shortcut to our materials namespace
   const materials = AWater.AOcean.Materials.FFTWaves;
@@ -2113,6 +2175,34 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
   }
   this.waveHeightComposerRenderer.compute();
 
+  //Initialize the normal map composer - computes normals from displacement via central differences
+  this.waveNormalComposerRenderer = new THREE.GPUComputationRenderer(this.baseTextureWidth, this.baseTextureHeight, this.renderer);
+  this.waveNormalComposerTexture = this.waveNormalComposerRenderer.createTexture();
+  this.waveNormalComposerVar = this.waveNormalComposerRenderer.addVariable(
+    'waveNormalTexture',
+    materials.waveNormalComposerShaderMaterial.fragmentShader(),
+    this.waveNormalComposerTexture
+  );
+  let wncVar = this.waveNormalComposerVar;
+  wncVar.minFilter = THREE.LinearFilter;
+  wncVar.magFilter = THREE.LinearFilter;
+  wncVar.format = THREE.RGBAFormat;
+  wncVar.type = THREE.FloatType;
+  wncVar.wrapS = THREE.RepeatWrapping;
+  wncVar.wrapT = THREE.RepeatWrapping;
+  wncVar.needsUpdate = true;
+  this.waveNormalComposerRenderer.setVariableDependencies(wncVar, []);
+  wncVar.material.uniforms = {
+    displacementTexture: {type: 't', value: null},
+    texelSize: {type: 'f', value: 1.0 / this.baseTextureWidth},
+    patchSize: {type: 'f', value: parentOceanGrid.patchSize}
+  };
+
+  let error6 = this.waveNormalComposerRenderer.init();
+  if(error6 !== null){
+    console.error(`Wave Normal Composer Renderer: ${error6}`);
+  }
+
   let self = this;
   this.tick = function(){
     //Update our uniforms
@@ -2123,6 +2213,11 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
     }
     self.waveHeightComposerRenderer.compute();
     this.displacementMap = self.waveHeightComposerRenderer.getCurrentRenderTarget(self.waveHeightComposerVar).texture;
+
+    //Compute normals from the displacement map
+    self.waveNormalComposerVar.material.uniforms.displacementTexture.value = this.displacementMap;
+    self.waveNormalComposerRenderer.compute();
+    this.normalMap = self.waveNormalComposerRenderer.getCurrentRenderTarget(self.waveNormalComposerVar).texture;
   };
 }
 
@@ -2132,6 +2227,7 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
 AWater.AOcean.Materials.Ocean.waterMaterial = {
   uniforms: {
     displacementMap: {type: 't', value: null},
+    fftNormalMap: {type: 't', value: null},
     smallNormalMap: {type: 't', value: null},
     largeNormalMap: {type: 't', value: null},
     causticMap: {type: 't', value: null},
@@ -2145,9 +2241,13 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     exclusionMap: {type: 't', value: null},
     smallNormalMapVelocity: {type: 'vec2', value: new THREE.Vector2()},
     largeNormalMapVelocity: {type: 'vec2', value: new THREE.Vector2()},
-    reflectionCubeMap: {value: null},
-    refractionCubeMap: {value: null},
-    depthCubeMap: {value: null},
+    reflectionTexture: {type: 't', value: null},
+    refractionColorTexture: {type: 't', value: null},
+    refractionDepthTexture: {type: 't', value: null},
+    screenResolution: {type: 'vec2', value: new THREE.Vector2()},
+    cameraNearFar: {type: 'vec2', value: new THREE.Vector2()},
+    inverseProjectionMatrix: {type: 'mat4', value: new THREE.Matrix4()},
+    inverseViewMatrix: {type: 'mat4', value: new THREE.Matrix4()},
     sizeOfOceanPatch: {type: 'f', value: 1.0},
     baseHeightOffset: {type: 'f', value: 0.0},
     fogNear: {type: 'f', value: null},
@@ -2161,7 +2261,8 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     smallNormalMapStrength: {type: 'f', value: 0.35},
     lightScatteringAmounts: {type: 'vec3', value: new THREE.Vector3(88.0, 108.0, 112.0)},
     linearScatteringHeightOffset: {type: 'f', value: 10.0},
-    linearScatteringTotalScatteringWaveHeight: {type: 'f', value: 20.0}
+    linearScatteringTotalScatteringWaveHeight: {type: 'f', value: 20.0},
+    patchDataSize: {type: 'f', value: 1024.0}
   },
 
   fragmentShader: function(causticsEnabled, foamEnabled){
@@ -2183,12 +2284,17 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     'uniform float smallNormalMapStrength;',
     'uniform float baseHeightOffset;',
     'uniform sampler2D displacementMap;',
+    'uniform sampler2D fftNormalMap;',
     'uniform sampler2D smallNormalMap;',
     'uniform sampler2D largeNormalMap;',
     'uniform sampler2D exclusionMap;',
-    'uniform samplerCube reflectionCubeMap;',
-    'uniform samplerCube refractionCubeMap;',
-    'uniform samplerCube depthCubeMap;',
+    'uniform sampler2D reflectionTexture;',
+    'uniform sampler2D refractionColorTexture;',
+    'uniform sampler2D refractionDepthTexture;',
+    'uniform vec2 screenResolution;',
+    'uniform vec2 cameraNearFar;',
+    'uniform mat4 inverseProjectionMatrix;',
+    'uniform mat4 inverseViewMatrix;',
 
     '#if($caustics_enabled)',
       'uniform sampler2D causticMap;',
@@ -2216,6 +2322,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     'uniform float linearScatteringTotalScatteringWaveHeight;',
 
     'uniform float t;',
+    'uniform float patchDataSize;',
 
     '//Fog variables',
     '#include <fog_pars_fragment>',
@@ -2229,6 +2336,12 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
 
     'vec2 vec2Modulo(vec2 inputUV){',
         'return (inputUV - floor(inputUV));',
+    '}',
+
+    'float linearizeDepth(float depthSample){',
+      'float near = cameraNearFar.x;',
+      'float far = cameraNearFar.y;',
+      'return near * far / (far - depthSample * (far - near));',
     '}',
 
     'vec4 sRGBToLinear( in vec4 value ) {',
@@ -2294,15 +2407,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     'SOFTWARE.',
     '*/',
     '#if($foam_enabled)',
-      'float foamAmount(vec2 vUv, float textureSize){',
-        'float texelSize = 1.0 / textureSize;',
-      '	vec2 dDdy = -0.5 * (texture2D(displacementMap, vUv + vec2(0.0, texelSize)).xz - texture2D(displacementMap, vUv + vec2(0.0, -texelSize)).xz) / 8.0;',
-      '	vec2 dDdx = -0.5 * (texture2D(displacementMap, vUv + vec2(texelSize, 0.0)).xz - texture2D(displacementMap, vUv + vec2(-texelSize, 0.0)).xz) / 8.0;',
-      '	float jacobian = (1.0 + dDdx.x) * (1.0 + dDdy.y) - dDdx.y * dDdy.x;',
-      '	float turb = max(0.0, 1.0 - jacobian);',
-      '	float xx = smoothstep(0.0, 1.0, turb);',
-      '	return xx;',
-      '}',
+      '//Foam amount is now pre-computed in the FFT normal map alpha channel',
     '#endif',
 
     'void main(){',
@@ -2329,41 +2434,14 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       'float distanceToWorldPosition = distance(worldPosition.xyz, cameraPosition.xyz);',
       'float LOD = pow(2.0, clamp(7.0 - (distanceToWorldPosition / (sizeOfOceanPatch * 7.0)), 2.0, 7.0));',
 
-      '//Calculate our normal for this vertex',
+      '//Sample the pre-computed FFT normal map (computed via central differences on displacement in a GPU pass)',
       'float displacementFadeout = clamp((2500.0 - distanceToWorldPosition) / 2500.0, 0.0, 1.0);',
-      'displacement *= displacementFadeout;',
-      'vec3 tangent = vTangent;',
-      'vec3 bitangent = vBitangent;',
-      'vec3 deltaTangent = tangent / LOD;',
-      'vec2 tangentUVOffset = (vUv * sizeOfOceanPatch + cameraOffset + deltaTangent.xz * sizeOfOceanPatch) / sizeOfOceanPatch;',
-      'vec3 vt = texture2D(displacementMap, tangentUVOffset).xyz * displacementFadeout;',
-      'vt.x *= -1.0;',
-      'vt.z *= -1.0;',
-      'vec3 deltaBitangent = bitangent / LOD;',
-      'vec2 biTangentUVOffset = (vUv * sizeOfOceanPatch + cameraOffset + deltaBitangent.xz * sizeOfOceanPatch) / sizeOfOceanPatch;',
-      'vec3 vb = texture2D(displacementMap, biTangentUVOffset).xyz * displacementFadeout;',
-      'vb.x *= -1.0;',
-      'vb.z *= -1.0;',
-      '//Change in height with respect to x',
-      'vec3 dhDt = normalize((vt + deltaTangent * sizeOfOceanPatch) - displacement);',
-      '//Change in height with respect to z',
-      'vec3 dhDbt = normalize((vb + deltaBitangent * sizeOfOceanPatch) - displacement);',
-      'vec3 displacedNormal = cross(dhDt, dhDbt);',
-
-      'tangentUVOffset = (vUv * sizeOfOceanPatch + cameraOffset - deltaTangent.xz * sizeOfOceanPatch) / sizeOfOceanPatch;',
-      'vt = texture2D(displacementMap, tangentUVOffset).xyz * displacementFadeout;',
-      'vt.x *= -1.0;',
-      'vt.z *= -1.0;',
-      'biTangentUVOffset = (vUv * sizeOfOceanPatch + cameraOffset - deltaBitangent.xz * sizeOfOceanPatch) / sizeOfOceanPatch;',
-      'vb = texture2D(displacementMap, biTangentUVOffset).xyz * displacementFadeout;',
-      'vb.x *= -1.0;',
-      'vb.z *= -1.0;',
-      '//Change in height with respect to x',
-      'dhDt = normalize((vt - deltaTangent * sizeOfOceanPatch) - displacement);',
-      '//Change in height with respect to z',
-      'dhDbt = normalize((vb - deltaBitangent * sizeOfOceanPatch) - displacement);',
-      'displacedNormal = (cross(dhDt, dhDbt) + displacedNormal) * 0.5;',
-      'displacedNormal = normalize(displacedNormal);',
+      'vec4 fftNormalSample = texture2D(fftNormalMap, uvOffset);',
+      'vec3 displacedNormal = fftNormalSample.xyz * 2.0 - 1.0;',
+      '//Blend toward flat normal (0,1,0) at distance',
+      'displacedNormal = normalize(mix(vec3(0.0, 1.0, 0.0), displacedNormal, displacementFadeout));',
+      '//The FFT normal is in object space (x, y, z) - swizzle to match expected xzy convention',
+      'displacedNormal = displacedNormal.xzy;',
 
       '//Get the reflected and refracted information of the scene',
       'vec2 smallNormalMapOffset = (((vUv * 2.0) * (sizeOfOceanPatch / 2.0) + cameraOffset + t * smallNormalMapVelocity) / (sizeOfOceanPatch / 2.0));',
@@ -2386,7 +2464,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       '#if($foam_enabled)',
         'vec3 foamNormal = texture2D(foamNormalMap, smallNormalMapOffset).xyz;',
         'foamNormal = 2.0 * foamNormal - 1.0;',
-        'float foamAmount = foamAmount(uvOffset, 512.0);',
+        'float foamAmount = fftNormalSample.a;',
         'vec2 foamPosition = 0.5 * (((worldPosition.xz - cameraPosition.xz) / vec2(2048.0)) + 1.0);',
         'foamPosition = vec2(foamPosition.x, 1.0 - foamPosition.y);',
         'if(foamPosition.x < 1.0 && foamPosition.x > 0.0 && foamPosition.y < 1.0 && foamPosition.y > 0.0){',
@@ -2408,21 +2486,52 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       'combinedNormalMap = combinedNormalMap.xzy;',
 
       'vec3 normalizedViewVector = normalize(worldPosition.xyz - cameraPosition);',
-      'vec3 reflectedCoordinates = reflect(normalizedViewVector, combinedNormalMap);',
-      '//Why?! O_O, ok, so I grabbed this from https://www.youtube.com/watch?v=kXH1-uY0wjY',
-      '//and... it makes absolutely no sense, but apparently 1.0/1.333 - the actual',
-      '//refraction coeficient for water is way too high. Is this not physically based',
-      '//or maybe I am thinking about cubemaps wrong?',
-      'vec3 refractedCoordinates = refract(normalizedViewVector, combinedNormalMap, 1.0 / 1.025);',
-      'vec3 reflectedLight = textureCube(reflectionCubeMap, reflectedCoordinates).rgb; //Reflection',
-      'vec3 refractedLight = textureCube(refractionCubeMap, refractedCoordinates).rgb; //Refraction',
-      'vec3 pointXYZ = textureCube(depthCubeMap, refractedCoordinates).xyz; //Scattering',
-      'float distanceToPoint = distance(pointXYZ, worldPosition.xyz);',
-      '// When the depth cubemap misses geometry (hits sky/background), it returns (0,0,0).',
-      '// distance(worldPos, vec3(0)) for distant vertices becomes hundreds of meters,',
-      '// driving percentOfSourceLight to zero and maximising inscatterLight everywhere.',
-      '// Cap at a physically reasonable ocean depth to prevent this haze.',
-      'distanceToPoint = min(distanceToPoint, 100.0);',
+      'vec2 screenUV = gl_FragCoord.xy / screenResolution;',
+
+      '//Planar reflection: sample the mirrored camera render using screen UVs with normal distortion',
+      'vec2 reflectionUV = screenUV;',
+      'reflectionUV.x = 1.0 - reflectionUV.x; //Flip horizontally (mirrored camera)',
+      'reflectionUV += combinedNormalMap.xz * 0.02; //Distort by surface normal',
+      'reflectionUV = clamp(reflectionUV, 0.001, 0.999);',
+      'vec3 reflectedLight = texture2D(reflectionTexture, reflectionUV).rgb; //Reflection',
+
+      '//Screen-space refraction',
+      '//Distort UVs based on the surface normal to simulate refraction',
+      'vec2 distortion = combinedNormalMap.xz * 0.03;',
+      'vec2 refractedUV = clamp(screenUV + distortion, 0.001, 0.999);',
+
+      '//Sample refraction color and depth',
+      'float refractionDepthRaw = texture2D(refractionDepthTexture, refractedUV).r;',
+      'float refractionDepthLinear = linearizeDepth(refractionDepthRaw);',
+      'float surfaceDepthLinear = linearizeDepth(gl_FragCoord.z);',
+
+      '//If distorted UV samples something closer than the water surface, fall back to undistorted',
+      'if(refractionDepthLinear < surfaceDepthLinear - 0.5){',
+        'refractedUV = screenUV;',
+        'refractionDepthRaw = texture2D(refractionDepthTexture, refractedUV).r;',
+        'refractionDepthLinear = linearizeDepth(refractionDepthRaw);',
+      '}',
+
+      'vec3 refractedLight = texture2D(refractionColorTexture, refractedUV).rgb;',
+
+      '//Reconstruct world-space position from refraction depth',
+      'vec4 clipPos = vec4(refractedUV * 2.0 - 1.0, refractionDepthRaw * 2.0 - 1.0, 1.0);',
+      'vec4 viewPos = inverseProjectionMatrix * clipPos;',
+      'viewPos /= viewPos.w;',
+      'vec3 pointXYZ = (inverseViewMatrix * viewPos).xyz;',
+
+      '//Use the reconstructed Y position to distinguish underwater vs above-water geometry',
+      'float distanceToPoint;',
+      'if(pointXYZ.y < baseHeightOffset && refractionDepthLinear > surfaceDepthLinear){',
+        '//Underwater geometry visible - use actual depth difference for scattering',
+        'distanceToPoint = min(refractionDepthLinear - surfaceDepthLinear, 100.0);',
+      '}',
+      'else{',
+        '//Above-water geometry or sky - treat as deep water',
+        '//Keep the scene color so scattering can tint it (matches old cube map behavior)',
+        'distanceToPoint = 100.0;',
+      '}',
+
       'vec3 normalizedTransmittancePercentColor = normalize(lightScatteringAmounts);',
       'vec3 percentOfSourceLight = clamp(exp(-2.25 * distanceToPoint / (lightScatteringAmounts)), 0.0, 1.0);',
       'refractedLight = sRGBToLinear(vec4(refractedLight, 1.0)).rgb;',
@@ -2438,8 +2547,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       'reflectedLight = sRGBToLinear(vec4(reflectedLight, 1.0)).rgb;',
 
       '#if($caustics_enabled)',
-        '//Caculate caustic lighting',
-        "//Probably needs offsetting based on height but let's just see how this is",
+        '//Calculate caustic lighting using reconstructed world position',
         'float causticLightingR = causticShader(0.01 * pointXYZ.xz + 0.005, t);',
         'float causticLightingG = causticShader(0.01 * pointXYZ.xz, t);',
         'float causticLightingB = causticShader(0.01 * pointXYZ.xz - 0.005, t);',
@@ -2453,7 +2561,8 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
 
       '//Calculate specular lighting and surface lighting',
       'vec3 directionalSurfaceLighting = normalizedLightIntensity * max(dot(combinedNormalMap, -brightestDirectionalLightDirection), 0.0);',
-      'vec3 specular = 1.7 * normalizedLightIntensity * clamp((dot(reflectedCoordinates, -brightestDirectionalLightDirection) - 0.995) / 0.005, 0.0, 1.0);',
+      'vec3 reflectedViewDir = reflect(normalizedViewVector, combinedNormalMap);',
+      'vec3 specular = 1.7 * normalizedLightIntensity * clamp((dot(reflectedViewDir, -brightestDirectionalLightDirection) - 0.995) / 0.005, 0.0, 1.0);',
 
       '//Total light',
       'vec3 totalLight = specular + (2.0 / 255.0) * directionalSurfaceLighting + (253.0 / 255.0) * ((inscatterLight + refractedLight) * (1.0 - fresnelFactor) + reflectedLight * fresnelFactor);',
@@ -2604,6 +2713,8 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
   this.brightestDirectionalLight = false;
 
+  let self = this;
+
   //Make sure the magnitude of the wind velocity is greater then 0.01, otherwise
   //set it to this to avoid data errors.
   this.windVelocity.x = Math.abs(this.data.wind_velocity.x) < 0.01 ? 0.01 : this.windVelocity.x;
@@ -2736,25 +2847,35 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     this.vanishingHeight.push(0.0);
   }
 
-  //Set up our cube camera for reflections and refractions
-  this.reflectionCubeRenderTarget = new THREE.WebGLCubeRenderTarget(1024, {});
-  this.reflectionCubeCamera = new THREE.CubeCamera(0.1, 10000.0, this.reflectionCubeRenderTarget);
-  this.scene.add(this.reflectionCubeCamera);
+  //Set up planar reflection render target and mirrored camera
+  let rendererSize = new THREE.Vector2();
+  this.renderer.getDrawingBufferSize(rendererSize);
+  this.reflectionRenderTarget = new THREE.WebGLRenderTarget(
+    rendererSize.x, rendererSize.y,
+    {
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      format: THREE.RGBAFormat,
+      type: THREE.HalfFloatType
+    }
+  );
+  this.reflectionCamera = new THREE.PerspectiveCamera();
 
-  this.refractionCubeRenderTarget = new THREE.WebGLCubeRenderTarget(1024, {
-    mapping: THREE.CubeRefractionMapping
-  });
-  this.refractionCubeRenderTarget.needsUpdate = true;
-  this.refractionCubeCamera = new THREE.CubeCamera(0.1, 10000.0, this.refractionCubeRenderTarget);
-  this.scene.add(this.refractionCubeCamera);
-
-  //Set up another cube camera for depth
-  this.depthCubeMapRenderTarget = new THREE.WebGLCubeRenderTarget(1024, {
-    mapping: THREE.CubeRefractionMapping,
-    type: THREE.FloatType
-  });
-  this.depthCubeCamera = new THREE.CubeCamera(0.1, 10000.0, this.depthCubeMapRenderTarget);
-  this.scene.add(this.depthCubeCamera);
+  //Set up screen-space refraction render target
+  this.refractionColorTarget = new THREE.WebGLRenderTarget(
+    rendererSize.x, rendererSize.y,
+    {
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      format: THREE.RGBAFormat,
+      type: THREE.HalfFloatType,
+      depthTexture: new THREE.DepthTexture(
+        rendererSize.x, rendererSize.y,
+        THREE.UnsignedIntType
+      )
+    }
+  );
+  this.refractionColorTarget.depthTexture.format = THREE.DepthFormat;
 
   //Set up depth camera pointing down for edge foam
   this.foamRenderTarget = new THREE.WebGLRenderTarget(4096, 4096, {
@@ -2795,7 +2916,6 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.oceanMaterial.uniforms = AWater.AOcean.Materials.Ocean.waterMaterial.uniforms;
   this.oceanMaterial.uniforms.sizeOfOceanPatch.value = this.patchSize;
 
-  let self = this;
   this.positionPassMaterial = new THREE.ShaderMaterial({
     vertexShader: AWater.AOcean.Materials.Ocean.positionPassMaterial.vertexShader,
     fragmentShader: AWater.AOcean.Materials.Ocean.positionPassMaterial.fragmentShader,
@@ -2918,6 +3038,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           uniformsRef.largeNormalMapStrength.value = this.data.large_normal_map_strength;
           uniformsRef.linearScatteringHeightOffset.value = this.data.linear_scattering_height_offset;
           uniformsRef.linearScatteringTotalScatteringWaveHeight.value = this.data.linear_scattering_total_wave_height;
+          uniformsRef.patchDataSize.value = this.data.patch_data_size;
         }
         const instanceIteration = instanceIterations[instanceCountID];
         this.oceanPatches.push(new AWater.AOcean.OceanPatch(this, new THREE.Vector3(xCoord, this.heightOffset, yCoord), oceanPatchGeometryInstances[instanceCountID], instanceIteration));
@@ -2934,6 +3055,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     oceanPatchTranslationMatrices.push(new THREE.Matrix4());
   }
   const directionalLightDirection = new THREE.Vector3();
+  const reflectionVPMatrix = new THREE.Matrix4();
   this.tick = function(time){
     //Update the brightest directional light if we don't have one
     if(this.brightestDirectionalLight === false){
@@ -2980,20 +3102,43 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].visible = false;
     }
 
-    //Snap a cubemap picture of our environment to create reflections and refractions
-    self.depthCubeCamera.position.copy(self.globalCameraPosition);
-    self.reflectionCubeCamera.position.copy(self.globalCameraPosition);
-    self.reflectionCubeCamera.position.y = 0.0;
-    self.refractionCubeCamera.position.copy(self.globalCameraPosition);
+    //Planar reflection: mirror the camera across the water plane (y = heightOffset)
+    const waterY = self.heightOffset;
+    self.reflectionCamera.copy(sceneCamera);
+    self.reflectionCamera.position.copy(self.globalCameraPosition);
+    self.reflectionCamera.position.y = 2.0 * waterY - self.reflectionCamera.position.y;
+
+    //Flip the camera's up direction and look target to mirror across water plane
+    const cameraTarget = new THREE.Vector3(0, 0, -1);
+    cameraTarget.applyQuaternion(sceneCamera.quaternion);
+    cameraTarget.add(self.globalCameraPosition);
+    const mirroredTarget = new THREE.Vector3(cameraTarget.x, 2.0 * waterY - cameraTarget.y, cameraTarget.z);
+    self.reflectionCamera.up.set(0, -1, 0);
+    self.reflectionCamera.lookAt(mirroredTarget);
+    self.reflectionCamera.updateMatrixWorld();
+    self.reflectionCamera.updateProjectionMatrix();
+
+    //Compute the reflection view-projection matrix for correct UV sampling in the shader
+    reflectionVPMatrix.multiplyMatrices(self.reflectionCamera.projectionMatrix, self.reflectionCamera.matrixWorldInverse);
+
     const rendererClippingEnabledBefore = self.renderer.localClippingEnabled;
     const originalGlobalClipPlane = self.renderer.clippingPlanes.length > 0 ? self.renderer.clippingPlanes : [];
+
+    //Render reflection with clip plane (only above-water geometry)
     self.renderer.clippingPlanes = [self.reflectionClipPlane];
-    self.reflectionCubeCamera.update(self.renderer, self.scene);
-    self.renderer.clippingPlanes = [self.refractionClipPlane];
-    self.refractionCubeCamera.update(self.renderer, self.scene);
-    self.scene.overrideMaterial = self.positionPassMaterial;
-    self.depthCubeCamera.update(self.renderer, self.scene);
+    const currentReflectionRT = self.renderer.getRenderTarget();
+    self.renderer.setRenderTarget(self.reflectionRenderTarget);
+    self.renderer.clear();
+    self.renderer.render(scene, self.reflectionCamera);
+    self.renderer.setRenderTarget(currentReflectionRT);
+
+    //Render scene to screen-space refraction target (no clip plane - depth comparison in shader)
     self.renderer.clippingPlanes = originalGlobalClipPlane;
+    const currentRefractionRT = self.renderer.getRenderTarget();
+    self.renderer.setRenderTarget(self.refractionColorTarget);
+    self.renderer.clear();
+    self.renderer.render(scene, sceneCamera);
+    self.renderer.setRenderTarget(currentRefractionRT);
 
     //Update our sea foam camera
     self.renderer.setClearAlpha(0.0);
@@ -3042,9 +3187,15 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
       const uniformsRef = oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms;
       uniformsRef.displacementMap.value = self.oceanHeightComposer.displacementMap;
-      uniformsRef.refractionCubeMap.value = self.refractionCubeCamera.renderTarget.texture;
-      uniformsRef.reflectionCubeMap.value = self.reflectionCubeCamera.renderTarget.texture;
-      uniformsRef.depthCubeMap.value = self.depthCubeCamera.renderTarget.texture;
+      uniformsRef.fftNormalMap.value = self.oceanHeightComposer.normalMap;
+      uniformsRef.refractionColorTexture.value = self.refractionColorTarget.texture;
+      uniformsRef.refractionDepthTexture.value = self.refractionColorTarget.depthTexture;
+      uniformsRef.screenResolution.value.set(self.refractionColorTarget.width, self.refractionColorTarget.height);
+      uniformsRef.cameraNearFar.value.set(sceneCamera.near, sceneCamera.far);
+      uniformsRef.inverseProjectionMatrix.value.copy(sceneCamera.projectionMatrixInverse);
+      uniformsRef.inverseViewMatrix.value.copy(sceneCamera.matrixWorld);
+      uniformsRef.reflectionTexture.value = self.reflectionRenderTarget.texture;
+      uniformsRef.reflectionViewProjectionMatrix.value.copy(reflectionVPMatrix);
       uniformsRef.smallNormalMap.value = self.smallNormalMap;
       uniformsRef.largeNormalMap.value = self.largeNormalMap;
       uniformsRef.causticMap.value = self.causticMap;

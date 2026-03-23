@@ -4,6 +4,7 @@
 AWater.AOcean.Materials.Ocean.waterMaterial = {
   uniforms: {
     displacementMap: {type: 't', value: null},
+    fftNormalMap: {type: 't', value: null},
     smallNormalMap: {type: 't', value: null},
     largeNormalMap: {type: 't', value: null},
     causticMap: {type: 't', value: null},
@@ -17,9 +18,14 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     exclusionMap: {type: 't', value: null},
     smallNormalMapVelocity: {type: 'vec2', value: new THREE.Vector2()},
     largeNormalMapVelocity: {type: 'vec2', value: new THREE.Vector2()},
-    reflectionCubeMap: {value: null},
-    refractionCubeMap: {value: null},
-    depthCubeMap: {value: null},
+    reflectionTexture: {type: 't', value: null},
+    refractionColorTexture: {type: 't', value: null},
+    refractionDepthTexture: {type: 't', value: null},
+    screenResolution: {type: 'vec2', value: new THREE.Vector2()},
+    cameraNearFar: {type: 'vec2', value: new THREE.Vector2()},
+    inverseProjectionMatrix: {type: 'mat4', value: new THREE.Matrix4()},
+    inverseViewMatrix: {type: 'mat4', value: new THREE.Matrix4()},
+    reflectionViewProjectionMatrix: {type: 'mat4', value: new THREE.Matrix4()},
     sizeOfOceanPatch: {type: 'f', value: 1.0},
     baseHeightOffset: {type: 'f', value: 0.0},
     fogNear: {type: 'f', value: null},
@@ -33,7 +39,8 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     smallNormalMapStrength: {type: 'f', value: 0.35},
     lightScatteringAmounts: {type: 'vec3', value: new THREE.Vector3(88.0, 108.0, 112.0)},
     linearScatteringHeightOffset: {type: 'f', value: 10.0},
-    linearScatteringTotalScatteringWaveHeight: {type: 'f', value: 20.0}
+    linearScatteringTotalScatteringWaveHeight: {type: 'f', value: 20.0},
+    patchDataSize: {type: 'f', value: 1024.0}
   },
 
   fragmentShader: function(causticsEnabled, foamEnabled){

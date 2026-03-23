@@ -22,6 +22,7 @@ def main():
     'ocean-system/materials/fft-waves/butterfly-pass.js',\
     'ocean-system/materials/fft-waves/amplitude-filter.js',\
     'ocean-system/materials/fft-waves/wave-composer.js',\
+    'ocean-system/materials/fft-waves/wave-normal-composer.js',\
     'ocean-system/materials/fft-waves/wave-height.js',\
     'ocean-system/materials/ocean-material/position-pass.js',\
     'ocean-system/luts/ocean-height-band-library.js',\

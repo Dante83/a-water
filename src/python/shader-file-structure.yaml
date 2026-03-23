@@ -32,6 +32,10 @@ groups:
         template: 'wave-composer-template.txt'
         material: 'wave-composer.js'
       -
+        fragment: 'wave-normal-composer.glsl'
+        template: 'wave-normal-composer-template.txt'
+        material: 'wave-normal-composer.js'
+      -
         fragment: 'wave-height.glsl'
         template: 'wave-height-template.txt'
         material: 'wave-height.js'

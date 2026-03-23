@@ -11,6 +11,7 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
   this.parentOceanGrid = parentOceanGrid;
   this.combinedWaveHeights;
   this.displacementMap;
+  this.normalMap;
 
   //Make a shortcut to our materials namespace
   const materials = AWater.AOcean.Materials.FFTWaves;
@@ -44,6 +45,34 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
   }
   this.waveHeightComposerRenderer.compute();
 
+  //Initialize the normal map composer - computes normals from displacement via central differences
+  this.waveNormalComposerRenderer = new THREE.GPUComputationRenderer(this.baseTextureWidth, this.baseTextureHeight, this.renderer);
+  this.waveNormalComposerTexture = this.waveNormalComposerRenderer.createTexture();
+  this.waveNormalComposerVar = this.waveNormalComposerRenderer.addVariable(
+    'waveNormalTexture',
+    materials.waveNormalComposerShaderMaterial.fragmentShader(),
+    this.waveNormalComposerTexture
+  );
+  let wncVar = this.waveNormalComposerVar;
+  wncVar.minFilter = THREE.LinearFilter;
+  wncVar.magFilter = THREE.LinearFilter;
+  wncVar.format = THREE.RGBAFormat;
+  wncVar.type = THREE.FloatType;
+  wncVar.wrapS = THREE.RepeatWrapping;
+  wncVar.wrapT = THREE.RepeatWrapping;
+  wncVar.needsUpdate = true;
+  this.waveNormalComposerRenderer.setVariableDependencies(wncVar, []);
+  wncVar.material.uniforms = {
+    displacementTexture: {type: 't', value: null},
+    texelSize: {type: 'f', value: 1.0 / this.baseTextureWidth},
+    patchSize: {type: 'f', value: parentOceanGrid.patchSize}
+  };
+
+  let error6 = this.waveNormalComposerRenderer.init();
+  if(error6 !== null){
+    console.error(`Wave Normal Composer Renderer: ${error6}`);
+  }
+
   let self = this;
   this.tick = function(){
     //Update our uniforms
@@ -54,5 +83,10 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
     }
     self.waveHeightComposerRenderer.compute();
     this.displacementMap = self.waveHeightComposerRenderer.getCurrentRenderTarget(self.waveHeightComposerVar).texture;
+
+    //Compute normals from the displacement map
+    self.waveNormalComposerVar.material.uniforms.displacementTexture.value = this.displacementMap;
+    self.waveNormalComposerRenderer.compute();
+    this.normalMap = self.waveNormalComposerRenderer.getCurrentRenderTarget(self.waveNormalComposerVar).texture;
   };
 }

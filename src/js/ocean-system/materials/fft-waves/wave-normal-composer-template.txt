@@ -1,0 +1,15 @@
+AWater.AOcean.Materials.FFTWaves.waveNormalComposerShaderMaterial = {
+  uniforms: {
+    displacementTexture: {type: 't', value: null},
+    texelSize: {type: 'f', value: 1.0 / 512.0},
+    patchSize: {type: 'f', value: 256.0}
+  },
+
+  fragmentShader: function(){
+    let originalGLSL = [
+      {fragment_glsl}
+    ];
+
+    return originalGLSL.join('\n');
+  }
+};

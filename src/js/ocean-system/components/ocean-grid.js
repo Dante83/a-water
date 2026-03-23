@@ -50,6 +50,8 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
   this.brightestDirectionalLight = false;
 
+  let self = this;
+
   //Make sure the magnitude of the wind velocity is greater then 0.01, otherwise
   //set it to this to avoid data errors.
   this.windVelocity.x = Math.abs(this.data.wind_velocity.x) < 0.01 ? 0.01 : this.windVelocity.x;
@@ -182,25 +184,35 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     this.vanishingHeight.push(0.0);
   }
 
-  //Set up our cube camera for reflections and refractions
-  this.reflectionCubeRenderTarget = new THREE.WebGLCubeRenderTarget(1024, {});
-  this.reflectionCubeCamera = new THREE.CubeCamera(0.1, 10000.0, this.reflectionCubeRenderTarget);
-  this.scene.add(this.reflectionCubeCamera);
+  //Set up planar reflection render target and mirrored camera
+  let rendererSize = new THREE.Vector2();
+  this.renderer.getDrawingBufferSize(rendererSize);
+  this.reflectionRenderTarget = new THREE.WebGLRenderTarget(
+    rendererSize.x, rendererSize.y,
+    {
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      format: THREE.RGBAFormat,
+      type: THREE.HalfFloatType
+    }
+  );
+  this.reflectionCamera = new THREE.PerspectiveCamera();
 
-  this.refractionCubeRenderTarget = new THREE.WebGLCubeRenderTarget(1024, {
-    mapping: THREE.CubeRefractionMapping
-  });
-  this.refractionCubeRenderTarget.needsUpdate = true;
-  this.refractionCubeCamera = new THREE.CubeCamera(0.1, 10000.0, this.refractionCubeRenderTarget);
-  this.scene.add(this.refractionCubeCamera);
-
-  //Set up another cube camera for depth
-  this.depthCubeMapRenderTarget = new THREE.WebGLCubeRenderTarget(1024, {
-    mapping: THREE.CubeRefractionMapping,
-    type: THREE.FloatType
-  });
-  this.depthCubeCamera = new THREE.CubeCamera(0.1, 10000.0, this.depthCubeMapRenderTarget);
-  this.scene.add(this.depthCubeCamera);
+  //Set up screen-space refraction render target
+  this.refractionColorTarget = new THREE.WebGLRenderTarget(
+    rendererSize.x, rendererSize.y,
+    {
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      format: THREE.RGBAFormat,
+      type: THREE.HalfFloatType,
+      depthTexture: new THREE.DepthTexture(
+        rendererSize.x, rendererSize.y,
+        THREE.UnsignedIntType
+      )
+    }
+  );
+  this.refractionColorTarget.depthTexture.format = THREE.DepthFormat;
 
   //Set up depth camera pointing down for edge foam
   this.foamRenderTarget = new THREE.WebGLRenderTarget(4096, 4096, {
@@ -241,7 +253,6 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.oceanMaterial.uniforms = AWater.AOcean.Materials.Ocean.waterMaterial.uniforms;
   this.oceanMaterial.uniforms.sizeOfOceanPatch.value = this.patchSize;
 
-  let self = this;
   this.positionPassMaterial = new THREE.ShaderMaterial({
     vertexShader: AWater.AOcean.Materials.Ocean.positionPassMaterial.vertexShader,
     fragmentShader: AWater.AOcean.Materials.Ocean.positionPassMaterial.fragmentShader,
@@ -364,6 +375,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           uniformsRef.largeNormalMapStrength.value = this.data.large_normal_map_strength;
           uniformsRef.linearScatteringHeightOffset.value = this.data.linear_scattering_height_offset;
           uniformsRef.linearScatteringTotalScatteringWaveHeight.value = this.data.linear_scattering_total_wave_height;
+          uniformsRef.patchDataSize.value = this.data.patch_data_size;
         }
         const instanceIteration = instanceIterations[instanceCountID];
         this.oceanPatches.push(new AWater.AOcean.OceanPatch(this, new THREE.Vector3(xCoord, this.heightOffset, yCoord), oceanPatchGeometryInstances[instanceCountID], instanceIteration));
@@ -380,6 +392,8 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     oceanPatchTranslationMatrices.push(new THREE.Matrix4());
   }
   const directionalLightDirection = new THREE.Vector3();
+  const reflectionVPMatrix = new THREE.Matrix4();
+  const cameraWorldDirection = new THREE.Vector3();
   this.tick = function(time){
     //Update the brightest directional light if we don't have one
     if(this.brightestDirectionalLight === false){
@@ -400,6 +414,17 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     }
     const sceneCamera = self.camera;
     sceneCamera.getWorldPosition(self.globalCameraPosition);
+
+    //Ensure render targets match current drawing buffer size (A-Frame may resize after construction)
+    self.renderer.getDrawingBufferSize(rendererSize);
+    if(self.reflectionRenderTarget.width !== rendererSize.x || self.reflectionRenderTarget.height !== rendererSize.y){
+      self.reflectionRenderTarget.setSize(rendererSize.x, rendererSize.y);
+      self.refractionColorTarget.setSize(rendererSize.x, rendererSize.y);
+      self.refractionColorTarget.depthTexture = new THREE.DepthTexture(
+        rendererSize.x, rendererSize.y, THREE.UnsignedIntType
+      );
+      self.refractionColorTarget.depthTexture.format = THREE.DepthFormat;
+    }
 
     //Update the state of our ocean grid
     self.time = time;
@@ -426,22 +451,47 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].visible = false;
     }
 
-    //Snap a cubemap picture of our environment to create reflections and refractions
-    self.depthCubeCamera.position.copy(self.globalCameraPosition);
-    self.reflectionCubeCamera.position.copy(self.globalCameraPosition);
-    self.reflectionCubeCamera.position.y = 0.0;
-    self.refractionCubeCamera.position.copy(self.globalCameraPosition);
+    //Planar reflection: mirror the camera across the water plane (y = heightOffset)
+    const waterY = self.heightOffset;
+    self.reflectionCamera.copy(sceneCamera);
+    self.reflectionCamera.position.copy(self.globalCameraPosition);
+    self.reflectionCamera.position.y = 2.0 * waterY - self.reflectionCamera.position.y;
+
+    //Compute the camera's world-space look target (not local quaternion, which ignores parent transforms)
+    sceneCamera.getWorldDirection(cameraWorldDirection);
+    const cameraTarget = self.globalCameraPosition.clone().add(cameraWorldDirection);
+    const mirroredTarget = new THREE.Vector3(cameraTarget.x, 2.0 * waterY - cameraTarget.y, cameraTarget.z);
+    self.reflectionCamera.up.set(0, -1, 0);
+    self.reflectionCamera.lookAt(mirroredTarget);
+    self.reflectionCamera.updateMatrixWorld(true);
+    self.reflectionCamera.updateProjectionMatrix();
+    //matrixWorldInverse is not updated by updateMatrixWorld, compute it explicitly
+    self.reflectionCamera.matrixWorldInverse.copy(self.reflectionCamera.matrixWorld).invert();
+
+    //Compute the reflection view-projection matrix for correct UV sampling in the shader
+    reflectionVPMatrix.multiplyMatrices(self.reflectionCamera.projectionMatrix, self.reflectionCamera.matrixWorldInverse);
+
     const rendererClippingEnabledBefore = self.renderer.localClippingEnabled;
     const originalGlobalClipPlane = self.renderer.clippingPlanes.length > 0 ? self.renderer.clippingPlanes : [];
-    self.renderer.clippingPlanes = [self.reflectionClipPlane];
-    self.reflectionCubeCamera.update(self.renderer, self.scene);
-    self.renderer.clippingPlanes = [self.refractionClipPlane];
-    self.refractionCubeCamera.update(self.renderer, self.scene);
-    self.scene.overrideMaterial = self.positionPassMaterial;
-    self.depthCubeCamera.update(self.renderer, self.scene);
-    self.renderer.clippingPlanes = originalGlobalClipPlane;
 
-    //Update our sea foam camera
+    //Render reflection with clip plane (only above-water geometry)
+    self.renderer.clippingPlanes = [self.reflectionClipPlane];
+    const currentReflectionRT = self.renderer.getRenderTarget();
+    self.renderer.setRenderTarget(self.reflectionRenderTarget);
+    self.renderer.clear();
+    self.renderer.render(scene, self.reflectionCamera);
+    self.renderer.setRenderTarget(currentReflectionRT);
+
+    //Render scene to screen-space refraction target (no clip plane - depth comparison in shader)
+    self.renderer.clippingPlanes = originalGlobalClipPlane;
+    const currentRefractionRT = self.renderer.getRenderTarget();
+    self.renderer.setRenderTarget(self.refractionColorTarget);
+    self.renderer.clear();
+    self.renderer.render(scene, sceneCamera);
+    self.renderer.setRenderTarget(currentRefractionRT);
+
+    //Update our sea foam camera - use position pass material to output world-space height data
+    self.scene.overrideMaterial = self.positionPassMaterial;
     self.renderer.setClearAlpha(0.0);
     const currentRenderTarget = self.renderer.getRenderTarget();
     self.foamCamera.position.copy(self.globalCameraPosition);
@@ -454,14 +504,14 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     self.renderer.render(scene, self.foamCamera);
     this.foamRenderMap = self.foamRenderTarget.texture;
     self.renderer.setRenderTarget(null);
-
-    //Update our exclusion camera
+    //Update our exclusion camera - also needs position pass material for height data
     self.exclusionCamera.position.copy(self.globalCameraPosition);
     self.exclusionCamera.position.y = this.heightOffset + 100.0;
     self.exclusionCamera.lookAt(self.globalCameraPosition.x, this.heightOffset - 1.0, self.globalCameraPosition.z);
     self.exclusionCamera.updateProjectionMatrix();
     self.renderer.setRenderTarget(self.exclusionRenderTarget);
     self.renderer.clear();
+    self.scene.overrideMaterial = self.positionPassMaterial;
     self.renderer.render(scene, self.exclusionCamera);
     this.exclusionMap = self.exclusionRenderTarget.texture;
     self.renderer.setRenderTarget(null);
@@ -488,12 +538,20 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
       const uniformsRef = oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms;
       uniformsRef.displacementMap.value = self.oceanHeightComposer.displacementMap;
-      uniformsRef.refractionCubeMap.value = self.refractionCubeCamera.renderTarget.texture;
-      uniformsRef.reflectionCubeMap.value = self.reflectionCubeCamera.renderTarget.texture;
-      uniformsRef.depthCubeMap.value = self.depthCubeCamera.renderTarget.texture;
+      uniformsRef.fftNormalMap.value = self.oceanHeightComposer.normalMap;
+      uniformsRef.refractionColorTexture.value = self.refractionColorTarget.texture;
+      uniformsRef.refractionDepthTexture.value = self.refractionColorTarget.depthTexture;
+      uniformsRef.screenResolution.value.set(self.refractionColorTarget.width, self.refractionColorTarget.height);
+      uniformsRef.cameraNearFar.value.set(sceneCamera.near, sceneCamera.far);
+      uniformsRef.inverseProjectionMatrix.value.copy(sceneCamera.projectionMatrixInverse);
+      uniformsRef.inverseViewMatrix.value.copy(sceneCamera.matrixWorld);
+      uniformsRef.reflectionTexture.value = self.reflectionRenderTarget.texture;
+      uniformsRef.reflectionViewProjectionMatrix.value.copy(reflectionVPMatrix);
       uniformsRef.smallNormalMap.value = self.smallNormalMap;
       uniformsRef.largeNormalMap.value = self.largeNormalMap;
       uniformsRef.causticMap.value = self.causticMap;
+      uniformsRef.causticIntensityMultiplier.value = self.causticsStrength;
+      uniformsRef.foamStartLevel.value = self.foamStart;
       uniformsRef.foamDiffuseMap.value = self.foamColorMap;
       uniformsRef.foamOpacityMap.value = self.foamOpacityMap;
       uniformsRef.foamNormalMap.value = self.foamNormalMap;
