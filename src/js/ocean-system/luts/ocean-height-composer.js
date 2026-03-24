@@ -38,6 +38,7 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
 
   //Set our uniforms
   whcVar.material.uniforms.N.value = this.N;
+  whcVar.material.uniforms.waveHeightMultiplier.value = data.wave_scale_multiple;
 
   let error5 = this.waveHeightComposerRenderer.init();
   if(error5 !== null){
@@ -60,6 +61,7 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
   wncVar.type = THREE.FloatType;
   wncVar.wrapS = THREE.RepeatWrapping;
   wncVar.wrapT = THREE.RepeatWrapping;
+  wncVar.generateMipmaps = true;
   wncVar.needsUpdate = true;
   this.waveNormalComposerRenderer.setVariableDependencies(wncVar, []);
   wncVar.material.uniforms = {

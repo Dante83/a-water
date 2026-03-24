@@ -28,12 +28,13 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.foamRenderMap;
   this.exclusionMap;
   this.windVelocity = data.wind_velocity;
+  //Clip planes with small bias to prevent waterline artifacts
   this.reflectionClipPlane = new THREE.Plane();
-  this.reflectionClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, this.heightOffset * 2.0, 0));
+  this.reflectionClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, this.heightOffset + 0.5, 0));
   this.refractionClipPlane = new THREE.Plane();
-  this.refractionClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, -1, 0), new THREE.Vector3(0, this.heightOffset * 2.0, 0));
+  this.refractionClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, -1, 0), new THREE.Vector3(0, this.heightOffset, 0));
   this.foamClipPlane = new THREE.Plane();
-  this.foamClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, -1, 0), new THREE.Vector3(0, this.heightOffset * 2.0 + 1.0, 0));
+  this.foamClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, -1, 0), new THREE.Vector3(0, this.heightOffset + 1.0, 0));
   const randomAngle1 = Math.random() * 2.0 * Math.PI;
   const randomAngle2 = Math.random() * 2.0 * Math.PI;
   this.randomWindVelocities = [
@@ -467,6 +468,24 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     self.reflectionCamera.updateProjectionMatrix();
     //matrixWorldInverse is not updated by updateMatrixWorld, compute it explicitly
     self.reflectionCamera.matrixWorldInverse.copy(self.reflectionCamera.matrixWorld).invert();
+
+    //Modify projection matrix with oblique clip plane so near plane aligns with water surface
+    //This prevents artifacts from geometry between the camera and the water plane
+    const clipPlaneView = new THREE.Vector4();
+    const reflClipPlane = self.reflectionClipPlane;
+    clipPlaneView.set(reflClipPlane.normal.x, reflClipPlane.normal.y, reflClipPlane.normal.z, reflClipPlane.constant);
+    clipPlaneView.applyMatrix4(self.reflectionCamera.matrixWorldInverse.clone().transpose().invert());
+    const projMatrix = self.reflectionCamera.projectionMatrix;
+    const q = new THREE.Vector4();
+    q.x = (Math.sign(clipPlaneView.x) + projMatrix.elements[8]) / projMatrix.elements[0];
+    q.y = (Math.sign(clipPlaneView.y) + projMatrix.elements[9]) / projMatrix.elements[5];
+    q.z = -1.0;
+    q.w = (1.0 + projMatrix.elements[10]) / projMatrix.elements[14];
+    const c = clipPlaneView.multiplyScalar(2.0 / clipPlaneView.dot(q));
+    projMatrix.elements[2] = c.x;
+    projMatrix.elements[6] = c.y;
+    projMatrix.elements[10] = c.z + 1.0;
+    projMatrix.elements[14] = c.w;
 
     //Compute the reflection view-projection matrix for correct UV sampling in the shader
     reflectionVPMatrix.multiplyMatrices(self.reflectionCamera.projectionMatrix, self.reflectionCamera.matrixWorldInverse);

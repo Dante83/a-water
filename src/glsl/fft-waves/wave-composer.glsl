@@ -4,6 +4,7 @@ uniform sampler2D xWavetextures[$total_offsets];
 uniform sampler2D yWavetextures[$total_offsets];
 uniform sampler2D zWavetextures[$total_offsets];
 uniform float N;
+uniform float waveHeightMultiplier;
 
 float fModulo1(float a){
   return (a - floor(a));
@@ -23,5 +24,5 @@ void main(){
 
   $unrolled_wave_composer
 
-  gl_FragColor = vec4(combinedWaveHeight / ($total_offsets_float * N * N), 1.0);
+  gl_FragColor = vec4(waveHeightMultiplier * combinedWaveHeight / ($total_offsets_float * N * N), 1.0);
 }

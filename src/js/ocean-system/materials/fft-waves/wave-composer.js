@@ -7,7 +7,8 @@ AWater.AOcean.Materials.FFTWaves.waveComposerShaderMaterial = {
       xWavetextures: {value: new Array(numberOfWaveComponents)},
       yWavetextures: {value: new Array(numberOfWaveComponents)},
       zWavetextures: {value: new Array(numberOfWaveComponents)},
-      N: {type: 'f', value: 0.0}
+      N: {type: 'f', value: 0.0},
+      waveHeightMultiplier: {type: 'f', value: 1.0}
     };
   },
 
@@ -19,6 +20,7 @@ AWater.AOcean.Materials.FFTWaves.waveComposerShaderMaterial = {
     'uniform sampler2D yWavetextures[$total_offsets];',
     'uniform sampler2D zWavetextures[$total_offsets];',
     'uniform float N;',
+    'uniform float waveHeightMultiplier;',
 
     'float fModulo1(float a){',
       'return (a - floor(a));',
@@ -38,7 +40,7 @@ AWater.AOcean.Materials.FFTWaves.waveComposerShaderMaterial = {
 
       '$unrolled_wave_composer',
 
-      'gl_FragColor = vec4(combinedWaveHeight / ($total_offsets_float * N * N), 1.0);',
+      'gl_FragColor = vec4(waveHeightMultiplier * combinedWaveHeight / ($total_offsets_float * N * N), 1.0);',
     '}',
     ];
 

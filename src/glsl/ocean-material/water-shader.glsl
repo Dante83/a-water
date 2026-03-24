@@ -167,11 +167,12 @@ void main(){
   float LOD = pow(2.0, clamp(7.0 - (distanceToWorldPosition / (sizeOfOceanPatch * 7.0)), 2.0, 7.0));
 
   //Sample the pre-computed FFT normal map (computed via central differences on displacement in a GPU pass)
-  float displacementFadeout = clamp((2500.0 - distanceToWorldPosition) / 2500.0, 0.0, 1.0);
+  //Fade normal detail proportional to mesh LOD to avoid grainy aliasing
+  float normalLodFactor = clamp(1.0 - distanceToWorldPosition / (sizeOfOceanPatch * 7.0), 0.0, 1.0);
+  float normalDetailFade = mix(0.15, 1.0, normalLodFactor * normalLodFactor);
   vec4 fftNormalSample = texture2D(fftNormalMap, uvOffset);
   vec3 displacedNormal = fftNormalSample.xyz * 2.0 - 1.0;
-  //Blend toward flat normal (0,1,0) at distance
-  displacedNormal = normalize(mix(vec3(0.0, 1.0, 0.0), displacedNormal, displacementFadeout));
+  displacedNormal = normalize(mix(vec3(0.0, 1.0, 0.0), displacedNormal, normalDetailFade));
   //The FFT normal is in object space (x, y, z) - swizzle to match expected xzy convention
   displacedNormal = displacedNormal.xzy;
 
@@ -268,7 +269,8 @@ void main(){
   vec3 percentOfSourceLight = clamp(exp(-2.25 * distanceToPoint / (lightScatteringAmounts)), 0.0, 1.0);
   refractedLight = sRGBToLinear(vec4(refractedLight, 1.0)).rgb;
   //Increasing brightness with height inspired by, https://80.lv/articles/tutorial-ocean-shader-with-gerstner-waves/
-  vec3 normalizedLightIntensity = normalize(brightestDirectionalLight);
+  float lightMag = length(brightestDirectionalLight);
+  vec3 normalizedLightIntensity = lightMag > 0.001 ? brightestDirectionalLight / lightMag : vec3(0.0);
   vec3 inscatterLight = pow(max(height, 0.0) * length(vec3(1.0) - percentOfSourceLight) * pow(normalizedTransmittancePercentColor, vec3(2.5)) * normalizedLightIntensity, gamma);
 
   //Apply Schlick's approximation for the fresnel amount
