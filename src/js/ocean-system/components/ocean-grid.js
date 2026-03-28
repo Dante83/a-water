@@ -403,7 +403,9 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           const uniformsRef = oceanPatchGeometryInstances[instanceCountID].material.uniforms;
           uniformsRef.smallNormalMapVelocity.value.set(this.randomWindVelocities[0], this.randomWindVelocities[1]);
           uniformsRef.largeNormalMapVelocity.value.set(this.randomWindVelocities[2], this.randomWindVelocities[3]);
-          uniformsRef.lightScatteringAmounts.value.copy(this.data.light_scattering_amounts);
+          uniformsRef.waterAbsorption.value.copy(this.data.water_absorption);
+          uniformsRef.waterScattering.value.copy(this.data.water_scattering);
+          uniformsRef.waterMieG.value = this.data.water_mie_g;
           uniformsRef.smallNormalMapStrength.value = this.data.small_normal_map_strength;
           uniformsRef.largeNormalMapStrength.value = this.data.large_normal_map_strength;
           uniformsRef.linearScatteringHeightOffset.value = this.data.linear_scattering_height_offset;
