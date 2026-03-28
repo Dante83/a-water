@@ -57,7 +57,30 @@ uniform float t;
 uniform float patchDataSize;
 
 //Fog variables
-#include <fog_pars_fragment>
+#if(!$atmospheric_perspective_enabled)
+  #include <fog_pars_fragment>
+#endif
+
+#if($atmospheric_perspective_enabled)
+  precision highp sampler3D;
+  uniform sampler2D atmosphereTransmittance;
+  uniform sampler3D atmosphereMieInscattering;
+  uniform sampler3D atmosphereRayleighInscattering;
+  uniform vec3 atmSunPosition;
+  uniform vec3 atmMoonPosition;
+  uniform float atmSunHorizonFade;
+  uniform float atmMoonHorizonFade;
+  uniform float atmScatteringSunIntensity;
+  uniform float atmScatteringMoonIntensity;
+  uniform vec3 atmMoonLightColor;
+  uniform float atmCameraHeight;
+  uniform float atmDistanceScale;
+
+  //ATMOSPHERE_FUNCTIONS_INJECTION_POINT
+#endif
+
+uniform sampler2D blueNoiseTexture;
+uniform float blueNoiseTime;
 
 
 //R0 For Schlick's Approximation
@@ -76,9 +99,12 @@ float linearizeDepth(float depthSample){
   return near * far / (far - depthSample * (far - near));
 }
 
-vec4 sRGBToLinear( in vec4 value ) {
-	return vec4( mix( pow( value.rgb * 0.9478672986 + vec3( 0.0521327014 ), vec3( 2.4 ) ), value.rgb * 0.0773993808, vec3( lessThanEqual( value.rgb, vec3( 0.04045 ) ) ) ), value.a );
-}
+#if(!$atmospheric_perspective_enabled)
+  //When atmospheric perspective is enabled, sRGBToLinear is provided by the injected atmosphere functions
+  vec4 sRGBToLinear( in vec4 value ) {
+  	return vec4( mix( pow( value.rgb * 0.9478672986 + vec3( 0.0521327014 ), vec3( 2.4 ) ), value.rgb * 0.0773993808, vec3( lessThanEqual( value.rgb, vec3( 0.04045 ) ) ) ), value.a );
+  }
+#endif
 
 vec4 linearTosRGB(vec4 value ) {
   return vec4( mix( pow( value.rgb, vec3( 0.41666 ) ) * 1.055 - vec3( 0.055 ), value.rgb * 12.92, vec3( lessThanEqual( value.rgb, vec3( 0.0031308 ) ) ) ), value.a );
@@ -140,6 +166,53 @@ SOFTWARE.
 */
 #if($foam_enabled)
   //Foam amount is now pre-computed in the FFT normal map alpha channel
+#endif
+
+#if($atmospheric_perspective_enabled)
+  //Atmospheric perspective for ground-level surfaces.
+  //Uses distance-based extinction with LUT-sampled multi-scattered inscattering.
+  //At the same height: S(A->B) = S(A->inf) * (1 - T(A->B))
+  vec3 applyAtmosphericPerspective(vec3 color, vec3 worldPos){
+    vec3 worldViewDir = normalize(worldPos - cameraPosition);
+    //Convert view direction from THREE.js world space to a-starry-sky's coordinate
+    //system. Sun world direction = (-sp.z, sp.y, -sp.x) from quadOffset, so the
+    //inverse transform from world to sky coords is: skyDir = (-world.z, world.y, -world.x)
+    vec3 viewDir = vec3(-worldViewDir.z, worldViewDir.y, -worldViewDir.x);
+    float dist = length(worldPos - cameraPosition) * METERS_TO_KM * atmDistanceScale;
+
+    //Distance-based extinction along the camera-to-surface path
+    vec3 extinction = exp(-(RAYLEIGH_BETA + EARTH_MIE_BETA_EXTINCTION) * dist);
+
+    //Attenuate surface color
+    color *= extinction;
+
+    //LUT coordinates for inscattering lookup
+    float viewCosZenith = max(viewDir.y, 0.0);
+    float xParam = parameterizationOfCosOfViewZenithToX(viewCosZenith);
+    float yHeight = parameterizationOfHeightToY(RADIUS_OF_EARTH + atmCameraHeight);
+
+    //Sun inscattering from 3D LUTs
+    float zSun = parameterizationOfCosOfSourceZenithToZ(max(atmSunPosition.y, 0.0));
+    vec3 uv3Sun = vec3(xParam, yHeight, zSun);
+    vec3 mieSun = texture(atmosphereMieInscattering, uv3Sun).rgb;
+    vec3 raySun = texture(atmosphereRayleighInscattering, uv3Sun).rgb;
+    float cosViewSun = dot(viewDir, atmSunPosition);
+    vec3 fogSun = pow(atmSunHorizonFade, 3.0) * atmScatteringSunIntensity
+                * (miePhaseFunction(cosViewSun) * mieSun + rayleighPhaseFunction(cosViewSun) * raySun)
+                * (1.0 - extinction);
+
+    //Moon inscattering from 3D LUTs
+    float zMoon = parameterizationOfCosOfSourceZenithToZ(max(atmMoonPosition.y, 0.0));
+    vec3 uv3Moon = vec3(xParam, yHeight, zMoon);
+    vec3 mieMoon = texture(atmosphereMieInscattering, uv3Moon).rgb;
+    vec3 rayMoon = texture(atmosphereRayleighInscattering, uv3Moon).rgb;
+    float cosViewMoon = dot(viewDir, atmMoonPosition);
+    vec3 fogMoon = pow(atmMoonHorizonFade, 3.0) * atmScatteringMoonIntensity * atmMoonLightColor
+                 * (miePhaseFunction(cosViewMoon) * mieMoon + rayleighPhaseFunction(cosViewMoon) * rayMoon)
+                 * (1.0 - extinction);
+
+    return color + fogSun + fogMoon;
+  }
 #endif
 
 void main(){
@@ -226,7 +299,13 @@ void main(){
   vec2 reflectionUV = reflectionClipPos.xy / reflectionClipPos.w * 0.5 + 0.5;
   reflectionUV += combinedNormalMap.xz * 0.02; //Distort by surface normal
   reflectionUV = clamp(reflectionUV, 0.001, 0.999);
-  vec3 reflectedLight = texture2D(reflectionTexture, reflectionUV).rgb; //Reflection
+  vec3 reflectedLight = texture2D(reflectionTexture, reflectionUV).rgb;
+  //At the horizon the reflection projection degenerates and samples black.
+  //Detect near-black reflection samples and replace with a sky-area sample
+  //from the reflection texture to avoid a dark seam at the horizon.
+  float reflBrightness = dot(reflectedLight, vec3(0.299, 0.587, 0.114));
+  vec3 horizonFallback = texture2D(reflectionTexture, vec2(0.5, 0.85)).rgb;
+  reflectedLight = mix(reflectedLight, horizonFallback, 1.0 - smoothstep(0.0, 0.005, reflBrightness));
 
   //Screen-space refraction
   //Distort UVs based on the surface normal to simulate refraction
@@ -306,7 +385,22 @@ void main(){
     totalLight = mix(totalLight, 2.0 * directionalSurfaceLighting * foamLight, (foamOpacity * foamAmount));
   #endif
 
+  #if($atmospheric_perspective_enabled)
+    totalLight = applyAtmosphericPerspective(totalLight, worldPosition.xyz);
+  #endif
+
   gl_FragColor = linearTosRGB(vec4(MyAESFilmicToneMapping(totalLight), 1.0));
 
-  #include <fog_fragment>
+  //Blue noise dithering to break banding (same technique as a-starry-sky)
+  float goldenRatio = 1.61803398875;
+  float framePhase = fract(blueNoiseTime * 0.001);
+  ivec2 temporalOffset = ivec2(
+    128.0 * fract(framePhase * goldenRatio),
+    128.0 * fract(framePhase * goldenRatio * goldenRatio)
+  );
+  gl_FragColor.rgb += (texelFetch(blueNoiseTexture, (ivec2(gl_FragCoord.xy) + temporalOffset) % 128, 0).rgb - vec3(0.5)) / vec3(128.0);
+
+  #if(!$atmospheric_perspective_enabled)
+    #include <fog_fragment>
+  #endif
 }

@@ -17,7 +17,9 @@ uniform sampler2D displacementMap;
 uniform float linearScatteringHeightOffset;
 uniform float linearScatteringTotalScatteringWaveHeight;
 
-#include <fog_pars_vertex>
+#if(!$atmospheric_perspective_enabled)
+  #include <fog_pars_vertex>
+#endif
 
 vec2 vec2Modulo(vec2 inputUV){
     return (inputUV - floor(inputUV));
@@ -86,7 +88,9 @@ void main() {
   vNormalMatrix = normalMatrix;
 
   //Add support for three.js fog
-  #include <fog_vertex>
+  #if(!$atmospheric_perspective_enabled)
+    #include <fog_vertex>
+  #endif
 
   gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);
 }

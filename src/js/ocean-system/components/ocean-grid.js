@@ -28,6 +28,10 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.foamRenderMap;
   this.exclusionMap;
   this.windVelocity = data.wind_velocity;
+  this.atmosphericPerspectiveEnabled = data.atmospheric_perspective_enabled;
+  this.atmosphericPerspectiveDistanceScale = data.atmospheric_perspective_distance_scale;
+  this.skyDirector = null;
+  this.atmosphereFunctionsGLSL = null;
   //Clip planes with small bias to prevent waterline artifacts
   this.reflectionClipPlane = new THREE.Plane();
   this.reflectionClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, this.heightOffset + 0.5, 0));
@@ -236,21 +240,49 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.oceanHeightBandLibrary = new AWater.AOcean.LUTlibraries.OceanHeightBandLibrary(this);
   this.oceanHeightComposer = new AWater.AOcean.LUTlibraries.OceanHeightComposer(this);
 
+  //Discover a-starry-sky's SkyDirector for atmospheric perspective LUTs
+  if(this.atmosphericPerspectiveEnabled){
+    //Try the global reference first, then fall back to DOM query
+    if(typeof StarrySky !== 'undefined' && StarrySky.skyDirectorRef){
+      this.skyDirector = StarrySky.skyDirectorRef;
+    }
+    else{
+      const skyEl = document.querySelector('a-starry-sky');
+      if(skyEl && skyEl.components && skyEl.components.starryskywrapper){
+        this.skyDirector = skyEl.components.starryskywrapper.skyDirector;
+      }
+    }
+    if(this.skyDirector){
+      const luts = this.skyDirector.getAtmosphericLUTs();
+      if(luts){
+        this.atmosphereFunctionsGLSL = luts.atmosphereFunctionsString;
+      }
+    }
+  }
+
   //Set up our ocean material that is used for all of our ocean patches
+  //If atmospheric perspective is requested but sky isn't ready yet, start with it disabled
+  //and recompile when the sky becomes available
+  const atmosphereReady = this.atmosphericPerspectiveEnabled && this.atmosphereFunctionsGLSL;
+  const useFog = !atmosphereReady;
+  let vertexShaderSource = AWater.AOcean.Materials.Ocean.waterMaterial.vertexShader;
+  vertexShaderSource = vertexShaderSource.replace(/\$atmospheric_perspective_enabled/g, atmosphereReady ? '1' : '0');
   this.oceanMaterial = new THREE.ShaderMaterial({
-    vertexShader: AWater.AOcean.Materials.Ocean.waterMaterial.vertexShader,
-    fragmentShader: AWater.AOcean.Materials.Ocean.waterMaterial.fragmentShader(this.causticsEnabled, this.foamEnabled),
+    vertexShader: vertexShaderSource,
+    fragmentShader: AWater.AOcean.Materials.Ocean.waterMaterial.fragmentShader(this.causticsEnabled, this.foamEnabled, atmosphereReady, this.atmosphereFunctionsGLSL),
     side: THREE.FrontSide,
     transparent: false,
     lights: false,
-    fog: true
+    fog: useFog
   });
-  this.oceanMaterial.onBeforeCompile = shader => {
-    shader.vertexShader = shader.vertexShader.replace('#include <fog_pars_vertex>', THREE.fogParsVert);
-    shader.vertexShader = shader.vertexShader.replace(`#include <fog_vertex>`, THREE.fogVert);
-    shader.fragmentShader = shader.fragmentShader.replace(`#include <fog_pars_fragment>`, THREE.fogParsFrag);
-    shader.fragmentShader = shader.fragmentShader.replace(`#include <fog_fragment>`, THREE.fogFrag);
-  };
+  if(useFog){
+    this.oceanMaterial.onBeforeCompile = shader => {
+      shader.vertexShader = shader.vertexShader.replace('#include <fog_pars_vertex>', THREE.fogParsVert);
+      shader.vertexShader = shader.vertexShader.replace(`#include <fog_vertex>`, THREE.fogVert);
+      shader.fragmentShader = shader.fragmentShader.replace(`#include <fog_pars_fragment>`, THREE.fogParsFrag);
+      shader.fragmentShader = shader.fragmentShader.replace(`#include <fog_fragment>`, THREE.fogFrag);
+    };
+  }
   this.oceanMaterial.uniforms = AWater.AOcean.Materials.Ocean.waterMaterial.uniforms;
   this.oceanMaterial.uniforms.sizeOfOceanPatch.value = this.patchSize;
 
@@ -590,6 +622,54 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         uniformsRef.brightestDirectionalLight.value.set(1.0,1.0,1.0);
       }
       uniformsRef.t.value = time * 0.001;
+
+      //Sync atmospheric perspective uniforms from a-starry-sky
+      if(self.atmosphericPerspectiveEnabled && self.skyDirector){
+        const luts = self.skyDirector.getAtmosphericLUTs();
+        if(luts){
+          //If we haven't recompiled with atmospheric perspective yet, do it now
+          if(!self.atmosphereFunctionsGLSL){
+            self.atmosphereFunctionsGLSL = luts.atmosphereFunctionsString;
+            //Recompile all cloned materials on each ocean patch instance
+            const newFragShader = AWater.AOcean.Materials.Ocean.waterMaterial.fragmentShader(
+              self.causticsEnabled, self.foamEnabled, true, self.atmosphereFunctionsGLSL
+            );
+            let newVtxSrc = AWater.AOcean.Materials.Ocean.waterMaterial.vertexShader;
+            newVtxSrc = newVtxSrc.replace(/\$atmospheric_perspective_enabled/g, '1');
+            for(let j = 0; j < oceanGridInstanceKeys.length; ++j){
+              const mesh = oceanPatchGeometryInstances[oceanGridInstanceKeys[j]];
+              mesh.material.vertexShader = newVtxSrc;
+              mesh.material.fragmentShader = newFragShader;
+              mesh.material.fog = false;
+              mesh.material.needsUpdate = true;
+            }
+            //Also update the source material for any future clones
+            self.oceanMaterial.vertexShader = newVtxSrc;
+            self.oceanMaterial.fragmentShader = newFragShader;
+            self.oceanMaterial.fog = false;
+            self.oceanMaterial.needsUpdate = true;
+          }
+          const skyState = luts.skyState;
+          uniformsRef.atmosphereTransmittance.value = luts.transmittance;
+          uniformsRef.atmosphereMieInscattering.value = luts.mieInscatteringSum;
+          uniformsRef.atmosphereRayleighInscattering.value = luts.rayleighInscatteringSum;
+          uniformsRef.atmSunPosition.value.copy(skyState.sun.position);
+          uniformsRef.atmMoonPosition.value.copy(skyState.moon.position);
+          uniformsRef.atmSunHorizonFade.value = skyState.sun.horizonFade;
+          uniformsRef.atmMoonHorizonFade.value = skyState.moon.horizonFade;
+          uniformsRef.atmScatteringSunIntensity.value = skyState.sun.intensity * luts.atmosphericParameters.solarIntensity / 1367.0;
+          uniformsRef.atmScatteringMoonIntensity.value = skyState.moon.intensity * luts.atmosphericParameters.lunarMaxIntensity / 29.0;
+          uniformsRef.atmMoonLightColor.value.copy(skyState.moon.lightingModifier);
+          uniformsRef.atmCameraHeight.value = luts.atmosphericParameters.cameraHeight;
+          uniformsRef.atmDistanceScale.value = self.atmosphericPerspectiveDistanceScale;
+          if(luts.blueNoiseTexture){
+            uniformsRef.blueNoiseTexture.value = luts.blueNoiseTexture;
+          }
+        }
+      }
+
+      //Blue noise dithering — always update time, texture comes from sky if available
+      uniformsRef.blueNoiseTime.value = performance.now();
     }
   };
 }

@@ -40,10 +40,24 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     lightScatteringAmounts: {type: 'vec3', value: new THREE.Vector3(88.0, 108.0, 112.0)},
     linearScatteringHeightOffset: {type: 'f', value: 10.0},
     linearScatteringTotalScatteringWaveHeight: {type: 'f', value: 20.0},
-    patchDataSize: {type: 'f', value: 1024.0}
+    patchDataSize: {type: 'f', value: 1024.0},
+    atmosphereTransmittance: {type: 't', value: null},
+    atmosphereMieInscattering: {type: 't', value: null},
+    atmosphereRayleighInscattering: {type: 't', value: null},
+    atmSunPosition: {type: 'vec3', value: new THREE.Vector3(0.0, 1.0, 0.0)},
+    atmMoonPosition: {type: 'vec3', value: new THREE.Vector3(0.0, -1.0, 0.0)},
+    atmSunHorizonFade: {type: 'f', value: 1.0},
+    atmMoonHorizonFade: {type: 'f', value: 0.0},
+    atmScatteringSunIntensity: {type: 'f', value: 1.0},
+    atmScatteringMoonIntensity: {type: 'f', value: 0.0},
+    atmMoonLightColor: {type: 'vec3', value: new THREE.Vector3(1.0, 1.0, 1.0)},
+    atmCameraHeight: {type: 'f', value: 0.0},
+    atmDistanceScale: {type: 'f', value: 1.0},
+    blueNoiseTexture: {type: 't', value: null},
+    blueNoiseTime: {type: 'f', value: 0.0}
   },
 
-  fragmentShader: function(causticsEnabled, foamEnabled){
+  fragmentShader: function(causticsEnabled, foamEnabled, atmosphericPerspectiveEnabled, atmosphereFunctionsGLSL){
     let originalGLSL = [
     'precision highp float;',
 
@@ -104,7 +118,30 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     'uniform float patchDataSize;',
 
     '//Fog variables',
-    '#include <fog_pars_fragment>',
+    '#if(!$atmospheric_perspective_enabled)',
+      '#include <fog_pars_fragment>',
+    '#endif',
+
+    '#if($atmospheric_perspective_enabled)',
+      'precision highp sampler3D;',
+      'uniform sampler2D atmosphereTransmittance;',
+      'uniform sampler3D atmosphereMieInscattering;',
+      'uniform sampler3D atmosphereRayleighInscattering;',
+      'uniform vec3 atmSunPosition;',
+      'uniform vec3 atmMoonPosition;',
+      'uniform float atmSunHorizonFade;',
+      'uniform float atmMoonHorizonFade;',
+      'uniform float atmScatteringSunIntensity;',
+      'uniform float atmScatteringMoonIntensity;',
+      'uniform vec3 atmMoonLightColor;',
+      'uniform float atmCameraHeight;',
+      'uniform float atmDistanceScale;',
+
+      '//ATMOSPHERE_FUNCTIONS_INJECTION_POINT',
+    '#endif',
+
+    'uniform sampler2D blueNoiseTexture;',
+    'uniform float blueNoiseTime;',
 
 
     "//R0 For Schlick's Approximation",
@@ -123,9 +160,12 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       'return near * far / (far - depthSample * (far - near));',
     '}',
 
-    'vec4 sRGBToLinear( in vec4 value ) {',
-    '	return vec4( mix( pow( value.rgb * 0.9478672986 + vec3( 0.0521327014 ), vec3( 2.4 ) ), value.rgb * 0.0773993808, vec3( lessThanEqual( value.rgb, vec3( 0.04045 ) ) ) ), value.a );',
-    '}',
+    '#if(!$atmospheric_perspective_enabled)',
+      '//When atmospheric perspective is enabled, sRGBToLinear is provided by the injected atmosphere functions',
+      'vec4 sRGBToLinear( in vec4 value ) {',
+      '	return vec4( mix( pow( value.rgb * 0.9478672986 + vec3( 0.0521327014 ), vec3( 2.4 ) ), value.rgb * 0.0773993808, vec3( lessThanEqual( value.rgb, vec3( 0.04045 ) ) ) ), value.a );',
+      '}',
+    '#endif',
 
     'vec4 linearTosRGB(vec4 value ) {',
       'return vec4( mix( pow( value.rgb, vec3( 0.41666 ) ) * 1.055 - vec3( 0.055 ), value.rgb * 12.92, vec3( lessThanEqual( value.rgb, vec3( 0.0031308 ) ) ) ), value.a );',
@@ -187,6 +227,53 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     '*/',
     '#if($foam_enabled)',
       '//Foam amount is now pre-computed in the FFT normal map alpha channel',
+    '#endif',
+
+    '#if($atmospheric_perspective_enabled)',
+      '//Atmospheric perspective for ground-level surfaces.',
+      '//Uses distance-based extinction with LUT-sampled multi-scattered inscattering.',
+      '//At the same height: S(A->B) = S(A->inf) * (1 - T(A->B))',
+      'vec3 applyAtmosphericPerspective(vec3 color, vec3 worldPos){',
+        'vec3 worldViewDir = normalize(worldPos - cameraPosition);',
+        "//Convert view direction from THREE.js world space to a-starry-sky's coordinate",
+        '//system. Sun world direction = (-sp.z, sp.y, -sp.x) from quadOffset, so the',
+        '//inverse transform from world to sky coords is: skyDir = (-world.z, world.y, -world.x)',
+        'vec3 viewDir = vec3(-worldViewDir.z, worldViewDir.y, -worldViewDir.x);',
+        'float dist = length(worldPos - cameraPosition) * METERS_TO_KM * atmDistanceScale;',
+
+        '//Distance-based extinction along the camera-to-surface path',
+        'vec3 extinction = exp(-(RAYLEIGH_BETA + EARTH_MIE_BETA_EXTINCTION) * dist);',
+
+        '//Attenuate surface color',
+        'color *= extinction;',
+
+        '//LUT coordinates for inscattering lookup',
+        'float viewCosZenith = max(viewDir.y, 0.0);',
+        'float xParam = parameterizationOfCosOfViewZenithToX(viewCosZenith);',
+        'float yHeight = parameterizationOfHeightToY(RADIUS_OF_EARTH + atmCameraHeight);',
+
+        '//Sun inscattering from 3D LUTs',
+        'float zSun = parameterizationOfCosOfSourceZenithToZ(max(atmSunPosition.y, 0.0));',
+        'vec3 uv3Sun = vec3(xParam, yHeight, zSun);',
+        'vec3 mieSun = texture(atmosphereMieInscattering, uv3Sun).rgb;',
+        'vec3 raySun = texture(atmosphereRayleighInscattering, uv3Sun).rgb;',
+        'float cosViewSun = dot(viewDir, atmSunPosition);',
+        'vec3 fogSun = pow(atmSunHorizonFade, 3.0) * atmScatteringSunIntensity',
+                    '* (miePhaseFunction(cosViewSun) * mieSun + rayleighPhaseFunction(cosViewSun) * raySun)',
+                    '* (1.0 - extinction);',
+
+        '//Moon inscattering from 3D LUTs',
+        'float zMoon = parameterizationOfCosOfSourceZenithToZ(max(atmMoonPosition.y, 0.0));',
+        'vec3 uv3Moon = vec3(xParam, yHeight, zMoon);',
+        'vec3 mieMoon = texture(atmosphereMieInscattering, uv3Moon).rgb;',
+        'vec3 rayMoon = texture(atmosphereRayleighInscattering, uv3Moon).rgb;',
+        'float cosViewMoon = dot(viewDir, atmMoonPosition);',
+        'vec3 fogMoon = pow(atmMoonHorizonFade, 3.0) * atmScatteringMoonIntensity * atmMoonLightColor',
+                     '* (miePhaseFunction(cosViewMoon) * mieMoon + rayleighPhaseFunction(cosViewMoon) * rayMoon)',
+                     '* (1.0 - extinction);',
+
+        'return color + fogSun + fogMoon;',
+      '}',
     '#endif',
 
     'void main(){',
@@ -273,7 +360,13 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       'vec2 reflectionUV = reflectionClipPos.xy / reflectionClipPos.w * 0.5 + 0.5;',
       'reflectionUV += combinedNormalMap.xz * 0.02; //Distort by surface normal',
       'reflectionUV = clamp(reflectionUV, 0.001, 0.999);',
-      'vec3 reflectedLight = texture2D(reflectionTexture, reflectionUV).rgb; //Reflection',
+      'vec3 reflectedLight = texture2D(reflectionTexture, reflectionUV).rgb;',
+      '//At the horizon the reflection projection degenerates and samples black.',
+      '//Detect near-black reflection samples and replace with a sky-area sample',
+      '//from the reflection texture to avoid a dark seam at the horizon.',
+      'float reflBrightness = dot(reflectedLight, vec3(0.299, 0.587, 0.114));',
+      'vec3 horizonFallback = texture2D(reflectionTexture, vec2(0.5, 0.85)).rgb;',
+      'reflectedLight = mix(reflectedLight, horizonFallback, 1.0 - smoothstep(0.0, 0.005, reflBrightness));',
 
       '//Screen-space refraction',
       '//Distort UVs based on the surface normal to simulate refraction',
@@ -353,9 +446,24 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
         'totalLight = mix(totalLight, 2.0 * directionalSurfaceLighting * foamLight, (foamOpacity * foamAmount));',
       '#endif',
 
+      '#if($atmospheric_perspective_enabled)',
+        'totalLight = applyAtmosphericPerspective(totalLight, worldPosition.xyz);',
+      '#endif',
+
       'gl_FragColor = linearTosRGB(vec4(MyAESFilmicToneMapping(totalLight), 1.0));',
 
-      '#include <fog_fragment>',
+      '//Blue noise dithering to break banding (same technique as a-starry-sky)',
+      'float goldenRatio = 1.61803398875;',
+      'float framePhase = fract(blueNoiseTime * 0.001);',
+      'ivec2 temporalOffset = ivec2(',
+        '128.0 * fract(framePhase * goldenRatio),',
+        '128.0 * fract(framePhase * goldenRatio * goldenRatio)',
+      ');',
+      'gl_FragColor.rgb += (texelFetch(blueNoiseTexture, (ivec2(gl_FragCoord.xy) + temporalOffset) % 128, 0).rgb - vec3(0.5)) / vec3(128.0);',
+
+      '#if(!$atmospheric_perspective_enabled)',
+        '#include <fog_fragment>',
+      '#endif',
     '}',
     ];
 
@@ -364,6 +472,11 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       let updatedCode = originalGLSL[i];
       updatedCode = updatedCode.replace(/\$foam_enabled/g, foamEnabled ? '1' : '0');
       updatedCode = updatedCode.replace(/\$caustics_enabled/g, causticsEnabled ? '1' : '0');
+      updatedCode = updatedCode.replace(/\$atmospheric_perspective_enabled/g, atmosphericPerspectiveEnabled ? '1' : '0');
+      //Inject atmosphere parameterization functions where the marker is
+      if(atmosphericPerspectiveEnabled && atmosphereFunctionsGLSL && updatedCode.indexOf('//ATMOSPHERE_FUNCTIONS_INJECTION_POINT') !== -1){
+        updatedCode = atmosphereFunctionsGLSL;
+      }
       updatedLines.push(updatedCode);
     }
 
@@ -390,7 +503,9 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     'uniform float linearScatteringHeightOffset;',
     'uniform float linearScatteringTotalScatteringWaveHeight;',
 
-    '#include <fog_pars_vertex>',
+    '#if(!$atmospheric_perspective_enabled)',
+      '#include <fog_pars_vertex>',
+    '#endif',
 
     'vec2 vec2Modulo(vec2 inputUV){',
         'return (inputUV - floor(inputUV));',
@@ -459,7 +574,9 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       'vNormalMatrix = normalMatrix;',
 
       '//Add support for three.js fog',
-      '#include <fog_vertex>',
+      '#if(!$atmospheric_perspective_enabled)',
+        '#include <fog_vertex>',
+      '#endif',
 
       'gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);',
     '}',

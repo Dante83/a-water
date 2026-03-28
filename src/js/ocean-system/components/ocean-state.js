@@ -25,7 +25,9 @@ AFRAME.registerComponent('ocean-state', {
     'small_normal_map_strength': {type: 'number', default: 0.35},
     'light_scattering_amounts': {type: 'vec3', default: {x: 88.0, y: 108.0, z: 112.0}},
     'linear_scattering_height_offset': {type: 'number', default: 10.0},
-    'linear_scattering_total_wave_height': {type: 'number', default: 20.0}
+    'linear_scattering_total_wave_height': {type: 'number', default: 20.0},
+    'atmospheric_perspective_enabled': {type: 'bool', default: false},
+    'atmospheric_perspective_distance_scale': {type: 'number', default: 1.0}
   },
   init: function(){
     //Get our renderer to pass in

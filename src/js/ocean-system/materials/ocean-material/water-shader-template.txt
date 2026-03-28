@@ -40,10 +40,24 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     lightScatteringAmounts: {type: 'vec3', value: new THREE.Vector3(88.0, 108.0, 112.0)},
     linearScatteringHeightOffset: {type: 'f', value: 10.0},
     linearScatteringTotalScatteringWaveHeight: {type: 'f', value: 20.0},
-    patchDataSize: {type: 'f', value: 1024.0}
+    patchDataSize: {type: 'f', value: 1024.0},
+    atmosphereTransmittance: {type: 't', value: null},
+    atmosphereMieInscattering: {type: 't', value: null},
+    atmosphereRayleighInscattering: {type: 't', value: null},
+    atmSunPosition: {type: 'vec3', value: new THREE.Vector3(0.0, 1.0, 0.0)},
+    atmMoonPosition: {type: 'vec3', value: new THREE.Vector3(0.0, -1.0, 0.0)},
+    atmSunHorizonFade: {type: 'f', value: 1.0},
+    atmMoonHorizonFade: {type: 'f', value: 0.0},
+    atmScatteringSunIntensity: {type: 'f', value: 1.0},
+    atmScatteringMoonIntensity: {type: 'f', value: 0.0},
+    atmMoonLightColor: {type: 'vec3', value: new THREE.Vector3(1.0, 1.0, 1.0)},
+    atmCameraHeight: {type: 'f', value: 0.0},
+    atmDistanceScale: {type: 'f', value: 1.0},
+    blueNoiseTexture: {type: 't', value: null},
+    blueNoiseTime: {type: 'f', value: 0.0}
   },
 
-  fragmentShader: function(causticsEnabled, foamEnabled){
+  fragmentShader: function(causticsEnabled, foamEnabled, atmosphericPerspectiveEnabled, atmosphereFunctionsGLSL){
     let originalGLSL = [
       {fragment_glsl}
     ];
@@ -53,6 +67,11 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       let updatedCode = originalGLSL[i];
       updatedCode = updatedCode.replace(/\$foam_enabled/g, foamEnabled ? '1' : '0');
       updatedCode = updatedCode.replace(/\$caustics_enabled/g, causticsEnabled ? '1' : '0');
+      updatedCode = updatedCode.replace(/\$atmospheric_perspective_enabled/g, atmosphericPerspectiveEnabled ? '1' : '0');
+      //Inject atmosphere parameterization functions where the marker is
+      if(atmosphericPerspectiveEnabled && atmosphereFunctionsGLSL && updatedCode.indexOf('//ATMOSPHERE_FUNCTIONS_INJECTION_POINT') !== -1){
+        updatedCode = atmosphereFunctionsGLSL;
+      }
       updatedLines.push(updatedCode);
     }
 
