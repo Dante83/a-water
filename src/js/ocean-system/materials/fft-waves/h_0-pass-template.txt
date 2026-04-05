@@ -7,7 +7,12 @@ AWater.AOcean.Materials.FFTWaves.h0ShaderMaterialData = {
     L: {type: 'f', value: 1000.0},
     A: {type: 'f', value: 20.0},
     L_: {type: 'f', value: 0.0},
-    w: {type: 'v2', value: new THREE.Vector2(1.0, 0.0)}
+    w: {type: 'v2', value: new THREE.Vector2(1.0, 0.0)},
+    omega_p: {type: 'f', value: 1.0},
+    gamma: {type: 'f', value: 3.3},
+    noiseUVOffset: {type: 'v2', value: new THREE.Vector2(0.0, 0.0)},
+    kMin: {type: 'f', value: 0.0},
+    kMax: {type: 'f', value: 1000000.0}
   },
 
   fragmentShader: [

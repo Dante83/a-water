@@ -178,16 +178,8 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     console.error(err);
   });
 
-  //Determine what our fade out start and end heights are
-  //This is a bit of a hack but we're going to leave it static for now
-  this.numberOfOceanHeightBands = 5;
-  this.beginsFadingOutAtHeight = [];
-  this.vanishingHeight = [];
-  let distanceBetweenBands = 80.0;
-  for(let i = 0; i < this.numberOfOceanHeightBands; ++i){
-    this.beginsFadingOutAtHeight.push(distanceBetweenBands * i);
-    this.vanishingHeight.push(0.0);
-  }
+  //Number of cascades (matches ocean-height-band-library cascade count)
+  this.numberOfOceanHeightBands = 6;
 
   //Set up planar reflection render target and mirrored camera
   let rendererSize = new THREE.Vector2();
@@ -411,6 +403,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           uniformsRef.linearScatteringHeightOffset.value = this.data.linear_scattering_height_offset;
           uniformsRef.linearScatteringTotalScatteringWaveHeight.value = this.data.linear_scattering_total_wave_height;
           uniformsRef.patchDataSize.value = this.data.patch_data_size;
+          uniformsRef.chop.value = this.data.chop;
         }
         const instanceIteration = instanceIterations[instanceCountID];
         this.oceanPatches.push(new AWater.AOcean.OceanPatch(this, new THREE.Vector3(xCoord, this.heightOffset, yCoord), oceanPatchGeometryInstances[instanceCountID], instanceIteration));
@@ -590,8 +583,11 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     }
     for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
       const uniformsRef = oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms;
-      uniformsRef.displacementMap.value = self.oceanHeightComposer.displacementMap;
-      uniformsRef.fftNormalMap.value = self.oceanHeightComposer.normalMap;
+      for(let c = 0; c < 6; c++){
+        uniformsRef.cascadeDisplacementTextures.value[c] = self.oceanHeightComposer.cascadeDisplacementTextures[c];
+      }
+      uniformsRef.cascadePatchSizes.value = self.oceanHeightComposer._cascadePatchSizes;
+      uniformsRef.waveHeightMultiplier.value = self.oceanHeightComposer.waveHeightMultiplier;
       uniformsRef.refractionColorTexture.value = self.refractionColorTarget.texture;
       uniformsRef.refractionDepthTexture.value = self.refractionColorTarget.depthTexture;
       uniformsRef.screenResolution.value.set(self.refractionColorTarget.width, self.refractionColorTarget.height);

@@ -3,92 +3,86 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
   this.renderer = parentOceanGrid.renderer;
   this.baseTextureWidth = data.patch_data_size;
   this.baseTextureHeight = data.patch_data_size;
-  this.outputTextureWidth = this.baseTextureWidth;
-  this.outputTextureHeight = this.baseTextureHeight;
   this.N = data.number_of_octaves;
   this.OceanMaterialHeightBandLibrary = parentOceanGrid.oceanHeightBandLibrary;
-  this.numberOfWaveComponents = parentOceanGrid.numberOfOceanHeightBands;
-  this.parentOceanGrid = parentOceanGrid;
-  this.combinedWaveHeights;
-  this.displacementMap;
-  this.normalMap;
+  this.numCascades = this.OceanMaterialHeightBandLibrary.numCascades;
 
-  //Make a shortcut to our materials namespace
-  const materials = AWater.AOcean.Materials.FFTWaves;
+  // ===== Per-cascade displacement packer =====
+  // Packs each cascade's x/y/z FFT outputs into a single RGB texture.
+  // These are sampled in the vertex/fragment shaders at worldXZ/cascadePatchSize[c]
+  // for seamless tiling across tile boundaries (no fract wrapping per-tile).
+  const packVertShader = [
+    'void main(){',
+    '  gl_Position = vec4(position, 1.0);',
+    '}'
+  ].join('\n');
+  const packFragShader = [
+    'uniform sampler2D xTexture;',
+    'uniform sampler2D yTexture;',
+    'uniform sampler2D zTexture;',
+    'uniform vec2 resolution;',
+    'void main(){',
+    '  vec2 uv = gl_FragCoord.xy / resolution.xy;',
+    '  gl_FragColor = vec4(',
+    '    texture2D(xTexture, uv).x,',
+    '    texture2D(yTexture, uv).x,',
+    '    texture2D(zTexture, uv).x,',
+    '    1.0',
+    '  );',
+    '}'
+  ].join('\n');
 
-  //Initialize our wave height composer renderer
-  this.waveHeightComposerRenderer = new THREE.GPUComputationRenderer(this.baseTextureWidth, this.baseTextureHeight, this.renderer);
-  this.waveFoamRenderer = new THREE.GPUComputationRenderer(this.baseTextureWidth, this.baseTextureHeight, this.renderer);
-  this.waveHeightComposerTexture = this.waveHeightComposerRenderer.createTexture();
-  this.waveHeightComposerVar = this.waveHeightComposerRenderer.addVariable('waveHeightTexture', materials.waveComposerShaderMaterial.fragmentShader(this.numberOfWaveComponents), this.waveHeightComposerTexture);
-  let whcVar = this.waveHeightComposerVar;
-  this.waveHeightComposerVar.material.uniforms.waveHeightMultiplier = data.wave_scale_multiple;
-  this.waveHeightComposerVar.minFilter = THREE.LinearFilter;
-  this.waveHeightComposerVar.magFilter = THREE.LinearFilter;
-  this.waveHeightComposerVar.format = THREE.RGBAFormat;
-  this.waveHeightComposerVar.type = THREE.FloatType;
-  this.waveHeightComposerVar.anisotropy = 4;
-  this.waveHeightComposerVar.samples = 8;
-  this.waveHeightComposerVar.wrapS = THREE.RepeatWrapping;
-  this.waveHeightComposerVar.wrapT = THREE.RepeatWrapping;
-  this.waveHeightComposerVar.generateMipmaps = true;
-  this.waveHeightComposerVar.needsUpdate = true;
-  this.waveHeightComposerRenderer.setVariableDependencies(whcVar, []);//Note: We use manual texture dependency injection here.
-  whcVar.material.uniforms = materials.waveComposerShaderMaterial.uniforms(this.numberOfWaveComponents);
+  const cascadeCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  const cascadeQuadGeo = new THREE.PlaneGeometry(2, 2);
+  this._packMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+      xTexture: {type: 't', value: null},
+      yTexture: {type: 't', value: null},
+      zTexture: {type: 't', value: null},
+      resolution: {type: 'v2', value: new THREE.Vector2(this.baseTextureWidth, this.baseTextureHeight)}
+    },
+    vertexShader: packVertShader,
+    fragmentShader: packFragShader,
+    depthTest: false,
+    depthWrite: false
+  });
+  this._packScene = new THREE.Scene();
+  this._packScene.add(new THREE.Mesh(cascadeQuadGeo, this._packMaterial));
+  this._cascadeCamera = cascadeCamera;
+  this._cascadePatchSizes = this.OceanMaterialHeightBandLibrary.cascadePatchSizes;
+  this.waveHeightMultiplier = data.wave_scale_multiple;
 
-  //Set our uniforms
-  whcVar.material.uniforms.N.value = this.N;
-  whcVar.material.uniforms.waveHeightMultiplier.value = data.wave_scale_multiple;
-
-  let error5 = this.waveHeightComposerRenderer.init();
-  if(error5 !== null){
-    console.error(`Wave Height Composer Renderer: ${error5}`);
-  }
-  this.waveHeightComposerRenderer.compute();
-
-  //Initialize the normal map composer - computes normals from displacement via central differences
-  this.waveNormalComposerRenderer = new THREE.GPUComputationRenderer(this.baseTextureWidth, this.baseTextureHeight, this.renderer);
-  this.waveNormalComposerTexture = this.waveNormalComposerRenderer.createTexture();
-  this.waveNormalComposerVar = this.waveNormalComposerRenderer.addVariable(
-    'waveNormalTexture',
-    materials.waveNormalComposerShaderMaterial.fragmentShader(),
-    this.waveNormalComposerTexture
-  );
-  let wncVar = this.waveNormalComposerVar;
-  wncVar.minFilter = THREE.LinearFilter;
-  wncVar.magFilter = THREE.LinearFilter;
-  wncVar.format = THREE.RGBAFormat;
-  wncVar.type = THREE.FloatType;
-  wncVar.wrapS = THREE.RepeatWrapping;
-  wncVar.wrapT = THREE.RepeatWrapping;
-  wncVar.generateMipmaps = true;
-  wncVar.needsUpdate = true;
-  this.waveNormalComposerRenderer.setVariableDependencies(wncVar, []);
-  wncVar.material.uniforms = {
-    displacementTexture: {type: 't', value: null},
-    texelSize: {type: 'f', value: 1.0 / this.baseTextureWidth},
-    patchSize: {type: 'f', value: parentOceanGrid.patchSize}
+  const cascadeRTOptions = {
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+    wrapS: THREE.RepeatWrapping,
+    wrapT: THREE.RepeatWrapping,
+    format: THREE.RGBAFormat,
+    type: THREE.FloatType,
+    depthBuffer: false,
+    stencilBuffer: false
   };
-
-  let error6 = this.waveNormalComposerRenderer.init();
-  if(error6 !== null){
-    console.error(`Wave Normal Composer Renderer: ${error6}`);
+  this.cascadeDisplacementTargets = [];
+  this.cascadeDisplacementTextures = [];
+  for(let c = 0; c < this.numCascades; c++){
+    const rt = new THREE.WebGLRenderTarget(this.baseTextureWidth, this.baseTextureHeight, cascadeRTOptions);
+    rt.texture.wrapS = THREE.RepeatWrapping;
+    rt.texture.wrapT = THREE.RepeatWrapping;
+    this.cascadeDisplacementTargets.push(rt);
+    this.cascadeDisplacementTextures.push(rt.texture);
   }
 
   let self = this;
   this.tick = function(){
-    //Update our uniforms
-    for(let i = 0; i < this.numberOfWaveComponents; ++i){
-      self.waveHeightComposerVar.material.uniforms.xWavetextures.value[i] = this.OceanMaterialHeightBandLibrary.wavesXFilteredByAmplitude[i];
-      self.waveHeightComposerVar.material.uniforms.yWavetextures.value[i] = this.OceanMaterialHeightBandLibrary.wavesYFilteredByAmplitude[i];
-      self.waveHeightComposerVar.material.uniforms.zWavetextures.value[i] = this.OceanMaterialHeightBandLibrary.wavesZFilteredByAmplitude[i];
+    //Pack per-cascade xyz displacements into individual RGB render targets.
+    //The vertex/fragment shaders sample these directly at worldXZ/cascadePatchSize[c].
+    for(let c = 0; c < self.numCascades; c++){
+      self._packMaterial.uniforms.xTexture.value = self.OceanMaterialHeightBandLibrary.wavesPerCascade[c][0];
+      self._packMaterial.uniforms.yTexture.value = self.OceanMaterialHeightBandLibrary.wavesPerCascade[c][1];
+      self._packMaterial.uniforms.zTexture.value = self.OceanMaterialHeightBandLibrary.wavesPerCascade[c][2];
+      self.renderer.setRenderTarget(self.cascadeDisplacementTargets[c]);
+      self.renderer.render(self._packScene, self._cascadeCamera);
     }
-    self.waveHeightComposerRenderer.compute();
-    this.displacementMap = self.waveHeightComposerRenderer.getCurrentRenderTarget(self.waveHeightComposerVar).texture;
-
-    //Compute normals from the displacement map
-    self.waveNormalComposerVar.material.uniforms.displacementTexture.value = this.displacementMap;
-    self.waveNormalComposerRenderer.compute();
-    this.normalMap = self.waveNormalComposerRenderer.getCurrentRenderTarget(self.waveNormalComposerVar).texture;
+    self.renderer.setRenderTarget(null);
   };
 }

@@ -3,8 +3,9 @@
 //https://github.com/mrdoob/three.js/wiki/Uniforms-types
 AWater.AOcean.Materials.Ocean.waterMaterial = {
   uniforms: {
-    displacementMap: {type: 't', value: null},
-    fftNormalMap: {type: 't', value: null},
+    cascadeDisplacementTextures: {value: [null, null, null, null, null, null]},
+    cascadePatchSizes: {value: [1000.0, 250.0, 64.0, 16.0, 4.0, 1.0]},
+    waveHeightMultiplier: {type: 'f', value: 1.0},
     smallNormalMap: {type: 't', value: null},
     largeNormalMap: {type: 't', value: null},
     causticMap: {type: 't', value: null},
@@ -56,7 +57,8 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     atmCameraHeight: {type: 'f', value: 0.0},
     atmDistanceScale: {type: 'f', value: 1.0},
     blueNoiseTexture: {type: 't', value: null},
-    blueNoiseTime: {type: 'f', value: 0.0}
+    blueNoiseTime: {type: 'f', value: 0.0},
+    chop: {type: 'f', value: 1.0}
   },
 
   fragmentShader: function(causticsEnabled, foamEnabled, atmosphericPerspectiveEnabled, atmosphereFunctionsGLSL){

@@ -3,6 +3,7 @@ varying vec3 vWorldPosition;
 uniform sampler2D xWavetextures[$total_offsets];
 uniform sampler2D yWavetextures[$total_offsets];
 uniform sampler2D zWavetextures[$total_offsets];
+uniform float cascadeScales[$total_offsets];
 uniform float N;
 uniform float waveHeightMultiplier;
 
@@ -12,17 +13,17 @@ float fModulo1(float a){
 
 void main(){
   vec2 position = gl_FragCoord.xy / resolution.xy;
-  float sizeExpansion = (resolution.x + 1.0) / resolution.x; //Expand by exactly one pixel
-  vec2 uv = sizeExpansion * position;
-  vec2 wrappedUV = vec2(fModulo1(uv.x), fModulo1(uv.y));
+  vec2 baseUV = position;
   vec3 combinedWaveHeight = vec3(0.0);
 
   //Interpolations
   float waveHeight_x;
   float waveHeight_y;
   float waveHeight_z;
+  vec2 cascadeUV;
 
   $unrolled_wave_composer
 
-  gl_FragColor = vec4(waveHeightMultiplier * combinedWaveHeight / ($total_offsets_float * N * N), 1.0);
+  //Each cascade covers independent frequency bands — no overlap division needed
+  gl_FragColor = vec4(waveHeightMultiplier * combinedWaveHeight, 1.0);
 }

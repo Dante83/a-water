@@ -1,6 +1,7 @@
 precision highp float;
 
 varying vec2 vUv;
+varying vec2 vWorldXZ;
 varying vec3 vPosition;
 varying vec3 vTangent;
 varying vec3 vBitangent;
@@ -11,11 +12,13 @@ varying mat3 vNormalMatrix;
 
 //uniform vec3 cameraDirection;
 uniform float sizeOfOceanPatch;
+uniform float chop;
 uniform float largeNormalMapStrength;
 uniform float smallNormalMapStrength;
 uniform float baseHeightOffset;
-uniform sampler2D displacementMap;
-uniform sampler2D fftNormalMap;
+uniform sampler2D cascadeDisplacementTextures[6];
+uniform float cascadePatchSizes[6];
+uniform float waveHeightMultiplier;
 uniform sampler2D smallNormalMap;
 uniform sampler2D largeNormalMap;
 uniform sampler2D exclusionMap;
@@ -92,7 +95,7 @@ const vec3 inverseGamma = vec3(0.454545454545454545454545);
 const vec3 gamma = vec3(2.2);
 
 vec2 vec2Modulo(vec2 inputUV){
-    return (inputUV - floor(inputUV));
+  return (inputUV - floor(inputUV));
 }
 
 float linearizeDepth(float depthSample){
@@ -235,14 +238,20 @@ SOFTWARE.
 void main(){
   mat3 instanceMatrixMat3 = mat3(vInstanceMatrix[0].xyz, vInstanceMatrix[1].xyz, vInstanceMatrix[2].xyz );
   mat3 modelMatrixMat3 = mat3(vModelMatrix[0].xyz, vModelMatrix[1].xyz, vModelMatrix[2].xyz );
-  vec2 cameraOffset = vec2(cameraPosition.x, cameraPosition.z);
 
-  vec2 uvOffset = (vUv * sizeOfOceanPatch + cameraOffset) / sizeOfOceanPatch;
-  vec3 displacement = texture2D(displacementMap, uvOffset).xyz;
-  displacement.x *= -1.0;
-  displacement.z *= -1.0;
+  //Sample per-cascade displacements at world-space UVs (no fract — seamless tiling)
+  vec3 displacement = vec3(0.0);
+  displacement += texture2D(cascadeDisplacementTextures[0], vWorldXZ / cascadePatchSizes[0]).xyz;
+  displacement += texture2D(cascadeDisplacementTextures[1], vWorldXZ / cascadePatchSizes[1]).xyz;
+  displacement += texture2D(cascadeDisplacementTextures[2], vWorldXZ / cascadePatchSizes[2]).xyz;
+  displacement += texture2D(cascadeDisplacementTextures[3], vWorldXZ / cascadePatchSizes[3]).xyz;
+  displacement += texture2D(cascadeDisplacementTextures[4], vWorldXZ / cascadePatchSizes[4]).xyz;
+  displacement += texture2D(cascadeDisplacementTextures[5], vWorldXZ / cascadePatchSizes[5]).xyz;
+  displacement *= waveHeightMultiplier;
+  displacement.x *= -chop;
+  displacement.z *= -chop;
   vec3 offsetPosition = vPosition + displacement;
-  float height = (offsetPosition.y  + linearScatteringHeightOffset) / linearScatteringTotalScatteringWaveHeight;
+  float height = (offsetPosition.y + linearScatteringHeightOffset) / linearScatteringTotalScatteringWaveHeight;
   vec4 worldPosition = vModelMatrix * vInstanceMatrix * vec4(offsetPosition, 1.0);
   vec2 exclusionPosition = 0.5 * (((worldPosition.xz - cameraPosition.xz) / vec2(1024.0)) + 1.0);
   exclusionPosition = vec2(exclusionPosition.x, 1.0 - exclusionPosition.y);
@@ -256,19 +265,150 @@ void main(){
   float distanceToWorldPosition = distance(worldPosition.xyz, cameraPosition.xyz);
   float LOD = pow(2.0, clamp(7.0 - (distanceToWorldPosition / (sizeOfOceanPatch * 7.0)), 2.0, 7.0));
 
-  //Sample the pre-computed FFT normal map (computed via central differences on displacement in a GPU pass)
-  //Fade normal detail proportional to mesh LOD to avoid grainy aliasing
+  //Compute surface normal inline from per-cascade displacements via central differences.
+  //Each cascade is sampled at its own world-space UV — no tile-boundary seams.
+  //Accumulate gradients dPdx/dPdz across all cascades, then compute the cross-product normal.
   float normalLodFactor = clamp(1.0 - distanceToWorldPosition / (sizeOfOceanPatch * 7.0), 0.0, 1.0);
   float normalDetailFade = mix(0.15, 1.0, normalLodFactor * normalLodFactor);
-  vec4 fftNormalSample = texture2D(fftNormalMap, uvOffset);
-  vec3 displacedNormal = fftNormalSample.xyz * 2.0 - 1.0;
-  displacedNormal = normalize(mix(vec3(0.0, 1.0, 0.0), displacedNormal, normalDetailFade));
+  vec3 totalDPdx = vec3(0.0);
+  vec3 totalDPdz = vec3(0.0);
+  vec2 rawDdxXZ = vec2(0.0);
+  vec2 rawDdzXZ = vec2(0.0);
+
+  //Cascade 0
+  {
+    float eps = 1.0 / patchDataSize;
+    float worldStep = cascadePatchSizes[0] / patchDataSize;
+    vec2 uv = vWorldXZ / cascadePatchSizes[0];
+    vec3 rawL = texture2D(cascadeDisplacementTextures[0], uv - vec2(eps, 0.0)).xyz;
+    vec3 rawR = texture2D(cascadeDisplacementTextures[0], uv + vec2(eps, 0.0)).xyz;
+    vec3 rawB = texture2D(cascadeDisplacementTextures[0], uv - vec2(0.0, eps)).xyz;
+    vec3 rawT = texture2D(cascadeDisplacementTextures[0], uv + vec2(0.0, eps)).xyz;
+    rawDdxXZ += (rawR.xz - rawL.xz) / (2.0 * worldStep);
+    rawDdzXZ += (rawT.xz - rawB.xz) / (2.0 * worldStep);
+    vec3 dL = rawL; dL.x *= -chop; dL.z *= -chop;
+    vec3 dR = rawR; dR.x *= -chop; dR.z *= -chop;
+    vec3 dB = rawB; dB.x *= -chop; dB.z *= -chop;
+    vec3 dT = rawT; dT.x *= -chop; dT.z *= -chop;
+    totalDPdx += (dR - dL) / (2.0 * worldStep);
+    totalDPdz += (dT - dB) / (2.0 * worldStep);
+  }
+  //Cascade 1
+  {
+    float eps = 1.0 / patchDataSize;
+    float worldStep = cascadePatchSizes[1] / patchDataSize;
+    vec2 uv = vWorldXZ / cascadePatchSizes[1];
+    vec3 rawL = texture2D(cascadeDisplacementTextures[1], uv - vec2(eps, 0.0)).xyz;
+    vec3 rawR = texture2D(cascadeDisplacementTextures[1], uv + vec2(eps, 0.0)).xyz;
+    vec3 rawB = texture2D(cascadeDisplacementTextures[1], uv - vec2(0.0, eps)).xyz;
+    vec3 rawT = texture2D(cascadeDisplacementTextures[1], uv + vec2(0.0, eps)).xyz;
+    rawDdxXZ += (rawR.xz - rawL.xz) / (2.0 * worldStep);
+    rawDdzXZ += (rawT.xz - rawB.xz) / (2.0 * worldStep);
+    vec3 dL = rawL; dL.x *= -chop; dL.z *= -chop;
+    vec3 dR = rawR; dR.x *= -chop; dR.z *= -chop;
+    vec3 dB = rawB; dB.x *= -chop; dB.z *= -chop;
+    vec3 dT = rawT; dT.x *= -chop; dT.z *= -chop;
+    totalDPdx += (dR - dL) / (2.0 * worldStep);
+    totalDPdz += (dT - dB) / (2.0 * worldStep);
+  }
+  //Cascade 2
+  {
+    float eps = 1.0 / patchDataSize;
+    float worldStep = cascadePatchSizes[2] / patchDataSize;
+    vec2 uv = vWorldXZ / cascadePatchSizes[2];
+    vec3 rawL = texture2D(cascadeDisplacementTextures[2], uv - vec2(eps, 0.0)).xyz;
+    vec3 rawR = texture2D(cascadeDisplacementTextures[2], uv + vec2(eps, 0.0)).xyz;
+    vec3 rawB = texture2D(cascadeDisplacementTextures[2], uv - vec2(0.0, eps)).xyz;
+    vec3 rawT = texture2D(cascadeDisplacementTextures[2], uv + vec2(0.0, eps)).xyz;
+    rawDdxXZ += (rawR.xz - rawL.xz) / (2.0 * worldStep);
+    rawDdzXZ += (rawT.xz - rawB.xz) / (2.0 * worldStep);
+    vec3 dL = rawL; dL.x *= -chop; dL.z *= -chop;
+    vec3 dR = rawR; dR.x *= -chop; dR.z *= -chop;
+    vec3 dB = rawB; dB.x *= -chop; dB.z *= -chop;
+    vec3 dT = rawT; dT.x *= -chop; dT.z *= -chop;
+    totalDPdx += (dR - dL) / (2.0 * worldStep);
+    totalDPdz += (dT - dB) / (2.0 * worldStep);
+  }
+  //Cascade 3
+  {
+    float eps = 1.0 / patchDataSize;
+    float worldStep = cascadePatchSizes[3] / patchDataSize;
+    vec2 uv = vWorldXZ / cascadePatchSizes[3];
+    vec3 rawL = texture2D(cascadeDisplacementTextures[3], uv - vec2(eps, 0.0)).xyz;
+    vec3 rawR = texture2D(cascadeDisplacementTextures[3], uv + vec2(eps, 0.0)).xyz;
+    vec3 rawB = texture2D(cascadeDisplacementTextures[3], uv - vec2(0.0, eps)).xyz;
+    vec3 rawT = texture2D(cascadeDisplacementTextures[3], uv + vec2(0.0, eps)).xyz;
+    rawDdxXZ += (rawR.xz - rawL.xz) / (2.0 * worldStep);
+    rawDdzXZ += (rawT.xz - rawB.xz) / (2.0 * worldStep);
+    vec3 dL = rawL; dL.x *= -chop; dL.z *= -chop;
+    vec3 dR = rawR; dR.x *= -chop; dR.z *= -chop;
+    vec3 dB = rawB; dB.x *= -chop; dB.z *= -chop;
+    vec3 dT = rawT; dT.x *= -chop; dT.z *= -chop;
+    totalDPdx += (dR - dL) / (2.0 * worldStep);
+    totalDPdz += (dT - dB) / (2.0 * worldStep);
+  }
+  //Cascade 4
+  {
+    float eps = 1.0 / patchDataSize;
+    float worldStep = cascadePatchSizes[4] / patchDataSize;
+    vec2 uv = vWorldXZ / cascadePatchSizes[4];
+    vec3 rawL = texture2D(cascadeDisplacementTextures[4], uv - vec2(eps, 0.0)).xyz;
+    vec3 rawR = texture2D(cascadeDisplacementTextures[4], uv + vec2(eps, 0.0)).xyz;
+    vec3 rawB = texture2D(cascadeDisplacementTextures[4], uv - vec2(0.0, eps)).xyz;
+    vec3 rawT = texture2D(cascadeDisplacementTextures[4], uv + vec2(0.0, eps)).xyz;
+    rawDdxXZ += (rawR.xz - rawL.xz) / (2.0 * worldStep);
+    rawDdzXZ += (rawT.xz - rawB.xz) / (2.0 * worldStep);
+    vec3 dL = rawL; dL.x *= -chop; dL.z *= -chop;
+    vec3 dR = rawR; dR.x *= -chop; dR.z *= -chop;
+    vec3 dB = rawB; dB.x *= -chop; dB.z *= -chop;
+    vec3 dT = rawT; dT.x *= -chop; dT.z *= -chop;
+    totalDPdx += (dR - dL) / (2.0 * worldStep);
+    totalDPdz += (dT - dB) / (2.0 * worldStep);
+  }
+  //Cascade 5
+  {
+    float eps = 1.0 / patchDataSize;
+    float worldStep = cascadePatchSizes[5] / patchDataSize;
+    vec2 uv = vWorldXZ / cascadePatchSizes[5];
+    vec3 rawL = texture2D(cascadeDisplacementTextures[5], uv - vec2(eps, 0.0)).xyz;
+    vec3 rawR = texture2D(cascadeDisplacementTextures[5], uv + vec2(eps, 0.0)).xyz;
+    vec3 rawB = texture2D(cascadeDisplacementTextures[5], uv - vec2(0.0, eps)).xyz;
+    vec3 rawT = texture2D(cascadeDisplacementTextures[5], uv + vec2(0.0, eps)).xyz;
+    rawDdxXZ += (rawR.xz - rawL.xz) / (2.0 * worldStep);
+    rawDdzXZ += (rawT.xz - rawB.xz) / (2.0 * worldStep);
+    vec3 dL = rawL; dL.x *= -chop; dL.z *= -chop;
+    vec3 dR = rawR; dR.x *= -chop; dR.z *= -chop;
+    vec3 dB = rawB; dB.x *= -chop; dB.z *= -chop;
+    vec3 dT = rawT; dT.x *= -chop; dT.z *= -chop;
+    totalDPdx += (dR - dL) / (2.0 * worldStep);
+    totalDPdz += (dT - dB) / (2.0 * worldStep);
+  }
+  totalDPdx *= waveHeightMultiplier;
+  totalDPdz *= waveHeightMultiplier;
+  rawDdxXZ *= waveHeightMultiplier;
+  rawDdzXZ *= waveHeightMultiplier;
+
+  //Jacobian: detect surface folds for foam
+  vec2 foamDdx = -chop * rawDdxXZ;
+  vec2 foamDdz = -chop * rawDdzXZ;
+  float jacobian = (1.0 + foamDdx.x) * (1.0 + foamDdz.y) - foamDdx.y * foamDdz.x;
+  float turbulence = max(0.0, 1.0 - jacobian);
+  float fftFoamAmount = smoothstep(0.1, 1.0, turbulence);
+
+  //Surface tangent vectors → normal via cross product
+  vec3 Tx = vec3(1.0 + totalDPdx.x, totalDPdx.y, totalDPdx.z);
+  vec3 Tz = vec3(totalDPdz.x, totalDPdz.y, 1.0 + totalDPdz.z);
+  vec3 displacedNormal = normalize(cross(Tz, Tx));
+  if(displacedNormal.y < 0.0) displacedNormal = -displacedNormal;
+  //Blend toward flat normal at fold points and at distance
+  float foldBlend = smoothstep(0.0, 0.3, jacobian);
+  displacedNormal = mix(vec3(0.0, 1.0, 0.0), displacedNormal, foldBlend * normalDetailFade);
   //The FFT normal is in object space (x, y, z) - swizzle to match expected xzy convention
   displacedNormal = displacedNormal.xzy;
 
   //Get the reflected and refracted information of the scene
-  vec2 smallNormalMapOffset = (((vUv * 2.0) * (sizeOfOceanPatch / 2.0) + cameraOffset + t * smallNormalMapVelocity) / (sizeOfOceanPatch / 2.0));
-  vec2 largeNormalMapOffset = (((vUv * 1.0) * (sizeOfOceanPatch / 1.0) + cameraOffset - t * largeNormalMapVelocity) / (sizeOfOceanPatch / 1.0));
+  vec2 smallNormalMapOffset = (vWorldXZ + t * smallNormalMapVelocity) / (sizeOfOceanPatch / 2.0);
+  vec2 largeNormalMapOffset = (vWorldXZ - t * largeNormalMapVelocity) / sizeOfOceanPatch;
   vec3 smallNormalMap = texture2D(smallNormalMap, smallNormalMapOffset).xyz;
   smallNormalMap = 2.0 * smallNormalMap - 1.0;
   float smallNormalMapFadeout = clamp((500.0 - distanceToWorldPosition) / 250.0, 0.0, 1.0);
@@ -287,7 +427,7 @@ void main(){
   #if($foam_enabled)
     vec3 foamNormal = texture2D(foamNormalMap, smallNormalMapOffset).xyz;
     foamNormal = 2.0 * foamNormal - 1.0;
-    float foamAmount = fftNormalSample.a;
+    float foamAmount = fftFoamAmount;
     vec2 foamPosition = 0.5 * (((worldPosition.xz - cameraPosition.xz) / vec2(2048.0)) + 1.0);
     foamPosition = vec2(foamPosition.x, 1.0 - foamPosition.y);
     if(foamPosition.x < 1.0 && foamPosition.x > 0.0 && foamPosition.y < 1.0 && foamPosition.y > 0.0){
@@ -313,10 +453,17 @@ void main(){
 
   //Planar reflection: project world position through the reflection camera's VP matrix
   vec4 reflectionClipPos = reflectionViewProjectionMatrix * worldPosition;
-  vec2 reflectionUV = reflectionClipPos.xy / reflectionClipPos.w * 0.5 + 0.5;
-  reflectionUV += combinedNormalMap.xz * 0.02; //Distort by surface normal
-  reflectionUV = clamp(reflectionUV, 0.001, 0.999);
+  vec2 reflectionUV;
+  if(reflectionClipPos.w > 0.0){
+    reflectionUV = reflectionClipPos.xy / reflectionClipPos.w * 0.5 + 0.5;
+    reflectionUV += combinedNormalMap.xz * 0.02; //Distort by surface normal
+    reflectionUV = clamp(reflectionUV, 0.001, 0.999);
+  } else {
+    //Fragment is behind the reflection camera (heavily displaced crest) — use screen-space fallback
+    reflectionUV = clamp(screenUV + combinedNormalMap.xz * 0.02, 0.001, 0.999);
+  }
   vec3 reflectedLight = texture2D(reflectionTexture, reflectionUV).rgb;
+
   //At the horizon the reflection projection degenerates and samples black.
   //Detect near-black reflection samples and replace with a sky-area sample
   //from the reflection texture to avoid a dark seam at the horizon.
@@ -464,9 +611,9 @@ void main(){
     totalLight = mix(totalLight, 2.0 * directionalSurfaceLighting * foamLight, (foamOpacity * foamAmount));
   #endif
 
-  #if($atmospheric_perspective_enabled)
-    totalLight = applyAtmosphericPerspective(totalLight, worldPosition.xyz);
-  #endif
+  // #if($atmospheric_perspective_enabled)
+  //   totalLight = applyAtmosphericPerspective(totalLight, worldPosition.xyz);
+  // #endif
 
   gl_FragColor = linearTosRGB(vec4(MyAESFilmicToneMapping(totalLight), 1.0));
 

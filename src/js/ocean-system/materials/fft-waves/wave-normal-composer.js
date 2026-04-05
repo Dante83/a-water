@@ -2,7 +2,8 @@ AWater.AOcean.Materials.FFTWaves.waveNormalComposerShaderMaterial = {
   uniforms: {
     displacementTexture: {type: 't', value: null},
     texelSize: {type: 'f', value: 1.0 / 512.0},
-    patchSize: {type: 'f', value: 256.0}
+    patchSize: {type: 'f', value: 256.0},
+    chop: {type: 'f', value: 1.0}
   },
 
   fragmentShader: function(){
@@ -10,6 +11,7 @@ AWater.AOcean.Materials.FFTWaves.waveNormalComposerShaderMaterial = {
     'uniform sampler2D displacementTexture;',
     'uniform float texelSize;',
     'uniform float patchSize;',
+    'uniform float chop;',
 
     'void main(){',
       'vec2 uv = gl_FragCoord.xy / resolution.xy;',
@@ -26,23 +28,24 @@ AWater.AOcean.Materials.FFTWaves.waveNormalComposerShaderMaterial = {
 
       '//Compute Jacobian for foam FIRST using raw values (before sign inversion)',
       '//Use world-space derivatives for proper Jacobian of horizontal displacement',
+      '//Scale by chop to match actual vertex positions (vertex shader applies -chop to xz)',
       'float worldStepFoam = patchSize * texelSize;',
-      'vec2 foamDdx = -(rawR.xz - rawL.xz) / (2.0 * worldStepFoam);',
-      'vec2 foamDdy = -(rawB.xz - rawT.xz) / (2.0 * worldStepFoam);',
+      'vec2 foamDdx = -chop * (rawR.xz - rawL.xz) / (2.0 * worldStepFoam);',
+      'vec2 foamDdy = -chop * (rawB.xz - rawT.xz) / (2.0 * worldStepFoam);',
       'float jacobian = (1.0 + foamDdx.x) * (1.0 + foamDdy.y) - foamDdx.y * foamDdy.x;',
       '//Foam where surface compresses significantly (J well below 1)',
       'float turbulence = max(0.0, 1.0 - jacobian);',
       'float foam = smoothstep(0.1, 1.0, turbulence);',
 
-      '//Apply sign inversion for normals (matching water shader convention)',
-      'vec3 dispTL = rawTL; dispTL.x *= -1.0; dispTL.z *= -1.0;',
-      'vec3 dispT  = rawT;  dispT.x  *= -1.0; dispT.z  *= -1.0;',
-      'vec3 dispTR = rawTR; dispTR.x *= -1.0; dispTR.z *= -1.0;',
-      'vec3 dispL  = rawL;  dispL.x  *= -1.0; dispL.z  *= -1.0;',
-      'vec3 dispR  = rawR;  dispR.x  *= -1.0; dispR.z  *= -1.0;',
-      'vec3 dispBL = rawBL; dispBL.x *= -1.0; dispBL.z *= -1.0;',
-      'vec3 dispB  = rawB;  dispB.x  *= -1.0; dispB.z  *= -1.0;',
-      'vec3 dispBR = rawBR; dispBR.x *= -1.0; dispBR.z *= -1.0;',
+      '//Apply sign inversion + chop scaling for normals (matching water shader convention)',
+      'vec3 dispTL = rawTL; dispTL.x *= -chop; dispTL.z *= -chop;',
+      'vec3 dispT  = rawT;  dispT.x  *= -chop; dispT.z  *= -chop;',
+      'vec3 dispTR = rawTR; dispTR.x *= -chop; dispTR.z *= -chop;',
+      'vec3 dispL  = rawL;  dispL.x  *= -chop; dispL.z  *= -chop;',
+      'vec3 dispR  = rawR;  dispR.x  *= -chop; dispR.z  *= -chop;',
+      'vec3 dispBL = rawBL; dispBL.x *= -chop; dispBL.z *= -chop;',
+      'vec3 dispB  = rawB;  dispB.x  *= -chop; dispB.z  *= -chop;',
+      'vec3 dispBR = rawBR; dispBR.x *= -chop; dispBR.z *= -chop;',
 
       '//World-space step between samples',
       'float worldStep = patchSize * texelSize;',

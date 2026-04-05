@@ -7,6 +7,7 @@ AWater.AOcean.Materials.FFTWaves.waveComposerShaderMaterial = {
       xWavetextures: {value: new Array(numberOfWaveComponents)},
       yWavetextures: {value: new Array(numberOfWaveComponents)},
       zWavetextures: {value: new Array(numberOfWaveComponents)},
+      cascadeScales: {value: new Array(numberOfWaveComponents).fill(1.0)},
       N: {type: 'f', value: 0.0},
       waveHeightMultiplier: {type: 'f', value: 1.0}
     };
@@ -19,9 +20,10 @@ AWater.AOcean.Materials.FFTWaves.waveComposerShaderMaterial = {
 
     let numberOfWaveComponentsGLSL = "";
     for(let i = 0; i < numberOfWaveComponents; ++i){
-      numberOfWaveComponentsGLSL += `waveHeight_x = texture2D(xWavetextures[${i}], wrappedUV).x;\n`;
-      numberOfWaveComponentsGLSL += `waveHeight_y = texture2D(yWavetextures[${i}], wrappedUV).x;\n`;
-      numberOfWaveComponentsGLSL += `waveHeight_z = texture2D(zWavetextures[${i}], wrappedUV).x;\n`;
+      numberOfWaveComponentsGLSL += `cascadeUV = baseUV * cascadeScales[${i}];\n`;
+      numberOfWaveComponentsGLSL += `waveHeight_x = texture2D(xWavetextures[${i}], cascadeUV).x;\n`;
+      numberOfWaveComponentsGLSL += `waveHeight_y = texture2D(yWavetextures[${i}], cascadeUV).x;\n`;
+      numberOfWaveComponentsGLSL += `waveHeight_z = texture2D(zWavetextures[${i}], cascadeUV).x;\n`;
       numberOfWaveComponentsGLSL += "combinedWaveHeight += vec3(waveHeight_x, waveHeight_y, waveHeight_z);\n";
     }
 

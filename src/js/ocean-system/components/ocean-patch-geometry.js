@@ -36,14 +36,43 @@ AWater.OceanTile = function(size, numTiles, top, right, bottom, left, count){
         const ySign = (((tri + 9) % 8) < 4) * 2 - 1;
         const segment = tri % 2;
         const downgradeTriangle = (topTriSkip && segmentIndex === 0) || (rightTriSkip && segmentIndex === 1) || (bottomTriSkip && segmentIndex === 2) || (leftTriSkip && segmentIndex === 3);
-        const endIndex = (downgradeTriangle && segment) * 2 - 1;
-        const startIndex = 2 - (downgradeTriangle && !segment);
-        for(let v = startIndex; v > endIndex; --v){
-          const triV = v + segment * 3;
-          vertexCoordinates[vindex + 2 * flipXY] = scaler * (1.0 + 2 * (flipXY ? y : x) + (flipXY ? ySign : xSign) * ((triV === 0) || (triV === 5)));
-          //vertexCoordinates[vindex] = 0.0 - Y is zero
-          vertexCoordinates[vindex + 2 * (!flipXY)] = scaler * (1.0 + 2 * (flipXY ? x : y) + (flipXY ? xSign : ySign) * ((triV + (!segment)) % 2));
+
+        if(downgradeTriangle && !segment){
+          //First triangle of a downgraded LOD-seam pair: emit the merged triangle.
+          //The two segment triangles normally share a center vertex and each touch one
+          //outer corner. Downgrading collapses them into a single triangle that spans
+          //both outer corners with the cell center, eliminating the T-junction.
+          //Emit: outer_B, center, outer_A (CW winding, consistent with normal triangles).
+
+          //outer_B: the far corner owned by the second triangle (segment=1).
+          //For flipXY=0 segments (top/bottom) xSign alternates; negate it.
+          //For flipXY=1 segments (left/right) ySign alternates; negate it.
+          vertexCoordinates[vindex + 2 * flipXY] = scaler * (1.0 + 2 * (flipXY ? y : x) + (flipXY ? -ySign : -xSign));
+          vertexCoordinates[vindex + 2 * (!flipXY)] = scaler * (1.0 + 2 * (flipXY ? x : y) + (flipXY ? xSign : ySign));
           vindex += 3;
+
+          //center
+          vertexCoordinates[vindex + 2 * flipXY] = scaler * (1.0 + 2 * (flipXY ? y : x));
+          vertexCoordinates[vindex + 2 * (!flipXY)] = scaler * (1.0 + 2 * (flipXY ? x : y));
+          vindex += 3;
+
+          //outer_A: the near corner of this (segment=0) triangle.
+          vertexCoordinates[vindex + 2 * flipXY] = scaler * (1.0 + 2 * (flipXY ? y : x) + (flipXY ? ySign : xSign));
+          vertexCoordinates[vindex + 2 * (!flipXY)] = scaler * (1.0 + 2 * (flipXY ? x : y) + (flipXY ? xSign : ySign));
+          vindex += 3;
+        } else if(downgradeTriangle && segment){
+          //Second triangle of a downgraded pair: emit a zero-area degenerate triangle.
+          //All vertices stay at their zero-initialized positions (which map to the patch
+          //corner via instanceMatrix — same point, zero area, no pixels rendered).
+          vindex += 9;
+        } else {
+          for(let v = 2; v > -1; --v){
+            const triV = v + segment * 3;
+            vertexCoordinates[vindex + 2 * flipXY] = scaler * (1.0 + 2 * (flipXY ? y : x) + (flipXY ? ySign : xSign) * ((triV === 0) || (triV === 5)));
+            //vertexCoordinates[vindex] = 0.0 - Y is zero
+            vertexCoordinates[vindex + 2 * (!flipXY)] = scaler * (1.0 + 2 * (flipXY ? x : y) + (flipXY ? xSign : ySign) * ((triV + (!segment)) % 2));
+            vindex += 3;
+          }
         }
 
         triIndex++;

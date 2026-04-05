@@ -3,20 +3,13 @@
 //https://github.com/mrdoob/three.js/wiki/Uniforms-types
 AWater.AOcean.Materials.FFTWaves.butterflyTextureData = {
   uniforms: {
+    inputTexture: {type: 't', value: null},
     twiddleTexture: {type: 't', value: null},
     stageFraction: {type: 'f', value: 0.0},
     direction: {type: 'i', value: 1}
   },
 
-  fragmentShader: function(pingpong_id, injectVariable = false){
-    let glsl = [
-      {fragment_glsl}
-    ];
-
-    if(injectVariable){
-      glsl = [`uniform sampler2D pingpong_${pingpong_id};`, ...glsl];
-    }
-
-    return glsl.join('\n');
-  }
+  fragmentShader: [
+    {fragment_glsl}
+  ].join('\n')
 };
