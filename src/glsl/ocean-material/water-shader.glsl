@@ -3,6 +3,7 @@ precision highp float;
 varying vec2 vUv;
 varying vec2 vWorldXZ;
 varying vec3 vPosition;
+varying vec3 vDisplacedPosition;
 varying vec3 vTangent;
 varying vec3 vBitangent;
 varying vec3 vInView;
@@ -239,18 +240,12 @@ void main(){
   mat3 instanceMatrixMat3 = mat3(vInstanceMatrix[0].xyz, vInstanceMatrix[1].xyz, vInstanceMatrix[2].xyz );
   mat3 modelMatrixMat3 = mat3(vModelMatrix[0].xyz, vModelMatrix[1].xyz, vModelMatrix[2].xyz );
 
-  //Sample per-cascade displacements at world-space UVs (no fract — seamless tiling)
-  vec3 displacement = vec3(0.0);
-  displacement += texture2D(cascadeDisplacementTextures[0], vWorldXZ / cascadePatchSizes[0]).xyz;
-  displacement += texture2D(cascadeDisplacementTextures[1], vWorldXZ / cascadePatchSizes[1]).xyz;
-  displacement += texture2D(cascadeDisplacementTextures[2], vWorldXZ / cascadePatchSizes[2]).xyz;
-  displacement += texture2D(cascadeDisplacementTextures[3], vWorldXZ / cascadePatchSizes[3]).xyz;
-  displacement += texture2D(cascadeDisplacementTextures[4], vWorldXZ / cascadePatchSizes[4]).xyz;
-  displacement += texture2D(cascadeDisplacementTextures[5], vWorldXZ / cascadePatchSizes[5]).xyz;
-  displacement *= waveHeightMultiplier;
-  displacement.x *= -chop;
-  displacement.z *= -chop;
-  vec3 offsetPosition = vPosition + displacement;
+  //Use the displaced position from the vertex shader directly — ensures worldPosition
+  //matches the actual geometry (vertex shader applies displacementFade; resampling here
+  //would skip that, causing LOD tile edge divergence).
+  vec3 offsetPosition = vDisplacedPosition;
+  //Still need displacement for height-based effects (translucency, scattering)
+  vec3 displacement = offsetPosition - vPosition;
   float height = (offsetPosition.y + linearScatteringHeightOffset) / linearScatteringTotalScatteringWaveHeight;
   vec4 worldPosition = vModelMatrix * vInstanceMatrix * vec4(offsetPosition, 1.0);
   vec2 exclusionPosition = 0.5 * (((worldPosition.xz - cameraPosition.xz) / vec2(1024.0)) + 1.0);
@@ -327,57 +322,63 @@ void main(){
     totalDPdx += ((dBR + 2.0*dR + dTR) - (dBL + 2.0*dL + dTL)) / (8.0 * worldStep);
     totalDPdz += ((dTL + 2.0*dT + dTR) - (dBL + 2.0*dB + dBR)) / (8.0 * worldStep);
   }
-  //Cascade 2 (L=64m) — disabled for diagnosis
-  if(false){
-    float eps = 1.0 / patchDataSize;
-    float worldStep = cascadePatchSizes[2] / patchDataSize;
-    vec2 uv = vWorldXZ / cascadePatchSizes[2];
-    vec3 rawBL = texture2D(cascadeDisplacementTextures[2], uv + vec2(-eps, -eps)).xyz;
-    vec3 rawB  = texture2D(cascadeDisplacementTextures[2], uv + vec2( 0.0, -eps)).xyz;
-    vec3 rawBR = texture2D(cascadeDisplacementTextures[2], uv + vec2( eps, -eps)).xyz;
-    vec3 rawL  = texture2D(cascadeDisplacementTextures[2], uv + vec2(-eps,  0.0)).xyz;
-    vec3 rawR  = texture2D(cascadeDisplacementTextures[2], uv + vec2( eps,  0.0)).xyz;
-    vec3 rawTL = texture2D(cascadeDisplacementTextures[2], uv + vec2(-eps,  eps)).xyz;
-    vec3 rawT  = texture2D(cascadeDisplacementTextures[2], uv + vec2( 0.0,  eps)).xyz;
-    vec3 rawTR = texture2D(cascadeDisplacementTextures[2], uv + vec2( eps,  eps)).xyz;
-    rawDdxXZ += (rawR.xz - rawL.xz) / (2.0 * worldStep);
-    rawDdzXZ += (rawT.xz - rawB.xz) / (2.0 * worldStep);
-    vec3 dBL = rawBL; dBL.x *= -chop; dBL.z *= -chop;
-    vec3 dB  = rawB;  dB.x  *= -chop; dB.z  *= -chop;
-    vec3 dBR = rawBR; dBR.x *= -chop; dBR.z *= -chop;
-    vec3 dL  = rawL;  dL.x  *= -chop; dL.z  *= -chop;
-    vec3 dR  = rawR;  dR.x  *= -chop; dR.z  *= -chop;
-    vec3 dTL = rawTL; dTL.x *= -chop; dTL.z *= -chop;
-    vec3 dT  = rawT;  dT.x  *= -chop; dT.z  *= -chop;
-    vec3 dTR = rawTR; dTR.x *= -chop; dTR.z *= -chop;
-    totalDPdx += ((dBR + 2.0*dR + dTR) - (dBL + 2.0*dL + dTL)) / (8.0 * worldStep);
-    totalDPdz += ((dTL + 2.0*dT + dTR) - (dBL + 2.0*dB + dBR)) / (8.0 * worldStep);
+  //Cascade 2 (L=64m) — distance-weighted: fades out by 640m
+  {
+    float cascadeWeight2 = clamp(1.0 - distanceToWorldPosition / (cascadePatchSizes[2] * 10.0), 0.0, 1.0);
+    if(cascadeWeight2 > 0.001){
+      float eps = 1.0 / patchDataSize;
+      float worldStep = cascadePatchSizes[2] / patchDataSize;
+      vec2 uv = vWorldXZ / cascadePatchSizes[2];
+      vec3 rawBL = texture2D(cascadeDisplacementTextures[2], uv + vec2(-eps, -eps)).xyz;
+      vec3 rawB  = texture2D(cascadeDisplacementTextures[2], uv + vec2( 0.0, -eps)).xyz;
+      vec3 rawBR = texture2D(cascadeDisplacementTextures[2], uv + vec2( eps, -eps)).xyz;
+      vec3 rawL  = texture2D(cascadeDisplacementTextures[2], uv + vec2(-eps,  0.0)).xyz;
+      vec3 rawR  = texture2D(cascadeDisplacementTextures[2], uv + vec2( eps,  0.0)).xyz;
+      vec3 rawTL = texture2D(cascadeDisplacementTextures[2], uv + vec2(-eps,  eps)).xyz;
+      vec3 rawT  = texture2D(cascadeDisplacementTextures[2], uv + vec2( 0.0,  eps)).xyz;
+      vec3 rawTR = texture2D(cascadeDisplacementTextures[2], uv + vec2( eps,  eps)).xyz;
+      rawDdxXZ += cascadeWeight2 * (rawR.xz - rawL.xz) / (2.0 * worldStep);
+      rawDdzXZ += cascadeWeight2 * (rawT.xz - rawB.xz) / (2.0 * worldStep);
+      vec3 dBL = rawBL; dBL.x *= -chop; dBL.z *= -chop;
+      vec3 dB  = rawB;  dB.x  *= -chop; dB.z  *= -chop;
+      vec3 dBR = rawBR; dBR.x *= -chop; dBR.z *= -chop;
+      vec3 dL  = rawL;  dL.x  *= -chop; dL.z  *= -chop;
+      vec3 dR  = rawR;  dR.x  *= -chop; dR.z  *= -chop;
+      vec3 dTL = rawTL; dTL.x *= -chop; dTL.z *= -chop;
+      vec3 dT  = rawT;  dT.x  *= -chop; dT.z  *= -chop;
+      vec3 dTR = rawTR; dTR.x *= -chop; dTR.z *= -chop;
+      totalDPdx += cascadeWeight2 * ((dBR + 2.0*dR + dTR) - (dBL + 2.0*dL + dTL)) / (8.0 * worldStep);
+      totalDPdz += cascadeWeight2 * ((dTL + 2.0*dT + dTR) - (dBL + 2.0*dB + dBR)) / (8.0 * worldStep);
+    }
   }
-  //Cascade 3 (L=16m) — disabled for diagnosis
-  if(false){
-    float eps = 1.0 / patchDataSize;
-    float worldStep = cascadePatchSizes[3] / patchDataSize;
-    vec2 uv = vWorldXZ / cascadePatchSizes[3];
-    vec3 rawBL = texture2D(cascadeDisplacementTextures[3], uv + vec2(-eps, -eps)).xyz;
-    vec3 rawB  = texture2D(cascadeDisplacementTextures[3], uv + vec2( 0.0, -eps)).xyz;
-    vec3 rawBR = texture2D(cascadeDisplacementTextures[3], uv + vec2( eps, -eps)).xyz;
-    vec3 rawL  = texture2D(cascadeDisplacementTextures[3], uv + vec2(-eps,  0.0)).xyz;
-    vec3 rawR  = texture2D(cascadeDisplacementTextures[3], uv + vec2( eps,  0.0)).xyz;
-    vec3 rawTL = texture2D(cascadeDisplacementTextures[3], uv + vec2(-eps,  eps)).xyz;
-    vec3 rawT  = texture2D(cascadeDisplacementTextures[3], uv + vec2( 0.0,  eps)).xyz;
-    vec3 rawTR = texture2D(cascadeDisplacementTextures[3], uv + vec2( eps,  eps)).xyz;
-    rawDdxXZ += (rawR.xz - rawL.xz) / (2.0 * worldStep);
-    rawDdzXZ += (rawT.xz - rawB.xz) / (2.0 * worldStep);
-    vec3 dBL = rawBL; dBL.x *= -chop; dBL.z *= -chop;
-    vec3 dB  = rawB;  dB.x  *= -chop; dB.z  *= -chop;
-    vec3 dBR = rawBR; dBR.x *= -chop; dBR.z *= -chop;
-    vec3 dL  = rawL;  dL.x  *= -chop; dL.z  *= -chop;
-    vec3 dR  = rawR;  dR.x  *= -chop; dR.z  *= -chop;
-    vec3 dTL = rawTL; dTL.x *= -chop; dTL.z *= -chop;
-    vec3 dT  = rawT;  dT.x  *= -chop; dT.z  *= -chop;
-    vec3 dTR = rawTR; dTR.x *= -chop; dTR.z *= -chop;
-    totalDPdx += ((dBR + 2.0*dR + dTR) - (dBL + 2.0*dL + dTL)) / (8.0 * worldStep);
-    totalDPdz += ((dTL + 2.0*dT + dTR) - (dBL + 2.0*dB + dBR)) / (8.0 * worldStep);
+  //Cascade 3 (L=16m) — distance-weighted: fades out by 160m
+  {
+    float cascadeWeight3 = clamp(1.0 - distanceToWorldPosition / (cascadePatchSizes[3] * 10.0), 0.0, 1.0);
+    if(cascadeWeight3 > 0.001){
+      float eps = 1.0 / patchDataSize;
+      float worldStep = cascadePatchSizes[3] / patchDataSize;
+      vec2 uv = vWorldXZ / cascadePatchSizes[3];
+      vec3 rawBL = texture2D(cascadeDisplacementTextures[3], uv + vec2(-eps, -eps)).xyz;
+      vec3 rawB  = texture2D(cascadeDisplacementTextures[3], uv + vec2( 0.0, -eps)).xyz;
+      vec3 rawBR = texture2D(cascadeDisplacementTextures[3], uv + vec2( eps, -eps)).xyz;
+      vec3 rawL  = texture2D(cascadeDisplacementTextures[3], uv + vec2(-eps,  0.0)).xyz;
+      vec3 rawR  = texture2D(cascadeDisplacementTextures[3], uv + vec2( eps,  0.0)).xyz;
+      vec3 rawTL = texture2D(cascadeDisplacementTextures[3], uv + vec2(-eps,  eps)).xyz;
+      vec3 rawT  = texture2D(cascadeDisplacementTextures[3], uv + vec2( 0.0,  eps)).xyz;
+      vec3 rawTR = texture2D(cascadeDisplacementTextures[3], uv + vec2( eps,  eps)).xyz;
+      rawDdxXZ += cascadeWeight3 * (rawR.xz - rawL.xz) / (2.0 * worldStep);
+      rawDdzXZ += cascadeWeight3 * (rawT.xz - rawB.xz) / (2.0 * worldStep);
+      vec3 dBL = rawBL; dBL.x *= -chop; dBL.z *= -chop;
+      vec3 dB  = rawB;  dB.x  *= -chop; dB.z  *= -chop;
+      vec3 dBR = rawBR; dBR.x *= -chop; dBR.z *= -chop;
+      vec3 dL  = rawL;  dL.x  *= -chop; dL.z  *= -chop;
+      vec3 dR  = rawR;  dR.x  *= -chop; dR.z  *= -chop;
+      vec3 dTL = rawTL; dTL.x *= -chop; dTL.z *= -chop;
+      vec3 dT  = rawT;  dT.x  *= -chop; dT.z  *= -chop;
+      vec3 dTR = rawTR; dTR.x *= -chop; dTR.z *= -chop;
+      totalDPdx += cascadeWeight3 * ((dBR + 2.0*dR + dTR) - (dBL + 2.0*dL + dTL)) / (8.0 * worldStep);
+      totalDPdz += cascadeWeight3 * ((dTL + 2.0*dT + dTR) - (dBL + 2.0*dB + dBR)) / (8.0 * worldStep);
+    }
   }
   //Cascades 4 (L=4m) and 5 (L=1m) are excluded from normal/Jacobian computation.
   //The small/large normal maps cover this frequency range close-up — adding both

@@ -1,10 +1,11 @@
 //A false for any of the top, right, bottom or left values
-//means we're transitioning to a lower value.
-AWater.OceanTile = function(size, numTiles, top, right, bottom, left, count){
-  const totalNumberOfTiles = numTiles * numTiles;
-  const numberOfInnerTiles = Math.max(numTiles - 2, 0) * (numTiles - 2);
+//means we're transitioning to a lower value (coarser outer ring).
+//worldSize: world-space size of this tile. numCells: cells per edge (verts = numCells+1).
+AWater.OceanTile = function(worldSize, numCells, top, right, bottom, left){
+  const totalNumberOfTiles = numCells * numCells;
+  const numberOfInnerTiles = Math.max(numCells - 2, 0) * (numCells - 2);
   const numberOfEdgeTiles = totalNumberOfTiles - numberOfInnerTiles;
-  const scaler = size / (numTiles * 2.0);
+  const scaler = worldSize / (numCells * 2.0);
   const tilesOnAnEdge = Math.max((numberOfEdgeTiles - 4), 0) / 4;
   const totalNumberOfTriangles = 8 * numberOfInnerTiles + 28 * tilesOnAnEdge + (tilesOnAnEdge + Math.min(4, numberOfEdgeTiles)) * (4 + top + right + bottom + left);
   const numberOfVertices = totalNumberOfTriangles * 3;
@@ -18,14 +19,14 @@ AWater.OceanTile = function(size, numTiles, top, right, bottom, left, count){
     tangents[i * 3] = 1.0; //X is Tangent
     bitangents[i * 3 + 2] = -1.0; //Z is bitangent
   }
-  const numTilesMinusOne = numTiles - 1;
+  const numCellsMinusOne = numCells - 1;
   let vindex = 0;
   let triIndex = 0;
-  for(let x = 0; x < numTiles; ++x){
-    const rightTriSkip = x === numTilesMinusOne && !right;
+  for(let x = 0; x < numCells; ++x){
+    const rightTriSkip = x === numCellsMinusOne && !right;
     const leftTriSkip = x === 0 && !left;
-    for(let y = 0; y < numTiles; ++y){
-      const topTriSkip = y === numTilesMinusOne && !top;
+    for(let y = 0; y < numCells; ++y){
+      const topTriSkip = y === numCellsMinusOne && !top;
       const bottomTriSkip = y === 0 && !bottom;
 
       //Iterate through each potential triangle in the inner tile
@@ -82,8 +83,8 @@ AWater.OceanTile = function(size, numTiles, top, right, bottom, left, count){
 
   //Set up all UV-Coordinates
   for(let i = 0; i < numberOfVertices; ++i){
-    uvs[i * 2] = vertexCoordinates[i * 3] / size;
-    uvs[i * 2 + 1] = vertexCoordinates[i * 3 + 2] / size;
+    uvs[i * 2] = vertexCoordinates[i * 3] / worldSize;
+    uvs[i * 2 + 1] = vertexCoordinates[i * 3 + 2] / worldSize;
   }
 
   //Set up all indices

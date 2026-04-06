@@ -288,137 +288,100 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.positionPassMaterial.uniforms = AWater.AOcean.Materials.Ocean.positionPassMaterial.uniforms;
   this.positionPassMaterial.uniforms.worldMatrix.value = this.camera.matrixWorld;
 
-  //Get all ocean patch offsets
-  const maxHalfPatchesPerSide = Math.ceil((this.drawDistance + this.patchSize) / this.patchSize);
-  const drawDistanceSquared = this.drawDistance * this.drawDistance;
-  const minDistanceForUpdatedLOD = this.patchSize;
-  let patchLODByBucketID = {};
-  const numberOfLODs = 7;
-  for(let x = -maxHalfPatchesPerSide; x < maxHalfPatchesPerSide; ++x){
-    const xForID = x + maxHalfPatchesPerSide;
-    for(let y = -maxHalfPatchesPerSide; y < maxHalfPatchesPerSide; ++y){
-      const yForID = y + maxHalfPatchesPerSide;
-      const xCoord = (x - 0.5) * this.patchSize;
-      const yCoord = (y - 0.5) * this.patchSize;
-      const xyDistToPlaneSquared = xCoord * xCoord + yCoord * yCoord;
-      if(xyDistToPlaneSquared <= drawDistanceSquared){
-        //Bit mask these into the same number to make a unique 32 bit integer id
-        const bucketID = xForID | (4294901760 & (yForID * 65536));
-        const distanceToPlane = Math.sqrt(xyDistToPlaneSquared);
-        //Not sure why this works best when draw distance is at a 1/4. Maybe it's just the angle? But not sure...
-        const tesselationFactor = Math.min(Math.max(Math.round(numberOfLODs * (1.0 - ( distanceToPlane / (this.patchSize * numberOfLODs) ) )), 1), numberOfLODs);
-        patchLODByBucketID[bucketID] = 2 ** tesselationFactor;
+  //── Clipmap grid construction ────────────────────────────────────────────
+  //All tiles use the same fixed tessellation (numCells cells/edge = numCells+1 verts/edge).
+  //Ring k has tile world size patchSize*2^k.
+  //Ring 0: full 4×4 grid of tiles.  Ring k≥1: 12-tile frame (4×4 minus inner 2×2).
+  //The outer edge of each ring borders the next (coarser) ring and needs T-junction
+  //stitching via the existing edge flags (false = coarser neighbor).
+  const numCells = 32;
+  const ringCount = Math.max(1, Math.ceil(Math.log2(Math.max(2, this.drawDistance / this.patchSize))));
+
+  //Instance key encodes ring index (bits 0-3) + edge flags (bits 4-7)
+  function makeClipmapKey(k, top, right, bottom, left){
+    return k | ((top ? 1 : 0) << 4) | ((right ? 1 : 0) << 5) | ((bottom ? 1 : 0) << 6) | ((left ? 1 : 0) << 7);
+  }
+
+  //Enumerate every tile in the clipmap, calling cb(k, gx, gy, tileSize, top, right, bottom, left)
+  //gx/gy ∈ {-2,-1,0,1}: tile grid offset (geometry spans [gx*tileSize, (gx+1)*tileSize])
+  function enumerateClipmapTiles(cb){
+    for(let k = 0; k < ringCount; ++k){
+      const tileSize = self.patchSize * Math.pow(2, k);
+      const isLastRing = (k === ringCount - 1);
+      for(let gx = -2; gx <= 1; ++gx){
+        for(let gy = -2; gy <= 1; ++gy){
+          //Ring k≥1: skip inner 2×2 — that area is covered by ring k-1
+          if(k > 0 && gx >= -1 && gx <= 0 && gy >= -1 && gy <= 0) continue;
+          //Outer edge flags: false when the edge faces the next (coarser) ring
+          const top    = !(gy ===  1 && !isLastRing);
+          const right  = !(gx ===  1 && !isLastRing);
+          const bottom = !(gy === -2 && !isLastRing);
+          const left   = !(gx === -2 && !isLastRing);
+          cb(k, gx, gy, tileSize, top, right, bottom, left);
+        }
       }
     }
   }
 
-  //Get the instance count for each tile type with all down grades to enable instanced meshes
+  //Count instances per key
   let instanceCount = {};
-  for(let x = -maxHalfPatchesPerSide; x < maxHalfPatchesPerSide; ++x){
-    const xForID = x + maxHalfPatchesPerSide;
-    for(let y = -maxHalfPatchesPerSide; y < maxHalfPatchesPerSide; ++y){
-      const yForID = y + maxHalfPatchesPerSide;
-      const xCoord = (x - 0.5) * this.patchSize;
-      const yCoord = (y - 0.5) * this.patchSize;
-      const xyDistToPlaneSquared = xCoord * xCoord + yCoord * yCoord;
-      if(xyDistToPlaneSquared <= drawDistanceSquared){
-        //Bit mask these into the same number to make a unique 32 bit integer id
-        const LODID = xForID | (4294901760 & (yForID * 65536));
-        const LOD = patchLODByBucketID[LODID];
-        const LODTopID = xForID | (4294901760 & ((yForID + 1) * 65536));
-        const LODTop = LODTopID in patchLODByBucketID ? patchLODByBucketID[LODTopID] >= LOD : true;
-        const LODRightID = (xForID + 1) | (4294901760 & (yForID * 65536));
-        const LODRight = LODRightID in patchLODByBucketID ? patchLODByBucketID[LODRightID] >= LOD : true;
-        const LODBottomID = xForID | (4294901760 & ((yForID - 1) * 65536));
-        const LODBottom = LODBottomID in patchLODByBucketID ? patchLODByBucketID[LODBottomID] >= LOD : true;
-        const LODLeftID = (xForID - 1) | (4294901760 & (yForID * 65536));
-        const LODLeft = LODLeftID in patchLODByBucketID ? patchLODByBucketID[LODLeftID] >= LOD : true;
+  enumerateClipmapTiles(function(k, gx, gy, tileSize, top, right, bottom, left){
+    const key = makeClipmapKey(k, top, right, bottom, left);
+    instanceCount[key] = (instanceCount[key] || 0) + 1;
+  });
 
-        //I'm just going to presume our LODs will never be beyond 128
-        //Which would have so many triangles, it would be silly.
-        //We then just go down by one or stay the same, so we can add on
-        //a couple of binary flags like so.
-        let instanceCountID = Math.round(Math.log(LOD) / Math.log(2));
-        instanceCountID += LODTop * 256;
-        instanceCountID += LODRight * 512;
-        instanceCountID += LODBottom * 1024;
-        instanceCountID += LODLeft * 2048;
-        if(!instanceCount.hasOwnProperty(instanceCountID)){
-          instanceCount[instanceCountID] = 1;
-        }
-        else{
-          instanceCount[instanceCountID]++;
-        }
-      }
-    }
-  }
-
+  //Create instanced meshes and ocean patches
   let oceanPatchGeometryInstances = {};
   let instanceIterations = {};
   let oceanGridInstanceKeys = [];
-  const windVelocity = new THREE.Vector2(this.windVelocity.x, this.windVelocity.y);
-  const windVelocityMagnitude = windVelocity.length();
-  const windVelocityDirection = windVelocity.divideScalar(windVelocityMagnitude);
-  for(let x = -maxHalfPatchesPerSide; x < maxHalfPatchesPerSide; ++x){
-    const xForID = x + maxHalfPatchesPerSide;
-    for(let y = -maxHalfPatchesPerSide; y < maxHalfPatchesPerSide; ++y){
-      const yForID = y + maxHalfPatchesPerSide;
-      const xCoord = (x - 0.5) * this.patchSize;
-      const yCoord = (y - 0.5) * this.patchSize;
-      const xyDistToPlaneSquared = xCoord * xCoord + yCoord * yCoord;
-      if(xyDistToPlaneSquared <= drawDistanceSquared){
-        //Bit mask these into the same number to make a unique 32 bit integer id
-        const LOD = patchLODByBucketID[xForID | (4294901760 & (yForID * 65536))];
-        const LODTopID = xForID | (4294901760 & ((yForID + 1) * 65536));
-        const LODTop = LODTopID in patchLODByBucketID ? patchLODByBucketID[LODTopID] >= LOD : true;
-        const LODRightID = (xForID + 1) | (4294901760 & (yForID * 65536));
-        const LODRight = LODRightID in patchLODByBucketID ? patchLODByBucketID[LODRightID] >= LOD : true;
-        const LODBottomID = xForID | (4294901760 & ((yForID - 1) * 65536));
-        const LODBottom = LODBottomID in patchLODByBucketID ? patchLODByBucketID[LODBottomID] >= LOD : true;
-        const LODLeftID = (xForID - 1) | (4294901760 & (yForID * 65536));
-        const LODLeft = LODLeftID in patchLODByBucketID ? patchLODByBucketID[LODLeftID] >= LOD : true;
 
-        let instanceCountID = Math.round(Math.log(LOD) / Math.log(2));
-        instanceCountID += LODTop * 256;
-        instanceCountID += LODRight * 512;
-        instanceCountID += LODBottom * 1024;
-        instanceCountID += LODLeft * 2048;
-        if(!oceanPatchGeometryInstances.hasOwnProperty(instanceCountID)){
-          oceanGridInstanceKeys.push(instanceCountID);
-          const geometry = AWater.OceanTile(this.patchSize, LOD, LODTop, LODRight, LODBottom, LODLeft);
-          oceanPatchGeometryInstances[instanceCountID] = new THREE.InstancedMesh(geometry, this.oceanMaterial.clone(), instanceCount[instanceCountID]);
-          oceanPatchGeometryInstances[instanceCountID].frustumCulled = false;
-          instanceIterations[instanceCountID] = 0;
-          scene.add(oceanPatchGeometryInstances[instanceCountID]);
+  enumerateClipmapTiles(function(k, gx, gy, tileSize, top, right, bottom, left){
+    const key = makeClipmapKey(k, top, right, bottom, left);
+    if(!oceanPatchGeometryInstances.hasOwnProperty(key)){
+      oceanGridInstanceKeys.push(key);
+      const geometry = AWater.OceanTile(tileSize, numCells, top, right, bottom, left);
+      const mesh = new THREE.InstancedMesh(geometry, self.oceanMaterial.clone(), instanceCount[key]);
+      mesh.frustumCulled = false;
+      oceanPatchGeometryInstances[key] = mesh;
+      instanceIterations[key] = 0;
+      scene.add(mesh);
 
-          //Set the velocity of the small water waves on the surface
-          const uniformsRef = oceanPatchGeometryInstances[instanceCountID].material.uniforms;
-          uniformsRef.smallNormalMapVelocity.value.set(this.randomWindVelocities[0], this.randomWindVelocities[1]);
-          uniformsRef.largeNormalMapVelocity.value.set(this.randomWindVelocities[2], this.randomWindVelocities[3]);
-          uniformsRef.waterAbsorption.value.copy(this.data.water_absorption);
-          uniformsRef.waterScattering.value.copy(this.data.water_scattering);
-          uniformsRef.waterMieG.value = this.data.water_mie_g;
-          uniformsRef.smallNormalMapStrength.value = this.data.small_normal_map_strength;
-          uniformsRef.largeNormalMapStrength.value = this.data.large_normal_map_strength;
-          uniformsRef.linearScatteringHeightOffset.value = this.data.linear_scattering_height_offset;
-          uniformsRef.linearScatteringTotalScatteringWaveHeight.value = this.data.linear_scattering_total_wave_height;
-          uniformsRef.patchDataSize.value = this.data.patch_data_size;
-          uniformsRef.chop.value = this.data.chop;
-        }
-        const instanceIteration = instanceIterations[instanceCountID];
-        this.oceanPatches.push(new AWater.AOcean.OceanPatch(this, new THREE.Vector3(xCoord, this.heightOffset, yCoord), oceanPatchGeometryInstances[instanceCountID], instanceIteration));
-        instanceIterations[instanceCountID] += 1;
-      }
+      const uniformsRef = mesh.material.uniforms;
+      uniformsRef.smallNormalMapVelocity.value.set(self.randomWindVelocities[0], self.randomWindVelocities[1]);
+      uniformsRef.largeNormalMapVelocity.value.set(self.randomWindVelocities[2], self.randomWindVelocities[3]);
+      uniformsRef.waterAbsorption.value.copy(self.data.water_absorption);
+      uniformsRef.waterScattering.value.copy(self.data.water_scattering);
+      uniformsRef.waterMieG.value = self.data.water_mie_g;
+      uniformsRef.smallNormalMapStrength.value = self.data.small_normal_map_strength;
+      uniformsRef.largeNormalMapStrength.value = self.data.large_normal_map_strength;
+      uniformsRef.linearScatteringHeightOffset.value = self.data.linear_scattering_height_offset;
+      uniformsRef.linearScatteringTotalScatteringWaveHeight.value = self.data.linear_scattering_total_wave_height;
+      uniformsRef.patchDataSize.value = self.data.patch_data_size;
+      uniformsRef.chop.value = self.data.chop;
+      //sizeOfOceanPatch stays as base patchSize for consistent world-space normal-map UV scaling
     }
-  }
+    //Tile geometry spans [0, tileSize]; placing at gx*tileSize centers the 4×4 ring on the camera
+    self.oceanPatches.push(new AWater.AOcean.OceanPatch(
+      self,
+      new THREE.Vector3(gx * tileSize, self.heightOffset, gy * tileSize),
+      oceanPatchGeometryInstances[key],
+      instanceIterations[key],
+      k
+    ));
+    instanceIterations[key] += 1;
+  });
 
   this.numberOfPatches = this.oceanPatches.length;
+  this.numCells = numCells;
+  this.ringCount = ringCount;
   this.globalCameraPosition = new THREE.Vector3();
-  const patchOffsetMatrix = new THREE.Matrix4();
   const oceanPatchTranslationMatrices = [];
   for(let i = 0; numOceanPatches = self.oceanPatches.length, i < numOceanPatches; ++i){
     oceanPatchTranslationMatrices.push(new THREE.Matrix4());
   }
+  //Snapped camera offset (reused each frame, avoids allocation)
+  const ringSnapX = new Float64Array(1);
+  const ringSnapZ = new Float64Array(1);
   const directionalLightDirection = new THREE.Vector3();
   const reflectionVPMatrix = new THREE.Matrix4();
   const cameraWorldDirection = new THREE.Vector3();
@@ -456,11 +419,22 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
     //Update the state of our ocean grid
     self.time = time;
+
+    //Compute a single snapped camera offset shared by all rings.
+    //Snapping at ring 0's cell size prevents the mesh from sliding continuously over the
+    //displacement field (which would make the wave texture and surface detail drift at
+    //different apparent speeds as the camera moves). All rings use the same offset so
+    //their shared boundaries stay perfectly aligned — using per-ring granularities would
+    //cause gaps since ring k and ring k+1 would snap to different values.
+    const snapCellSize = self.patchSize / self.numCells;
+    ringSnapX[0] = Math.floor(self.globalCameraPosition.x / snapCellSize) * snapCellSize;
+    ringSnapZ[0] = Math.floor(self.globalCameraPosition.z / snapCellSize) * snapCellSize;
+
     for(let i = 0; numOceanPatches = self.oceanPatches.length, i < numOceanPatches; ++i){
       const oceanPatch = self.oceanPatches[i];
-      const xOffset = oceanPatch.initialPosition.x + self.globalCameraPosition.x;
+      const xOffset = oceanPatch.initialPosition.x + ringSnapX[0];
       const yOffset = oceanPatch.initialPosition.y;
-      const zOffset = oceanPatch.initialPosition.z + self.globalCameraPosition.z;
+      const zOffset = oceanPatch.initialPosition.z + ringSnapZ[0];
       const translationMatrix = oceanPatchTranslationMatrices[i];
       translationMatrix.makeTranslation(xOffset, yOffset, zOffset);
       self.oceanPatches[i].instanceMeshRef.setMatrixAt(oceanPatch.instanceID, translationMatrix);

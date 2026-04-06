@@ -6,6 +6,7 @@ attribute vec3 bitangent;
 varying vec2 vUv;
 varying vec2 vWorldXZ;
 varying vec3 vPosition;
+varying vec3 vDisplacedPosition;
 varying vec3 vTangent;
 varying vec3 vBitangent;
 varying vec3 vInView;
@@ -33,20 +34,17 @@ void main() {
   float distanceToVertex = distance(cameraPosition.xyz, worldPositionOfVertex.xyz);
   vec2 worldXZ = worldPositionOfVertex.xz;
 
-  //Fade FFT displacement proportional to mesh LOD to prevent vertex-density aliasing
-  //Matches LOD curve: full detail near camera, tapers as tessellation drops
-  float lodFactor = clamp(1.0 - distanceToVertex / (sizeOfOceanPatch * 7.0), 0.0, 1.0);
-  float displacementFade = mix(0.15, 1.0, lodFactor * lodFactor);
-
-  //Sample per-cascade displacements at world-space UVs (no fract — seamless tiling across tile boundaries)
+  //Per-cascade displacement fade: fine cascades fade out at distance so coarse mesh
+  //tessellation doesn't have to follow sub-mesh-resolution wave shapes.
+  //Each cascade fades over 10x its patch size — same ratio as fragment normal weighting.
   vec3 displacement = vec3(0.0);
   displacement += texture2D(cascadeDisplacementTextures[0], worldXZ / cascadePatchSizes[0]).xyz;
   displacement += texture2D(cascadeDisplacementTextures[1], worldXZ / cascadePatchSizes[1]).xyz;
-  displacement += texture2D(cascadeDisplacementTextures[2], worldXZ / cascadePatchSizes[2]).xyz;
-  displacement += texture2D(cascadeDisplacementTextures[3], worldXZ / cascadePatchSizes[3]).xyz;
-  displacement += texture2D(cascadeDisplacementTextures[4], worldXZ / cascadePatchSizes[4]).xyz;
-  displacement += texture2D(cascadeDisplacementTextures[5], worldXZ / cascadePatchSizes[5]).xyz;
-  displacement *= waveHeightMultiplier * displacementFade;
+  displacement += clamp(1.0 - distanceToVertex / (cascadePatchSizes[2] * 10.0), 0.0, 1.0) * texture2D(cascadeDisplacementTextures[2], worldXZ / cascadePatchSizes[2]).xyz;
+  displacement += clamp(1.0 - distanceToVertex / (cascadePatchSizes[3] * 10.0), 0.0, 1.0) * texture2D(cascadeDisplacementTextures[3], worldXZ / cascadePatchSizes[3]).xyz;
+  displacement += clamp(1.0 - distanceToVertex / (cascadePatchSizes[4] * 10.0), 0.0, 1.0) * texture2D(cascadeDisplacementTextures[4], worldXZ / cascadePatchSizes[4]).xyz;
+  displacement += clamp(1.0 - distanceToVertex / (cascadePatchSizes[5] * 10.0), 0.0, 1.0) * texture2D(cascadeDisplacementTextures[5], worldXZ / cascadePatchSizes[5]).xyz;
+  displacement *= waveHeightMultiplier;
   displacement.x *= -chop;
   displacement.z *= -chop;
 
@@ -55,6 +53,7 @@ void main() {
   //Set up our varyings
   vUv = uv;
   vWorldXZ = worldPositionOfVertex.xz;
+  vDisplacedPosition = offsetPosition;
   vTangent = tangent;
   vBitangent = bitangent;
   vPosition = position;
