@@ -39,13 +39,19 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.refractionClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, -1, 0), new THREE.Vector3(0, this.heightOffset, 0));
   this.foamClipPlane = new THREE.Plane();
   this.foamClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, -1, 0), new THREE.Vector3(0, this.heightOffset + 1.0, 0));
-  const randomAngle1 = Math.random() * 2.0 * Math.PI;
-  const randomAngle2 = Math.random() * 2.0 * Math.PI;
+  //Normal map scroll velocities: wind-relative fixed angles (Crest-style).
+  //Both maps scroll in the same general direction with slight non-perpendicular offsets.
+  //Random angles caused the maps to sometimes scroll nearly perpendicular/opposite,
+  //creating a plaid cross-hatch interference pattern.
+  const windAngle = Math.atan2(this.windVelocity.y, this.windVelocity.x);
+  const windSpeed = Math.sqrt(this.windVelocity.x ** 2 + this.windVelocity.y ** 2);
+  const nmSpeed0 = windSpeed * 0.04; // 4% of wind speed, primary map
+  const nmSpeed1 = windSpeed * 0.025; // 2.5% of wind speed, secondary map
   this.randomWindVelocities = [
-    2.0 * Math.cos(randomAngle1),
-    2.0 * Math.sin(randomAngle1),
-    1.0 * Math.cos(randomAngle2),
-    1.0 * Math.sin(randomAngle2),
+    nmSpeed0 * Math.cos(windAngle + 0.34), // ~20deg off wind
+    nmSpeed0 * Math.sin(windAngle + 0.34),
+    nmSpeed1 * Math.cos(windAngle - 0.20), // ~12deg off wind, other side
+    nmSpeed1 * Math.sin(windAngle - 0.20),
   ];
   this.raycaster = new THREE.Raycaster(
     new THREE.Vector3(0.0,100.0,0.0),
@@ -54,6 +60,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.cameraFrustum = new THREE.Frustum();
 
   this.brightestDirectionalLight = false;
+  this.directionalLights = [];
 
   let self = this;
 
@@ -358,6 +365,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       uniformsRef.linearScatteringTotalScatteringWaveHeight.value = self.data.linear_scattering_total_wave_height;
       uniformsRef.patchDataSize.value = self.data.patch_data_size;
       uniformsRef.chop.value = self.data.chop;
+      uniformsRef.ringIndex.value = k;
       //sizeOfOceanPatch stays as base patchSize for consistent world-space normal-map UV scaling
     }
     //Tile geometry spans [0, tileSize]; placing at gx*tileSize centers the 4×4 ring on the camera
@@ -386,16 +394,19 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   const reflectionVPMatrix = new THREE.Matrix4();
   const cameraWorldDirection = new THREE.Vector3();
   this.tick = function(time){
-    //Update the brightest directional light if we don't have one
-    if(this.brightestDirectionalLight === false){
+    //Update directional lights list (collect all in scene)
+    if(self.directionalLights.length === 0){
       for(let i = 0, numItems = self.scene.children.length; i < numItems; ++i){
         let child = self.scene.children[i];
-        if(child.type === 'DirectionalLight' &&
-        (this.brightestDirectionalLight === false ||
-          child.intensity > self.brightestDirectionalLight.intensity)){
-          self.brightestDirectionalLight = child;
+        if(child.type === 'DirectionalLight'){
+          self.directionalLights.push(child);
         }
       }
+    }
+
+    //Keep brightestDirectionalLight for backward compatibility
+    if(this.brightestDirectionalLight === false && self.directionalLights.length > 0){
+      self.brightestDirectionalLight = self.directionalLights[0];
     }
 
     //Copy the camera position in the world...
@@ -559,6 +570,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       const uniformsRef = oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms;
       for(let c = 0; c < 6; c++){
         uniformsRef.cascadeDisplacementTextures.value[c] = self.oceanHeightComposer.cascadeDisplacementTextures[c];
+        uniformsRef.cascadeSlopeTextures.value[c] = self.oceanHeightComposer.cascadeSlopeTextures[c];
       }
       uniformsRef.cascadePatchSizes.value = self.oceanHeightComposer._cascadePatchSizes;
       uniformsRef.waveHeightMultiplier.value = self.oceanHeightComposer.waveHeightMultiplier;
@@ -582,18 +594,50 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       uniformsRef.foamRenderMap.value = self.foamRenderMap;
       uniformsRef.exclusionMap.value = self.exclusionMap;
       uniformsRef.baseHeightOffset.value = self.heightOffset;
-      if(self.brightestDirectionalLight){
-        const intensity = brightestDirectionalLight.intensity;
-        const color = brightestDirectionalLight.color;
+
+      // Update all directional lights for ambient scattering
+      if(self.directionalLights.length > 0){
+        // Keep main light for backward compat
+        const mainLight = self.directionalLights[0];
+        const intensity = mainLight.intensity;
+        const color = mainLight.color;
         uniformsRef.brightestDirectionalLight.value.set(color.r * intensity, color.g * intensity, color.b * intensity);
-        directionalLightDirection.set(brightestDirectionalLight.position.x, brightestDirectionalLight.position.y, brightestDirectionalLight.position.z);
-        directionalLightDirection.sub(brightestDirectionalLight.target.position).negate().normalize();
+        directionalLightDirection.set(mainLight.position.x, mainLight.position.y, mainLight.position.z);
+        directionalLightDirection.sub(mainLight.target.position).negate().normalize();
         uniformsRef.brightestDirectionalLightDirection.value.set(directionalLightDirection.x, directionalLightDirection.y, directionalLightDirection.z);
+
+        // Pass all lights as arrays
+        const lightCount = Math.min(self.directionalLights.length, 8); // Cap at 8 lights for perf
+        if(uniformsRef.ambientLightColors && uniformsRef.ambientLightDirections && uniformsRef.ambientLightCount){
+          uniformsRef.ambientLightCount.value = lightCount;
+          for(let l = 0; l < lightCount; ++l){
+            const light = self.directionalLights[l];
+            const lIntensity = light.intensity;
+            const lColor = light.color;
+            uniformsRef.ambientLightColors.value[l].set(lColor.r * lIntensity, lColor.g * lIntensity, lColor.b * lIntensity);
+
+            directionalLightDirection.set(light.position.x, light.position.y, light.position.z);
+            directionalLightDirection.sub(light.target.position).negate().normalize();
+            uniformsRef.ambientLightDirections.value[l].set(directionalLightDirection.x, directionalLightDirection.y, directionalLightDirection.z);
+          }
+        }
       }
       else{
         uniformsRef.brightestDirectionalLight.value.set(1.0,1.0,1.0);
       }
       uniformsRef.t.value = time * 0.001;
+
+      //Sky ambient color from a-starry-sky's y-axis hemisphere light (pointing straight up).
+      //This is view-independent and color-correct at all times of day.
+      if(self.skyDirector && self.skyDirector.lightingManager){
+        const yLight = self.skyDirector.lightingManager.yAxisHemisphericalLight;
+        const skyIntensity = yLight.intensity;
+        uniformsRef.skyAmbientColor.value.set(
+          yLight.color.r * skyIntensity,
+          yLight.color.g * skyIntensity,
+          yLight.color.b * skyIntensity
+        );
+      }
 
       //Sync atmospheric perspective uniforms from a-starry-sky
       if(self.atmosphericPerspectiveEnabled && self.skyDirector){

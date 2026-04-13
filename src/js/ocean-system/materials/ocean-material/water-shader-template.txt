@@ -4,7 +4,19 @@
 AWater.AOcean.Materials.Ocean.waterMaterial = {
   uniforms: {
     cascadeDisplacementTextures: {value: [null, null, null, null, null, null]},
+    cascadeSlopeTextures: {value: [null, null, null, null, null, null]},
     cascadePatchSizes: {value: [1000.0, 250.0, 64.0, 16.0, 4.0, 1.0]},
+    //Per-cascade spatial UV offsets to break visual tiling periodicity.
+    //Golden-ratio derived fractions of each cascade's patch size — different per cascade
+    //so tile seams never align with each other.
+    cascadeSpatialOffsets: {value: [
+      new THREE.Vector2(382.0,  618.0),  //C0 1000m: 0.382L, 0.618L
+      new THREE.Vector2( 59.0,  154.5),  //C1  250m: 0.236L, 0.618L
+      new THREE.Vector2( 54.7,   15.1),  //C2   64m: 0.854L, 0.236L
+      new THREE.Vector2(  7.55,  13.7),  //C3   16m: 0.472L, 0.854L
+      new THREE.Vector2(  0.36,   1.89), //C4    4m: 0.090L, 0.472L
+      new THREE.Vector2(  0.708,  0.09)  //C5    1m: 0.708L, 0.090L
+    ]},
     waveHeightMultiplier: {type: 'f', value: 1.0},
     smallNormalMap: {type: 't', value: null},
     largeNormalMap: {type: 't', value: null},
@@ -28,6 +40,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     inverseViewMatrix: {type: 'mat4', value: new THREE.Matrix4()},
     reflectionViewProjectionMatrix: {type: 'mat4', value: new THREE.Matrix4()},
     sizeOfOceanPatch: {type: 'f', value: 1.0},
+    ringIndex: {type: 'i', value: 0},
     baseHeightOffset: {type: 'f', value: 0.0},
     fogNear: {type: 'f', value: null},
     fogFar: {type: 'f', value: null},
@@ -36,11 +49,22 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     t: {type: 'f', value: 0.0},
     brightestDirectionalLight: {type: 'vec3', value: new THREE.Vector3(1.0,1.0,1.0)},
     brightestDirectionalLightDirection: {type: 'vec3', value: new THREE.Vector3(1.0,1.0,1.0)},
+    // Ambient directional lights (for water scattering)
+    ambientLightCount: {type: 'i', value: 0},
+    ambientLightColors: {type: 'vec3', value: [new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0)]},
+    ambientLightDirections: {type: 'vec3', value: [new THREE.Vector3(0,1,0), new THREE.Vector3(1,0,0), new THREE.Vector3(0,-1,0), new THREE.Vector3(-1,0,0), new THREE.Vector3(0,0,1), new THREE.Vector3(0,0,-1), new THREE.Vector3(0,1,0), new THREE.Vector3(0,1,0)]},
+    skyAmbientColor: {type: 'vec3', value: new THREE.Vector3(0.1, 0.15, 0.2)},
     largeNormalMapStrength: {type: 'f', value: 0.45},
     smallNormalMapStrength: {type: 'f', value: 0.35},
     waterAbsorption: {type: 'vec3', value: new THREE.Vector3(0.018, 0.007, 0.005)},
     waterScattering: {type: 'vec3', value: new THREE.Vector3(0.0015, 0.0018, 0.002)},
     waterMieG: {type: 'f', value: 0.7},
+    // New physically-based scattering parameters
+    k1ScatterAmount: {type: 'f', value: 0.5},
+    k2ViewDependence: {type: 'f', value: 0.3},
+    k3DirectScatter: {type: 'f', value: 0.2},
+    k4ParallaxScatter: {type: 'f', value: 0.1},
+    fresnelAbsorptionAmount: {type: 'f', value: 1.0},
     linearScatteringHeightOffset: {type: 'f', value: 10.0},
     linearScatteringTotalScatteringWaveHeight: {type: 'f', value: 20.0},
     patchDataSize: {type: 'f', value: 1024.0},

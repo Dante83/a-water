@@ -17,6 +17,7 @@ varying mat3 vNormalMatrix;
 uniform float sizeOfOceanPatch;
 uniform sampler2D cascadeDisplacementTextures[6];
 uniform float cascadePatchSizes[6];
+uniform vec2 cascadeSpatialOffsets[6];
 uniform float waveHeightMultiplier;
 uniform float chop;
 
@@ -38,12 +39,12 @@ void main() {
   //tessellation doesn't have to follow sub-mesh-resolution wave shapes.
   //Each cascade fades over 10x its patch size — same ratio as fragment normal weighting.
   vec3 displacement = vec3(0.0);
-  displacement += texture2D(cascadeDisplacementTextures[0], worldXZ / cascadePatchSizes[0]).xyz;
-  displacement += texture2D(cascadeDisplacementTextures[1], worldXZ / cascadePatchSizes[1]).xyz;
-  displacement += clamp(1.0 - distanceToVertex / (cascadePatchSizes[2] * 10.0), 0.0, 1.0) * texture2D(cascadeDisplacementTextures[2], worldXZ / cascadePatchSizes[2]).xyz;
-  displacement += clamp(1.0 - distanceToVertex / (cascadePatchSizes[3] * 10.0), 0.0, 1.0) * texture2D(cascadeDisplacementTextures[3], worldXZ / cascadePatchSizes[3]).xyz;
-  displacement += clamp(1.0 - distanceToVertex / (cascadePatchSizes[4] * 10.0), 0.0, 1.0) * texture2D(cascadeDisplacementTextures[4], worldXZ / cascadePatchSizes[4]).xyz;
-  displacement += clamp(1.0 - distanceToVertex / (cascadePatchSizes[5] * 10.0), 0.0, 1.0) * texture2D(cascadeDisplacementTextures[5], worldXZ / cascadePatchSizes[5]).xyz;
+  displacement += texture2D(cascadeDisplacementTextures[0], (worldXZ + cascadeSpatialOffsets[0]) / cascadePatchSizes[0]).xyz;
+  displacement += texture2D(cascadeDisplacementTextures[1], (worldXZ + cascadeSpatialOffsets[1]) / cascadePatchSizes[1]).xyz;
+  displacement += clamp(1.0 - distanceToVertex / (cascadePatchSizes[2] * 10.0), 0.0, 1.0) * texture2D(cascadeDisplacementTextures[2], (worldXZ + cascadeSpatialOffsets[2]) / cascadePatchSizes[2]).xyz;
+  displacement += clamp(1.0 - distanceToVertex / (cascadePatchSizes[3] * 10.0), 0.0, 1.0) * texture2D(cascadeDisplacementTextures[3], (worldXZ + cascadeSpatialOffsets[3]) / cascadePatchSizes[3]).xyz;
+  displacement += 0.3 * clamp(1.0 - distanceToVertex / (cascadePatchSizes[4] * 10.0), 0.0, 1.0) * texture2D(cascadeDisplacementTextures[4], (worldXZ + cascadeSpatialOffsets[4]) / cascadePatchSizes[4]).xyz;
+  displacement += 0.1 * clamp(1.0 - distanceToVertex / (cascadePatchSizes[5] * 10.0), 0.0, 1.0) * texture2D(cascadeDisplacementTextures[5], (worldXZ + cascadeSpatialOffsets[5]) / cascadePatchSizes[5]).xyz;
   displacement *= waveHeightMultiplier;
   displacement.x *= -chop;
   displacement.z *= -chop;

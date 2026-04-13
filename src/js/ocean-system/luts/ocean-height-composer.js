@@ -31,6 +31,16 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
     '  );',
     '}'
   ].join('\n');
+  //Slope pack shader — reads packed butterfly IFFT output (R=dh/dx, G=dh/dz) into stable RT
+  const slopePackFragShader = [
+    'uniform sampler2D slopeTexture;',
+    'uniform vec2 resolution;',
+    'void main(){',
+    '  vec2 uv = gl_FragCoord.xy / resolution.xy;',
+    '  vec2 slopes = texture2D(slopeTexture, uv).rg;',
+    '  gl_FragColor = vec4(slopes.r, slopes.g, 0.0, 1.0);',
+    '}'
+  ].join('\n');
 
   const cascadeCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   const cascadeQuadGeo = new THREE.PlaneGeometry(2, 2);
@@ -48,6 +58,20 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
   });
   this._packScene = new THREE.Scene();
   this._packScene.add(new THREE.Mesh(cascadeQuadGeo, this._packMaterial));
+
+  this._slopePackMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+      slopeTexture: {type: 't', value: null},
+      resolution: {type: 'v2', value: new THREE.Vector2(this.baseTextureWidth, this.baseTextureHeight)}
+    },
+    vertexShader: packVertShader,
+    fragmentShader: slopePackFragShader,
+    depthTest: false,
+    depthWrite: false
+  });
+  this._slopePackScene = new THREE.Scene();
+  this._slopePackScene.add(new THREE.Mesh(cascadeQuadGeo.clone(), this._slopePackMaterial));
+
   this._cascadeCamera = cascadeCamera;
   this._cascadePatchSizes = this.OceanMaterialHeightBandLibrary.cascadePatchSizes;
   this.waveHeightMultiplier = data.wave_scale_multiple;
@@ -72,6 +96,17 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
     this.cascadeDisplacementTextures.push(rt.texture);
   }
 
+  //Stable slope output RTs — one per cascade, RG = (dh/dx, dh/dz)
+  this.cascadeSlopeTargets = [];
+  this.cascadeSlopeTextures = [];
+  for(let c = 0; c < this.numCascades; c++){
+    const rt = new THREE.WebGLRenderTarget(this.baseTextureWidth, this.baseTextureHeight, cascadeRTOptions);
+    rt.texture.wrapS = THREE.RepeatWrapping;
+    rt.texture.wrapT = THREE.RepeatWrapping;
+    this.cascadeSlopeTargets.push(rt);
+    this.cascadeSlopeTextures.push(rt.texture);
+  }
+
   let self = this;
   this.tick = function(){
     //Pack per-cascade xyz displacements into individual RGB render targets.
@@ -83,6 +118,14 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
       self.renderer.setRenderTarget(self.cascadeDisplacementTargets[c]);
       self.renderer.render(self._packScene, self._cascadeCamera);
     }
+
+    //Blit slope FFT results into stable slope RTs (R=dh/dx, G=dh/dz).
+    for(let c = 0; c < self.numCascades; c++){
+      self._slopePackMaterial.uniforms.slopeTexture.value = self.OceanMaterialHeightBandLibrary.slopesPerCascade[c];
+      self.renderer.setRenderTarget(self.cascadeSlopeTargets[c]);
+      self.renderer.render(self._slopePackScene, self._cascadeCamera);
+    }
+
     self.renderer.setRenderTarget(null);
   };
 }

@@ -9,14 +9,15 @@ AWater.AOcean.Materials.FFTWaves.hkShaderMaterialData = {
     uTime: {type: 'f', value: 0.0}
   },
 
-  fragmentShader: function(isXAxis = false, isYAxis = false){
+  fragmentShader: function(isXAxis = false, isYAxis = false, isSlope = false){
     let originalGLSL = [
       {fragment_glsl}
     ];
 
     let updatedLines = [];
     for(let i = 0, numLines = originalGLSL.length; i < numLines; ++i){
-      let updatedGLSL = originalGLSL[i].replace(/\$isXAxis/g, isXAxis ? '1' : '0');
+      let updatedGLSL = originalGLSL[i].replace(/\$isSlope/g, isSlope ? '1' : '0');
+      updatedGLSL = updatedGLSL.replace(/\$isXAxis/g, isXAxis ? '1' : '0');
       updatedGLSL = updatedGLSL.replace(/\$isYAxis/g, isYAxis ? '1' : '0');
       //Otherwise is z-axis, and sure, it is true these are dependent values but this is just easier
 

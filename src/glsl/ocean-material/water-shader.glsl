@@ -13,12 +13,15 @@ varying mat3 vNormalMatrix;
 
 //uniform vec3 cameraDirection;
 uniform float sizeOfOceanPatch;
+uniform int ringIndex;
 uniform float chop;
 uniform float largeNormalMapStrength;
 uniform float smallNormalMapStrength;
 uniform float baseHeightOffset;
 uniform sampler2D cascadeDisplacementTextures[6];
+uniform sampler2D cascadeSlopeTextures[6];
 uniform float cascadePatchSizes[6];
+uniform vec2 cascadeSpatialOffsets[6];
 uniform float waveHeightMultiplier;
 uniform sampler2D smallNormalMap;
 uniform sampler2D largeNormalMap;
@@ -52,9 +55,22 @@ uniform vec2 largeNormalMapVelocity;
 
 uniform vec3 brightestDirectionalLight;
 uniform vec3 brightestDirectionalLightDirection;
+uniform vec3 skyAmbientColor;
 uniform vec3 waterAbsorption;
 uniform vec3 waterScattering;
 uniform float waterMieG;
+
+// Ambient directional lights (for scattering contributions)
+uniform int ambientLightCount;
+uniform vec3 ambientLightColors[8];
+uniform vec3 ambientLightDirections[8];
+
+// New physically-based scattering parameters
+uniform float k1ScatterAmount;
+uniform float k2ViewDependence;
+uniform float k3DirectScatter;
+uniform float k4ParallaxScatter;
+uniform float fresnelAbsorptionAmount;
 
 uniform float linearScatteringHeightOffset;
 uniform float linearScatteringTotalScatteringWaveHeight;
@@ -135,6 +151,22 @@ vec3 MyAESFilmicToneMapping(vec3 color) {
   return clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), 0.0, 1.0);
 }
 
+//GGX microfacet normal distribution (D term)
+//From Atlas GDC 2019 / Cook-Torrance: cos_theta = dot(N, H), alpha = roughness
+float ggxDistribution(float cosTheta, float alpha) {
+  float a2 = alpha * alpha;
+  float d = 1.0 + (a2 - 1.0) * cosTheta * cosTheta;
+  return a2 / (3.14159265 * d * d);
+}
+
+//Smith masking-shadowing (G term) — Beckmann rational approximation
+//cos_theta is either NdotL or NdotV depending on which term you're computing
+float smithMaskingShadowing(float cosTheta, float alpha) {
+  float a = cosTheta / (alpha * sqrt(max(1.0 - cosTheta * cosTheta, 1e-6)));
+  float a2 = a * a;
+  return a < 1.6 ? (1.0 - 1.259 * a + 0.396 * a2) / (3.535 * a + 2.181 * a2) : 0.0;
+}
+
 //Henyey-Greenstein phase function for Mie scattering in water
 //g = asymmetry parameter (0.85-0.95 for ocean particles, strongly forward-scattering)
 float waterMiePhase(float cosTheta, float g){
@@ -148,6 +180,78 @@ float waterMiePhase(float cosTheta, float g){
 float fresnelAirToWater(float cosTheta){
   float r0 = 0.02;
   return r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
+}
+
+// New physically-based scattering terms
+// H(x) - Heaviside step function (0 if x < 0, 1 if x >= 0)
+float heaviside(float x) {
+  return x >= 0.0 ? 1.0 : 0.0;
+}
+
+// Term 1: k₁ H ⟨ωᵢ · -ωₒ⟩⁴(0.5 - 0.5(ωᵢ · ωₙ))³
+// Wave height scattering — H is wave height, backlit + normal modulation
+float scatterTerm1(vec3 sunDir, vec3 viewDir, vec3 normal, float waveHeight, float k1) {
+  // H: wave height drives scattering amount (reference: displacementFoam.y * _HeightModifier)
+  float H = max(0.0, waveHeight);
+
+  // ⟨ωᵢ · -ωₒ⟩⁴: clamped backlit dot raised to 4th power
+  float backlitDot = max(dot(sunDir, -viewDir), 0.0);
+  float backlitTerm = backlitDot * backlitDot * backlitDot * backlitDot; // pow 4
+
+  // (0.5 - 0.5(ωᵢ · ωₙ))³: sun-normal angle modulation
+  float sunNormalDot = dot(sunDir, normal);
+  float normalModulation = pow(0.5 - 0.5 * sunNormalDot, 3.0);
+
+  return k1 * H * backlitTerm * normalModulation;
+}
+
+// Term 2: k₂(ωₒ · ωₙ)²
+// View-dependent scattering from surface orientation
+// Bright when normal faces camera, dark at grazing angles
+float scatterTerm2(vec3 viewDir, vec3 normal, float k2) {
+  // Use negative view direction: points FROM camera TO surface
+  // This makes it positive when normal faces camera
+  float viewNormalDot = max(dot(-viewDir, normal), 0.0);
+  return k2 * viewNormalDot * viewNormalDot;
+}
+
+// Fresnel denominator: 1/(1 + A(ωᵢ))
+// A(ωᵢ) based on absorption at incident angle
+float fresnelAbsorption(vec3 sunDir, vec3 normal, float absorptionAmount) {
+  float sunNormalDot = max(dot(sunDir, normal), 0.0);
+  float A = absorptionAmount * (1.0 - sunNormalDot);
+  return 1.0 / (1.0 + A);
+}
+
+// Term 3: k₃(ωᵢ · ωₙ)
+// Direct sun-normal scattering
+float scatterTerm3(vec3 sunDir, vec3 normal, float k3) {
+  return k3 * max(dot(sunDir, normal), 0.0);
+}
+
+// Term 4: k₄ P_f
+// P_f = bubble density (foam/turbulence driven)
+float scatterTerm4(float bubbleDensity, float k4) {
+  return k4 * bubbleDensity;
+}
+
+// Accumulate ambient light scattering from all directional lights
+vec3 ambientLightScattering(vec3 viewDir, vec3 normal, float waveElevation) {
+  vec3 totalAmbientScatter = vec3(0.0);
+
+  for(int i = 0; i < ambientLightCount && i < 8; ++i) {
+    // Simple ambient contribution: backlit scattering weighted by light color
+    float ambientBacklit = max(-dot(viewDir, ambientLightDirections[i]), 0.0);
+    ambientBacklit *= ambientBacklit; // Square for contrast
+
+    // Modulate by wave elevation (higher crests scatter more)
+    float ambientTerm = ambientBacklit * waveElevation;
+
+    // Add contribution from this light
+    totalAmbientScatter += ambientLightColors[i] * ambientTerm;
+  }
+
+  return totalAmbientScatter;
 }
 
 #if($caustics_enabled)
@@ -260,193 +364,134 @@ void main(){
   float distanceToWorldPosition = distance(worldPosition.xyz, cameraPosition.xyz);
   float LOD = pow(2.0, clamp(7.0 - (distanceToWorldPosition / (sizeOfOceanPatch * 7.0)), 2.0, 7.0));
 
-  //Compute surface normal inline from per-cascade displacements via central differences.
-  //Each cascade is sampled at its own world-space UV — no tile-boundary seams.
-  //Accumulate gradients dPdx/dPdz across all cascades, then compute the cross-product normal.
+  //Analytical surface normals from FFT slope textures.
+  //Each cascade's slope texture contains R=dh/dx, G=dh/dz computed in the frequency domain
+  //(h_k spectrum multiplied by i*kx / i*kz, then IFFTed). This gives exact gradients at ALL
+  //frequencies with zero finite-difference aliasing — replaces the old Sobel approach that
+  //was limited to cascades 0-1 due to Nyquist constraints.
   float normalLodFactor = clamp(1.0 - distanceToWorldPosition / (sizeOfOceanPatch * 7.0), 0.0, 1.0);
   float normalDetailFade = mix(0.15, 1.0, normalLodFactor * normalLodFactor);
-  vec3 totalDPdx = vec3(0.0);
-  vec3 totalDPdz = vec3(0.0);
-  vec2 rawDdxXZ = vec2(0.0);
-  vec2 rawDdzXZ = vec2(0.0);
 
-  //Cascade 0 — Sobel 3x3 for normals; simple central diff for Jacobian
+  //Central differences on displacement for Jacobian and normals — cascades 0-1 only.
+  //Computes full 3D displacement derivatives (not just XZ) so the surface normal
+  //can be computed from the cross product of displaced tangent vectors (Crest-style).
+  //Using finite differences for ALL components ensures height and chop derivatives
+  //are consistent — mixing analytical FFT slopes with finite-difference chop derivatives
+  //creates a precision mismatch that produces incorrect normals.
+  vec3 rawDdx = vec3(0.0);
+  vec3 rawDdz = vec3(0.0);
+  //Cascade 0 height slope saved separately for macro normal (specular)
+  vec2 cascade0HeightSlope;
   {
     float eps = 1.0 / patchDataSize;
     float worldStep = cascadePatchSizes[0] / patchDataSize;
-    vec2 uv = vWorldXZ / cascadePatchSizes[0];
-    vec3 rawBL = texture2D(cascadeDisplacementTextures[0], uv + vec2(-eps, -eps)).xyz;
-    vec3 rawB  = texture2D(cascadeDisplacementTextures[0], uv + vec2( 0.0, -eps)).xyz;
-    vec3 rawBR = texture2D(cascadeDisplacementTextures[0], uv + vec2( eps, -eps)).xyz;
-    vec3 rawL  = texture2D(cascadeDisplacementTextures[0], uv + vec2(-eps,  0.0)).xyz;
-    vec3 rawR  = texture2D(cascadeDisplacementTextures[0], uv + vec2( eps,  0.0)).xyz;
-    vec3 rawTL = texture2D(cascadeDisplacementTextures[0], uv + vec2(-eps,  eps)).xyz;
-    vec3 rawT  = texture2D(cascadeDisplacementTextures[0], uv + vec2( 0.0,  eps)).xyz;
-    vec3 rawTR = texture2D(cascadeDisplacementTextures[0], uv + vec2( eps,  eps)).xyz;
-    rawDdxXZ += (rawR.xz - rawL.xz) / (2.0 * worldStep);
-    rawDdzXZ += (rawT.xz - rawB.xz) / (2.0 * worldStep);
-    vec3 dBL = rawBL; dBL.x *= -chop; dBL.z *= -chop;
-    vec3 dB  = rawB;  dB.x  *= -chop; dB.z  *= -chop;
-    vec3 dBR = rawBR; dBR.x *= -chop; dBR.z *= -chop;
-    vec3 dL  = rawL;  dL.x  *= -chop; dL.z  *= -chop;
-    vec3 dR  = rawR;  dR.x  *= -chop; dR.z  *= -chop;
-    vec3 dTL = rawTL; dTL.x *= -chop; dTL.z *= -chop;
-    vec3 dT  = rawT;  dT.x  *= -chop; dT.z  *= -chop;
-    vec3 dTR = rawTR; dTR.x *= -chop; dTR.z *= -chop;
-    totalDPdx += ((dBR + 2.0*dR + dTR) - (dBL + 2.0*dL + dTL)) / (8.0 * worldStep);
-    totalDPdz += ((dTL + 2.0*dT + dTR) - (dBL + 2.0*dB + dBR)) / (8.0 * worldStep);
+    vec2 uv = (vWorldXZ + cascadeSpatialOffsets[0]) / cascadePatchSizes[0];
+    vec3 rawL = texture2D(cascadeDisplacementTextures[0], uv + vec2(-eps,  0.0)).xyz;
+    vec3 rawR = texture2D(cascadeDisplacementTextures[0], uv + vec2( eps,  0.0)).xyz;
+    vec3 rawB = texture2D(cascadeDisplacementTextures[0], uv + vec2( 0.0, -eps)).xyz;
+    vec3 rawT = texture2D(cascadeDisplacementTextures[0], uv + vec2( 0.0,  eps)).xyz;
+    rawDdx += (rawR - rawL) / (2.0 * worldStep);
+    rawDdz += (rawT - rawB) / (2.0 * worldStep);
+    cascade0HeightSlope = vec2(rawDdx.y, rawDdz.y);
   }
-  //Cascade 1
   {
     float eps = 1.0 / patchDataSize;
     float worldStep = cascadePatchSizes[1] / patchDataSize;
-    vec2 uv = vWorldXZ / cascadePatchSizes[1];
-    vec3 rawBL = texture2D(cascadeDisplacementTextures[1], uv + vec2(-eps, -eps)).xyz;
-    vec3 rawB  = texture2D(cascadeDisplacementTextures[1], uv + vec2( 0.0, -eps)).xyz;
-    vec3 rawBR = texture2D(cascadeDisplacementTextures[1], uv + vec2( eps, -eps)).xyz;
-    vec3 rawL  = texture2D(cascadeDisplacementTextures[1], uv + vec2(-eps,  0.0)).xyz;
-    vec3 rawR  = texture2D(cascadeDisplacementTextures[1], uv + vec2( eps,  0.0)).xyz;
-    vec3 rawTL = texture2D(cascadeDisplacementTextures[1], uv + vec2(-eps,  eps)).xyz;
-    vec3 rawT  = texture2D(cascadeDisplacementTextures[1], uv + vec2( 0.0,  eps)).xyz;
-    vec3 rawTR = texture2D(cascadeDisplacementTextures[1], uv + vec2( eps,  eps)).xyz;
-    rawDdxXZ += (rawR.xz - rawL.xz) / (2.0 * worldStep);
-    rawDdzXZ += (rawT.xz - rawB.xz) / (2.0 * worldStep);
-    vec3 dBL = rawBL; dBL.x *= -chop; dBL.z *= -chop;
-    vec3 dB  = rawB;  dB.x  *= -chop; dB.z  *= -chop;
-    vec3 dBR = rawBR; dBR.x *= -chop; dBR.z *= -chop;
-    vec3 dL  = rawL;  dL.x  *= -chop; dL.z  *= -chop;
-    vec3 dR  = rawR;  dR.x  *= -chop; dR.z  *= -chop;
-    vec3 dTL = rawTL; dTL.x *= -chop; dTL.z *= -chop;
-    vec3 dT  = rawT;  dT.x  *= -chop; dT.z  *= -chop;
-    vec3 dTR = rawTR; dTR.x *= -chop; dTR.z *= -chop;
-    totalDPdx += ((dBR + 2.0*dR + dTR) - (dBL + 2.0*dL + dTL)) / (8.0 * worldStep);
-    totalDPdz += ((dTL + 2.0*dT + dTR) - (dBL + 2.0*dB + dBR)) / (8.0 * worldStep);
+    vec2 uv = (vWorldXZ + cascadeSpatialOffsets[1]) / cascadePatchSizes[1];
+    vec3 rawL = texture2D(cascadeDisplacementTextures[1], uv + vec2(-eps,  0.0)).xyz;
+    vec3 rawR = texture2D(cascadeDisplacementTextures[1], uv + vec2( eps,  0.0)).xyz;
+    vec3 rawB = texture2D(cascadeDisplacementTextures[1], uv + vec2( 0.0, -eps)).xyz;
+    vec3 rawT = texture2D(cascadeDisplacementTextures[1], uv + vec2( 0.0,  eps)).xyz;
+    rawDdx += (rawR - rawL) / (2.0 * worldStep);
+    rawDdz += (rawT - rawB) / (2.0 * worldStep);
   }
-  //Cascade 2 (L=64m) — distance-weighted: fades out by 640m
-  {
-    float cascadeWeight2 = clamp(1.0 - distanceToWorldPosition / (cascadePatchSizes[2] * 10.0), 0.0, 1.0);
-    if(cascadeWeight2 > 0.001){
-      float eps = 1.0 / patchDataSize;
-      float worldStep = cascadePatchSizes[2] / patchDataSize;
-      vec2 uv = vWorldXZ / cascadePatchSizes[2];
-      vec3 rawBL = texture2D(cascadeDisplacementTextures[2], uv + vec2(-eps, -eps)).xyz;
-      vec3 rawB  = texture2D(cascadeDisplacementTextures[2], uv + vec2( 0.0, -eps)).xyz;
-      vec3 rawBR = texture2D(cascadeDisplacementTextures[2], uv + vec2( eps, -eps)).xyz;
-      vec3 rawL  = texture2D(cascadeDisplacementTextures[2], uv + vec2(-eps,  0.0)).xyz;
-      vec3 rawR  = texture2D(cascadeDisplacementTextures[2], uv + vec2( eps,  0.0)).xyz;
-      vec3 rawTL = texture2D(cascadeDisplacementTextures[2], uv + vec2(-eps,  eps)).xyz;
-      vec3 rawT  = texture2D(cascadeDisplacementTextures[2], uv + vec2( 0.0,  eps)).xyz;
-      vec3 rawTR = texture2D(cascadeDisplacementTextures[2], uv + vec2( eps,  eps)).xyz;
-      rawDdxXZ += cascadeWeight2 * (rawR.xz - rawL.xz) / (2.0 * worldStep);
-      rawDdzXZ += cascadeWeight2 * (rawT.xz - rawB.xz) / (2.0 * worldStep);
-      vec3 dBL = rawBL; dBL.x *= -chop; dBL.z *= -chop;
-      vec3 dB  = rawB;  dB.x  *= -chop; dB.z  *= -chop;
-      vec3 dBR = rawBR; dBR.x *= -chop; dBR.z *= -chop;
-      vec3 dL  = rawL;  dL.x  *= -chop; dL.z  *= -chop;
-      vec3 dR  = rawR;  dR.x  *= -chop; dR.z  *= -chop;
-      vec3 dTL = rawTL; dTL.x *= -chop; dTL.z *= -chop;
-      vec3 dT  = rawT;  dT.x  *= -chop; dT.z  *= -chop;
-      vec3 dTR = rawTR; dTR.x *= -chop; dTR.z *= -chop;
-      totalDPdx += cascadeWeight2 * ((dBR + 2.0*dR + dTR) - (dBL + 2.0*dL + dTL)) / (8.0 * worldStep);
-      totalDPdz += cascadeWeight2 * ((dTL + 2.0*dT + dTR) - (dBL + 2.0*dB + dBR)) / (8.0 * worldStep);
-    }
-  }
-  //Cascade 3 (L=16m) — distance-weighted: fades out by 160m
-  {
-    float cascadeWeight3 = clamp(1.0 - distanceToWorldPosition / (cascadePatchSizes[3] * 10.0), 0.0, 1.0);
-    if(cascadeWeight3 > 0.001){
-      float eps = 1.0 / patchDataSize;
-      float worldStep = cascadePatchSizes[3] / patchDataSize;
-      vec2 uv = vWorldXZ / cascadePatchSizes[3];
-      vec3 rawBL = texture2D(cascadeDisplacementTextures[3], uv + vec2(-eps, -eps)).xyz;
-      vec3 rawB  = texture2D(cascadeDisplacementTextures[3], uv + vec2( 0.0, -eps)).xyz;
-      vec3 rawBR = texture2D(cascadeDisplacementTextures[3], uv + vec2( eps, -eps)).xyz;
-      vec3 rawL  = texture2D(cascadeDisplacementTextures[3], uv + vec2(-eps,  0.0)).xyz;
-      vec3 rawR  = texture2D(cascadeDisplacementTextures[3], uv + vec2( eps,  0.0)).xyz;
-      vec3 rawTL = texture2D(cascadeDisplacementTextures[3], uv + vec2(-eps,  eps)).xyz;
-      vec3 rawT  = texture2D(cascadeDisplacementTextures[3], uv + vec2( 0.0,  eps)).xyz;
-      vec3 rawTR = texture2D(cascadeDisplacementTextures[3], uv + vec2( eps,  eps)).xyz;
-      rawDdxXZ += cascadeWeight3 * (rawR.xz - rawL.xz) / (2.0 * worldStep);
-      rawDdzXZ += cascadeWeight3 * (rawT.xz - rawB.xz) / (2.0 * worldStep);
-      vec3 dBL = rawBL; dBL.x *= -chop; dBL.z *= -chop;
-      vec3 dB  = rawB;  dB.x  *= -chop; dB.z  *= -chop;
-      vec3 dBR = rawBR; dBR.x *= -chop; dBR.z *= -chop;
-      vec3 dL  = rawL;  dL.x  *= -chop; dL.z  *= -chop;
-      vec3 dR  = rawR;  dR.x  *= -chop; dR.z  *= -chop;
-      vec3 dTL = rawTL; dTL.x *= -chop; dTL.z *= -chop;
-      vec3 dT  = rawT;  dT.x  *= -chop; dT.z  *= -chop;
-      vec3 dTR = rawTR; dTR.x *= -chop; dTR.z *= -chop;
-      totalDPdx += cascadeWeight3 * ((dBR + 2.0*dR + dTR) - (dBL + 2.0*dL + dTL)) / (8.0 * worldStep);
-      totalDPdz += cascadeWeight3 * ((dTL + 2.0*dT + dTR) - (dBL + 2.0*dB + dBR)) / (8.0 * worldStep);
-    }
-  }
-  //Cascades 4 (L=4m) and 5 (L=1m) are excluded from normal/Jacobian computation.
-  //The small/large normal maps cover this frequency range close-up — adding both
-  //doubles the micro-detail and floods the specular with too many bright facets.
-  totalDPdx *= waveHeightMultiplier;
-  totalDPdz *= waveHeightMultiplier;
-  rawDdxXZ *= waveHeightMultiplier;
-  rawDdzXZ *= waveHeightMultiplier;
+  rawDdx *= waveHeightMultiplier;
+  rawDdz *= waveHeightMultiplier;
 
-  //Jacobian: detect surface folds for foam
-  vec2 foamDdx = -chop * rawDdxXZ;
-  vec2 foamDdz = -chop * rawDdzXZ;
+  //Jacobian: detect surface folds for foam (uses XZ chop derivatives only)
+  vec2 foamDdx = -chop * rawDdx.xz;
+  vec2 foamDdz = -chop * rawDdz.xz;
   float jacobian = (1.0 + foamDdx.x) * (1.0 + foamDdz.y) - foamDdx.y * foamDdz.x;
   float turbulence = max(0.0, 1.0 - jacobian);
   float fftFoamAmount = smoothstep(0.1, 1.0, turbulence);
 
-  //Surface tangent vectors → normal via cross product
-  vec3 Tx = vec3(1.0 + totalDPdx.x, totalDPdx.y, totalDPdx.z);
-  vec3 Tz = vec3(totalDPdz.x, totalDPdz.y, 1.0 + totalDPdz.z);
+  //Crest-style surface normal from cross product of displaced tangent vectors.
+  //Surface parameterization: P(u,v) = (u - chop*Dx, Dy, v - chop*Dz)
+  //Tangent vectors include the full Jacobian of the displacement mapping:
+  //  Tx = dP/du = (1 - chop*dDx/du, dDy/du, -chop*dDz/du)
+  //  Tz = dP/dv = (-chop*dDx/dv, dDy/dv, 1 - chop*dDz/dv)
+  //All derivatives come from the same finite-difference samples for consistency.
+  vec2 totalSlope = vec2(rawDdx.y, rawDdz.y);
+  vec3 Tx = vec3(1.0 + foamDdx.x, totalSlope.x, foamDdx.y);
+  vec3 Tz = vec3(foamDdz.x, totalSlope.y, 1.0 + foamDdz.y);
   vec3 displacedNormal = normalize(cross(Tz, Tx));
+  //Cross product Y component equals the Jacobian determinant — positive when surface is
+  //well-behaved, negative at folds. Force upward to avoid lighting inversion (Crest does
+  //the same: crossProd.y = max(crossProd.y, 0.0001)).
   if(displacedNormal.y < 0.0) displacedNormal = -displacedNormal;
   //Blend toward flat normal at fold points and at distance
   float foldBlend = smoothstep(0.0, 0.3, jacobian);
-  displacedNormal = mix(vec3(0.0, 1.0, 0.0), displacedNormal, foldBlend * normalDetailFade);
-  //The FFT normal is in object space (x, y, z) - swizzle to match expected xzy convention
-  displacedNormal = displacedNormal.xzy;
+  displacedNormal = normalize(mix(vec3(0.0, 1.0, 0.0), displacedNormal, foldBlend * normalDetailFade));
+  if(displacedNormal.y < 0.0) displacedNormal = -displacedNormal;
 
-  //Get the reflected and refracted information of the scene
-  vec2 smallNormalMapOffset = (vWorldXZ + t * smallNormalMapVelocity) / (sizeOfOceanPatch / 2.0);
-  vec2 largeNormalMapOffset = (vWorldXZ - t * largeNormalMapVelocity) / sizeOfOceanPatch;
-  vec3 smallNormalMap = texture2D(smallNormalMap, smallNormalMapOffset).xyz;
-  smallNormalMap = 2.0 * smallNormalMap - 1.0;
+  //Macro-scale normal from cascade 0 only — used for GGX specular orientation.
+  //Using cascade 0+1 normals for NdotH creates a "sand-ripple" pattern when the moon
+  //is perpendicular to the view: each 1-4m wave face creates its own sharp specular
+  //hotspot. Cascade 0 only gives a wide, smooth specular lobe (Sea of Thieves style).
+  //Fresnel still uses displacedNormal (cascade 0+1) so it correctly matches the geometry.
+  vec2 macroSlope = cascade0HeightSlope * waveHeightMultiplier;
+  float macroSlopeLen = length(macroSlope);
+  if(macroSlopeLen > 1.2) macroSlope *= 1.2 / macroSlopeLen;
+  vec3 macroNormal = normalize(vec3(-macroSlope.x, 1.0, -macroSlope.y));
+  if(macroNormal.y < 0.0) macroNormal = -macroNormal;
+  macroNormal = normalize(mix(vec3(0.0, 1.0, 0.0), macroNormal, foldBlend * normalDetailFade));
+  if(macroNormal.y < 0.0) macroNormal = -macroNormal;
+
+  //Additive world-space normal blending (Crest-style):
+  //Decode only xy of each map (tangent x → world x, tangent y → world z) and
+  //add directly to displacedNormal.xz. The y component stays anchored to the
+  //FFT value, so hemisphere inversions from steep waves + strong maps are impossible.
+  //Normal map UV scale: tile at world-space frequencies appropriate for micro-ripples.
+  //Small: ~12m tiles (capillary/wind ripples). Large: sampled at two perpendicular
+  //angles (~80m) and averaged — breaks the corduroy banding that comes from scrolling
+  //a single directional map in the wind direction.
+  vec2 smallNormalMapOffset = (worldPosition.xz + t * smallNormalMapVelocity) / 12.0;
+  vec2 largeNormalMapOffset = (worldPosition.xz + t * largeNormalMapVelocity) / 80.0;
+  //90°-rotated second sample of the large map to kill directional bias
+  vec2 largeNormalMapOffset2 = (vec2(-worldPosition.z, worldPosition.x) + t * largeNormalMapVelocity) / 80.0;
+  //Foam textures use a separate UV at a larger world-scale so they don't tile tiny
+  vec2 foamTextureUV = (worldPosition.xz + t * smallNormalMapVelocity) / (sizeOfOceanPatch / 2.0);
   float smallNormalMapFadeout = clamp((500.0 - distanceToWorldPosition) / 250.0, 0.0, 1.0);
-  smallNormalMap.x *= smallNormalMapStrength * smallNormalMapFadeout;
-  smallNormalMap.y *= smallNormalMapStrength * smallNormalMapFadeout;
-  smallNormalMap = normalize(smallNormalMap);
-  smallNormalMap = (smallNormalMap + 1.0) * 0.5;
-  vec3 largeNormalMap = texture2D(largeNormalMap, largeNormalMapOffset).xyz;
-  largeNormalMap = 2.0 * largeNormalMap - 1.0;
   float largeNormalMapFadeout = clamp((3000.0 - distanceToWorldPosition) / 2500.0, 0.0, 1.0);
-  largeNormalMap.x *= largeNormalMapStrength * largeNormalMapFadeout;
-  largeNormalMap.y *= largeNormalMapStrength * largeNormalMapFadeout;
-  largeNormalMap = normalize(largeNormalMap);
-  largeNormalMap = (largeNormalMap + 1.0) * 0.5;
-  vec3 combinedNormalMap = combineNormals(smallNormalMap, largeNormalMap);
-  #if($foam_enabled)
-    vec3 foamNormal = texture2D(foamNormalMap, smallNormalMapOffset).xyz;
-    foamNormal = 2.0 * foamNormal - 1.0;
-    float foamAmount = fftFoamAmount;
-    vec2 foamPosition = 0.5 * (((worldPosition.xz - cameraPosition.xz) / vec2(2048.0)) + 1.0);
-    foamPosition = vec2(foamPosition.x, 1.0 - foamPosition.y);
-    if(foamPosition.x < 1.0 && foamPosition.x > 0.0 && foamPosition.y < 1.0 && foamPosition.y > 0.0){
-      vec2 foamHeightData = texture2D(foamRenderMap, foamPosition).ga;
-      if((foamHeightData.y > 0.5)){
-        foamAmount = max(foamAmount, 1.0 - abs(clamp(worldPosition.y - foamHeightData.x - 10.0, 0.0, 10.0) / 10.0));
-      }
-    }
-    foamNormal.x *= 0.5 * foamAmount * largeNormalMapFadeout;
-    foamNormal.y *= 0.5 * foamAmount * largeNormalMapFadeout;
-    foamNormal = normalize(foamNormal);
-    foamNormal = (foamNormal + 1.0) * 0.5;
-    combinedNormalMap = combineNormals(combinedNormalMap, foamNormal);
-  #endif
-  vec3 normalizedDisplacedNormalMap = (normalize(displacedNormal) + vec3(1.0)) * 0.5;
-  combinedNormalMap = combineNormals(normalizedDisplacedNormalMap, combinedNormalMap);
-  combinedNormalMap = combinedNormalMap * 2.0 - vec3(1.0);
+
+  //Normal maps re-enabled at reduced strength.
+  //The current textures (water-normal-1/2.png) are too rocky — ideally replace them
+  //with softer water ripple textures (like Crest's WaveNormals.png). For now, use
+  //very low multipliers (0.05) so they add subtle variation to break up coherent FFT
+  //banding without imposing a stone-like texture on the surface.
+  float normalMapScale = 0.15;
+  vec2 smallNM = texture2D(smallNormalMap, smallNormalMapOffset).xy * 2.0 - 1.0;
+  vec2 largeNM = (texture2D(largeNormalMap, largeNormalMapOffset).xy +
+                  texture2D(largeNormalMap, largeNormalMapOffset2).xy) - 1.0;
+
+  vec3 combinedNormalMap = displacedNormal;
+  combinedNormalMap.xz += smallNM * smallNormalMapStrength * normalMapScale * smallNormalMapFadeout;
+  combinedNormalMap.xz += largeNM * largeNormalMapStrength * normalMapScale * largeNormalMapFadeout;
+  // #if($foam_enabled)
+  //   float foamAmount = fftFoamAmount;
+  //   vec2 foamPosition = 0.5 * (((worldPosition.xz - cameraPosition.xz) / vec2(2048.0)) + 1.0);
+  //   foamPosition = vec2(foamPosition.x, 1.0 - foamPosition.y);
+  //   if(foamPosition.x < 1.0 && foamPosition.x > 0.0 && foamPosition.y < 1.0 && foamPosition.y > 0.0){
+  //     vec2 foamHeightData = texture2D(foamRenderMap, foamPosition).ga;
+  //     if((foamHeightData.y > 0.5)){
+  //       foamAmount = max(foamAmount, 1.0 - abs(clamp(worldPosition.y - foamHeightData.x - 10.0, 0.0, 10.0) / 10.0));
+  //     }
+  //   }
+  //   vec2 foamNM = texture2D(foamNormalMap, smallNormalMapOffset).xy * 2.0 - 1.0;
+  //   combinedNormalMap.xz += foamNM * 0.5 * foamAmount * largeNormalMapFadeout;
+  // #endif
+  float foamAmount = 0.0;
   combinedNormalMap = normalize(combinedNormalMap);
-  combinedNormalMap = combinedNormalMap.xzy;
 
   vec3 normalizedViewVector = normalize(worldPosition.xyz - cameraPosition);
   vec2 screenUV = gl_FragCoord.xy / screenResolution;
@@ -454,13 +499,19 @@ void main(){
   //Planar reflection: project world position through the reflection camera's VP matrix
   vec4 reflectionClipPos = reflectionViewProjectionMatrix * worldPosition;
   vec2 reflectionUV;
+  //Reflection distortion fades with distance — near-camera waves perturb the reflection
+  //noticeably; at the horizon even small normal variation creates noisy reflections.
+  //Reflection distortion: pushes the planar reflection UV by the wave normal.
+  //Larger values make the reflection follow wave shapes better (less "flat mirror" look).
+  //The planar reflection is fundamentally captured on a flat y=0 plane — distortion
+  //compensates artistically. Too high causes stretching artifacts near structures.
+  float reflDistortAmount = 0.06 * clamp(1.0 - distanceToWorldPosition / 800.0, 0.0, 1.0);
   if(reflectionClipPos.w > 0.0){
     reflectionUV = reflectionClipPos.xy / reflectionClipPos.w * 0.5 + 0.5;
-    reflectionUV += combinedNormalMap.xz * 0.02; //Distort by surface normal
+    reflectionUV += displacedNormal.xz * reflDistortAmount;
     reflectionUV = clamp(reflectionUV, 0.001, 0.999);
   } else {
-    //Fragment is behind the reflection camera (heavily displaced crest) — use screen-space fallback
-    reflectionUV = clamp(screenUV + combinedNormalMap.xz * 0.02, 0.001, 0.999);
+    reflectionUV = clamp(screenUV + displacedNormal.xz * reflDistortAmount, 0.001, 0.999);
   }
   vec3 reflectedLight = texture2D(reflectionTexture, reflectionUV).rgb;
 
@@ -472,8 +523,8 @@ void main(){
   reflectedLight = mix(reflectedLight, horizonFallback, 1.0 - smoothstep(0.0, 0.005, reflBrightness));
 
   //Screen-space refraction
-  //Distort UVs based on the surface normal to simulate refraction
-  vec2 distortion = combinedNormalMap.xz * 0.03;
+  //Distort UVs based on FFT normal only — same reason as reflection: avoids visible normal map tiling
+  vec2 distortion = displacedNormal.xz * 0.03;
   vec2 refractedUV = clamp(screenUV + distortion, 0.001, 0.999);
 
   //Sample refraction color and depth
@@ -545,10 +596,44 @@ void main(){
   //= (scattering / extinction) * (1 - exp(-extinction * depth))
   vec3 inscatterIntegral = waterScattering / max(extinction, vec3(0.0001)) * (1.0 - transmittance);
 
-  //Combine single-scatter (directional Mie) and multi-scatter (isotropic).
-  //Single-scatter dominates in thin water (wave crests). Multi-scatter fills
-  //in the base color for deep water columns.
-  vec3 inscatterLight = inscatterIntegral * (phaseSingle + phaseMulti) * sunTransmission * brightestDirectionalLight;
+  // === NEW PHYSICALLY-BASED SCATTERING MODEL ===
+  // Calculate each scattering term separately for debugging/visualization
+
+  float waveElevation = max(height, 0.0);
+
+  // Calculate individual scattering terms
+  float term1 = scatterTerm1(-brightestDirectionalLightDirection, normalizedViewVector, displacedNormal, height, k1ScatterAmount);
+  float term2 = scatterTerm2(normalizedViewVector, displacedNormal, k2ViewDependence);
+  float fresnelFresnel = fresnelAbsorption(-brightestDirectionalLightDirection, displacedNormal, fresnelAbsorptionAmount);
+  float term3 = scatterTerm3(-brightestDirectionalLightDirection, displacedNormal, k3DirectScatter);
+  float term4 = scatterTerm4(fftFoamAmount, k4ParallaxScatter);
+
+  // First scattering term: (k₁ ... + k₂ ...) * C_ss * L_sun * Fresnel
+  vec3 mainScatter = (term1 + term2) * waterScattering * brightestDirectionalLight * fresnelFresnel;
+
+  // Second scattering term: k₃(ωᵢ · ωₙ) * C_ss * L_sun
+  vec3 directScatter = term3 * waterScattering * brightestDirectionalLight;
+
+  // Fourth scattering term: k₄ P_f C_f * L_sun
+  vec3 term4Scatter = term4 * brightestDirectionalLight;
+
+  // L_scatter = (k1 + k2) * C_ss * L_sun * 1/(1 + A(ωᵢ))
+  //           + k3 * C_ss * L_sun
+  //           + k4 * P_f * L_sun
+  vec3 inscatterLight = mainScatter + directScatter + term4Scatter;
+
+  // Add ambient light contributions from all directional lights
+  vec3 ambientScatter = ambientLightScattering(normalizedViewVector, displacedNormal, waveElevation);
+  inscatterLight += ambientScatter * waterScattering;
+
+  /* OLD CODE - COMMENTED OUT FOR REFERENCE
+  //Jacobian SSS modulation (Crest technique): flat areas appear clearer/deeper by reducing
+  //inscatter; wave crests remain bright as the Jacobian pinches and thins the water column.
+  //turbulence is 0 on flat water, >0 at compressed crests.
+  //NOTE: was mix(0.5, 1.0) but the 2x contrast made wave crests pitch-black at night
+  //(crests have turbulence=0 → inscatter halved → only visible light source gone).
+  //Reduced to mix(0.8, 1.0) — still physically meaningful but visually acceptable at night.
+  inscatterLight *= mix(0.8, 1.0, turbulence);
 
   //Wave-crest translucency: estimate light path thickness through the wave body.
   //At a crest the water is thin - light from the sun side passes through a short
@@ -558,8 +643,6 @@ void main(){
   //Thickness is approximated from wave height above base water level and the
   //angle between the surface normal and the sun direction. No ray marching needed -
   //just geometry: a steep wave face lit from behind has a very short internal path.
-  float waveElevation = max(height, 0.0);
-  float sunNormalDot = max(dot(combinedNormalMap, -brightestDirectionalLightDirection), 0.05);
   float minCrestThickness = 3.0;
   float crestThickness = max(linearScatteringTotalScatteringWaveHeight * (1.0 - waveElevation) / sunNormalDot, minCrestThickness);
   float waveThickness = mix(distanceToPoint, crestThickness, waveElevation);
@@ -575,13 +658,35 @@ void main(){
   //absorption color (green-gold for thin water), added on top of the volume inscatter.
   vec3 crestLight = waveTransmittance * sunTransmission * brightestDirectionalLight * waveElevation * backlitFactor;
   inscatterLight += crestLight;
+  */
 
   //Apply Schlick's approximation for the fresnel amount
   //https://graphicscompendium.com/raytracing/11-fresnel-beer
-
-  float cosTheta = clamp(dot(combinedNormalMap, -normalizedViewVector), 0.0, 1.0);
+  //Use macro-scale FFT normal (displacedNormal) rather than the full micro-detail combinedNormalMap.
+  //Micro-ripples drive the GGX specular D term above; using them here too floods every steep
+  //wave face with sky reflection, washing out the whole surface with white.
+  float cosTheta = clamp(dot(displacedNormal, -normalizedViewVector), 0.0, 1.0);
   float fresnelFactor = r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
+  //Cap Fresnel so the water body color always shows through — at grazing angles the
+  //planar reflection only captures sky (no ocean self-reflection), so uncapped Fresnel
+  //makes everything sky-colored. Cap gives a floor of body-color contribution.
+  //Cap at 0.65 (Crest uses _Specular=0.7 for the same reason): prevents the horizon
+  //from becoming 90%+ sky reflection which washes out to bright white.
+  //Cap Fresnel: at grazing angles (horizon) this hits 1.0 but the planar reflection
+  //only captures sky — at 65% cap, individual stars reflect visibly in dark water.
+  //0.35 keeps the horizon glossy while preventing star points from dominating.
+  fresnelFactor = min(fresnelFactor, 0.35);
+  //Trough damping: wave troughs sit below surrounding crests which occlude the sky at
+  //grazing angles. Reduce Fresnel in troughs so they show water body color rather than
+  //sky. height ≈ 0 at deep troughs, ≈ 0.5 at mean level, ≈ 1 at crests.
+  float troughDampen = smoothstep(0.1, 0.55, height);
+  fresnelFactor *= mix(0.4, 1.0, troughDampen);
   reflectedLight = sRGBToLinear(vec4(reflectedLight, 1.0)).rgb;
+  //Clamp HDR reflection values: night sky stars and sun disk can have linear values >> 1.
+  //sRGBToLinear gamma-expands any value > 1 further (e.g. HDR star at 10 → hundreds).
+  //Even at 2% Fresnel that saturates the tonemapper. Cap to prevent individual stars
+  //from appearing as bright points on an otherwise dark water surface.
+  reflectedLight = min(reflectedLight, vec3(2.0));
 
   #if($caustics_enabled)
     //Calculate caustic lighting using reconstructed world position
@@ -599,25 +704,76 @@ void main(){
   //Calculate specular lighting and surface lighting
   float lightMag = length(brightestDirectionalLight);
   vec3 normalizedLightIntensity = lightMag > 0.001 ? brightestDirectionalLight / lightMag : vec3(0.0);
-  vec3 directionalSurfaceLighting = normalizedLightIntensity * max(dot(combinedNormalMap, -brightestDirectionalLightDirection), 0.0);
-  vec3 reflectedViewDir = reflect(normalizedViewVector, combinedNormalMap);
-  float specularDot = max(dot(reflectedViewDir, -brightestDirectionalLightDirection), 0.0);
-  float specularAmount = pow(specularDot, 200.0);
-  vec3 specular = 1.7 * normalizedLightIntensity * specularAmount;
+  vec3 directionalSurfaceLighting = normalizedLightIntensity * max(dot(macroNormal, -brightestDirectionalLightDirection), 0.0);
+
+  //GGX Cook-Torrance specular
+  float waterRoughness = mix(0.22, 0.40, fftFoamAmount);
+  vec3 H = normalize(-normalizedViewVector + (-brightestDirectionalLightDirection));
+  //Use displacedNormal (FFT geometry, no texture maps) for specular dot products.
+  //Normal maps tilt combinedNormalMap by 3-10° which at any roughness creates
+  //high-frequency specular noise matching the normal map tile pattern.
+  //Use macro normal (cascade 0) for specular dot products — prevents sand-ripple pattern.
+  float NdotH = max(dot(macroNormal, H), 1e-5);
+  float NdotV = max(dot(macroNormal, -normalizedViewVector), 1e-5);
+  float NdotL = max(dot(macroNormal, -brightestDirectionalLightDirection), 1e-5);
+
+  float D = min(ggxDistribution(NdotH, waterRoughness), 100.0);
+  float G_light = smithMaskingShadowing(NdotL, waterRoughness);
+  float G_view  = smithMaskingShadowing(NdotV, waterRoughness);
+  float G = 1.0 / (1.0 + G_light + G_view);
+
+  //Lazányi-Schlick Fresnel — roughness spreads the grazing-angle Fresnel peak
+  float fresnelSpec = mix(
+    pow(1.0 - NdotV, 5.0 * exp(-2.69 * waterRoughness)) / (1.0 + 22.7 * pow(waterRoughness, 1.5)),
+    1.0, r0);
+
+  vec3 specular = fresnelSpec * D * G / (4.0 * NdotV + 0.001) * lightMag * normalizedLightIntensity;
 
   //Total light
   vec3 totalLight = specular + (2.0 / 255.0) * directionalSurfaceLighting + (253.0 / 255.0) * ((inscatterLight + refractedLight) * (1.0 - fresnelFactor) + reflectedLight * fresnelFactor);
+  //Ambient sky irradiance: diffuse illumination from the sky dome hitting the surface.
+  //Without this, high-Fresnel wave faces (crests tilted toward camera) appear black when
+  //there is nothing bright to reflect — the Fresnel model alone produces no light there.
+  //NdotUp weights by sky exposure; (1-fresnel) keeps this from fighting reflections.
+  //Hemisphere ambient: 1.0 facing straight up, 0.5 facing horizontal, 0.0 facing down.
+  //Prevents steep wave faces from going black — a vertical face still sees half the sky dome.
+  //Hemisphere sky ambient: color from a-starry-sky's y-axis hemisphere light.
+  //View-independent and color-correct at all times of day (blue at noon, orange-tinted at sunset).
+  //skyFactor: 1.0 facing straight up, 0.5 horizontal, 0.0 facing down.
+  //Use FFT geometry normal (no texture maps) for ambient — avoids printing normal map pattern onto the lighting.
+  //Crest does the same: geometry normals for SSS/ambient, texture normals only for specular/refraction.
+  float skyFactor = 0.5 + 0.5 * dot(displacedNormal, vec3(0.0, 1.0, 0.0));
+  totalLight += skyAmbientColor * skyFactor * (1.0 - fresnelFactor) * 0.1;
   #if($foam_enabled)
-    float foamOpacity = foamAmount * texture2D(foamOpacityMap, smallNormalMapOffset).r;
-    vec3 foamLight = texture2D(foamDiffuseMap, smallNormalMapOffset).rgb;
+    float foamOpacity = foamAmount * texture2D(foamOpacityMap, foamTextureUV).r;
+    vec3 foamLight = texture2D(foamDiffuseMap, foamTextureUV).rgb;
     totalLight = mix(totalLight, 2.0 * directionalSurfaceLighting * foamLight, (foamOpacity * foamAmount));
   #endif
 
-  // #if($atmospheric_perspective_enabled)
-  //   totalLight = applyAtmosphericPerspective(totalLight, worldPosition.xyz);
-  // #endif
+  #if($atmospheric_perspective_enabled)
+    totalLight = applyAtmosphericPerspective(totalLight, worldPosition.xyz);
+  #endif
 
   gl_FragColor = linearTosRGB(vec4(MyAESFilmicToneMapping(totalLight), 1.0));
+
+  //DEBUG PANELS — shows the values actually used in lighting for the water fragments
+  //landing in those screen-space corners.
+  //Left:  displacedNormal → flat water = (0.5, 0.5, 1.0) = lavender-blue
+  //       red/green tint = surface is tilted; any spatial pattern here = normal noise
+  //Right: wave displacement height → flat water = mid-grey (0.5)
+  //       scale: ±5m maps to [0,1] — brighten constant below if waves are barely visible
+  {
+    float panelSize = 200.0;
+    vec2 fc = gl_FragCoord.xy;
+    if(fc.x < panelSize && fc.y < panelSize){
+      gl_FragColor = vec4(displacedNormal * 0.5 + 0.5, 1.0);
+    }
+    if(fc.x > screenResolution.x - panelSize && fc.y < panelSize){
+      float waveHeight = vDisplacedPosition.y - vPosition.y; // displacement only, not base mesh height
+      float heightVis = clamp(waveHeight * 0.2 + 0.5, 0.0, 1.0); // ±2.5m → [0,1]
+      gl_FragColor = vec4(vec3(heightVis), 1.0);
+    }
+  }
 
   //Blue noise dithering to break banding (same technique as a-starry-sky)
   float goldenRatio = 1.61803398875;

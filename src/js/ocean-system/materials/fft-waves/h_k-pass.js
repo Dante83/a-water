@@ -9,7 +9,7 @@ AWater.AOcean.Materials.FFTWaves.hkShaderMaterialData = {
     uTime: {type: 'f', value: 0.0}
   },
 
-  fragmentShader: function(isXAxis = false, isYAxis = false){
+  fragmentShader: function(isXAxis = false, isYAxis = false, isSlope = false){
     let originalGLSL = [
     'precision highp float;',
 
@@ -56,7 +56,24 @@ AWater.AOcean.Materials.FFTWaves.hkShaderMaterialData = {
       '//dy',
       'vec2 hk_tilda = cAdd(cMult(tilda_h0_k, expIwt), cMult(tilda_h0_minus_k_conj, expIwtConj));',
 
-      '#if($isXAxis)',
+      '#if($isSlope)',
+        '//Packed analytical slope spectrum: P(k) = (kx + i*kz) * i*H(k,t)',
+        '//After IFFT: R = dh/dx, G = dh/dz — exact derivatives, zero aliasing at all frequencies.',
+        '//Derivation: slopeX = i*kx*H, slopeZ = i*kz*H. Pack as P = slopeX + i*slopeZ.',
+        '//Then IFFT(P) = slopeX(x) + i*slopeZ(x), giving both slopes in one FFT chain.',
+        '//',
+        '//IMPORTANT: k runs 0..2π·N/L, but n > N/2 are negative frequencies.',
+        '//For chop (-kx/|k|) the magnitude is bounded so the sign error is benign.',
+        '//For slope the error scales as k × H — up to N× too large at high n without centering.',
+        '//Center k so the negative-frequency half wraps to [-π·N/L, 0].',
+        'float halfKmax = piTimes2 * N / (2.0 * L);',
+        'vec2 kCentered = vec2(',
+          'k.x > halfKmax ? k.x - 2.0 * halfKmax : k.x,',
+          'k.y > halfKmax ? k.y - 2.0 * halfKmax : k.y',
+        ');',
+        'vec2 iH = vec2(-hk_tilda.y, hk_tilda.x);',
+        'hk_tilda = cMult(kCentered, iH);',
+      '#elif($isXAxis)',
         'vec2 dx = vec2(0.0, -k.x / magK);',
         'hk_tilda = cMult(dx, hk_tilda);',
       '#elif(!$isXAxis && !$isYAxis)',
@@ -69,7 +86,8 @@ AWater.AOcean.Materials.FFTWaves.hkShaderMaterialData = {
 
     let updatedLines = [];
     for(let i = 0, numLines = originalGLSL.length; i < numLines; ++i){
-      let updatedGLSL = originalGLSL[i].replace(/\$isXAxis/g, isXAxis ? '1' : '0');
+      let updatedGLSL = originalGLSL[i].replace(/\$isSlope/g, isSlope ? '1' : '0');
+      updatedGLSL = updatedGLSL.replace(/\$isXAxis/g, isXAxis ? '1' : '0');
       updatedGLSL = updatedGLSL.replace(/\$isYAxis/g, isYAxis ? '1' : '0');
       //Otherwise is z-axis, and sure, it is true these are dependent values but this is just easier
 
