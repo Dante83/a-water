@@ -816,9 +816,26 @@ void main(){
   float skyFactor = 0.5 + 0.5 * dot(displacedNormal, vec3(0.0, 1.0, 0.0));
   totalLight += skyAmbientColor * skyFactor * (1.0 - fresnelFactor) * 0.1;
   #if($foam_enabled)
-    float foamOpacity = foamAmount * texture2D(foamOpacityMap, foamTextureUV).r;
-    vec3 foamLight = texture2D(foamDiffuseMap, foamTextureUV).rgb;
-    totalLight = mix(totalLight, 2.0 * directionalSurfaceLighting * foamLight, (foamOpacity * foamAmount));
+    vec3  foamAlbedo = texture2D(foamDiffuseMap,    foamTextureUV).rgb;
+    float foamMask   = texture2D(foamOpacityMap,    foamTextureUV).r;
+    vec2  foamNMXZ   = texture2D(foamNormalMap,     foamTextureUV).xy * 2.0 - 1.0;
+
+    //Foam normal: perturb the FFT surface normal with the foam normal map.
+    //Foam is rough and diffuse so the normal drives lighting more than the water normal does.
+    vec3 foamSurfaceNormal = normalize(displacedNormal + vec3(foamNMXZ.x, 0.0, foamNMXZ.y) * 0.5);
+
+    //Lambert diffuse from the primary directional light (sun/moon)
+    float foamNdotL = max(0.0, dot(foamSurfaceNormal, -brightestDirectionalLightDirection));
+    vec3 foamDiffuse = foamNdotL * lightMag * normalizedLightIntensity * foamAlbedo;
+
+    //Sky ambient: same hemisphere model as the water surface ambient above, but foam
+    //scatters ambient light diffusely (albedo multiplication is correct for a rough surface).
+    float foamSkyFactor = 0.5 + 0.5 * dot(foamSurfaceNormal, vec3(0.0, 1.0, 0.0));
+    vec3 foamAmbient = skyAmbientColor * foamSkyFactor * foamAlbedo;
+
+    //Blend lit foam over the water; opacity map drives per-texel coverage,
+    //foamAmount fades foam in and out with the Jacobian/shoreline accumulation.
+    totalLight = mix(totalLight, foamDiffuse + foamAmbient, clamp(foamMask * foamAmount, 0.0, 1.0));
   #endif
 
   #if($atmospheric_perspective_enabled)
@@ -826,25 +843,6 @@ void main(){
   #endif
 
   gl_FragColor = linearTosRGB(vec4(MyAESFilmicToneMapping(totalLight), 1.0));
-
-  //DEBUG PANELS — shows the values actually used in lighting for the water fragments
-  //landing in those screen-space corners.
-  //Left:  displacedNormal → flat water = (0.5, 0.5, 1.0) = lavender-blue
-  //       red/green tint = surface is tilted; any spatial pattern here = normal noise
-  //Right: wave displacement height → flat water = mid-grey (0.5)
-  //       scale: ±5m maps to [0,1] — brighten constant below if waves are barely visible
-  {
-    float panelSize = 200.0;
-    vec2 fc = gl_FragCoord.xy;
-    if(fc.x < panelSize && fc.y < panelSize){
-      gl_FragColor = vec4(displacedNormal * 0.5 + 0.5, 1.0);
-    }
-    if(fc.x > screenResolution.x - panelSize && fc.y < panelSize){
-      float waveHeight = vDisplacedPosition.y - vPosition.y; // displacement only, not base mesh height
-      float heightVis = clamp(waveHeight * 0.2 + 0.5, 0.0, 1.0); // ±2.5m → [0,1]
-      gl_FragColor = vec4(vec3(heightVis), 1.0);
-    }
-  }
 
   //Blue noise dithering to break banding (same technique as a-starry-sky)
   float goldenRatio = 1.61803398875;

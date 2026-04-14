@@ -53,9 +53,10 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
     '  float dDxdx = (dxR - dxL) / (2.0 * worldStep);',
     '  float dDzdz = (dzT - dzB) / (2.0 * worldStep);',
     '  float dDxdz = (dxT - dxB) / (2.0 * worldStep);',
-    //Jacobian: (1 + chop*dDx/dx) * (1 + chop*dDz/dz) - chop^2 * dDx/dz * dDz/dx
-    //dDz/dx ≈ dDx/dz for irrotational waves, so we use dDxdz for both
-    '  float jacobian = (1.0 + chop * dDxdx) * (1.0 + chop * dDzdz) - chop * chop * dDxdz * dDxdz;',
+    //Jacobian: vertex shader applies -chop to raw x/z, so actual world derivatives
+    //are -chop*dDxdx and -chop*dDzdz. Match wave-normal-composer convention.
+    //dDz/dx ≈ dDx/dz for irrotational waves, so we use dDxdz for both cross terms.
+    '  float jacobian = (1.0 - chop * dDxdx) * (1.0 - chop * dDzdz) - chop * chop * dDxdz * dDxdz;',
     //Read previous frame foam, apply exponential decay
     '  float prevFoam = texture2D(prevFoamTexture, uv).a;',
     '  float foam = prevFoam * exp(-foamDecayRate);',
@@ -91,9 +92,9 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
       resolution: {type: 'v2', value: new THREE.Vector2(this.baseTextureWidth, this.baseTextureHeight)},
       patchSize: {type: 'f', value: 1000.0},
       chop: {type: 'f', value: data.chop || 0.75},
-      foamBias: {type: 'f', value: -0.5},
-      foamDecayRate: {type: 'f', value: 0.05},
-      foamAdd: {type: 'f', value: 0.5},
+      foamBias: {type: 'f', value: 0.6},
+      foamDecayRate: {type: 'f', value: 0.03},
+      foamAdd: {type: 'f', value: 0.6},
       foamThreshold: {type: 'f', value: 0.0}
     },
     vertexShader: packVertShader,
