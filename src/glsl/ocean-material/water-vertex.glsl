@@ -15,6 +15,7 @@ varying mat4 vModelMatrix;
 varying mat3 vNormalMatrix;
 
 uniform float sizeOfOceanPatch;
+uniform int ringIndex;
 uniform sampler2D cascadeDisplacementTextures[6];
 uniform float cascadePatchSizes[6];
 uniform vec2 cascadeSpatialOffsets[6];
@@ -35,16 +36,25 @@ void main() {
   float distanceToVertex = distance(cameraPosition.xyz, worldPositionOfVertex.xyz);
   vec2 worldXZ = worldPositionOfVertex.xz;
 
-  //Per-cascade displacement fade: fine cascades fade out at distance so coarse mesh
-  //tessellation doesn't have to follow sub-mesh-resolution wave shapes.
-  //Each cascade fades over 10x its patch size — same ratio as fragment normal weighting.
+  //Crest-style cascade-to-LOD binding: each ring only samples cascades it can resolve.
+  //Ring k uses cascades 0 through (5 - k), clamped to [1, 5]. Fine cascades still get
+  //a distance fade within their ring for smooth transitions at ring boundaries.
+  //maxCascadeIdx: ring 0 → 5, ring 1 → 4, ring 2 → 3, ring 3 → 2, ring 4+ → 1
   vec3 displacement = vec3(0.0);
   displacement += texture2D(cascadeDisplacementTextures[0], (worldXZ + cascadeSpatialOffsets[0]) / cascadePatchSizes[0]).xyz;
   displacement += texture2D(cascadeDisplacementTextures[1], (worldXZ + cascadeSpatialOffsets[1]) / cascadePatchSizes[1]).xyz;
-  displacement += clamp(1.0 - distanceToVertex / (cascadePatchSizes[2] * 10.0), 0.0, 1.0) * texture2D(cascadeDisplacementTextures[2], (worldXZ + cascadeSpatialOffsets[2]) / cascadePatchSizes[2]).xyz;
-  displacement += clamp(1.0 - distanceToVertex / (cascadePatchSizes[3] * 10.0), 0.0, 1.0) * texture2D(cascadeDisplacementTextures[3], (worldXZ + cascadeSpatialOffsets[3]) / cascadePatchSizes[3]).xyz;
-  displacement += 0.3 * clamp(1.0 - distanceToVertex / (cascadePatchSizes[4] * 10.0), 0.0, 1.0) * texture2D(cascadeDisplacementTextures[4], (worldXZ + cascadeSpatialOffsets[4]) / cascadePatchSizes[4]).xyz;
-  displacement += 0.1 * clamp(1.0 - distanceToVertex / (cascadePatchSizes[5] * 10.0), 0.0, 1.0) * texture2D(cascadeDisplacementTextures[5], (worldXZ + cascadeSpatialOffsets[5]) / cascadePatchSizes[5]).xyz;
+  if(ringIndex <= 3){
+    displacement += clamp(1.0 - distanceToVertex / (cascadePatchSizes[2] * 10.0), 0.0, 1.0) * texture2D(cascadeDisplacementTextures[2], (worldXZ + cascadeSpatialOffsets[2]) / cascadePatchSizes[2]).xyz;
+  }
+  if(ringIndex <= 2){
+    displacement += clamp(1.0 - distanceToVertex / (cascadePatchSizes[3] * 10.0), 0.0, 1.0) * texture2D(cascadeDisplacementTextures[3], (worldXZ + cascadeSpatialOffsets[3]) / cascadePatchSizes[3]).xyz;
+  }
+  if(ringIndex <= 1){
+    displacement += clamp(1.0 - distanceToVertex / (cascadePatchSizes[4] * 10.0), 0.0, 1.0) * texture2D(cascadeDisplacementTextures[4], (worldXZ + cascadeSpatialOffsets[4]) / cascadePatchSizes[4]).xyz;
+  }
+  if(ringIndex == 0){
+    displacement += clamp(1.0 - distanceToVertex / (cascadePatchSizes[5] * 10.0), 0.0, 1.0) * texture2D(cascadeDisplacementTextures[5], (worldXZ + cascadeSpatialOffsets[5]) / cascadePatchSizes[5]).xyz;
+  }
   displacement *= waveHeightMultiplier;
   displacement.x *= -chop;
   displacement.z *= -chop;

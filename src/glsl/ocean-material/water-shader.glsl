@@ -405,15 +405,85 @@ void main(){
     rawDdx += (rawR - rawL) / (2.0 * worldStep);
     rawDdz += (rawT - rawB) / (2.0 * worldStep);
   }
+  if(ringIndex <= 3){
+    float eps = 1.0 / patchDataSize;
+    float worldStep = cascadePatchSizes[2] / patchDataSize;
+    float fade = clamp(1.0 - distanceToWorldPosition / (cascadePatchSizes[2] * 10.0), 0.0, 1.0);
+    vec2 uv = (vWorldXZ + cascadeSpatialOffsets[2]) / cascadePatchSizes[2];
+    vec3 rawL = texture2D(cascadeDisplacementTextures[2], uv + vec2(-eps,  0.0)).xyz;
+    vec3 rawR = texture2D(cascadeDisplacementTextures[2], uv + vec2( eps,  0.0)).xyz;
+    vec3 rawB = texture2D(cascadeDisplacementTextures[2], uv + vec2( 0.0, -eps)).xyz;
+    vec3 rawT = texture2D(cascadeDisplacementTextures[2], uv + vec2( 0.0,  eps)).xyz;
+    rawDdx += fade * (rawR - rawL) / (2.0 * worldStep);
+    rawDdz += fade * (rawT - rawB) / (2.0 * worldStep);
+  }
+  if(ringIndex <= 2){
+    float eps = 1.0 / patchDataSize;
+    float worldStep = cascadePatchSizes[3] / patchDataSize;
+    float fade = clamp(1.0 - distanceToWorldPosition / (cascadePatchSizes[3] * 10.0), 0.0, 1.0);
+    vec2 uv = (vWorldXZ + cascadeSpatialOffsets[3]) / cascadePatchSizes[3];
+    vec3 rawL = texture2D(cascadeDisplacementTextures[3], uv + vec2(-eps,  0.0)).xyz;
+    vec3 rawR = texture2D(cascadeDisplacementTextures[3], uv + vec2( eps,  0.0)).xyz;
+    vec3 rawB = texture2D(cascadeDisplacementTextures[3], uv + vec2( 0.0, -eps)).xyz;
+    vec3 rawT = texture2D(cascadeDisplacementTextures[3], uv + vec2( 0.0,  eps)).xyz;
+    rawDdx += fade * (rawR - rawL) / (2.0 * worldStep);
+    rawDdz += fade * (rawT - rawB) / (2.0 * worldStep);
+  }
+  if(ringIndex <= 1){
+    float eps = 1.0 / patchDataSize;
+    float worldStep = cascadePatchSizes[4] / patchDataSize;
+    float fade = clamp(1.0 - distanceToWorldPosition / (cascadePatchSizes[4] * 10.0), 0.0, 1.0);
+    vec2 uv = (vWorldXZ + cascadeSpatialOffsets[4]) / cascadePatchSizes[4];
+    vec3 rawL = texture2D(cascadeDisplacementTextures[4], uv + vec2(-eps,  0.0)).xyz;
+    vec3 rawR = texture2D(cascadeDisplacementTextures[4], uv + vec2( eps,  0.0)).xyz;
+    vec3 rawB = texture2D(cascadeDisplacementTextures[4], uv + vec2( 0.0, -eps)).xyz;
+    vec3 rawT = texture2D(cascadeDisplacementTextures[4], uv + vec2( 0.0,  eps)).xyz;
+    rawDdx += fade * (rawR - rawL) / (2.0 * worldStep);
+    rawDdz += fade * (rawT - rawB) / (2.0 * worldStep);
+  }
+  if(ringIndex == 0){
+    float eps = 1.0 / patchDataSize;
+    float worldStep = cascadePatchSizes[5] / patchDataSize;
+    float fade = clamp(1.0 - distanceToWorldPosition / (cascadePatchSizes[5] * 10.0), 0.0, 1.0);
+    vec2 uv = (vWorldXZ + cascadeSpatialOffsets[5]) / cascadePatchSizes[5];
+    vec3 rawL = texture2D(cascadeDisplacementTextures[5], uv + vec2(-eps,  0.0)).xyz;
+    vec3 rawR = texture2D(cascadeDisplacementTextures[5], uv + vec2( eps,  0.0)).xyz;
+    vec3 rawB = texture2D(cascadeDisplacementTextures[5], uv + vec2( 0.0, -eps)).xyz;
+    vec3 rawT = texture2D(cascadeDisplacementTextures[5], uv + vec2( 0.0,  eps)).xyz;
+    rawDdx += fade * (rawR - rawL) / (2.0 * worldStep);
+    rawDdz += fade * (rawT - rawB) / (2.0 * worldStep);
+  }
   rawDdx *= waveHeightMultiplier;
   rawDdz *= waveHeightMultiplier;
 
-  //Jacobian: detect surface folds for foam (uses XZ chop derivatives only)
+  //Jacobian: detect surface folds — still used for inscatter modulation and normal blending
   vec2 foamDdx = -chop * rawDdx.xz;
   vec2 foamDdz = -chop * rawDdz.xz;
   float jacobian = (1.0 + foamDdx.x) * (1.0 + foamDdz.y) - foamDdx.y * foamDdz.x;
   float turbulence = max(0.0, 1.0 - jacobian);
-  float fftFoamAmount = smoothstep(0.1, 1.0, turbulence);
+
+  //Persistent foam: read from displacement texture alpha (accumulated by the composer
+  //via Jacobian-based ping-pong each frame). Sum active cascades with LOD fade.
+  float fftFoamAmount = 0.0;
+  {
+    vec2 uv0 = (vWorldXZ + cascadeSpatialOffsets[0]) / cascadePatchSizes[0];
+    fftFoamAmount += texture2D(cascadeDisplacementTextures[0], uv0).a;
+  }
+  {
+    vec2 uv1 = (vWorldXZ + cascadeSpatialOffsets[1]) / cascadePatchSizes[1];
+    fftFoamAmount += texture2D(cascadeDisplacementTextures[1], uv1).a;
+  }
+  if(ringIndex <= 3){
+    vec2 uv2 = (vWorldXZ + cascadeSpatialOffsets[2]) / cascadePatchSizes[2];
+    float fade2 = clamp(1.0 - distanceToWorldPosition / (cascadePatchSizes[2] * 10.0), 0.0, 1.0);
+    fftFoamAmount += fade2 * texture2D(cascadeDisplacementTextures[2], uv2).a;
+  }
+  if(ringIndex <= 2){
+    vec2 uv3 = (vWorldXZ + cascadeSpatialOffsets[3]) / cascadePatchSizes[3];
+    float fade3 = clamp(1.0 - distanceToWorldPosition / (cascadePatchSizes[3] * 10.0), 0.0, 1.0);
+    fftFoamAmount += fade3 * texture2D(cascadeDisplacementTextures[3], uv3).a;
+  }
+  fftFoamAmount = clamp(fftFoamAmount, 0.0, 1.0);
 
   //Crest-style surface normal from cross product of displaced tangent vectors.
   //Surface parameterization: P(u,v) = (u - chop*Dx, Dy, v - chop*Dz)
@@ -477,20 +547,21 @@ void main(){
   vec3 combinedNormalMap = displacedNormal;
   combinedNormalMap.xz += smallNM * smallNormalMapStrength * normalMapScale * smallNormalMapFadeout;
   combinedNormalMap.xz += largeNM * largeNormalMapStrength * normalMapScale * largeNormalMapFadeout;
-  // #if($foam_enabled)
-  //   float foamAmount = fftFoamAmount;
-  //   vec2 foamPosition = 0.5 * (((worldPosition.xz - cameraPosition.xz) / vec2(2048.0)) + 1.0);
-  //   foamPosition = vec2(foamPosition.x, 1.0 - foamPosition.y);
-  //   if(foamPosition.x < 1.0 && foamPosition.x > 0.0 && foamPosition.y < 1.0 && foamPosition.y > 0.0){
-  //     vec2 foamHeightData = texture2D(foamRenderMap, foamPosition).ga;
-  //     if((foamHeightData.y > 0.5)){
-  //       foamAmount = max(foamAmount, 1.0 - abs(clamp(worldPosition.y - foamHeightData.x - 10.0, 0.0, 10.0) / 10.0));
-  //     }
-  //   }
-  //   vec2 foamNM = texture2D(foamNormalMap, smallNormalMapOffset).xy * 2.0 - 1.0;
-  //   combinedNormalMap.xz += foamNM * 0.5 * foamAmount * largeNormalMapFadeout;
-  // #endif
-  float foamAmount = 0.0;
+  #if($foam_enabled)
+    float foamAmount = fftFoamAmount;
+    vec2 foamPosition = 0.5 * (((worldPosition.xz - cameraPosition.xz) / vec2(2048.0)) + 1.0);
+    foamPosition = vec2(foamPosition.x, 1.0 - foamPosition.y);
+    if(foamPosition.x < 1.0 && foamPosition.x > 0.0 && foamPosition.y < 1.0 && foamPosition.y > 0.0){
+      vec2 foamHeightData = texture2D(foamRenderMap, foamPosition).ga;
+      if((foamHeightData.y > 0.5)){
+        foamAmount = max(foamAmount, 1.0 - abs(clamp(worldPosition.y - foamHeightData.x - 10.0, 0.0, 10.0) / 10.0));
+      }
+    }
+    vec2 foamNM = texture2D(foamNormalMap, smallNormalMapOffset).xy * 2.0 - 1.0;
+    combinedNormalMap.xz += foamNM * 0.5 * foamAmount * largeNormalMapFadeout;
+  #else
+    float foamAmount = 0.0;
+  #endif
   combinedNormalMap = normalize(combinedNormalMap);
 
   vec3 normalizedViewVector = normalize(worldPosition.xyz - cameraPosition);
@@ -709,13 +780,13 @@ void main(){
   //GGX Cook-Torrance specular
   float waterRoughness = mix(0.22, 0.40, fftFoamAmount);
   vec3 H = normalize(-normalizedViewVector + (-brightestDirectionalLightDirection));
-  //Use displacedNormal (FFT geometry, no texture maps) for specular dot products.
-  //Normal maps tilt combinedNormalMap by 3-10° which at any roughness creates
-  //high-frequency specular noise matching the normal map tile pattern.
-  //Use macro normal (cascade 0) for specular dot products — prevents sand-ripple pattern.
-  float NdotH = max(dot(macroNormal, H), 1e-5);
-  float NdotV = max(dot(macroNormal, -normalizedViewVector), 1e-5);
-  float NdotL = max(dot(macroNormal, -brightestDirectionalLightDirection), 1e-5);
+  //Use displacedNormal (all active FFT cascades, no texture maps) for specular.
+  //macroNormal (cascade 0 only, ~2m/texel) is too coarse — specular follows the low-poly
+  //mesh silhouette rather than the wave surface. displacedNormal has per-ring detail
+  //without texture-map tiling artifacts (the old "sand-ripple" concern was about combinedNormalMap).
+  float NdotH = max(dot(displacedNormal, H), 1e-5);
+  float NdotV = max(dot(displacedNormal, -normalizedViewVector), 1e-5);
+  float NdotL = max(dot(displacedNormal, -brightestDirectionalLightDirection), 1e-5);
 
   float D = min(ggxDistribution(NdotH, waterRoughness), 100.0);
   float G_light = smithMaskingShadowing(NdotL, waterRoughness);

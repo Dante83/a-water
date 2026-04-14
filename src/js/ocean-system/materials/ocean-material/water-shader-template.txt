@@ -56,8 +56,8 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     skyAmbientColor: {type: 'vec3', value: new THREE.Vector3(0.1, 0.15, 0.2)},
     largeNormalMapStrength: {type: 'f', value: 0.45},
     smallNormalMapStrength: {type: 'f', value: 0.35},
-    waterAbsorption: {type: 'vec3', value: new THREE.Vector3(0.018, 0.007, 0.005)},
-    waterScattering: {type: 'vec3', value: new THREE.Vector3(0.0015, 0.0018, 0.002)},
+    waterAbsorption: {type: 'vec3', value: new THREE.Vector3(0.06, 0.012, 0.004)},
+    waterScattering: {type: 'vec3', value: new THREE.Vector3(0.010, 0.038, 0.040)},
     waterMieG: {type: 'f', value: 0.7},
     // New physically-based scattering parameters
     k1ScatterAmount: {type: 'f', value: 0.5},
