@@ -57,11 +57,18 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
     //are -chop*dDxdx and -chop*dDzdz. Match wave-normal-composer convention.
     //dDz/dx ≈ dDx/dz for irrotational waves, so we use dDxdz for both cross terms.
     '  float jacobian = (1.0 - chop * dDxdx) * (1.0 - chop * dDzdz) - chop * chop * dDxdz * dDxdz;',
-    //Read previous frame foam, apply exponential decay
+    //Read previous frame foam. Blend center with 4-neighbor average (spatial diffusion)
+    //so foam spreads into soft patches rather than staying as sharp point-source pixels.
+    //Sharp foam edges alias against mesh triangle boundaries and appear as straight tris.
     '  float prevFoam = texture2D(prevFoamTexture, uv).a;',
-    '  float foam = prevFoam * exp(-foamDecayRate);',
+    '  float foamN = texture2D(prevFoamTexture, uv + vec2(0.0,  eps)).a;',
+    '  float foamS = texture2D(prevFoamTexture, uv + vec2(0.0, -eps)).a;',
+    '  float foamE = texture2D(prevFoamTexture, uv + vec2( eps, 0.0)).a;',
+    '  float foamW = texture2D(prevFoamTexture, uv + vec2(-eps, 0.0)).a;',
+    '  float foam = mix(prevFoam, 0.25 * (foamN + foamS + foamE + foamW), 0.15) * exp(-foamDecayRate);',
     '  foam = clamp(foam, 0.0, 1.0);',
-    //Accumulate where Jacobian indicates breaking (negative = folded surface)
+    //Crests have J < 1 (compressed), troughs have J > 1 (stretched).
+    //Accumulate where J falls below the bias threshold (compressed/breaking crests).
     '  float biasedJacobian = max(0.0, -(jacobian - foamBias));',
     '  if(biasedJacobian > foamThreshold){',
     '    foam += foamAdd * biasedJacobian;',
@@ -92,9 +99,12 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
       resolution: {type: 'v2', value: new THREE.Vector2(this.baseTextureWidth, this.baseTextureHeight)},
       patchSize: {type: 'f', value: 1000.0},
       chop: {type: 'f', value: data.chop || 0.75},
-      foamBias: {type: 'f', value: 0.6},
-      foamDecayRate: {type: 'f', value: 0.03},
-      foamAdd: {type: 'f', value: 0.6},
+      //Equivalent to Crest _WaveFoamCoverage. Formula is max(0, foamBias - jacobian), same as
+      //Crest saturate(_WaveFoamCoverage - det). Flat water J=1.0 always, so foamBias must be
+      //<= 1.0 or flat water accumulates foam. Crest default is 0.95; raise toward 1.0 for more coverage.
+      foamBias: {type: 'f', value: 0.9},
+      foamDecayRate: {type: 'f', value: 0.015}, //faster than pure Crest to prevent long-term saturation
+      foamAdd: {type: 'f', value: 0.08},
       foamThreshold: {type: 'f', value: 0.0}
     },
     vertexShader: packVertShader,

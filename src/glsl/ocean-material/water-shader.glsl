@@ -529,8 +529,10 @@ void main(){
   vec2 largeNormalMapOffset = (worldPosition.xz + t * largeNormalMapVelocity) / 80.0;
   //90°-rotated second sample of the large map to kill directional bias
   vec2 largeNormalMapOffset2 = (vec2(-worldPosition.z, worldPosition.x) + t * largeNormalMapVelocity) / 80.0;
-  //Foam textures use a separate UV at a larger world-scale so they don't tile tiny
-  vec2 foamTextureUV = (worldPosition.xz + t * smallNormalMapVelocity) / (sizeOfOceanPatch / 2.0);
+  //Foam textures use a separate UV at a larger world-scale so they don't tile tiny.
+  //Two layers: one rotated 90° at a different scale (Crest technique) to kill the brick-tiling pattern.
+  vec2 foamTextureUV  = (worldPosition.xz + t * smallNormalMapVelocity) / (sizeOfOceanPatch / 2.0);
+  vec2 foamTextureUV2 = (vec2(-worldPosition.z, worldPosition.x) + t * smallNormalMapVelocity) / (sizeOfOceanPatch * 0.365);
   float smallNormalMapFadeout = clamp((500.0 - distanceToWorldPosition) / 250.0, 0.0, 1.0);
   float largeNormalMapFadeout = clamp((3000.0 - distanceToWorldPosition) / 2500.0, 0.0, 1.0);
 
@@ -816,26 +818,32 @@ void main(){
   float skyFactor = 0.5 + 0.5 * dot(displacedNormal, vec3(0.0, 1.0, 0.0));
   totalLight += skyAmbientColor * skyFactor * (1.0 - fresnelFactor) * 0.1;
   #if($foam_enabled)
-    vec3  foamAlbedo = texture2D(foamDiffuseMap,    foamTextureUV).rgb;
-    float foamMask   = texture2D(foamOpacityMap,    foamTextureUV).r;
-    vec2  foamNMXZ   = texture2D(foamNormalMap,     foamTextureUV).xy * 2.0 - 1.0;
+    //Two-layer foam sampling: average a 90°-rotated, differently-scaled second sample
+    //with the first to break up the repeating brick pattern (same trick as the large normal map).
+    vec3  foamAlbedo = 0.5 * (texture2D(foamDiffuseMap, foamTextureUV).rgb  + texture2D(foamDiffuseMap, foamTextureUV2).rgb);
+    float foamMask   = 0.5 * (texture2D(foamOpacityMap, foamTextureUV).r    + texture2D(foamOpacityMap, foamTextureUV2).r);
+    //Average packed normals in [0,1] space, then decode once
+    vec2  foamNMXZ   = (texture2D(foamNormalMap, foamTextureUV).xy + texture2D(foamNormalMap, foamTextureUV2).xy) - 1.0;
 
     //Foam normal: perturb the FFT surface normal with the foam normal map.
-    //Foam is rough and diffuse so the normal drives lighting more than the water normal does.
     vec3 foamSurfaceNormal = normalize(displacedNormal + vec3(foamNMXZ.x, 0.0, foamNMXZ.y) * 0.5);
 
     //Lambert diffuse from the primary directional light (sun/moon)
     float foamNdotL = max(0.0, dot(foamSurfaceNormal, -brightestDirectionalLightDirection));
     vec3 foamDiffuse = foamNdotL * lightMag * normalizedLightIntensity * foamAlbedo;
 
-    //Sky ambient: same hemisphere model as the water surface ambient above, but foam
-    //scatters ambient light diffusely (albedo multiplication is correct for a rough surface).
+    //Sky ambient: same hemisphere model as the water surface ambient above.
     float foamSkyFactor = 0.5 + 0.5 * dot(foamSurfaceNormal, vec3(0.0, 1.0, 0.0));
     vec3 foamAmbient = skyAmbientColor * foamSkyFactor * foamAlbedo;
 
-    //Blend lit foam over the water; opacity map drives per-texel coverage,
-    //foamAmount fades foam in and out with the Jacobian/shoreline accumulation.
-    totalLight = mix(totalLight, foamDiffuse + foamAmbient, clamp(foamMask * foamAmount, 0.0, 1.0));
+    //Crest WhiteFoamTexture technique: foam amount sets a sliding black-point on the
+    //opacity texture. High foamAmount → black point near 0 → all texture values pass.
+    //Low foamAmount → black point near 1 → only the brightest foam patches show.
+    //This is fundamentally different from foamMask*foamAmount which suppresses both.
+    //_WaveFoamFeather = 0.4 in Crest's defaults.
+    float foamBlackPoint = clamp(1.0 - foamAmount, 0.0, 1.0);
+    float foamBlend = smoothstep(foamBlackPoint, foamBlackPoint + 0.4, foamMask);
+    totalLight = mix(totalLight, foamDiffuse + foamAmbient, foamBlend);
   #endif
 
   #if($atmospheric_perspective_enabled)
@@ -843,6 +851,19 @@ void main(){
   #endif
 
   gl_FragColor = linearTosRGB(vec4(MyAESFilmicToneMapping(totalLight), 1.0));
+
+  //TEMP DEBUG: bottom-left = raw jacobian mapped [0,2] → [0,1] (grey=1.0=flat, black=0=folded, white=2=stretched)
+  //            bottom-right = fftFoamAmount [0,1]
+  {
+    float panelSize = 200.0;
+    vec2 fc = gl_FragCoord.xy;
+    if(fc.x < panelSize && fc.y < panelSize){
+      gl_FragColor = vec4(vec3(jacobian * 0.5), 1.0);
+    }
+    if(fc.x > screenResolution.x - panelSize && fc.y < panelSize){
+      gl_FragColor = vec4(vec3(fftFoamAmount), 1.0);
+    }
+  }
 
   //Blue noise dithering to break banding (same technique as a-starry-sky)
   float goldenRatio = 1.61803398875;
