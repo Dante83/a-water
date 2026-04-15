@@ -358,6 +358,11 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       uniformsRef.largeNormalMapVelocity.value.set(self.randomWindVelocities[2], self.randomWindVelocities[3]);
       uniformsRef.waterAbsorption.value.copy(self.data.water_absorption);
       uniformsRef.waterScattering.value.copy(self.data.water_scattering);
+      uniformsRef.waterTurbidity.value = self.data.water_turbidity;
+      uniformsRef.k1ScatterAmount.value = self.data.k1_scatter_amount;
+      uniformsRef.k2ViewDependence.value = self.data.k2_view_dependence;
+      uniformsRef.k3DirectScatter.value = self.data.k3_direct_scatter;
+      uniformsRef.k4ParallaxScatter.value = self.data.k4_parallax_scatter;
       uniformsRef.waterMieG.value = self.data.water_mie_g;
       uniformsRef.smallNormalMapStrength.value = self.data.small_normal_map_strength;
       uniformsRef.largeNormalMapStrength.value = self.data.large_normal_map_strength;

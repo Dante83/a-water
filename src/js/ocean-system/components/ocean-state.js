@@ -28,6 +28,15 @@ AFRAME.registerComponent('ocean-state', {
     //At 20m: transmittance ~79% — very clear near shore.
     'water_absorption': {type: 'vec3', default: {x: 0.012, y: 0.004, z: 0.001}},
     'water_scattering': {type: 'vec3', default: {x: 0.003, y: 0.008, z: 0.010}},
+    //Turbidity: overall scatter multiplier. 1=clear tropical, 3=murky coastal, 8=river mouth.
+    //Scales inscatterLight — higher values make body color more visible and water cloudier.
+    'water_turbidity': {type: 'number', default: 1.0},
+    //Scatter term weights — exposed so you can tune body color visibility without touching
+    //physical absorption/scattering coefficients.
+    'k1_scatter_amount': {type: 'number', default: 1.5},
+    'k2_view_dependence': {type: 'number', default: 1.2},
+    'k3_direct_scatter': {type: 'number', default: 0.6},
+    'k4_parallax_scatter': {type: 'number', default: 0.2},
     'water_mie_g': {type: 'number', default: 0.85},
     'linear_scattering_height_offset': {type: 'number', default: 5.0},
     'linear_scattering_total_wave_height': {type: 'number', default: 12.0},

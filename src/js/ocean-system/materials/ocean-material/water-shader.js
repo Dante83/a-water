@@ -60,10 +60,11 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     waterScattering: {type: 'vec3', value: new THREE.Vector3(0.010, 0.038, 0.040)},
     waterMieG: {type: 'f', value: 0.7},
     // New physically-based scattering parameters
-    k1ScatterAmount: {type: 'f', value: 0.5},
-    k2ViewDependence: {type: 'f', value: 0.3},
-    k3DirectScatter: {type: 'f', value: 0.2},
-    k4ParallaxScatter: {type: 'f', value: 0.1},
+    k1ScatterAmount: {type: 'f', value: 1.5},
+    k2ViewDependence: {type: 'f', value: 1.2},
+    k3DirectScatter: {type: 'f', value: 0.6},
+    k4ParallaxScatter: {type: 'f', value: 0.2},
+    waterTurbidity: {type: 'f', value: 1.0},
     fresnelAbsorptionAmount: {type: 'f', value: 1.0},
     linearScatteringHeightOffset: {type: 'f', value: 10.0},
     linearScatteringTotalScatteringWaveHeight: {type: 'f', value: 20.0},
@@ -159,6 +160,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     'uniform float k2ViewDependence;',
     'uniform float k3DirectScatter;',
     'uniform float k4ParallaxScatter;',
+    'uniform float waterTurbidity;',
     'uniform float fresnelAbsorptionAmount;',
 
     'uniform float linearScatteringHeightOffset;',
@@ -790,7 +792,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       '// L_scatter = (k1 + k2) * C_ss * L_sun * 1/(1 + A(ωᵢ))',
       '//           + k3 * C_ss * L_sun',
       '//           + k4 * P_f * L_sun',
-      'vec3 inscatterLight = mainScatter + directScatter + term4Scatter;',
+      'vec3 inscatterLight = (mainScatter + directScatter + term4Scatter) * waterTurbidity;',
 
       '// Add ambient light contributions from all directional lights',
       'vec3 ambientScatter = ambientLightScattering(normalizedViewVector, displacedNormal, waveElevation);',

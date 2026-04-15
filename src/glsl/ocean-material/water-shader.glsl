@@ -70,6 +70,7 @@ uniform float k1ScatterAmount;
 uniform float k2ViewDependence;
 uniform float k3DirectScatter;
 uniform float k4ParallaxScatter;
+uniform float waterTurbidity;
 uniform float fresnelAbsorptionAmount;
 
 uniform float linearScatteringHeightOffset;
@@ -701,7 +702,7 @@ void main(){
   // L_scatter = (k1 + k2) * C_ss * L_sun * 1/(1 + A(ωᵢ))
   //           + k3 * C_ss * L_sun
   //           + k4 * P_f * L_sun
-  vec3 inscatterLight = mainScatter + directScatter + term4Scatter;
+  vec3 inscatterLight = (mainScatter + directScatter + term4Scatter) * waterTurbidity;
 
   // Add ambient light contributions from all directional lights
   vec3 ambientScatter = ambientLightScattering(normalizedViewVector, displacedNormal, waveElevation);
