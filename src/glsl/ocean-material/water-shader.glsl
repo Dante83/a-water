@@ -682,7 +682,12 @@ void main(){
   float term2 = scatterTerm2(normalizedViewVector, displacedNormal, k2ViewDependence);
   float fresnelFresnel = fresnelAbsorption(-brightestDirectionalLightDirection, displacedNormal, fresnelAbsorptionAmount);
   float term3 = scatterTerm3(-brightestDirectionalLightDirection, displacedNormal, k3DirectScatter);
-  float term4 = scatterTerm4(fftFoamAmount, k4ParallaxScatter);
+  //Bubble turbidity: microbubble haze present in all ocean water, not just at foam crests.
+  //Uses turbulence (instant Jacobian compression) for wave-dependent churn, plus a constant
+  //floor (0.2) for the baseline scatter always present in ocean water.
+  //fftFoamAmount is kept for white foam rendering; turbulence drives the scatter model.
+  float bubbleDensity = clamp(turbulence + 0.2, 0.0, 1.0);
+  float term4 = scatterTerm4(bubbleDensity, k4ParallaxScatter);
 
   // First scattering term: (k₁ ... + k₂ ...) * C_ss * L_sun * Fresnel
   vec3 mainScatter = (term1 + term2) * waterScattering * brightestDirectionalLight * fresnelFresnel;
@@ -690,7 +695,7 @@ void main(){
   // Second scattering term: k₃(ωᵢ · ωₙ) * C_ss * L_sun
   vec3 directScatter = term3 * waterScattering * brightestDirectionalLight;
 
-  // Fourth scattering term: k₄ P_f C_f * L_sun
+  // Fourth scattering term: k₄ P_b * L_sun (bubble density, not foam accumulation)
   vec3 term4Scatter = term4 * brightestDirectionalLight;
 
   // L_scatter = (k1 + k2) * C_ss * L_sun * 1/(1 + A(ωᵢ))
