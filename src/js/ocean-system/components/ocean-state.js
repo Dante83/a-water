@@ -23,8 +23,11 @@ AFRAME.registerComponent('ocean-state', {
     'foam_start': {type: 'number', default: 0.10},
     'large_normal_map_strength': {type: 'number', default: 0.30},
     'small_normal_map_strength': {type: 'number', default: 0.20},
-    'water_absorption': {type: 'vec3', default: {x: 0.06, y: 0.012, z: 0.004}},
-    'water_scattering': {type: 'vec3', default: {x: 0.010, y: 0.038, z: 0.040}},
+    //Absorption/scattering in m^-1. Tuned for clear tropical ocean with ~70m visibility.
+    //At 70m: transmittance ~35% green/blue, ~25% red (strong blue-green tint at depth).
+    //At 20m: transmittance ~79% — very clear near shore.
+    'water_absorption': {type: 'vec3', default: {x: 0.012, y: 0.004, z: 0.001}},
+    'water_scattering': {type: 'vec3', default: {x: 0.003, y: 0.008, z: 0.010}},
     'water_mie_g': {type: 'number', default: 0.85},
     'linear_scattering_height_offset': {type: 'number', default: 5.0},
     'linear_scattering_total_wave_height': {type: 'number', default: 12.0},
