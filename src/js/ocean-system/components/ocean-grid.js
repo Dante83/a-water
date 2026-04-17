@@ -585,6 +585,22 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       uniformsRef.cameraNearFar.value.set(sceneCamera.near, sceneCamera.far);
       uniformsRef.inverseProjectionMatrix.value.copy(sceneCamera.projectionMatrixInverse);
       uniformsRef.inverseViewMatrix.value.copy(sceneCamera.matrixWorld);
+      uniformsRef.ssrViewMatrix.value.copy(sceneCamera.matrixWorldInverse);
+      uniformsRef.ssrProjectionMatrix.value.copy(sceneCamera.projectionMatrix);
+      //Metering survey: a-starry-sky 64x64 fisheye sky texture. World-space XZ maps
+      //directly to UV, giving smooth, noise-free sky color for SSR fallback.
+      if(self.skyDirector && self.skyDirector.renderers && self.skyDirector.renderers.meteringSurveyRenderer){
+        const msr = self.skyDirector.renderers.meteringSurveyRenderer;
+        const meterTex = msr.meteringSurveyRenderer.getCurrentRenderTarget(msr.meteringSurveyVar).texture;
+        //Enable linear filtering for smooth sky gradients (default is NearestFilter
+        //which causes visible banding). Requires OES_texture_float_linear (WebGL2 / most devices).
+        if(meterTex.magFilter !== THREE.LinearFilter){
+          meterTex.minFilter = THREE.LinearFilter;
+          meterTex.magFilter = THREE.LinearFilter;
+          meterTex.needsUpdate = true;
+        }
+        uniformsRef.meteringSurveyTexture.value = meterTex;
+      }
       uniformsRef.reflectionTexture.value = self.reflectionRenderTarget.texture;
       uniformsRef.reflectionViewProjectionMatrix.value.copy(reflectionVPMatrix);
       uniformsRef.smallNormalMap.value = self.smallNormalMap;
