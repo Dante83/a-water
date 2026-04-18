@@ -157,8 +157,10 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 reflectDir){
   //Exponential step: starts at 0.5m, grows 1.3x each step.
   float stepLen = 0.5;
   vec3 curPos = viewPos;
+  vec3 prevPos = viewPos;
 
   for(int i = 0; i < 48; i++){
+    prevPos = curPos;
     curPos  += viewReflect * stepLen;
     stepLen *= 1.3;
 
@@ -173,15 +175,76 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 reflectDir){
 
     float sceneDepth = linearizeDepth(texture2D(refractionDepthTexture, uv).r);
     float rayDepth   = -curPos.z;
+    float depthDelta = rayDepth - sceneDepth;
+    float farThreshold = cameraNearFar.y * 0.95;
+    //Loose crossing gate — every accepted hit gets binary-search refinement
+    //and a silhouette check below, so thickness can be generous here.
+    float maxThickness = stepLen + 1.0;
 
-    //Reject hits in the lower screen half — foreground geometry (trees, terrain)
-    //reflected at wrong parallax. Only trust hits above the horizon.
-    if(rayDepth > sceneDepth + 0.5 && uv.y > 0.5){
-      //Geometry hit — refraction texture is sRGB; convert to linear to match sky path.
-      vec2  edgeDist = abs(uv * 2.0 - 1.0);
-      float edgeFade = 1.0 - smoothstep(0.80, 1.0, max(edgeDist.x, edgeDist.y));
-      vec3  hitColor = sRGBToLinear(vec4(texture2D(refractionColorTexture, uv).rgb, 1.0)).rgb;
-      return mix(skyColor, hitColor, edgeFade);
+    if(depthDelta > 0.0 && depthDelta < maxThickness && uv.y > 0.5 &&
+       sceneDepth > 2.0 && sceneDepth < farThreshold){
+
+      //Binary-search refinement: the actual crossing lies between prevPos and
+      //curPos. 5 iterations narrows it to ~1/32 of the last step length, so
+      //real hits converge to |hitDelta| < a few cm regardless of step size.
+      //Thickness-bug rays (ray passes behind thin geometry whose back face is
+      //not in the depth buffer) still converge, but only to the thin object's
+      //front face — which the silhouette check below then rejects.
+      vec3 lo = prevPos;
+      vec3 hi = curPos;
+      vec2  hitUV         = uv;
+      float hitSceneDepth = sceneDepth;
+      float hitDelta      = depthDelta;
+      for(int j = 0; j < 5; j++){
+        vec3 mid = 0.5 * (lo + hi);
+        vec4 midClip = ssrProjectionMatrix * vec4(mid, 1.0);
+        vec2 midUV   = midClip.xy / midClip.w * 0.5 + 0.5;
+        float midDepth = linearizeDepth(texture2D(refractionDepthTexture, midUV).r);
+        float midDelta = -mid.z - midDepth;
+        if(midDelta > 0.0){
+          hi            = mid;
+          hitUV         = midUV;
+          hitSceneDepth = midDepth;
+          hitDelta      = midDelta;
+        } else {
+          lo = mid;
+        }
+      }
+
+      //Silhouette check: sample 4 neighbors. A thick surface — even on its
+      //edge — has at most ONE neighbor reading far background (the side
+      //pointing away from the object). A thin object (tree, railing, wire)
+      //has TWO opposing neighbors reading background. Using the 2nd-largest
+      //delta instead of the max distinguishes the two cases and stops us
+      //from rejecting the outline of every solid object.
+      vec2 px = vec2(0.002);
+      float dN = abs(linearizeDepth(texture2D(refractionDepthTexture, hitUV + vec2( 0.0,  px.y)).r) - hitSceneDepth);
+      float dS = abs(linearizeDepth(texture2D(refractionDepthTexture, hitUV + vec2( 0.0, -px.y)).r) - hitSceneDepth);
+      float dE = abs(linearizeDepth(texture2D(refractionDepthTexture, hitUV + vec2( px.x, 0.0)).r) - hitSceneDepth);
+      float dW = abs(linearizeDepth(texture2D(refractionDepthTexture, hitUV + vec2(-px.x, 0.0)).r) - hitSceneDepth);
+      //Second-largest of four: max of (min-of-each-pair, min-of-the-two-maxes).
+      float secondMax = max(max(min(dN, dS), min(dE, dW)),
+                            min(max(dN, dS), max(dE, dW)));
+      float silhouetteThreshold = hitSceneDepth * 0.05 + 1.0;
+
+      //Soft rejection: smoothstep out as the silhouette measure grows, instead
+      //of a hard cutoff. Hard cutoffs produce moire/striping when the refined
+      //hitUV jitters sub-pixel across adjacent fragments.
+      float silhouetteConfidence =
+        1.0 - smoothstep(silhouetteThreshold * 0.6, silhouetteThreshold, secondMax);
+
+      //Convergence threshold scales with step size: 5 binary halvings of a
+      //step of length L leaves at most L/32 of residual on a real crossing,
+      //so 0.1*stepLen + 0.5 is generous margin. A constant 0.5 rejected every
+      //far hit because exponential stepping reaches ~100m-per-step by iter 20.
+      float convergenceThreshold = stepLen * 0.1 + 0.5;
+      if(hitDelta < convergenceThreshold && silhouetteConfidence > 0.0){
+        vec2  edgeDist = abs(hitUV * 2.0 - 1.0);
+        float edgeFade = 1.0 - smoothstep(0.80, 1.0, max(edgeDist.x, edgeDist.y));
+        vec3  hitColor = sRGBToLinear(vec4(texture2D(refractionColorTexture, hitUV).rgb, 1.0)).rgb;
+        return mix(skyColor, hitColor, edgeFade * silhouetteConfidence);
+      }
+      //Rejected — keep marching; a thicker surface may lie further along the ray.
     }
   }
 
@@ -840,20 +903,18 @@ void main(){
   //wave face with sky reflection, washing out the whole surface with white.
   float cosTheta = clamp(dot(displacedNormal, -normalizedViewVector), 0.0, 1.0);
   float fresnelFactor = r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
-  //Cap Fresnel so the water body color always shows through — at grazing angles the
-  //planar reflection only captures sky (no ocean self-reflection), so uncapped Fresnel
-  //makes everything sky-colored. Cap gives a floor of body-color contribution.
-  //Cap at 0.65 (Crest uses _Specular=0.7 for the same reason): prevents the horizon
-  //from becoming 90%+ sky reflection which washes out to bright white.
-  //Cap Fresnel: at grazing angles (horizon) this hits 1.0 but the planar reflection
-  //only captures sky — at 65% cap, individual stars reflect visibly in dark water.
-  //0.35 keeps the horizon glossy while preventing star points from dominating.
-  fresnelFactor = min(fresnelFactor, 0.35);
   //Trough damping: wave troughs sit below surrounding crests which occlude the sky at
   //grazing angles. Reduce Fresnel in troughs so they show water body color rather than
   //sky. height ≈ 0 at deep troughs, ≈ 0.5 at mean level, ≈ 1 at crests.
   float troughDampen = smoothstep(0.1, 0.55, height);
   fresnelFactor *= mix(0.4, 1.0, troughDampen);
+  //Two decoupled Fresnels so reflection and body weight don't fight over a single value:
+  //  fresnelFactor — physical Schlick (→1 at horizon) weights reflectedLight. Full sky
+  //                  at the horizon kills the pea-green tint that came from the old cap.
+  //  fresnelBody   — soft cap at 0.3 weights (1 - fresnelBody) body color, so at horizon
+  //                  sky is fully on but body still contributes ~70% instead of 0. This
+  //                  preserves body visibility without fighting the sky reflection.
+  float fresnelBody = min(fresnelFactor, 0.3);
   //Clamp HDR values — metering survey is linear float and can be bright near the sun.
   //Cap at 4.0 to prevent saturation while preserving sky brightness range.
   reflectedLight = min(reflectedLight, vec3(4.0));
@@ -900,7 +961,7 @@ void main(){
   vec3 specular = fresnelSpec * D * G / (4.0 * NdotV + 0.001) * lightMag * normalizedLightIntensity;
 
   //Total light
-  vec3 totalLight = specular + (2.0 / 255.0) * directionalSurfaceLighting + (253.0 / 255.0) * ((inscatterLight + refractedLight) * (1.0 - fresnelFactor) + reflectedLight * fresnelFactor);
+  vec3 totalLight = specular + (2.0 / 255.0) * directionalSurfaceLighting + (253.0 / 255.0) * ((inscatterLight + refractedLight) * (1.0 - fresnelBody) + reflectedLight * fresnelFactor);
   //Ambient sky irradiance: diffuse illumination from the sky dome hitting the surface.
   //Without this, high-Fresnel wave faces (crests tilted toward camera) appear black when
   //there is nothing bright to reflect — the Fresnel model alone produces no light there.
