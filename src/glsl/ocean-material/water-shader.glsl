@@ -143,7 +143,7 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 reflectDir){
   //Sky fallback: use LUT-based sky radiance when atmosphere is enabled for correct horizon
   //colors; fall back to metering survey fisheye for the no-atmosphere build path.
   #if($atmospheric_perspective_enabled)
-    vec3 skyColor = min(computeSkyRadiance(reflectDir), vec3(8.0));
+    vec3 skyColor = computeSkyRadiance(reflectDir);
   #else
     vec2 skyUV = clamp(reflectDir.xz * 0.5 + 0.5, 0.01, 0.99);
     vec3 skyColor = min(texture2D(meteringSurveyTexture, skyUV).rgb, vec3(4.0));
@@ -394,7 +394,12 @@ SOFTWARE.
     vec3 skyMoon = pow(atmMoonHorizonFade, 3.0) * atmScatteringMoonIntensity * atmMoonLightColor
                  * (miePhaseFunction(cosViewMoon) * mieMoon + rayleighPhaseFunction(cosViewMoon) * rayMoon);
 
-    return skySun + skyMoon;
+    //Base sky ambient — matches a-starry-sky's own atmosphere pass main() (not linearAtmosphericPass).
+    //Small bluish floor that fades with altitude/horizon via the 2D transmittance LUT.
+    vec3 transmittanceFade = texture(atmosphereTransmittance, vec2(xParam, yHeight)).rgb;
+    vec3 baseSkyLighting = 0.25 * vec3(2E-3, 3.5E-3, 9E-3) * transmittanceFade;
+
+    return skySun + skyMoon + baseSkyLighting;
   }
 
   //Atmospheric perspective for ground-level surfaces.
