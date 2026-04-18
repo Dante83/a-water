@@ -13,6 +13,7 @@ varying vec3 vInView;
 varying mat4 vInstanceMatrix;
 varying mat4 vModelMatrix;
 varying mat3 vNormalMatrix;
+varying vec4 vSunShadowCoord;
 
 uniform float sizeOfOceanPatch;
 uniform int ringIndex;
@@ -21,6 +22,7 @@ uniform float cascadePatchSizes[6];
 uniform vec2 cascadeSpatialOffsets[6];
 uniform float waveHeightMultiplier;
 uniform float chop;
+uniform mat4 sunShadowMatrix;
 
 #if(!$atmospheric_perspective_enabled)
   #include <fog_pars_vertex>
@@ -75,6 +77,11 @@ void main() {
   vInstanceMatrix = instanceMatrix;
   vModelMatrix = modelMatrix;
   vNormalMatrix = normalMatrix;
+
+  //Shadow coord — project the displaced world position into the sun's light-clip
+  //space so the fragment shader can compare against the shadow depth texture.
+  vec4 worldDisplacedPosition = modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);
+  vSunShadowCoord = sunShadowMatrix * worldDisplacedPosition;
 
   //Add support for three.js fog
   #if(!$atmospheric_perspective_enabled)

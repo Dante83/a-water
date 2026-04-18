@@ -52,6 +52,14 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     t: {type: 'f', value: 0.0},
     brightestDirectionalLight: {type: 'vec3', value: new THREE.Vector3(1.0,1.0,1.0)},
     brightestDirectionalLightDirection: {type: 'vec3', value: new THREE.Vector3(1.0,1.0,1.0)},
+    //Directional-light shadow-map receive. Zero flag when no caster exists; the
+    //shader defaults to "unshadowed" so the pass is a no-op until a caster wires up.
+    sunShadowMap: {type: 't', value: null},
+    sunShadowMatrix: {type: 'mat4', value: new THREE.Matrix4()},
+    sunShadowMapSize: {type: 'vec2', value: new THREE.Vector2(1024.0, 1024.0)},
+    sunShadowRadius: {type: 'f', value: 1.0},
+    sunShadowBias: {type: 'f', value: -0.003},
+    sunShadowEnabled: {type: 'i', value: 0},
     // Ambient directional lights (for water scattering)
     ambientLightCount: {type: 'i', value: 0},
     ambientLightColors: {type: 'vec3', value: [new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0)]},

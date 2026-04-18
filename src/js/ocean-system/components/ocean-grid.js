@@ -349,6 +349,11 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       const geometry = AWater.OceanTile(tileSize, numCells, top, right, bottom, left);
       const mesh = new THREE.InstancedMesh(geometry, self.oceanMaterial.clone(), instanceCount[key]);
       mesh.frustumCulled = false;
+      //Water receives environment shadows but doesn't cast — waves into a shadow map
+      //would be opaque (wrong for translucent water) and we're handling wave self-shadow
+      //separately in Phase 2 via analytic ambient-aperture on the sum-of-sines model.
+      mesh.castShadow = false;
+      mesh.receiveShadow = true;
       oceanPatchGeometryInstances[key] = mesh;
       instanceIterations[key] = 0;
       scene.add(mesh);
@@ -626,6 +631,20 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         directionalLightDirection.set(mainLight.position.x, mainLight.position.y, mainLight.position.z);
         directionalLightDirection.sub(mainLight.target.position).negate().normalize();
         uniformsRef.brightestDirectionalLightDirection.value.set(directionalLightDirection.x, directionalLightDirection.y, directionalLightDirection.z);
+
+        //Wire sun shadow-map receive. Enabled only when the main light actually
+        //casts and its shadow map has been rendered at least once (shadow.map
+        //is null until the renderer runs the shadow pass).
+        if(mainLight.castShadow && mainLight.shadow && mainLight.shadow.map){
+          uniformsRef.sunShadowEnabled.value = 1;
+          uniformsRef.sunShadowMap.value = mainLight.shadow.map.texture;
+          uniformsRef.sunShadowMatrix.value.copy(mainLight.shadow.matrix);
+          uniformsRef.sunShadowMapSize.value.set(mainLight.shadow.mapSize.x, mainLight.shadow.mapSize.y);
+          uniformsRef.sunShadowRadius.value = mainLight.shadow.radius;
+          uniformsRef.sunShadowBias.value = mainLight.shadow.bias - 0.003;
+        } else {
+          uniformsRef.sunShadowEnabled.value = 0;
+        }
 
         // Pass all lights as arrays
         const lightCount = Math.min(self.directionalLights.length, 8); // Cap at 8 lights for perf

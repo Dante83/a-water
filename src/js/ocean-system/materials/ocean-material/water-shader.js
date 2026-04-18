@@ -52,6 +52,14 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     t: {type: 'f', value: 0.0},
     brightestDirectionalLight: {type: 'vec3', value: new THREE.Vector3(1.0,1.0,1.0)},
     brightestDirectionalLightDirection: {type: 'vec3', value: new THREE.Vector3(1.0,1.0,1.0)},
+    //Directional-light shadow-map receive. Zero flag when no caster exists; the
+    //shader defaults to "unshadowed" so the pass is a no-op until a caster wires up.
+    sunShadowMap: {type: 't', value: null},
+    sunShadowMatrix: {type: 'mat4', value: new THREE.Matrix4()},
+    sunShadowMapSize: {type: 'vec2', value: new THREE.Vector2(1024.0, 1024.0)},
+    sunShadowRadius: {type: 'f', value: 1.0},
+    sunShadowBias: {type: 'f', value: -0.003},
+    sunShadowEnabled: {type: 'i', value: 0},
     // Ambient directional lights (for water scattering)
     ambientLightCount: {type: 'i', value: 0},
     ambientLightColors: {type: 'vec3', value: [new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0)]},
@@ -103,6 +111,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     'varying mat4 vInstanceMatrix;',
     'varying mat4 vModelMatrix;',
     'varying mat3 vNormalMatrix;',
+    'varying vec4 vSunShadowCoord;',
 
     '//uniform vec3 cameraDirection;',
     'uniform float sizeOfOceanPatch;',
@@ -151,6 +160,14 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
 
     'uniform vec3 brightestDirectionalLight;',
     'uniform vec3 brightestDirectionalLightDirection;',
+
+    '//Sun shadow map receive. When sunShadowEnabled == 0 the sample function short-',
+    '//circuits to 1.0 (unshadowed) so the whole feature is a no-op with no caster.',
+    'uniform sampler2D sunShadowMap;',
+    'uniform vec2 sunShadowMapSize;',
+    'uniform float sunShadowRadius;',
+    'uniform float sunShadowBias;',
+    'uniform int sunShadowEnabled;',
     'uniform vec3 skyAmbientColor;',
     'uniform vec3 waterAbsorption;',
     'uniform vec3 waterScattering;',
@@ -216,6 +233,32 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       'float near = cameraNearFar.x;',
       'float far = cameraNearFar.y;',
       'return near * far / (far - depthSample * (far - near));',
+    '}',
+
+    "//PCF-soft sample against the sun's shadow map. Returns 1.0 for fully lit,",
+    '//0.0 for fully shadowed. Fragments outside the shadow frustum read as lit so',
+    "//the map's edge doesn't produce a hard shadow seam across open ocean.",
+    '//',
+    '//On WebGL2 Three.js uses a depth-texture attachment for directional shadow',
+    '//maps, so sampling the red channel gives the normalized depth directly. The',
+    '//earlier RGBA-unpack variant was reading garbage on this pipeline, which is',
+    '//what caused the wave-shaped acne we saw over the rock mesh.',
+    'float getSunShadow(vec4 shadowCoord){',
+      'if(sunShadowEnabled == 0) return 1.0;',
+      'vec3 sc = shadowCoord.xyz / shadowCoord.w;',
+      'if(sc.x < 0.0 || sc.x > 1.0 || sc.y < 0.0 || sc.y > 1.0 || sc.z > 1.0){',
+        'return 1.0;',
+      '}',
+      'float refZ = sc.z + sunShadowBias;',
+      'vec2 texelSize = (1.0 / sunShadowMapSize) * sunShadowRadius;',
+      'float shadow = 0.0;',
+      'for(int x = -1; x <= 1; x++){',
+        'for(int y = -1; y <= 1; y++){',
+          'float d = texture2D(sunShadowMap, sc.xy + vec2(float(x), float(y)) * texelSize).r;',
+          'shadow += refZ < d ? 1.0 : 0.0;',
+        '}',
+      '}',
+      'return shadow * (1.0 / 9.0);',
     '}',
 
     '#if($atmospheric_perspective_enabled)',
@@ -605,6 +648,11 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     '#endif',
 
     'void main(){',
+      '//Shadow factor — once per fragment. 1.0 = fully lit, 0.0 = fully shadowed.',
+      '//Multiplied into every sun-driven term below (SSS, diffuse, specular, foam),',
+      '//but NOT into sky ambient / reflection / refraction, which come from other sources.',
+      'float sunShadowFactor = getSunShadow(vSunShadowCoord);',
+
       'mat3 instanceMatrixMat3 = mat3(vInstanceMatrix[0].xyz, vInstanceMatrix[1].xyz, vInstanceMatrix[2].xyz );',
       'mat3 modelMatrixMat3 = mat3(vModelMatrix[0].xyz, vModelMatrix[1].xyz, vModelMatrix[2].xyz );',
 
@@ -938,13 +986,13 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       'float term4 = scatterTerm4(bubbleDensity, k4ParallaxScatter);',
 
       '// First scattering term: (k₁ ... + k₂ ...) * C_ss * L_sun * Fresnel',
-      'vec3 mainScatter = (term1 + term2) * waterScattering * brightestDirectionalLight * fresnelFresnel;',
+      'vec3 mainScatter = (term1 + term2) * waterScattering * brightestDirectionalLight * fresnelFresnel * sunShadowFactor;',
 
       '// Second scattering term: k₃(ωᵢ · ωₙ) * C_ss * L_sun',
-      'vec3 directScatter = term3 * waterScattering * brightestDirectionalLight;',
+      'vec3 directScatter = term3 * waterScattering * brightestDirectionalLight * sunShadowFactor;',
 
       '// Fourth scattering term: k₄ P_b * L_sun (bubble density, not foam accumulation)',
-      'vec3 term4Scatter = term4 * brightestDirectionalLight;',
+      'vec3 term4Scatter = term4 * brightestDirectionalLight * sunShadowFactor;',
 
       '// L_scatter = (k1 + k2) * C_ss * L_sun * 1/(1 + A(ωᵢ))',
       '//           + k3 * C_ss * L_sun',
@@ -1028,7 +1076,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       '//Calculate specular lighting and surface lighting',
       'float lightMag = length(brightestDirectionalLight);',
       'vec3 normalizedLightIntensity = lightMag > 0.001 ? brightestDirectionalLight / lightMag : vec3(0.0);',
-      'vec3 directionalSurfaceLighting = normalizedLightIntensity * max(dot(macroNormal, -brightestDirectionalLightDirection), 0.0);',
+      'vec3 directionalSurfaceLighting = normalizedLightIntensity * max(dot(macroNormal, -brightestDirectionalLightDirection), 0.0) * sunShadowFactor;',
 
       '//GGX Cook-Torrance specular',
       'float waterRoughness = mix(0.22, 0.40, fftFoamAmount);',
@@ -1051,7 +1099,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
         'pow(1.0 - NdotV, 5.0 * exp(-2.69 * waterRoughness)) / (1.0 + 22.7 * pow(waterRoughness, 1.5)),',
         '1.0, r0);',
 
-      'vec3 specular = fresnelSpec * D * G / (4.0 * NdotV + 0.001) * lightMag * normalizedLightIntensity;',
+      'vec3 specular = fresnelSpec * D * G / (4.0 * NdotV + 0.001) * lightMag * normalizedLightIntensity * sunShadowFactor;',
 
       '//Total light',
       'vec3 totalLight = specular + (2.0 / 255.0) * directionalSurfaceLighting + (253.0 / 255.0) * ((inscatterLight + refractedLight) * (1.0 - fresnelBody) + reflectedLight * fresnelFactor);',
@@ -1081,7 +1129,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
 
         '//Lambert diffuse from the primary directional light (sun/moon)',
         'float foamNdotL = max(0.0, dot(foamSurfaceNormal, -brightestDirectionalLightDirection));',
-        'vec3 foamDiffuse = foamNdotL * lightMag * normalizedLightIntensity * foamAlbedo;',
+        'vec3 foamDiffuse = foamNdotL * lightMag * normalizedLightIntensity * foamAlbedo * sunShadowFactor;',
 
         '//Sky ambient: same hemisphere model as the water surface ambient above.',
         'float foamSkyFactor = 0.5 + 0.5 * dot(foamSurfaceNormal, vec3(0.0, 1.0, 0.0));',
@@ -1163,6 +1211,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     'varying mat4 vInstanceMatrix;',
     'varying mat4 vModelMatrix;',
     'varying mat3 vNormalMatrix;',
+    'varying vec4 vSunShadowCoord;',
 
     'uniform float sizeOfOceanPatch;',
     'uniform int ringIndex;',
@@ -1171,6 +1220,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     'uniform vec2 cascadeSpatialOffsets[6];',
     'uniform float waveHeightMultiplier;',
     'uniform float chop;',
+    'uniform mat4 sunShadowMatrix;',
 
     '#if(!$atmospheric_perspective_enabled)',
       '#include <fog_pars_vertex>',
@@ -1225,6 +1275,11 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       'vInstanceMatrix = instanceMatrix;',
       'vModelMatrix = modelMatrix;',
       'vNormalMatrix = normalMatrix;',
+
+      "//Shadow coord — project the displaced world position into the sun's light-clip",
+      '//space so the fragment shader can compare against the shadow depth texture.',
+      'vec4 worldDisplacedPosition = modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);',
+      'vSunShadowCoord = sunShadowMatrix * worldDisplacedPosition;',
 
       '//Add support for three.js fog',
       '#if(!$atmospheric_perspective_enabled)',
