@@ -1262,11 +1262,13 @@ void main(){
 
   //Total light. Sky reflection is geometric — the sky itself isn't darkened
   //by a cloud passing overhead — but in real photos shadowed water reflects
-  //a slightly dimmer sky-dome because sun-lit surroundings contribute to its
-  //apparent brightness. Attenuate the reflected term by 15% in fully shadowed
-  //regions to match that visual cue without killing reflection altogether.
-  float reflectionShadowAttenuation = mix(0.85, 1.0, sunShadowFactor);
-  vec3 totalLight = specular + (2.0 / 255.0) * directionalSurfaceLighting + (253.0 / 255.0) * ((inscatterLight + refractedLight) * (1.0 - fresnelBody) + reflectedLight * reflectionShadowAttenuation * fresnelFactor);
+  //Sun shadow is applied only to direct-sun terms (specular,
+  //directionalSurfaceLighting, the four scatter contributions). Sky
+  //reflection, refraction, and ambient are not sun-driven and stay at
+  //full brightness in shadowed regions — physically correct, and avoids
+  //the over-darkening that the EVSM-era crisp shadow factor produced
+  //through the previous "perceptual nudge" multipliers.
+  vec3 totalLight = specular + (2.0 / 255.0) * directionalSurfaceLighting + (253.0 / 255.0) * ((inscatterLight + refractedLight) * (1.0 - fresnelBody) + reflectedLight * fresnelFactor);
   //Ambient sky irradiance: diffuse illumination from the sky dome hitting the surface.
   //Without this, high-Fresnel wave faces (crests tilted toward camera) appear black when
   //there is nothing bright to reflect — the Fresnel model alone produces no light there.
@@ -1280,16 +1282,6 @@ void main(){
   //Crest does the same: geometry normals for SSS/ambient, texture normals only for specular/refraction.
   float skyFactor = 0.5 + 0.5 * dot(displacedNormal, vec3(0.0, 1.0, 0.0));
   totalLight += skyAmbientColor * skyFactor * (1.0 - fresnelFactor) * 0.1;
-
-  //Soft "shadow tint" on the assembled water lighting. Direct-sun terms are
-  //already shadow-modulated upstream, but sky reflection + refraction +
-  //ambient dominate the open-ocean pixel and aren't sun-driven, so killing
-  //the sun-lit fraction alone only darkens the surface ~15-25%. This extra
-  //multiply pushes shadowed water visibly darker so cloud/wave shadows read
-  //the way they do in real photos. Not strictly physical — it's a
-  //perceptual nudge — but matches viewer expectation. Applied BEFORE the
-  //foam blend so foam keeps its own per-fragment shadow without double-dip.
-  totalLight *= mix(0.7, 1.0, sunShadowFactor);
 
   #if($foam_enabled)
     //Two-layer foam sampling: average a 90°-rotated, differently-scaled second sample
