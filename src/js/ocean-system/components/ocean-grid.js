@@ -295,6 +295,17 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.positionPassMaterial.uniforms = AWater.AOcean.Materials.Ocean.positionPassMaterial.uniforms;
   this.positionPassMaterial.uniforms.worldMatrix.value = this.camera.matrixWorld;
 
+  //Ocean-only cascaded shadow map. Dedicated tight-frustum depth pass that
+  //only contains the water InstancedMeshes — gives per-wave self-shadow that
+  //the scene-wide sun shadow map can't resolve. Registered with each mesh
+  //below via addCaster(). Safe to skip if the shadow material isn't loaded
+  //(older builds without ocean-shadow.js).
+  if(AWater.AOcean.OceanShadowCSM && AWater.AOcean.Materials.Ocean.oceanShadowMaterial){
+    this.oceanShadowCSM = new AWater.AOcean.OceanShadowCSM(this, scene);
+  } else {
+    this.oceanShadowCSM = null;
+  }
+
   //── Clipmap grid construction ────────────────────────────────────────────
   //All tiles use the same fixed tessellation (numCells cells/edge = numCells+1 verts/edge).
   //Ring k has tile world size patchSize*2^k.
@@ -349,14 +360,25 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       const geometry = AWater.OceanTile(tileSize, numCells, top, right, bottom, left);
       const mesh = new THREE.InstancedMesh(geometry, self.oceanMaterial.clone(), instanceCount[key]);
       mesh.frustumCulled = false;
-      //Water receives environment shadows but doesn't cast — waves into a shadow map
-      //would be opaque (wrong for translucent water) and we're handling wave self-shadow
-      //separately in Phase 2 via analytic ambient-aperture on the sum-of-sines model.
+      //Ocean self-shadow is handled by the dedicated ocean-only CSM below;
+      //casting into the scene-wide sun shadow map would re-rasterise ~900K
+      //ocean triangles into a large target every render call, for no useful
+      //wave-scale detail. receiveShadow stays on so environment casters
+      //(trees, lighthouse, rocks) still occlude the water.
       mesh.castShadow = false;
       mesh.receiveShadow = true;
       oceanPatchGeometryInstances[key] = mesh;
       instanceIterations[key] = 0;
       scene.add(mesh);
+      //Register as a caster in the ocean-only CSM. The CSM decides which
+      //cascades this ring participates in based on its ring index (each
+      //cascade has a maxRing). Larger rings only contribute to coarser
+      //cascades; finest ring 0 contributes to all four. Layers are set
+      //inside addCaster so per-cascade light cameras naturally pick the
+      //right caster set without any per-frame layer toggling here.
+      if(self.oceanShadowCSM){
+        self.oceanShadowCSM.addCaster(mesh, k);
+      }
 
       const uniformsRef = mesh.material.uniforms;
       uniformsRef.smallNormalMapVelocity.value.set(self.randomWindVelocities[0], self.randomWindVelocities[1]);
@@ -393,6 +415,60 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.numCells = numCells;
   this.ringCount = ringCount;
   this.globalCameraPosition = new THREE.Vector3();
+
+  //Console helper — flip the ocean-shadow debug mode on every water tile
+  //material at once. Call from the browser console as
+  //  setOceanShadowDebug(0|1|2)
+  //  0 = normal render, 1 = shadow factor as full-screen grayscale,
+  //  2 = cascade-index tint (red C0, green C1, blue C2, yellow C3).
+  //Cascade-depth thumbnails along the top of the screen are always on
+  //regardless of mode.
+  this.setOceanShadowDebug = function(mode){
+    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.oceanShadowDebugMode.value = mode | 0;
+    }
+  };
+  //Diagnostic toggles — flip the scene-wide sun shadow or the ocean-only
+  //CSM on/off across every water tile so we can isolate which one is
+  //producing a given visible shadow. Call as setSunShadowEnabled(0) etc.
+  //from the browser console.
+  this.setSunShadowEnabled = function(enabled){
+    const v = enabled ? 1 : 0;
+    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.sunShadowEnabled.value = v;
+    }
+  };
+  this.setOceanShadowEnabled = function(enabled){
+    const v = enabled ? 1 : 0;
+    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.oceanShadowEnabled.value = v;
+    }
+  };
+  //Live-tune the receiver-side normal-offset bias from the console. Pushes
+  //to every water tile material at once so the change is visible next
+  //frame. Pass a value in WORLD METERS — typical range 0.05 to 2.0.
+  this.setOceanShadowNormalBias = function(meters){
+    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.oceanShadowNormalBias.value = +meters;
+    }
+  };
+  //Live-tune the world-space PCF softness target. Each cascade converts
+  //this to a texel radius (= meters / cascadeTexelSize), so the kernel
+  //covers the same physical span everywhere. Typical range 0.1 to 1.5;
+  //larger values hide texel-grid Moire at distance, smaller values keep
+  //near-camera wave detail crisp.
+  this.setOceanShadowSoftnessWorld = function(meters){
+    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.oceanShadowSoftnessWorld.value = +meters;
+    }
+  };
+  if(typeof window !== 'undefined'){
+    window.setOceanShadowDebug = this.setOceanShadowDebug;
+    window.setSunShadowEnabled = this.setSunShadowEnabled;
+    window.setOceanShadowEnabled = this.setOceanShadowEnabled;
+    window.setOceanShadowNormalBias = this.setOceanShadowNormalBias;
+    window.setOceanShadowSoftnessWorld = this.setOceanShadowSoftnessWorld;
+  }
   const oceanPatchTranslationMatrices = [];
   for(let i = 0; numOceanPatches = self.oceanPatches.length, i < numOceanPatches; ++i){
     oceanPatchTranslationMatrices.push(new THREE.Matrix4());
@@ -645,6 +721,22 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         } else {
           uniformsRef.sunShadowEnabled.value = 0;
         }
+        //DEBUG: snapshot of shadow-enable state on every tick. Inspect via
+        //  window.__OCEAN_SHADOW_DEBUG__  in devtools to see why shadows are
+        //  (or aren't) firing. Remove once shadow path is confirmed working.
+        window.__OCEAN_SHADOW_DEBUG__ = {
+          mainLight_castShadow: mainLight.castShadow,
+          mainLight_has_shadow: !!mainLight.shadow,
+          mainLight_has_shadow_map: !!(mainLight.shadow && mainLight.shadow.map),
+          sunShadowEnabled: uniformsRef.sunShadowEnabled.value,
+          sunShadowBias: uniformsRef.sunShadowBias.value,
+          oceanShadowCSM_exists: !!self.oceanShadowCSM,
+          oceanShadowCSM_caster_count: self.oceanShadowCSM ? self.oceanShadowCSM.oceanMeshes.length : -1,
+          oceanShadowEnabled: uniformsRef.oceanShadowEnabled.value,
+          oceanShadowBias: uniformsRef.oceanShadowBias.value,
+          sunDir_y: -directionalLightDirection.y,
+          rendererShadowMapEnabled: self.renderer && self.renderer.shadowMap ? self.renderer.shadowMap.enabled : 'no-renderer'
+        };
 
         // Pass all lights as arrays
         const lightCount = Math.min(self.directionalLights.length, 8); // Cap at 8 lights for perf
@@ -726,6 +818,49 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
       //Blue noise dithering — always update time, texture comes from sky if available
       uniformsRef.blueNoiseTime.value = performance.now();
+    }
+
+    //Ocean-only CSM pass. Runs after every ocean material has had its cascade
+    //textures/uniforms refreshed for this frame, so the shadow material picks
+    //up the current FFT state by reference. Then we push the resulting depth
+    //texture + shadow matrix back to each water material.
+    if(self.oceanShadowCSM && self.directionalLights.length > 0 && oceanGridInstanceKeys.length > 0){
+      const mainLight = self.directionalLights[0];
+      directionalLightDirection.set(mainLight.position.x, mainLight.position.y, mainLight.position.z);
+      directionalLightDirection.sub(mainLight.target.position).negate().normalize();
+      const firstMeshUniforms = oceanPatchGeometryInstances[oceanGridInstanceKeys[0]].material.uniforms;
+      self.oceanShadowCSM.render(self.renderer, sceneCamera, directionalLightDirection, firstMeshUniforms);
+
+      //Sun below horizon → CSM.render() early-exits; disable the sampler so
+      //the water shader doesn't read stale maps.
+      const sunBelowHorizon = -directionalLightDirection.y <= 0.0;
+      const cascades = self.oceanShadowCSM.cascades;
+      const numCascades = self.oceanShadowCSM.numCascades;
+      for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+        const u = oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms;
+        if(sunBelowHorizon){
+          u.oceanShadowEnabled.value = 0;
+          continue;
+        }
+        u.oceanShadowEnabled.value = 1;
+        //Push every cascade's depth texture, shadow matrix, and map size.
+        //Matrices live as separate uniform names (oceanShadowMatrix0..3) and
+        //must be projected per-vertex; texture/mapSize are arrays sampled
+        //in the fragment cascade walk.
+        for(let c = 0; c < numCascades; c++){
+          u.oceanShadowMap.value[c] = cascades[c].renderTarget.depthTexture;
+          u.oceanShadowMapSize.value[c].set(cascades[c].cfg.mapSize, cascades[c].cfg.mapSize);
+          u.oceanShadowDepthRange.value[c] = cascades[c].depthRange;
+          //Lateral world-space texel size — receiver uses this to derive a
+          //constant world-space PCF radius across cascades. Cheap to compute
+          //here, avoids storing redundantly on the cascade.
+          u.oceanShadowTexelSizeWorld.value[c] = cascades[c].cfg.extent / cascades[c].cfg.mapSize;
+        }
+        u.oceanShadowMatrix0.value.copy(cascades[0].shadowMatrix);
+        u.oceanShadowMatrix1.value.copy(cascades[1].shadowMatrix);
+        u.oceanShadowMatrix2.value.copy(cascades[2].shadowMatrix);
+        u.oceanShadowMatrix3.value.copy(cascades[3].shadowMatrix);
+      }
     }
   };
 }

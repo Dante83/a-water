@@ -53,3 +53,8 @@ groups:
         vertex:   'water-vertex.glsl'
         template: 'water-shader-template.txt'
         material: 'water-shader.js'
+      -
+        fragment: 'ocean-shadow.glsl'
+        vertex:   'ocean-shadow-vertex.glsl'
+        template: 'ocean-shadow-template.txt'
+        material: 'ocean-shadow.js'

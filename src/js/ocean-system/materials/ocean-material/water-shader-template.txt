@@ -60,15 +60,71 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     sunShadowRadius: {type: 'f', value: 1.0},
     sunShadowBias: {type: 'f', value: -0.003},
     sunShadowEnabled: {type: 'i', value: 0},
+    //Ocean-only cascaded shadow map — four dedicated tight-frustum depth
+    //textures rendered by ocean-shadow-csm.js, sampled fine→coarse so each
+    //fragment uses the smallest cascade that contains it. Gives per-wave
+    //self-shadow that the scene-wide sunShadowMap above is too coarse to
+    //resolve. Per-cascade matrices are split as oceanShadowMatrix0..3 so
+    //vertex-shader array-uniform packing isn't relied on.
+    oceanShadowMap: {type: 't', value: [null, null, null, null]},
+    oceanShadowMatrix0: {type: 'mat4', value: new THREE.Matrix4()},
+    oceanShadowMatrix1: {type: 'mat4', value: new THREE.Matrix4()},
+    oceanShadowMatrix2: {type: 'mat4', value: new THREE.Matrix4()},
+    oceanShadowMatrix3: {type: 'mat4', value: new THREE.Matrix4()},
+    oceanShadowMapSize: {type: 'v2v', value: [
+      new THREE.Vector2(1024.0, 1024.0),
+      new THREE.Vector2(1024.0, 1024.0),
+      new THREE.Vector2(1024.0, 1024.0),
+      new THREE.Vector2(1024.0, 1024.0)
+    ]},
+    //Per-cascade NDC→world depth slab span (= 2 × halfDepth). Pushed each
+    //frame from ocean-shadow-csm.js. Receiver divides bias/slopeBias by
+    //this so a single user knob produces constant world-space peter-pan
+    //regardless of which cascade is being sampled.
+    oceanShadowDepthRange: {type: 'fv1', value: [160.0, 340.0, 2100.0, 10100.0]},
+    //Per-cascade lateral world-space texel size (= cascade.extent / mapSize).
+    //Lets the receiver derive a *constant world-space* PCF kernel radius
+    //regardless of cascade, instead of using hand-tuned per-cascade texel
+    //radii (which made each cascade look visibly different in softness).
+    //ocean-shadow-csm.js pushes the live values per frame.
+    oceanShadowTexelSizeWorld: {type: 'fv1', value: [0.0293, 0.1172, 0.3906, 1.9531]},
+    oceanShadowBias: {type: 'f', value: -0.0005},
+    //World-space PCF kernel radius target in METERS. Receiver scales this
+    //per cascade by the local texel size to derive a texel radius. ~0.5 m
+    //hides shadow-map texel-grid Moiré at distance without washing out
+    //near-camera wave detail. Tunable live via setOceanShadowSoftnessWorld().
+    oceanShadowSoftnessWorld: {type: 'f', value: 0.5},
+    //Normal-offset bias in WORLD METERS. Receiver projects worldPos +
+    //normal × this distance into shadow space, decoupling per-fragment
+    //sc.z from the caster surface plane. Standard self-shadow technique
+    //(Three.js DirectionalLight.shadow.normalBias). Tune ~ one coarse-
+    //cascade texel; too small leaves per-triangle acne, too large
+    //detaches shadow from wave geometry.
+    oceanShadowNormalBias: {type: 'f', value: 0.5},
+    oceanShadowEnabled: {type: 'i', value: 0},
+    //Debug visualisation switch (see water-shader.glsl). 0 = normal,
+    //1 = shadow-factor full-screen, 2 = cascade-index full-screen.
+    //Cascade-depth thumbnails along the top of the screen are
+    //unconditional regardless of this value.
+    oceanShadowDebugMode: {type: 'i', value: 0},
     // Ambient directional lights (for water scattering)
     ambientLightCount: {type: 'i', value: 0},
     ambientLightColors: {type: 'vec3', value: [new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0)]},
     ambientLightDirections: {type: 'vec3', value: [new THREE.Vector3(0,1,0), new THREE.Vector3(1,0,0), new THREE.Vector3(0,-1,0), new THREE.Vector3(-1,0,0), new THREE.Vector3(0,0,1), new THREE.Vector3(0,0,-1), new THREE.Vector3(0,1,0), new THREE.Vector3(0,1,0)]},
     skyAmbientColor: {type: 'vec3', value: new THREE.Vector3(0.1, 0.15, 0.2)},
+    //How strongly diffuse sky irradiance drives underwater backscatter, relative to
+    //direct sun. Physically ~0.15-0.2 on a clear day, but skyAmbientColor isn't in
+    //the same units as brightestDirectionalLight — tune empirically in the dev GUI.
+    ambientWaterWeight: {type: 'f', value: 0.1},
     largeNormalMapStrength: {type: 'f', value: 0.45},
     smallNormalMapStrength: {type: 'f', value: 0.35},
-    waterAbsorption: {type: 'vec3', value: new THREE.Vector3(0.06, 0.012, 0.004)},
-    waterScattering: {type: 'vec3', value: new THREE.Vector3(0.010, 0.038, 0.040)},
+    //Petzold "clear ocean" coefficients rebalanced so (a) single-scatter albedo
+    //(scattering / extinction) lands navy-heavy and (b) extinction is ordered
+    //red > green > blue — matching Pope & Fry 1997 clean-ocean measurements,
+    //so blue survives long refraction paths and dusk doesn't read olive-green.
+    //Extinction = (0.204, 0.048, 0.040). Albedo = (0.02, 0.17, 0.75).
+    waterAbsorption: {type: 'vec3', value: new THREE.Vector3(0.45, 0.10, 0.04)},
+    waterScattering: {type: 'vec3', value: new THREE.Vector3(0.08, 0.08, 0.08)},
     waterMieG: {type: 'f', value: 0.7},
     // New physically-based scattering parameters
     k1ScatterAmount: {type: 'f', value: 1.5},

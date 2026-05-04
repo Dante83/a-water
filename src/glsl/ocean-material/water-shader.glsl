@@ -11,6 +11,10 @@ varying mat4 vInstanceMatrix;
 varying mat4 vModelMatrix;
 varying mat3 vNormalMatrix;
 varying vec4 vSunShadowCoord;
+varying vec4 vOceanShadowCoord0;
+varying vec4 vOceanShadowCoord1;
+varying vec4 vOceanShadowCoord2;
+varying vec4 vOceanShadowCoord3;
 
 //uniform vec3 cameraDirection;
 uniform float sizeOfOceanPatch;
@@ -67,7 +71,52 @@ uniform vec2 sunShadowMapSize;
 uniform float sunShadowRadius;
 uniform float sunShadowBias;
 uniform int sunShadowEnabled;
+
+//Ocean-only cascaded shadow map — rendered by ocean-shadow-csm.js into four
+//tight sun-aligned frusta, giving per-wave self-shadow that the scene-wide
+//sunShadowMap is too coarse to resolve. Same short-circuit pattern: when
+//oceanShadowEnabled == 0 the sample returns 1.0 and the feature is inert.
+//
+//Four cascades are sampled fine→coarse: cascade 0 is the tightest (~60m,
+//sharp wave-on-wave near camera), cascade 3 the widest (covers the full
+//draw distance, only resolves big swells). For each fragment the shader
+//walks 0→3 and uses the first cascade whose UVs fall inside [0,1].
+//mapSize/matrices/depthRange are arrayed; oceanShadowBias is a single
+//user-tunable knob interpreted as the C0-reference NDC bias and is auto-
+//scaled per cascade by depthRange so the *world-space* bias stays
+//constant — without that, one bias value translates to ~8 cm peter-pan
+//in C0 but ~5 m in C3 (10100m depth range), producing washed-out shadows
+//that drift off their waves and visibly "lighten" at every cascade edge.
+uniform sampler2D oceanShadowMap[4];
+uniform vec2 oceanShadowMapSize[4];
+uniform float oceanShadowDepthRange[4];
+//Per-cascade lateral world-space texel size (= extent / mapSize). Used by
+//the receiver to derive a constant *world-space* PCF kernel radius across
+//cascades. Without this, hard-coded per-cascade pixel radii (1, 1.5, 2, 3
+//texels) produced very different visible softness because each cascade's
+//texel covers a different physical span (~3 cm in C0 vs ~5 m in C3) — so
+//the same N-texel kernel was a 12 cm kernel in C0 and a 23 m kernel in C3.
+uniform float oceanShadowTexelSizeWorld[4];
+uniform float oceanShadowBias;
+//Target PCF kernel radius in WORLD METERS. Each cascade converts this to
+//its local texel count via oceanShadowTexelSizeWorld[i]. Larger values
+//soften shadows more uniformly across cascades; ~0.5 m hides texel-grid
+//Moiré at distance without washing out near-camera wave detail. Tunable
+//live via setOceanShadowSoftnessWorld() from the console.
+uniform float oceanShadowSoftnessWorld;
+uniform int oceanShadowEnabled;
+//Debug visualisation. 0 = normal render. 1 = full-screen shadow factor as
+//grayscale (white = lit, black = fully shadowed). 2 = full-screen cascade
+//index tint (C0=red, C1=green, C2=blue, C3=yellow, none=black). 3 =
+//receiver's sc.z for the selected cascade (grayscale). 4 = caster's stored
+//depth d at sc.xy for the selected cascade (grayscale). On flat water 3
+//and 4 must match texel-for-texel; any visible difference means the
+//caster/receiver matrices or the displacement-texture references are out
+//of sync. The 4-up cascade-depth thumbnail strip along the top of the
+//screen is always on regardless of mode.
+uniform int oceanShadowDebugMode;
 uniform vec3 skyAmbientColor;
+uniform float ambientWaterWeight;
 uniform vec3 waterAbsorption;
 uniform vec3 waterScattering;
 uniform float waterMieG;
@@ -114,6 +163,16 @@ uniform float patchDataSize;
   //ATMOSPHERE_FUNCTIONS_INJECTION_POINT
 #endif
 
+#if(!$atmospheric_perspective_enabled)
+  //When atmospheric perspective is enabled, sRGBToLinear is provided by the
+  //injected atmosphere functions (inside the #if block above). Otherwise we
+  //need our own — declared here, BEFORE the SSR raymarch function that calls
+  //it, because GLSL requires forward declarations before use.
+  vec4 sRGBToLinear( in vec4 value ) {
+  	return vec4( mix( pow( value.rgb * 0.9478672986 + vec3( 0.0521327014 ), vec3( 2.4 ) ), value.rgb * 0.0773993808, vec3( lessThanEqual( value.rgb, vec3( 0.04045 ) ) ) ), value.a );
+  }
+#endif
+
 uniform sampler2D blueNoiseTexture;
 uniform float blueNoiseTime;
 
@@ -148,7 +207,13 @@ float getSunShadow(vec4 shadowCoord){
   if(sc.x < 0.0 || sc.x > 1.0 || sc.y < 0.0 || sc.y > 1.0 || sc.z > 1.0){
     return 1.0;
   }
-  float refZ = sc.z + sunShadowBias;
+  //Receiver-plane slope bias: dFdx/dFdy of sc.z give the rate at which shadow-space
+  //depth changes per screen pixel. Steeply tilted surfaces need more bias to stay
+  //above the depth-map quantisation noise, otherwise they self-shadow as acne.
+  //Clamp because near-grazing pixels can produce huge derivatives that would push
+  //refZ off the map entirely (peter-panning).
+  float slopeBias = clamp(length(vec2(dFdx(sc.z), dFdy(sc.z))), 0.0, 0.01);
+  float refZ = sc.z + sunShadowBias - slopeBias;
   vec2 texelSize = (1.0 / sunShadowMapSize) * sunShadowRadius;
   float shadow = 0.0;
   for(int x = -1; x <= 1; x++){
@@ -158,6 +223,240 @@ float getSunShadow(vec4 shadowCoord){
     }
   }
   return shadow * (1.0 / 9.0);
+}
+
+//Same PCF pattern as getSunShadow, but samples the ocean-only CSM and walks
+//4 cascades fine→coarse. For each cascade we project the fragment's world
+//position into light-clip via vOceanShadowCoord[i] (precomputed in the
+//vertex shader), divide by w, and check whether the resulting UV falls
+//inside [0,1]. The first one that does is sampled with 5x5 PCF and
+//returned. Fragments past every cascade (e.g. behind camera or above the
+//cascade depth window) return 1.0 — the sun's scene shadow map still
+//applies there.
+//
+//worldNormal/sunDir feed a normal-based slope bias instead of the
+//dFdx/dFdy variant: dFdx of sc.z is constant within a triangle and
+//discontinuous at triangle edges, which paints the shadow factor in
+//faceted bands. Smoothly interpolated wave normals give a continuous
+//tan(theta) bias.
+//
+//Sampler-array indices in GLSL ES must be constant integral expressions,
+//so the 4-cascade selection is unrolled rather than written as a for-loop.
+//The `if(found) return` pattern also short-circuits the PCF taps once a
+//covering cascade is found — typically C0 near camera, C3 at horizon.
+//16-tap Poisson disk on the unit disk. Pre-generated low-discrepancy
+//pattern. Replaces the regular 5x5 grid that aliased against both the
+//FFT wave grid and the shadow-map texel grid, producing the alternating
+//banded Moire visible at distance. Combined with per-fragment rotation
+//(below) the regular sampling lattice that produced the bands is gone.
+const vec2 POISSON_DISK_16[16] = vec2[16](
+  vec2(-0.94201624, -0.39906216),
+  vec2( 0.94558609, -0.76890725),
+  vec2(-0.094184101, -0.92938870),
+  vec2( 0.34495938,  0.29387760),
+  vec2(-0.91588581,  0.45771432),
+  vec2(-0.81544232, -0.87912464),
+  vec2(-0.38277543,  0.27676845),
+  vec2( 0.97484398,  0.75648379),
+  vec2( 0.44323325, -0.97511554),
+  vec2( 0.53742981, -0.47373420),
+  vec2(-0.26496911, -0.41893023),
+  vec2( 0.79197514,  0.19090188),
+  vec2(-0.24188840,  0.99706507),
+  vec2(-0.81409955,  0.91437590),
+  vec2( 0.19984126,  0.78641367),
+  vec2( 0.14383161, -0.14100790)
+);
+
+float sampleOceanCascadePCF(sampler2D shadowMap, vec2 mapSize, vec3 sc, float refZ, float radius){
+  //Rotated 16-tap Poisson disk PCF. Each fragment rotates the disk by an
+  //angle pulled from the blue-noise texture so adjacent fragments sample
+  //a different rotation. The aliasing between the wave grid and the
+  //shadow-map texel grid (which produced banded Moire with the old
+  //regular 5x5 stamp) becomes high-frequency noise that the eye reads as
+  //a smooth soft shadow. radius is in TEXELS and scales unit-disk taps.
+  vec2 texelSize = (1.0 / mapSize) * radius;
+
+  //Per-fragment rotation. Reuses the blue-noise texture from the dither
+  //pass; sampled at a 64-pixel offset and a different temporal phase so
+  //the two consumers are decorrelated. Without this rotation a regular
+  //sample lattice produces regular artifacts no matter how many taps.
+  float pcfFramePhase = fract(blueNoiseTime * 0.0007);
+  ivec2 pcfTemporalOffset = ivec2(
+    128.0 * fract(pcfFramePhase * 1.61803398875),
+    128.0 * fract(pcfFramePhase * 2.61803398875)
+  );
+  ivec2 noiseCoord = (ivec2(mod(gl_FragCoord.xy, 128.0)) + pcfTemporalOffset + ivec2(64, 0)) % 128;
+  float angle = texelFetch(blueNoiseTexture, noiseCoord, 0).r * 6.28318530718;
+  float ca = cos(angle);
+  float sa = sin(angle);
+  mat2 rot = mat2(ca, -sa, sa, ca);
+
+  float shadow = 0.0;
+  for(int i = 0; i < 16; i++){
+    vec2 offset = rot * POISSON_DISK_16[i] * texelSize;
+    float d = texture2D(shadowMap, sc.xy + offset).r;
+    shadow += refZ < d ? 1.0 : 0.0;
+  }
+  return shadow * (1.0 / 16.0);
+}
+
+bool oceanCascadeContains(vec3 sc, float marginUV){
+  //Both ends of z need gating: sc.z > 1 → past far plane, sc.z < 0 → between
+  //light and near plane. Without the lower bound, fragments in front of the
+  //cascade get sampled with junk depth and silently read as lit.
+  //
+  //marginUV insets the lateral [0,1] window by the PCF kernel reach in UV
+  //space so a fragment whose 5x5 sample stamp would spill past the cascade
+  //edge falls through to the next (coarser) cascade instead. Without this,
+  //clamp-to-edge sampling at the boundary returns adjacent texels' depth
+  //and produces a hard rectangular dark band at every cascade switch.
+  return sc.x >= marginUV && sc.x <= 1.0 - marginUV
+      && sc.y >= marginUV && sc.y <= 1.0 - marginUV
+      && sc.z >= 0.0 && sc.z <= 1.0;
+}
+
+//Per-cascade PCF kernel radius in TEXELS, derived from a world-space
+//softness target so the kernel covers a constant physical span across
+//cascades regardless of texel size. Floor of 2 texels guarantees the
+//rotated Poisson disk samples land on distinct texels even when the
+//target spacing is sub-texel — necessary for far cascades whose texels
+//exceed the softness target.
+float oceanCascadePCFRadius(int cascadeIdx){
+  return max(2.0, oceanShadowSoftnessWorld / oceanShadowTexelSizeWorld[cascadeIdx]);
+}
+
+//Returns 1.0 if the fragment is well inside the cascade and 0.0 if it sits
+//right at the cascade's kernel-clipped edge — used to lerp between this
+//cascade and the next coarser one in the overlap zone. Without fade, the
+//walk-fine-to-coarse switch makes a visible discontinuity at every cascade
+//boundary because consecutive cascades have different texel sizes, PCF
+//radii, and (sometimes) caster geometry detail. The ratio scales with the
+//cascade's usable size so the absolute fade width grows with cascade extent
+//(matching three-csm's quadratic-margin idea).
+const float OCEAN_SHADOW_FADE_FRACTION = 0.20;
+
+//DEBUG amplifier on the ocean shadow only (NOT the scene shadow). Set to 1.0
+//for physically-correct output. >1.0 over-darkens the shadowed regions to
+//make subtle wave-on-wave occlusion visually obvious — useful when checking
+//whether self-shadow is firing at all. Applied as
+//  out = 1 - BOOST * (1 - shadow), clamped to [0,1].
+const float OCEAN_SHADOW_DEBUG_DARKNESS_BOOST = 1.0;
+
+float oceanCascadeFadeWeight(vec3 sc, float marginUV){
+  float distToEdge = min(min(sc.x - marginUV, (1.0 - marginUV) - sc.x),
+                         min(sc.y - marginUV, (1.0 - marginUV) - sc.y));
+  float fadeWidth = OCEAN_SHADOW_FADE_FRACTION * (0.5 - marginUV);
+  return clamp(distToEdge / fadeWidth, 0.0, 1.0);
+}
+
+float getOceanShadow(vec4 shadowCoord0, vec4 shadowCoord1, vec4 shadowCoord2, vec4 shadowCoord3, vec3 worldNormal, vec3 sunDir){
+  if(oceanShadowEnabled == 0) return 1.0;
+  //Normal-based slope bias: tan(angle between surface and light) scaled to
+  //depth-texture units. Smooth across triangle interpolation, scales up at
+  //grazing angles where shadow map errors get worst. Capped to avoid
+  //peter-panning when N·L approaches zero. Same NDC bias is then per-cascade
+  //rescaled by depthRange so the world-space peter-pan stays sane.
+  //
+  //Cap was 0.015 NDC, but at C0 (depthRange ~160m) that yields 2.4m world
+  //bias at glancing sun — bigger than wave amplitude, so wave peaks at
+  //sunset always read as lit (peter-pan extends past the entire wave).
+  //Dropped to 0.002 → ~32cm world bias at C0, comparable to wave amplitude.
+  //Acne risk grows in coarse cascades at grazing angles; if visible, reduce
+  //further or make texel-proportional.
+  float NdotL = max(dot(worldNormal, sunDir), 0.0);
+  float sinTheta = sqrt(max(1.0 - NdotL * NdotL, 0.0));
+  float slopeBias = clamp(0.005 * sinTheta / max(NdotL, 0.05), 0.0, 0.002);
+
+  //Walk fine→coarse. At each cascade hit, sample it; if the fragment sits
+  //in the outer fade zone (near the cascade's edge), also sample the next
+  //coarser cascade and lerp. This hides what would otherwise be a visible
+  //character-change at every cascade boundary (texel size jumps, caster
+  //detail differs because coarser cascades pull from larger ocean rings).
+  //
+  //Per-cascade PCF radius is derived from a world-space softness target,
+  //not hand-tuned per cascade. biasScale converts the user knob (calibrated
+  //for C0) into per-cascade NDC such that world-space bias scales with the
+  //SQUARE ROOT of the texel-size ratio. Pure linear texel scaling worked
+  //against acne but over-biased coarse cascades by 4-5x — bias exceeded
+  //wave amplitude and ate every shadow. Sqrt softens this so coarse
+  //cascades still gain bias headroom (more than C0) without burning all
+  //the wave-shadow budget. C0 stays at scale 1.0 so the user knob keeps
+  //its current calibration.
+  float c0Range = oceanShadowDepthRange[0];
+  float texel0 = oceanShadowTexelSizeWorld[0];
+
+  //C0 → fades into C1
+  vec3 sc0 = shadowCoord0.xyz / shadowCoord0.w;
+  float radius0 = oceanCascadePCFRadius(0);
+  float margin0 = 2.0 * radius0 / oceanShadowMapSize[0].x;
+  if(oceanCascadeContains(sc0, margin0)){
+    float biasScale0 = c0Range / oceanShadowDepthRange[0];
+    float shadow0 = sampleOceanCascadePCF(oceanShadowMap[0], oceanShadowMapSize[0], sc0, sc0.z + (oceanShadowBias - slopeBias) * biasScale0, radius0);
+    float w0 = oceanCascadeFadeWeight(sc0, margin0);
+    if(w0 >= 1.0) return shadow0;
+    vec3 sc1 = shadowCoord1.xyz / shadowCoord1.w;
+    float radius1 = oceanCascadePCFRadius(1);
+    float margin1 = 2.0 * radius1 / oceanShadowMapSize[1].x;
+    if(oceanCascadeContains(sc1, margin1)){
+      float biasScale1 = sqrt(oceanShadowTexelSizeWorld[1] / texel0) * c0Range / oceanShadowDepthRange[1];
+      float shadow1 = sampleOceanCascadePCF(oceanShadowMap[1], oceanShadowMapSize[1], sc1, sc1.z + (oceanShadowBias - slopeBias) * biasScale1, radius1);
+      return mix(shadow1, shadow0, w0);
+    }
+    return shadow0;
+  }
+
+  //C1 → fades into C2
+  vec3 sc1 = shadowCoord1.xyz / shadowCoord1.w;
+  float radius1 = oceanCascadePCFRadius(1);
+  float margin1 = 2.0 * radius1 / oceanShadowMapSize[1].x;
+  if(oceanCascadeContains(sc1, margin1)){
+    float biasScale1 = sqrt(oceanShadowTexelSizeWorld[1] / texel0) * c0Range / oceanShadowDepthRange[1];
+    float shadow1 = sampleOceanCascadePCF(oceanShadowMap[1], oceanShadowMapSize[1], sc1, sc1.z + (oceanShadowBias - slopeBias) * biasScale1, radius1);
+    float w1 = oceanCascadeFadeWeight(sc1, margin1);
+    if(w1 >= 1.0) return shadow1;
+    vec3 sc2 = shadowCoord2.xyz / shadowCoord2.w;
+    float radius2 = oceanCascadePCFRadius(2);
+    float margin2 = 2.0 * radius2 / oceanShadowMapSize[2].x;
+    if(oceanCascadeContains(sc2, margin2)){
+      float biasScale2 = sqrt(oceanShadowTexelSizeWorld[2] / texel0) * c0Range / oceanShadowDepthRange[2];
+      float shadow2 = sampleOceanCascadePCF(oceanShadowMap[2], oceanShadowMapSize[2], sc2, sc2.z + (oceanShadowBias - slopeBias) * biasScale2, radius2);
+      return mix(shadow2, shadow1, w1);
+    }
+    return shadow1;
+  }
+
+  //C2 → fades into C3
+  vec3 sc2 = shadowCoord2.xyz / shadowCoord2.w;
+  float radius2 = oceanCascadePCFRadius(2);
+  float margin2 = 2.0 * radius2 / oceanShadowMapSize[2].x;
+  if(oceanCascadeContains(sc2, margin2)){
+    float biasScale2 = sqrt(oceanShadowTexelSizeWorld[2] / texel0) * c0Range / oceanShadowDepthRange[2];
+    float shadow2 = sampleOceanCascadePCF(oceanShadowMap[2], oceanShadowMapSize[2], sc2, sc2.z + (oceanShadowBias - slopeBias) * biasScale2, radius2);
+    float w2 = oceanCascadeFadeWeight(sc2, margin2);
+    if(w2 >= 1.0) return shadow2;
+    vec3 sc3 = shadowCoord3.xyz / shadowCoord3.w;
+    float radius3 = oceanCascadePCFRadius(3);
+    float margin3 = 2.0 * radius3 / oceanShadowMapSize[3].x;
+    if(oceanCascadeContains(sc3, margin3)){
+      float biasScale3 = sqrt(oceanShadowTexelSizeWorld[3] / texel0) * c0Range / oceanShadowDepthRange[3];
+      float shadow3 = sampleOceanCascadePCF(oceanShadowMap[3], oceanShadowMapSize[3], sc3, sc3.z + (oceanShadowBias - slopeBias) * biasScale3, radius3);
+      return mix(shadow3, shadow2, w2);
+    }
+    return shadow2;
+  }
+
+  //C3 — no further cascade to fade into; hard transition to "lit" at edge.
+  //That edge sits at the horizon for typical configs so the discontinuity
+  //is barely visible.
+  vec3 sc3 = shadowCoord3.xyz / shadowCoord3.w;
+  float radius3 = oceanCascadePCFRadius(3);
+  float margin3 = 2.0 * radius3 / oceanShadowMapSize[3].x;
+  if(oceanCascadeContains(sc3, margin3)){
+    float biasScale3 = sqrt(oceanShadowTexelSizeWorld[3] / texel0) * c0Range / oceanShadowDepthRange[3];
+    return sampleOceanCascadePCF(oceanShadowMap[3], oceanShadowMapSize[3], sc3, sc3.z + (oceanShadowBias - slopeBias) * biasScale3, radius3);
+  }
+  return 1.0;
 }
 
 #if($atmospheric_perspective_enabled)
@@ -286,13 +585,6 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 reflectDir){
   //Max steps without hit — sky.
   return skyColor;
 }
-
-#if(!$atmospheric_perspective_enabled)
-  //When atmospheric perspective is enabled, sRGBToLinear is provided by the injected atmosphere functions
-  vec4 sRGBToLinear( in vec4 value ) {
-  	return vec4( mix( pow( value.rgb * 0.9478672986 + vec3( 0.0521327014 ), vec3( 2.4 ) ), value.rgb * 0.0773993808, vec3( lessThanEqual( value.rgb, vec3( 0.04045 ) ) ) ), value.a );
-  }
-#endif
 
 vec4 linearTosRGB(vec4 value ) {
   return vec4( mix( pow( value.rgb, vec3( 0.41666 ) ) * 1.055 - vec3( 0.055 ), value.rgb * 12.92, vec3( lessThanEqual( value.rgb, vec3( 0.0031308 ) ) ) ), value.a );
@@ -548,9 +840,9 @@ SOFTWARE.
 
 void main(){
   //Shadow factor — once per fragment. 1.0 = fully lit, 0.0 = fully shadowed.
-  //Multiplied into every sun-driven term below (SSS, diffuse, specular, foam),
-  //but NOT into sky ambient / reflection / refraction, which come from other sources.
-  float sunShadowFactor = getSunShadow(vSunShadowCoord);
+  //sunShadowFactor is computed LATER, after macroNormal is available — the
+  //ocean CSM uses a normal-based slope bias to avoid the per-triangle
+  //faceting that dFdx/dFdy produces.
 
   mat3 instanceMatrixMat3 = mat3(vInstanceMatrix[0].xyz, vInstanceMatrix[1].xyz, vInstanceMatrix[2].xyz );
   mat3 modelMatrixMat3 = mat3(vModelMatrix[0].xyz, vModelMatrix[1].xyz, vModelMatrix[2].xyz );
@@ -728,6 +1020,16 @@ void main(){
   macroNormal = normalize(mix(vec3(0.0, 1.0, 0.0), macroNormal, foldBlend * normalDetailFade));
   if(macroNormal.y < 0.0) macroNormal = -macroNormal;
 
+  //Shadow factor: scene-wide map (env casters) × ocean CSM (wave self-shadow).
+  //Multiplied into every sun-driven term below (SSS, diffuse, specular, foam),
+  //but NOT into sky ambient / reflection / refraction. Either being 0 forces
+  //full shadow; both 1 means fully lit. macroNormal is the smooth wave normal
+  //(cascade 0 only), used by the ocean shadow's normal-based slope bias.
+  vec3 sunDirToSky = -brightestDirectionalLightDirection;
+  float oceanShadowRaw = getOceanShadow(vOceanShadowCoord0, vOceanShadowCoord1, vOceanShadowCoord2, vOceanShadowCoord3, macroNormal, sunDirToSky);
+  float oceanShadowBoosted = clamp(1.0 - OCEAN_SHADOW_DEBUG_DARKNESS_BOOST * (1.0 - oceanShadowRaw), 0.0, 1.0);
+  float sunShadowFactor = getSunShadow(vSunShadowCoord) * oceanShadowBoosted;
+
   //Additive world-space normal blending (Crest-style):
   //Decode only xy of each map (tangent x → world x, tangent y → world z) and
   //add directly to displacedNormal.xz. The y component stays anchored to the
@@ -788,6 +1090,8 @@ void main(){
   //high-frequency per-pixel noise that displacedNormal causes in reflection lookups.
   vec3 ssrReflectDir    = reflect(worldIncidentDir, macroNormal);
   //screenSpaceReflection() always returns LINEAR values (see function comment).
+  //DIAGNOSTIC: reflection zeroed to isolate the refraction/equilibrium term.
+  //vec3 reflectedLight   = vec3(0.0);
   vec3 reflectedLight   = screenSpaceReflection(worldPosition.xyz, ssrReflectDir);
 
   //Screen-space refraction
@@ -807,7 +1111,7 @@ void main(){
     refractionDepthLinear = linearizeDepth(refractionDepthRaw);
   }
 
-  vec3 refractedLight = texture2D(refractionColorTexture, refractedUV).rgb;
+  vec3 refractedLight = sRGBToLinear(vec4(texture2D(refractionColorTexture, refractedUV).rgb, 1.0)).rgb;
 
   //Reconstruct world-space position from refraction depth
   vec4 clipPos = vec4(refractedUV * 2.0 - 1.0, refractionDepthRaw * 2.0 - 1.0, 1.0);
@@ -815,41 +1119,57 @@ void main(){
   viewPos /= viewPos.w;
   vec3 pointXYZ = (inverseViewMatrix * viewPos).xyz;
 
-  //Use the reconstructed Y position to distinguish underwater vs above-water geometry
-  float distanceToPoint;
-  bool isDeepWater;
-  //Detect sky/far-plane fragments: if the refraction depth is near the far plane,
-  //this is sky bleeding through, not real underwater geometry.
+  //Unified distance-depth model — no isDeepWater branch.
+  //  verticalDepth:   real water-column thickness (surface Y - seabed Y) when
+  //                   the refraction ray actually hit underwater geometry, else 0.
+  //  horizontalDist:  distance across the ocean surface between camera and fragment.
+  //                   Acts as a grazing-path proxy: a ray skimming the surface
+  //                   accumulates "fake" water in front of it, so transmittance
+  //                   decays with distance even when no seabed is in the sample.
+  //At the horizon horizontalDist → large, transmittance → 0, refractedLight asymptotes
+  //to the backscatter equilibrium color (scattering / extinction) — which is what
+  //a semi-infinite water column actually looks like. Kills sky-dome-through-water
+  //leak without a depth threshold or deep-water color swap.
   bool isFarPlane = refractionDepthLinear > cameraNearFar.y * 0.99;
-  if(!isFarPlane && pointXYZ.y < baseHeightOffset && refractionDepthLinear > surfaceDepthLinear){
-    //Underwater geometry visible - use actual vertical water column depth (surface Y minus seabed Y).
-    //Camera-depth difference (refractionDepthLinear - surfaceDepthLinear) blows up at oblique angles:
-    //a 1m deep seabed seen at a grazing angle has huge camera-depth delta but only 1m of actual water.
-    //worldPosition.y is the displaced surface height; pointXYZ.y is the refracted geometry height.
-    distanceToPoint = min(worldPosition.y - pointXYZ.y, 500.0);
-    isDeepWater = false;
-  }
-  else{
-    //Above-water geometry, sky, or far-plane - no background light survives this depth.
-    //Zero out refracted light to prevent HDR sky/sun from bleeding through.
-    distanceToPoint = 1000.0;
-    isDeepWater = true;
-  }
-
+  bool hasUnderwaterGeom = !isFarPlane && pointXYZ.y < baseHeightOffset && refractionDepthLinear > surfaceDepthLinear;
+  float verticalDepth = hasUnderwaterGeom ? max(worldPosition.y - pointXYZ.y, 0.0) : 0.0;
+  float horizontalDist = length(worldPosition.xz - cameraPosition.xz);
+  //horizontalDepthScale: how many meters of effective depth per meter of horizontal
+  //distance. 0.02 → 100m of horizontal fetch ≈ 2m of water, 500m ≈ 10m — enough for
+  //blue/green to be meaningfully attenuated at the horizon without choking shallows.
+  float horizontalDepthScale = 0.02;
+  float effectiveDepth = min(verticalDepth + horizontalDist * horizontalDepthScale, 500.0);
   //Physically-based underwater light transport
   //Extinction = absorption + scattering (Beer-Lambert for both)
   vec3 extinction = waterAbsorption + waterScattering;
-  vec3 transmittance = exp(-extinction * distanceToPoint);
-
-  refractedLight = sRGBToLinear(vec4(refractedLight, 1.0)).rgb;
-  if(isDeepWater){
-    refractedLight = vec3(0.0);
-  }
+  vec3 transmittance = exp(-extinction * effectiveDepth);
 
   //Sun light entering the water column
   //Fresnel transmission at the air->water interface from above
   float sunCosZenith = max(dot(-brightestDirectionalLightDirection, vec3(0.0, 1.0, 0.0)), 0.0);
   float sunTransmission = 1.0 - fresnelAirToWater(sunCosZenith);
+
+  //Backscatter equilibrium: asymptotic color of a semi-infinite water column.
+  //(scattering / extinction) is the medium's single-scatter ALBEDO — a 0..1
+  //reflectance — so it becomes visible radiance only when multiplied by the
+  //actual downwelling light hitting the surface. Two drivers, à la Bruneton:
+  //  directDownwelling  — brightestDirectionalLight * surface Fresnel * cos zenith.
+  //                       Sun by day, moon by night (dim but physical). Zero at sub-
+  //                       horizon so polar night ocean goes dark as it should.
+  //  ambientDownwelling — diffuse sky hemisphere irradiance (skyAmbientColor).
+  //                       Weighted by ambientWaterWeight because skyAmbientColor's
+  //                       magnitude isn't in the same units as direct light; a
+  //                       literal 1.0 multiplier over-drives the blue glow.
+  //The 0.5 is the round-trip factor: light travels down to the scattering event and
+  //back up, so the integrated radiance is ∫ L * exp(-2*ext*d) dd = L * albedo / 2.
+  //Extinction ordering matters for dusk: orange sky sampled through the water is
+  //filtered by transmittance = exp(-extinction * d). Blue must have the SMALLEST
+  //extinction so it survives long paths (real clean ocean: Pope & Fry 1997), else
+  //a red-heavy sky tinted by green-biased transmittance reads olive.
+  vec3 waterAlbedo = waterScattering / max(extinction, vec3(0.0001));
+  vec3 directDownwelling = brightestDirectionalLight * sunTransmission * sunCosZenith;
+  vec3 ambientDownwelling = skyAmbientColor * ambientWaterWeight;
+  vec3 inscatterEquilibrium = waterAlbedo * (directDownwelling + ambientDownwelling) * 0.5;
 
   //Mie phase function: how much scattered light reaches the camera
   //The scattered light must travel TOWARD the camera (-normalizedViewVector),
@@ -861,11 +1181,6 @@ void main(){
   //Multi-scattering approximation: in a thick water column, repeated scattering
   //events isotropize the light field. Model this as an additive isotropic term.
   float phaseMulti = 1.0 / (4.0 * 3.14159265);
-
-  //Single-scattering integral over the water column depth
-  //integral of scattering * exp(-extinction * d) dd from 0 to depth
-  //= (scattering / extinction) * (1 - exp(-extinction * depth))
-  vec3 inscatterIntegral = waterScattering / max(extinction, vec3(0.0001)) * (1.0 - transmittance);
 
   // === NEW PHYSICALLY-BASED SCATTERING MODEL ===
   // Calculate each scattering term separately for debugging/visualization
@@ -882,7 +1197,11 @@ void main(){
   //floor (0.2) for the baseline scatter always present in ocean water.
   //fftFoamAmount is kept for white foam rendering; turbulence drives the scatter model.
   float bubbleDensity = clamp(turbulence + 0.2, 0.0, 1.0);
-  float term4 = scatterTerm4(bubbleDensity, k4ParallaxScatter);
+  //DIAGNOSTIC: term4 (bubble-density haze) zeroed to test whether its raw
+  //sun-color * density output (no waterScattering multiplier) is the source of
+  //the dusk olive-green tint. Restore by re-enabling the scatterTerm4() call.
+  float term4 = 0.0;
+  //float term4 = scatterTerm4(bubbleDensity, k4ParallaxScatter);
 
   // First scattering term: (k₁ ... + k₂ ...) * C_ss * L_sun * Fresnel
   vec3 mainScatter = (term1 + term2) * waterScattering * brightestDirectionalLight * fresnelFresnel * sunShadowFactor;
@@ -943,11 +1262,7 @@ void main(){
   //wave face with sky reflection, washing out the whole surface with white.
   float cosTheta = clamp(dot(displacedNormal, -normalizedViewVector), 0.0, 1.0);
   float fresnelFactor = r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
-  //Trough damping: wave troughs sit below surrounding crests which occlude the sky at
-  //grazing angles. Reduce Fresnel in troughs so they show water body color rather than
-  //sky. height ≈ 0 at deep troughs, ≈ 0.5 at mean level, ≈ 1 at crests.
-  float troughDampen = smoothstep(0.1, 0.55, height);
-  fresnelFactor *= mix(0.4, 1.0, troughDampen);
+
   //Two decoupled Fresnels so reflection and body weight don't fight over a single value:
   //  fresnelFactor — physical Schlick (→1 at horizon) weights reflectedLight. Full sky
   //                  at the horizon kills the pea-green tint that came from the old cap.
@@ -961,47 +1276,62 @@ void main(){
 
   #if($caustics_enabled)
     //Calculate caustic lighting using reconstructed world position
-    float causticLightingR = causticShader(0.01 * pointXYZ.xz + 0.005, t);
-    float causticLightingG = causticShader(0.01 * pointXYZ.xz, t);
-    float causticLightingB = causticShader(0.01 * pointXYZ.xz - 0.005, t);
+    float causticLightingR = causticShader(0.02 * pointXYZ.xz + 0.005, t);
+    float causticLightingG = causticShader(0.02 * pointXYZ.xz, t);
+    float causticLightingB = causticShader(0.02 * pointXYZ.xz - 0.005, t);
     vec3 causticLighting = causticIntensityMultiplier * 20.0 * vec3(causticLightingR, causticLightingG, causticLightingB);
     if(distance(cameraPosition, pointXYZ.xyz) > 2500.0){
       causticLighting = vec3(1.0);
     }
     refractedLight *= (causticLighting);
   #endif
-  refractedLight *= transmittance;
+  //Blend refracted sample with backscatter equilibrium by transmittance.
+  //Near-field, shallow: transmittance ≈ 1, refractedLight ≈ sampled scene.
+  //Far-horizon / deep: transmittance → 0, refractedLight → inscatterEquilibrium.
+  //Continuous across the whole range — no branching, no far-plane cliff.
+  refractedLight = refractedLight * transmittance + inscatterEquilibrium * (vec3(1.0) - transmittance);
 
   //Calculate specular lighting and surface lighting
   float lightMag = length(brightestDirectionalLight);
   vec3 normalizedLightIntensity = lightMag > 0.001 ? brightestDirectionalLight / lightMag : vec3(0.0);
   vec3 directionalSurfaceLighting = normalizedLightIntensity * max(dot(macroNormal, -brightestDirectionalLightDirection), 0.0) * sunShadowFactor;
 
-  //GGX Cook-Torrance specular
-  float waterRoughness = mix(0.22, 0.40, fftFoamAmount);
-  vec3 H = normalize(-normalizedViewVector + (-brightestDirectionalLightDirection));
-  //Use displacedNormal (all active FFT cascades, no texture maps) for specular.
-  //macroNormal (cascade 0 only, ~2m/texel) is too coarse — specular follows the low-poly
-  //mesh silhouette rather than the wave surface. displacedNormal has per-ring detail
-  //without texture-map tiling artifacts (the old "sand-ripple" concern was about combinedNormalMap).
-  float NdotH = max(dot(displacedNormal, H), 1e-5);
-  float NdotV = max(dot(displacedNormal, -normalizedViewVector), 1e-5);
-  float NdotL = max(dot(displacedNormal, -brightestDirectionalLightDirection), 1e-5);
+  //Crest-style Phong sun-glint specular.
+  //The FFT cascades already encode microfacet statistics as explicit geometry, so a
+  //full GGX D/G/F BRDF double-counts: the normal variance IS the roughness. Use a
+  //clean Phong lobe centered on the reflected-sun direction with a distance-varying
+  //exponent plus a distance-varying normal. Foam surfaces collapse to a low exponent.
+  //
+  //Key trick: the N used to reflect() fades from displacedNormal (all cascades) near
+  //to macroNormal (cascade-0 only, ~2m/texel) far. Keeping cascade-1 ripple detail
+  //in the reflect direction at long distance would land some sub-pixel facet in the
+  //sun cone on every single wave — producing the mid-field "every crest blooms"
+  //look. Cascade-0 only at the horizon gives a clean glint trail down the sun path
+  //and darker water elsewhere.
+  float specDistAlpha = sqrt(clamp(distanceToWorldPosition / 200.0, 0.0, 1.0));
+  vec3 specNormal = normalize(mix(displacedNormal, macroNormal, specDistAlpha));
+  float sunFallOff = mix(600.0, 300.0, specDistAlpha);
+  //NOTE: no foam-exponent collapse. fftFoamAmount is a wave-compression proxy and
+  //reads nonzero on every steep crest — collapsing fallOff there paints the mid-
+  //field with broad white highlights that look like wet splatter. The foam diffuse/
+  //opacity pass below handles actual whitewater visuals separately.
+  vec3 sunReflect = reflect(brightestDirectionalLightDirection, specNormal);
+  float sunLobe = pow(max(dot(sunReflect, -normalizedViewVector), 0.0), sunFallOff);
+  //Fresnel gate at N·V: head-on barely reflects, grazing catches the full lobe.
+  float NdotV = max(dot(specNormal, -normalizedViewVector), 0.0);
+  float fresnelSpec = r0 + (1.0 - r0) * pow(1.0 - NdotV, 5.0);
+  //Specular boost: Crest's _DirectionalLightBoost defaults ~5; dropped to 3 because
+  //the Fresnel gate already pushes grazing waves to full intensity.
+  float specularBoost = 3.0;
+  vec3 specular = sunLobe * fresnelSpec * specularBoost * lightMag * normalizedLightIntensity * sunShadowFactor;
 
-  float D = min(ggxDistribution(NdotH, waterRoughness), 100.0);
-  float G_light = smithMaskingShadowing(NdotL, waterRoughness);
-  float G_view  = smithMaskingShadowing(NdotV, waterRoughness);
-  float G = 1.0 / (1.0 + G_light + G_view);
-
-  //Lazányi-Schlick Fresnel — roughness spreads the grazing-angle Fresnel peak
-  float fresnelSpec = mix(
-    pow(1.0 - NdotV, 5.0 * exp(-2.69 * waterRoughness)) / (1.0 + 22.7 * pow(waterRoughness, 1.5)),
-    1.0, r0);
-
-  vec3 specular = fresnelSpec * D * G / (4.0 * NdotV + 0.001) * lightMag * normalizedLightIntensity * sunShadowFactor;
-
-  //Total light
-  vec3 totalLight = specular + (2.0 / 255.0) * directionalSurfaceLighting + (253.0 / 255.0) * ((inscatterLight + refractedLight) * (1.0 - fresnelBody) + reflectedLight * fresnelFactor);
+  //Total light. Sky reflection is geometric — the sky itself isn't darkened
+  //by a cloud passing overhead — but in real photos shadowed water reflects
+  //a slightly dimmer sky-dome because sun-lit surroundings contribute to its
+  //apparent brightness. Attenuate the reflected term by 15% in fully shadowed
+  //regions to match that visual cue without killing reflection altogether.
+  float reflectionShadowAttenuation = mix(0.85, 1.0, sunShadowFactor);
+  vec3 totalLight = specular + (2.0 / 255.0) * directionalSurfaceLighting + (253.0 / 255.0) * ((inscatterLight + refractedLight) * (1.0 - fresnelBody) + reflectedLight * reflectionShadowAttenuation * fresnelFactor);
   //Ambient sky irradiance: diffuse illumination from the sky dome hitting the surface.
   //Without this, high-Fresnel wave faces (crests tilted toward camera) appear black when
   //there is nothing bright to reflect — the Fresnel model alone produces no light there.
@@ -1015,6 +1345,17 @@ void main(){
   //Crest does the same: geometry normals for SSS/ambient, texture normals only for specular/refraction.
   float skyFactor = 0.5 + 0.5 * dot(displacedNormal, vec3(0.0, 1.0, 0.0));
   totalLight += skyAmbientColor * skyFactor * (1.0 - fresnelFactor) * 0.1;
+
+  //Soft "shadow tint" on the assembled water lighting. Direct-sun terms are
+  //already shadow-modulated upstream, but sky reflection + refraction +
+  //ambient dominate the open-ocean pixel and aren't sun-driven, so killing
+  //the sun-lit fraction alone only darkens the surface ~15-25%. This extra
+  //multiply pushes shadowed water visibly darker so cloud/wave shadows read
+  //the way they do in real photos. Not strictly physical — it's a
+  //perceptual nudge — but matches viewer expectation. Applied BEFORE the
+  //foam blend so foam keeps its own per-fragment shadow without double-dip.
+  totalLight *= mix(0.7, 1.0, sunShadowFactor);
+
   #if($foam_enabled)
     //Two-layer foam sampling: average a 90°-rotated, differently-scaled second sample
     //with the first to break up the repeating brick pattern (same trick as the large normal map).
@@ -1050,8 +1391,90 @@ void main(){
 
   gl_FragColor = linearTosRGB(vec4(MyAESFilmicToneMapping(totalLight), 1.0));
 
+  //Ocean-shadow debug overrides. Full-screen modes — replace the lighting
+  //output entirely so we can see what the shadow path is computing.
+  //Mode 1: shadow factor as grayscale. White = lit, black = fully shadowed.
+  //Mode 2: cascade-index tint per fragment. Red=C0, green=C1, blue=C2,
+  //        yellow=C3, black = fragment outside every cascade.
+  if(oceanShadowDebugMode == 1){
+    //Show ONLY the ocean cascade shadow (not multiplied by scene sun shadow)
+    //so debug captures isolate cascade-side acne from scene-shadow acne.
+    gl_FragColor = vec4(vec3(oceanShadowBoosted), 1.0);
+  }
+  else if(oceanShadowDebugMode == 2){
+    //Use the same per-cascade margins the lighting path uses so the tint
+    //rings match the cascade actually selected for shading. Without this,
+    //debug viz shows a wider C0/C1 footprint than the lighting actually
+    //samples, hiding cascade-edge artifacts behind a misleading visual.
+    vec3 sc0 = vOceanShadowCoord0.xyz / vOceanShadowCoord0.w;
+    vec3 sc1 = vOceanShadowCoord1.xyz / vOceanShadowCoord1.w;
+    vec3 sc2 = vOceanShadowCoord2.xyz / vOceanShadowCoord2.w;
+    vec3 sc3 = vOceanShadowCoord3.xyz / vOceanShadowCoord3.w;
+    float dbgMargin0 = 2.0 * 1.0 / oceanShadowMapSize[0].x;
+    float dbgMargin1 = 2.0 * 1.5 / oceanShadowMapSize[1].x;
+    float dbgMargin2 = 2.0 * 2.0 / oceanShadowMapSize[2].x;
+    float dbgMargin3 = 2.0 * 3.0 / oceanShadowMapSize[3].x;
+    //Default magenta = water fragment fell outside every cascade. Was black,
+    //but black blends visually with deep water and made the no-cascade case
+    //hard to distinguish from a near-zero tint. If a band is the no-cascade
+    //case, magenta is obvious; if it stays the original color, the bright
+    //region is being produced by something OTHER than the cascade walk
+    //(e.g., sky dome leaking through ring-stitch gaps in the water mesh).
+    vec3 tint = vec3(1.0, 0.0, 1.0);
+    if(oceanCascadeContains(sc0, dbgMargin0))      tint = vec3(1.0, 0.2, 0.2);
+    else if(oceanCascadeContains(sc1, dbgMargin1)) tint = vec3(0.2, 1.0, 0.2);
+    else if(oceanCascadeContains(sc2, dbgMargin2)) tint = vec3(0.2, 0.2, 1.0);
+    else if(oceanCascadeContains(sc3, dbgMargin3)) tint = vec3(1.0, 1.0, 0.2);
+    gl_FragColor = vec4(tint, 1.0);
+  }
+  else if(oceanShadowDebugMode == 3 || oceanShadowDebugMode == 4){
+    //Mode 3 = receiver's sc.z. Mode 4 = caster-stored d sampled at sc.xy.
+    //Walk fine→coarse using the same margins as mode 2 so the cascade
+    //chosen for the readout matches the cascade chosen for shading. Both
+    //modes select the SAME cascade for the same fragment so the two
+    //full-screen captures can be diffed pixel-for-pixel — on flat water
+    //they should be identical inside every cascade. Sampler2D arrays
+    //demand a constant integral index, so the cascade pick is unrolled.
+    vec3 sc0d = vOceanShadowCoord0.xyz / vOceanShadowCoord0.w;
+    vec3 sc1d = vOceanShadowCoord1.xyz / vOceanShadowCoord1.w;
+    vec3 sc2d = vOceanShadowCoord2.xyz / vOceanShadowCoord2.w;
+    vec3 sc3d = vOceanShadowCoord3.xyz / vOceanShadowCoord3.w;
+    float dbgMargin0 = 2.0 * 1.0 / oceanShadowMapSize[0].x;
+    float dbgMargin1 = 2.0 * 1.5 / oceanShadowMapSize[1].x;
+    float dbgMargin2 = 2.0 * 2.0 / oceanShadowMapSize[2].x;
+    float dbgMargin3 = 2.0 * 3.0 / oceanShadowMapSize[3].x;
+    float refDepth = -1.0;
+    float storedDepth = -1.0;
+    if(oceanCascadeContains(sc0d, dbgMargin0)){
+      refDepth = sc0d.z;
+      storedDepth = texture2D(oceanShadowMap[0], sc0d.xy).r;
+    } else if(oceanCascadeContains(sc1d, dbgMargin1)){
+      refDepth = sc1d.z;
+      storedDepth = texture2D(oceanShadowMap[1], sc1d.xy).r;
+    } else if(oceanCascadeContains(sc2d, dbgMargin2)){
+      refDepth = sc2d.z;
+      storedDepth = texture2D(oceanShadowMap[2], sc2d.xy).r;
+    } else if(oceanCascadeContains(sc3d, dbgMargin3)){
+      refDepth = sc3d.z;
+      storedDepth = texture2D(oceanShadowMap[3], sc3d.xy).r;
+    }
+    //Magenta = fragment fell outside every cascade (impossible read).
+    //Visible flag — distinguishes the no-cascade case from a depth of 0.
+    if(refDepth < 0.0){
+      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0);
+    } else {
+      float v = (oceanShadowDebugMode == 3) ? refDepth : storedDepth;
+      gl_FragColor = vec4(vec3(v), 1.0);
+    }
+  }
+
   //TEMP DEBUG: bottom-left = raw jacobian mapped [0,2] → [0,1] (grey=1.0=flat, black=0=folded, white=2=stretched)
   //            bottom-right = fftFoamAmount [0,1]
+  //            top strip = 4-up ocean-CSM cascade depth thumbnails (C0..C3 left→right).
+  //            Depth values land in a narrow band (~0.3-0.7 of the 200m depth window)
+  //            so the visualisation contrast-stretches that range to black-white.
+  //            White edges are texels with no caster (cleared to 1.0) — useful for
+  //            seeing the cascade footprint shrink as you move toward C0.
   {
     float panelSize = 200.0;
     vec2 fc = gl_FragCoord.xy;
@@ -1060,6 +1483,25 @@ void main(){
     }
     if(fc.x > screenResolution.x - panelSize && fc.y < panelSize){
       gl_FragColor = vec4(vec3(fftFoamAmount), 1.0);
+    }
+    float thumbSize = 200.0;
+    float topY = screenResolution.y - thumbSize;
+    if(fc.y > topY && fc.x < thumbSize * 4.0){
+      int cascadeIndex = int(fc.x / thumbSize);
+      vec2 thumbUV = vec2((fc.x - float(cascadeIndex) * thumbSize) / thumbSize,
+                          (fc.y - topY) / thumbSize);
+      //Sampler2D arrays demand a constant integral index; unroll the four
+      //selections rather than dynamic-indexing the array.
+      float d = 1.0;
+      if(cascadeIndex == 0)      d = texture2D(oceanShadowMap[0], thumbUV).r;
+      else if(cascadeIndex == 1) d = texture2D(oceanShadowMap[1], thumbUV).r;
+      else if(cascadeIndex == 2) d = texture2D(oceanShadowMap[2], thumbUV).r;
+      else                       d = texture2D(oceanShadowMap[3], thumbUV).r;
+      //Sea-surface depths cluster in [0.3, 0.7] (200m depth window centred
+      //on a pivot 400m up-sun). Stretch that band so wave structure shows
+      //as gray gradients; cleared/no-caster texels (d=1) stay white.
+      float v = clamp((d - 0.3) * 2.5, 0.0, 1.0);
+      gl_FragColor = vec4(vec3(v), 1.0);
     }
   }
 

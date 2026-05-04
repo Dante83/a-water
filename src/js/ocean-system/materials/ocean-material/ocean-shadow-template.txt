@@ -1,0 +1,31 @@
+//Ocean shadow-caster material — rendered into the ocean CSM's depth targets
+//by ocean-shadow-csm.js. Uniforms mirror the subset of water-shader.glsl
+//needed to displace vertices: cascade textures, patch sizes, spatial offsets,
+//wave-height multiplier, and chop.
+AWater.AOcean.Materials.Ocean.oceanShadowMaterial = {
+  uniforms: {
+    cascadeDisplacementTextures: {value: [null, null, null, null, null, null]},
+    cascadePatchSizes: {value: [1000.0, 250.0, 64.0, 16.0, 4.0, 1.0]},
+    cascadeSpatialOffsets: {value: [
+      new THREE.Vector2(382.0,  618.0),
+      new THREE.Vector2( 59.0,  154.5),
+      new THREE.Vector2( 54.7,   15.1),
+      new THREE.Vector2(  7.55,  13.7),
+      new THREE.Vector2(  0.36,   1.89),
+      new THREE.Vector2(  0.708,  0.09)
+    ]},
+    waveHeightMultiplier: {type: 'f', value: 1.0},
+    sizeOfOceanPatch: {type: 'f', value: 1.0},
+    chop: {type: 'f', value: 1.0},
+    ringIndex: {type: 'i', value: 0},
+    mainCameraPosition: {type: 'v3', value: new THREE.Vector3()}
+  },
+
+  fragmentShader: [
+    {fragment_glsl}
+  ].join('\n'),
+
+  vertexShader: [
+    {vertex_glsl}
+  ].join('\n'),
+};

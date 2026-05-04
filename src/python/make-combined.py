@@ -28,7 +28,9 @@ def main():
     'ocean-system/luts/ocean-height-band-library.js',\
     'ocean-system/luts/ocean-height-composer.js',\
     'ocean-system/materials/ocean-material/water-shader.js',\
+    'ocean-system/materials/ocean-material/ocean-shadow.js',\
     'ocean-system/components/ocean-patch.js',\
+    'ocean-system/components/ocean-shadow-csm.js',\
     'ocean-system/components/ocean-grid.js',\
     'ocean-system/components/ocean-state.js',\
     'ocean-system/components/a-ocean.js']
