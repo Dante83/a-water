@@ -452,14 +452,34 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.oceanShadowNormalBias.value = +meters;
     }
   };
-  //Live-tune the world-space PCF softness target. Each cascade converts
-  //this to a texel radius (= meters / cascadeTexelSize), so the kernel
-  //covers the same physical span everywhere. Typical range 0.1 to 1.5;
-  //larger values hide texel-grid Moire at distance, smaller values keep
-  //near-camera wave detail crisp.
-  this.setOceanShadowSoftnessWorld = function(meters){
+  //EVSM warp constant. Pushes to BOTH the receiver materials and the
+  //caster materials (via the CSM helper). Keep them in sync — caster
+  //emits exp(c·z) moments and receiver computes exp(c·refZ); a mismatch
+  //makes every comparison nonsense.
+  this.setOceanEvsmExpC = function(c){
+    const v = +c;
     for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
-      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.oceanShadowSoftnessWorld.value = +meters;
+      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.evsmExpC.value = v;
+    }
+    if(self.oceanShadowCSM){
+      self.oceanShadowCSM.setEvsmExpC(v);
+    }
+  };
+  //EVSM minimum variance floor. Tiny number; raise (e.g. 1e-3) if you
+  //see speckle in penumbra; lower (e.g. 1e-5) if shadow gradients feel
+  //too soft.
+  this.setOceanEvsmMinVariance = function(v){
+    const f = +v;
+    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.evsmMinVariance.value = f;
+    }
+  };
+  //EVSM light-bleed reduction threshold in [0, 1). Higher = harder
+  //shadows, more contrast; lower = softer with risk of light bleed.
+  this.setOceanEvsmLightBleedReduction = function(v){
+    const f = +v;
+    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.evsmLightBleedReduction.value = f;
     }
   };
   if(typeof window !== 'undefined'){
@@ -467,7 +487,9 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     window.setSunShadowEnabled = this.setSunShadowEnabled;
     window.setOceanShadowEnabled = this.setOceanShadowEnabled;
     window.setOceanShadowNormalBias = this.setOceanShadowNormalBias;
-    window.setOceanShadowSoftnessWorld = this.setOceanShadowSoftnessWorld;
+    window.setOceanEvsmExpC = this.setOceanEvsmExpC;
+    window.setOceanEvsmMinVariance = this.setOceanEvsmMinVariance;
+    window.setOceanEvsmLightBleedReduction = this.setOceanEvsmLightBleedReduction;
   }
   const oceanPatchTranslationMatrices = [];
   for(let i = 0; numOceanPatches = self.oceanPatches.length, i < numOceanPatches; ++i){
@@ -733,7 +755,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           oceanShadowCSM_exists: !!self.oceanShadowCSM,
           oceanShadowCSM_caster_count: self.oceanShadowCSM ? self.oceanShadowCSM.oceanMeshes.length : -1,
           oceanShadowEnabled: uniformsRef.oceanShadowEnabled.value,
-          oceanShadowBias: uniformsRef.oceanShadowBias.value,
+          evsmExpC: uniformsRef.evsmExpC.value,
           sunDir_y: -directionalLightDirection.y,
           rendererShadowMapEnabled: self.renderer && self.renderer.shadowMap ? self.renderer.shadowMap.enabled : 'no-renderer'
         };
@@ -843,18 +865,13 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           continue;
         }
         u.oceanShadowEnabled.value = 1;
-        //Push every cascade's depth texture, shadow matrix, and map size.
-        //Matrices live as separate uniform names (oceanShadowMatrix0..3) and
-        //must be projected per-vertex; texture/mapSize are arrays sampled
-        //in the fragment cascade walk.
+        //Push every cascade's moment texture (RGBA32F, post-blur), shadow
+        //matrix, and map size. Matrices live as separate uniform names
+        //(oceanShadowMatrix0..3) and must be projected per-vertex;
+        //texture/mapSize are arrays sampled in the fragment cascade walk.
         for(let c = 0; c < numCascades; c++){
-          u.oceanShadowMap.value[c] = cascades[c].renderTarget.depthTexture;
+          u.oceanShadowMap.value[c] = cascades[c].renderTarget.texture;
           u.oceanShadowMapSize.value[c].set(cascades[c].cfg.mapSize, cascades[c].cfg.mapSize);
-          u.oceanShadowDepthRange.value[c] = cascades[c].depthRange;
-          //Lateral world-space texel size — receiver uses this to derive a
-          //constant world-space PCF radius across cascades. Cheap to compute
-          //here, avoids storing redundantly on the cascade.
-          u.oceanShadowTexelSizeWorld.value[c] = cascades[c].cfg.extent / cascades[c].cfg.mapSize;
         }
         u.oceanShadowMatrix0.value.copy(cascades[0].shadowMatrix);
         u.oceanShadowMatrix1.value.copy(cascades[1].shadowMatrix);

@@ -18,7 +18,11 @@ AWater.AOcean.Materials.Ocean.oceanShadowMaterial = {
     sizeOfOceanPatch: {type: 'f', value: 1.0},
     chop: {type: 'f', value: 1.0},
     ringIndex: {type: 'i', value: 0},
-    mainCameraPosition: {type: 'v3', value: new THREE.Vector3()}
+    mainCameraPosition: {type: 'v3', value: new THREE.Vector3()},
+    //EVSM warp constant. Larger values reduce light bleed but compress
+    //precision at depth extremes; ~5 is a good float32 balance. MUST
+    //match the receiver's evsmExpC exactly or the comparison breaks.
+    evsmExpC: {type: 'f', value: 5.0}
   },
 
   fragmentShader: [

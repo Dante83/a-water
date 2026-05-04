@@ -60,47 +60,42 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     sunShadowRadius: {type: 'f', value: 1.0},
     sunShadowBias: {type: 'f', value: -0.003},
     sunShadowEnabled: {type: 'i', value: 0},
-    //Ocean-only cascaded shadow map — four dedicated tight-frustum depth
-    //textures rendered by ocean-shadow-csm.js, sampled fine→coarse so each
-    //fragment uses the smallest cascade that contains it. Gives per-wave
-    //self-shadow that the scene-wide sunShadowMap above is too coarse to
-    //resolve. Per-cascade matrices are split as oceanShadowMatrix0..3 so
-    //vertex-shader array-uniform packing isn't relied on.
+    //Ocean-only cascaded shadow map — EVSM (Exponential Variance Shadow
+    //Map). Four cascades' moment textures (RGBA32F) rendered + blurred
+    //by ocean-shadow-csm.js. Each fragment walks fine→coarse and samples
+    //the first cascade whose UVs fall inside [0,1]. Per-cascade matrices
+    //are split as oceanShadowMatrix0..3 so vertex-shader array-uniform
+    //packing is not relied on.
     oceanShadowMap: {type: 't', value: [null, null, null, null]},
     oceanShadowMatrix0: {type: 'mat4', value: new THREE.Matrix4()},
     oceanShadowMatrix1: {type: 'mat4', value: new THREE.Matrix4()},
     oceanShadowMatrix2: {type: 'mat4', value: new THREE.Matrix4()},
     oceanShadowMatrix3: {type: 'mat4', value: new THREE.Matrix4()},
     oceanShadowMapSize: {type: 'v2v', value: [
-      new THREE.Vector2(1024.0, 1024.0),
-      new THREE.Vector2(1024.0, 1024.0),
-      new THREE.Vector2(1024.0, 1024.0),
-      new THREE.Vector2(1024.0, 1024.0)
+      new THREE.Vector2(2048.0, 2048.0),
+      new THREE.Vector2(2048.0, 2048.0),
+      new THREE.Vector2(4096.0, 4096.0),
+      new THREE.Vector2(4096.0, 4096.0)
     ]},
-    //Per-cascade NDC→world depth slab span (= 2 × halfDepth). Pushed each
-    //frame from ocean-shadow-csm.js. Receiver divides bias/slopeBias by
-    //this so a single user knob produces constant world-space peter-pan
-    //regardless of which cascade is being sampled.
-    oceanShadowDepthRange: {type: 'fv1', value: [160.0, 340.0, 2100.0, 10100.0]},
-    //Per-cascade lateral world-space texel size (= cascade.extent / mapSize).
-    //Lets the receiver derive a *constant world-space* PCF kernel radius
-    //regardless of cascade, instead of using hand-tuned per-cascade texel
-    //radii (which made each cascade look visibly different in softness).
-    //ocean-shadow-csm.js pushes the live values per frame.
-    oceanShadowTexelSizeWorld: {type: 'fv1', value: [0.0293, 0.1172, 0.3906, 1.9531]},
-    oceanShadowBias: {type: 'f', value: -0.0005},
-    //World-space PCF kernel radius target in METERS. Receiver scales this
-    //per cascade by the local texel size to derive a texel radius. ~0.5 m
-    //hides shadow-map texel-grid Moiré at distance without washing out
-    //near-camera wave detail. Tunable live via setOceanShadowSoftnessWorld().
-    oceanShadowSoftnessWorld: {type: 'f', value: 0.5},
+    //EVSM warp constant. MUST match the caster's evsmExpC. Larger values
+    //reduce light bleed but compress depth precision; ~5 is a good
+    //float32 balance for ocean depth slabs up to 10 km. Live-tunable
+    //via setOceanEvsmExpC() — caster and receiver are pushed together.
+    evsmExpC: {type: 'f', value: 5.0},
+    //Floor on per-texel variance to prevent divide-by-zero in the
+    //Chebyshev bound on perfectly flat texels. Sub-pixel value; raise
+    //if grain shows in shadow gradients.
+    evsmMinVariance: {type: 'f', value: 0.0001},
+    //Light-bleed reduction. Linstep remaps the Chebyshev p_max so values
+    //below this threshold become zero (firmly shadowed) and the rest
+    //stretch to [0,1]. ~0.2 is typical for outdoor scenes.
+    evsmLightBleedReduction: {type: 'f', value: 0.2},
     //Normal-offset bias in WORLD METERS. Receiver projects worldPos +
-    //normal × this distance into shadow space, decoupling per-fragment
-    //sc.z from the caster surface plane. Standard self-shadow technique
-    //(Three.js DirectionalLight.shadow.normalBias). Tune ~ one coarse-
-    //cascade texel; too small leaves per-triangle acne, too large
-    //detaches shadow from wave geometry.
-    oceanShadowNormalBias: {type: 'f', value: 0.5},
+    //normal × this distance into shadow space. With EVSM the per-triangle
+    //z-acne the offset was designed to mask is no longer the dominant
+    //artifact, so the default is much smaller than the depth-comparison
+    //era (was 0.5). Kept as a small belt-and-suspenders nudge.
+    oceanShadowNormalBias: {type: 'f', value: 0.05},
     oceanShadowEnabled: {type: 'i', value: 0},
     //Debug visualisation switch (see water-shader.glsl). 0 = normal,
     //1 = shadow-factor full-screen, 2 = cascade-index full-screen.

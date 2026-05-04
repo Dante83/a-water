@@ -72,39 +72,39 @@ uniform float sunShadowRadius;
 uniform float sunShadowBias;
 uniform int sunShadowEnabled;
 
-//Ocean-only cascaded shadow map — rendered by ocean-shadow-csm.js into four
-//tight sun-aligned frusta, giving per-wave self-shadow that the scene-wide
-//sunShadowMap is too coarse to resolve. Same short-circuit pattern: when
-//oceanShadowEnabled == 0 the sample returns 1.0 and the feature is inert.
+//Ocean-only cascaded shadow map — EVSM (Exponential Variance Shadow Map).
+//Each cascade's texture stores 4 warped depth moments per texel (written
+//by the caster, then separable-Gaussian-blurred by ocean-shadow-csm.js):
+//  R = exp(c·z)
+//  G = exp(2c·z)
+//  B = -exp(-c·z)
+//  A = exp(-2c·z)
+//Receiver derives a probabilistic shadow bound via Chebyshev's inequality
+//on each warp pair, taking the min — the negative-warp pair is what kills
+//most of plain-VSM light bleed. Linear-filtered floats + the blur are
+//what give EVSM its smoothness; without the blur per-texel variance is
+//near zero and the bound degenerates to a hard depth comparison.
 //
-//Four cascades are sampled fine→coarse: cascade 0 is the tightest (~60m,
-//sharp wave-on-wave near camera), cascade 3 the widest (covers the full
-//draw distance, only resolves big swells). For each fragment the shader
-//walks 0→3 and uses the first cascade whose UVs fall inside [0,1].
-//mapSize/matrices/depthRange are arrayed; oceanShadowBias is a single
-//user-tunable knob interpreted as the C0-reference NDC bias and is auto-
-//scaled per cascade by depthRange so the *world-space* bias stays
-//constant — without that, one bias value translates to ~8 cm peter-pan
-//in C0 but ~5 m in C3 (10100m depth range), producing washed-out shadows
-//that drift off their waves and visibly "lighten" at every cascade edge.
+//Four cascades sampled fine→coarse: cascade 0 is the tightest (~60m),
+//cascade 3 the widest (full draw distance). The fragment shader walks
+//0→3 and uses the first cascade whose UVs fall inside [0,1], with a
+//narrow fade band into the next coarser cascade so the boundary is not
+//visible.
 uniform sampler2D oceanShadowMap[4];
 uniform vec2 oceanShadowMapSize[4];
-uniform float oceanShadowDepthRange[4];
-//Per-cascade lateral world-space texel size (= extent / mapSize). Used by
-//the receiver to derive a constant *world-space* PCF kernel radius across
-//cascades. Without this, hard-coded per-cascade pixel radii (1, 1.5, 2, 3
-//texels) produced very different visible softness because each cascade's
-//texel covers a different physical span (~3 cm in C0 vs ~5 m in C3) — so
-//the same N-texel kernel was a 12 cm kernel in C0 and a 23 m kernel in C3.
-uniform float oceanShadowTexelSizeWorld[4];
-uniform float oceanShadowBias;
-//Target PCF kernel radius in WORLD METERS. Each cascade converts this to
-//its local texel count via oceanShadowTexelSizeWorld[i]. Larger values
-//soften shadows more uniformly across cascades; ~0.5 m hides texel-grid
-//Moiré at distance without washing out near-camera wave detail. Tunable
-//live via setOceanShadowSoftnessWorld() from the console.
-uniform float oceanShadowSoftnessWorld;
 uniform int oceanShadowEnabled;
+//EVSM warp constant. MUST match the caster's evsmExpC exactly. Larger
+//values reduce light bleed but compress depth precision; ~5 is a good
+//float32 balance for ocean depth slabs up to 10 km.
+uniform float evsmExpC;
+//Floor on per-texel variance to prevent divide-by-zero in the Chebyshev
+//bound on perfectly flat texels. Sub-pixel value; raise if grain shows.
+uniform float evsmMinVariance;
+//Light-bleed reduction. Remaps the Chebyshev p_max via linstep so values
+//below this threshold become zero (firmly shadowed) and the rest stretch
+//to [0,1]. ~0.2 is typical for outdoor scenes; raise if penumbras look
+//hazy, lower if hard shadow edges feel too crisp.
+uniform float evsmLightBleedReduction;
 //Debug visualisation. 0 = normal render. 1 = full-screen shadow factor as
 //grayscale (white = lit, black = fully shadowed). 2 = full-screen cascade
 //index tint (C0=red, C1=green, C2=blue, C3=yellow, none=black). 3 =
@@ -225,105 +225,78 @@ float getSunShadow(vec4 shadowCoord){
   return shadow * (1.0 / 9.0);
 }
 
-//Same PCF pattern as getSunShadow, but samples the ocean-only CSM and walks
-//4 cascades fine→coarse. For each cascade we project the fragment's world
-//position into light-clip via vOceanShadowCoord[i] (precomputed in the
-//vertex shader), divide by w, and check whether the resulting UV falls
-//inside [0,1]. The first one that does is sampled with 5x5 PCF and
-//returned. Fragments past every cascade (e.g. behind camera or above the
-//cascade depth window) return 1.0 — the sun's scene shadow map still
-//applies there.
+//EVSM evaluation. Each cascade's texture stores 4 warped depth moments
+//per texel (computed by the caster, separable-Gaussian-blurred). Receiver
+//converts its own fragment depth to the same warped domain, then derives
+//a probabilistic shadow upper bound via Chebyshev's inequality on each
+//warp pair. The min of the two bounds is what eliminates most of plain-
+//VSM light bleed (the "E" in EVSM).
 //
-//worldNormal/sunDir feed a normal-based slope bias instead of the
-//dFdx/dFdy variant: dFdx of sc.z is constant within a triangle and
-//discontinuous at triangle edges, which paints the shadow factor in
-//faceted bands. Smoothly interpolated wave normals give a continuous
-//tan(theta) bias.
+//Why Chebyshev: variance shadow maps replace the binary depth comparison
+//with a statistical comparison. The bound is sharp (=1.0 fully lit) when
+//the receiver depth is closer than the moment mean, and falls off
+//smoothly past it. Per-triangle z-acne — the core failure mode of the
+//old depth-comparison path on smooth ocean meshes — becomes a soft
+//gradient instead of binary flips between adjacent triangles.
 //
 //Sampler-array indices in GLSL ES must be constant integral expressions,
 //so the 4-cascade selection is unrolled rather than written as a for-loop.
-//The `if(found) return` pattern also short-circuits the PCF taps once a
+//The `if(found) return` pattern short-circuits the texture read once a
 //covering cascade is found — typically C0 near camera, C3 at horizon.
-//16-tap Poisson disk on the unit disk. Pre-generated low-discrepancy
-//pattern. Replaces the regular 5x5 grid that aliased against both the
-//FFT wave grid and the shadow-map texel grid, producing the alternating
-//banded Moire visible at distance. Combined with per-fragment rotation
-//(below) the regular sampling lattice that produced the bands is gone.
-const vec2 POISSON_DISK_16[16] = vec2[16](
-  vec2(-0.94201624, -0.39906216),
-  vec2( 0.94558609, -0.76890725),
-  vec2(-0.094184101, -0.92938870),
-  vec2( 0.34495938,  0.29387760),
-  vec2(-0.91588581,  0.45771432),
-  vec2(-0.81544232, -0.87912464),
-  vec2(-0.38277543,  0.27676845),
-  vec2( 0.97484398,  0.75648379),
-  vec2( 0.44323325, -0.97511554),
-  vec2( 0.53742981, -0.47373420),
-  vec2(-0.26496911, -0.41893023),
-  vec2( 0.79197514,  0.19090188),
-  vec2(-0.24188840,  0.99706507),
-  vec2(-0.81409955,  0.91437590),
-  vec2( 0.19984126,  0.78641367),
-  vec2( 0.14383161, -0.14100790)
-);
 
-float sampleOceanCascadePCF(sampler2D shadowMap, vec2 mapSize, vec3 sc, float refZ, float radius){
-  //Rotated 16-tap Poisson disk PCF. Each fragment rotates the disk by an
-  //angle pulled from the blue-noise texture so adjacent fragments sample
-  //a different rotation. The aliasing between the wave grid and the
-  //shadow-map texel grid (which produced banded Moire with the old
-  //regular 5x5 stamp) becomes high-frequency noise that the eye reads as
-  //a smooth soft shadow. radius is in TEXELS and scales unit-disk taps.
-  vec2 texelSize = (1.0 / mapSize) * radius;
+float chebyshevUpperBound(vec2 moments, float d){
+  //moments.x = E[d_warp], moments.y = E[d_warp^2]. Variance = M2 - M1^2.
+  //If the receiver depth is at or before the mean, no occluder is closer
+  //than this fragment so it is fully lit. Past the mean, the bound falls
+  //off as variance / (variance + diff^2), giving a smooth shadow gradient
+  //whose hardness depends on per-texel depth variance.
+  if(d <= moments.x) return 1.0;
+  float variance = max(moments.y - moments.x * moments.x, evsmMinVariance);
+  float diff = d - moments.x;
+  return variance / (variance + diff * diff);
+}
 
-  //Per-fragment rotation. Reuses the blue-noise texture from the dither
-  //pass; sampled at a 64-pixel offset and a different temporal phase so
-  //the two consumers are decorrelated. Without this rotation a regular
-  //sample lattice produces regular artifacts no matter how many taps.
-  float pcfFramePhase = fract(blueNoiseTime * 0.0007);
-  ivec2 pcfTemporalOffset = ivec2(
-    128.0 * fract(pcfFramePhase * 1.61803398875),
-    128.0 * fract(pcfFramePhase * 2.61803398875)
-  );
-  ivec2 noiseCoord = (ivec2(mod(gl_FragCoord.xy, 128.0)) + pcfTemporalOffset + ivec2(64, 0)) % 128;
-  float angle = texelFetch(blueNoiseTexture, noiseCoord, 0).r * 6.28318530718;
-  float ca = cos(angle);
-  float sa = sin(angle);
-  mat2 rot = mat2(ca, -sa, sa, ca);
+float reduceLightBleed(float pmax){
+  //Plain VSM tends to leak light through partial occluders ("light bleed"
+  //around tall thin shadow casters). The EVSM negative-warp pair already
+  //removes most of it; a final linstep remap kills the remainder by
+  //pushing the lower part of the bound to zero.
+  return clamp((pmax - evsmLightBleedReduction) / (1.0 - evsmLightBleedReduction), 0.0, 1.0);
+}
 
-  float shadow = 0.0;
-  for(int i = 0; i < 16; i++){
-    vec2 offset = rot * POISSON_DISK_16[i] * texelSize;
-    float d = texture2D(shadowMap, sc.xy + offset).r;
-    shadow += refZ < d ? 1.0 : 0.0;
-  }
-  return shadow * (1.0 / 16.0);
+float sampleOceanCascadeEVSM(sampler2D momentMap, vec3 sc){
+  //Sample the 4 moments with hardware bilinear (LinearFilter on the float
+  //target), warp the fragment depth into the same domain, and take the
+  //min of the two Chebyshev bounds. Linear filtering of warped moments
+  //is mathematically valid because the warp is monotonic — bilinear
+  //interpolation of moments equals the moments of the bilinear-
+  //interpolated warped depth.
+  vec4 moments = texture2D(momentMap, sc.xy);
+  float dPos =  exp( evsmExpC * sc.z);
+  float dNeg = -exp(-evsmExpC * sc.z);
+  float pPos = chebyshevUpperBound(moments.xy, dPos);
+  float pNeg = chebyshevUpperBound(moments.zw, dNeg);
+  return reduceLightBleed(min(pPos, pNeg));
 }
 
 bool oceanCascadeContains(vec3 sc, float marginUV){
-  //Both ends of z need gating: sc.z > 1 → past far plane, sc.z < 0 → between
-  //light and near plane. Without the lower bound, fragments in front of the
-  //cascade get sampled with junk depth and silently read as lit.
-  //
-  //marginUV insets the lateral [0,1] window by the PCF kernel reach in UV
-  //space so a fragment whose 5x5 sample stamp would spill past the cascade
-  //edge falls through to the next (coarser) cascade instead. Without this,
-  //clamp-to-edge sampling at the boundary returns adjacent texels' depth
-  //and produces a hard rectangular dark band at every cascade switch.
+  //Both ends of z need gating: sc.z > 1 → past far plane, sc.z < 0 →
+  //between light and near plane. Without the lower bound, fragments in
+  //front of the cascade get sampled with junk depth and silently read
+  //as lit. marginUV insets the lateral [0,1] window so fragments whose
+  //blur-kernel reach would spill past the cascade edge fall through to
+  //the next coarser cascade rather than reading clamp-to-edge garbage.
   return sc.x >= marginUV && sc.x <= 1.0 - marginUV
       && sc.y >= marginUV && sc.y <= 1.0 - marginUV
       && sc.z >= 0.0 && sc.z <= 1.0;
 }
 
-//Per-cascade PCF kernel radius in TEXELS, derived from a world-space
-//softness target so the kernel covers a constant physical span across
-//cascades regardless of texel size. Floor of 2 texels guarantees the
-//rotated Poisson disk samples land on distinct texels even when the
-//target spacing is sub-texel — necessary for far cascades whose texels
-//exceed the softness target.
-float oceanCascadePCFRadius(int cascadeIdx){
-  return max(2.0, oceanShadowSoftnessWorld / oceanShadowTexelSizeWorld[cascadeIdx]);
+//UV margin = 5 texels of inset, sized to exceed the EVSM Gaussian blur
+//reach (4 texels each side). Fragments closer than this to a cascade
+//edge fall through to the next coarser cascade so they never sample
+//moments contaminated by the clear-color baseline outside the caster.
+float oceanCascadeMarginUV(int cascadeIdx){
+  return 5.0 / oceanShadowMapSize[cascadeIdx].x;
 }
 
 //Returns 1.0 if the fragment is well inside the cascade and 0.0 if it sits
@@ -352,55 +325,27 @@ float oceanCascadeFadeWeight(vec3 sc, float marginUV){
 
 float getOceanShadow(vec4 shadowCoord0, vec4 shadowCoord1, vec4 shadowCoord2, vec4 shadowCoord3, vec3 worldNormal, vec3 sunDir){
   if(oceanShadowEnabled == 0) return 1.0;
-  //Normal-based slope bias: tan(angle between surface and light) scaled to
-  //depth-texture units. Smooth across triangle interpolation, scales up at
-  //grazing angles where shadow map errors get worst. Capped to avoid
-  //peter-panning when N·L approaches zero. Same NDC bias is then per-cascade
-  //rescaled by depthRange so the world-space peter-pan stays sane.
-  //
-  //Cap was 0.015 NDC, but at C0 (depthRange ~160m) that yields 2.4m world
-  //bias at glancing sun — bigger than wave amplitude, so wave peaks at
-  //sunset always read as lit (peter-pan extends past the entire wave).
-  //Dropped to 0.002 → ~32cm world bias at C0, comparable to wave amplitude.
-  //Acne risk grows in coarse cascades at grazing angles; if visible, reduce
-  //further or make texel-proportional.
-  float NdotL = max(dot(worldNormal, sunDir), 0.0);
-  float sinTheta = sqrt(max(1.0 - NdotL * NdotL, 0.0));
-  float slopeBias = clamp(0.005 * sinTheta / max(NdotL, 0.05), 0.0, 0.002);
 
-  //Walk fine→coarse. At each cascade hit, sample it; if the fragment sits
-  //in the outer fade zone (near the cascade's edge), also sample the next
-  //coarser cascade and lerp. This hides what would otherwise be a visible
-  //character-change at every cascade boundary (texel size jumps, caster
-  //detail differs because coarser cascades pull from larger ocean rings).
-  //
-  //Per-cascade PCF radius is derived from a world-space softness target,
-  //not hand-tuned per cascade. biasScale converts the user knob (calibrated
-  //for C0) into per-cascade NDC such that world-space bias scales with the
-  //SQUARE ROOT of the texel-size ratio. Pure linear texel scaling worked
-  //against acne but over-biased coarse cascades by 4-5x — bias exceeded
-  //wave amplitude and ate every shadow. Sqrt softens this so coarse
-  //cascades still gain bias headroom (more than C0) without burning all
-  //the wave-shadow budget. C0 stays at scale 1.0 so the user knob keeps
-  //its current calibration.
-  float c0Range = oceanShadowDepthRange[0];
-  float texel0 = oceanShadowTexelSizeWorld[0];
+  //Walk fine→coarse. At each cascade hit, sample its EVSM moments; if
+  //the fragment sits in the outer fade zone (near the cascade's edge),
+  //also sample the next coarser cascade and lerp. This hides what would
+  //otherwise be a visible character-change at every cascade boundary
+  //(texel size jumps, caster detail differs because coarser cascades
+  //pull from larger ocean rings). EVSM removes the per-cascade biasScale
+  //gymnastics the depth-comparison path needed — the Chebyshev bound is
+  //unitless and behaves identically across cascades.
 
   //C0 → fades into C1
   vec3 sc0 = shadowCoord0.xyz / shadowCoord0.w;
-  float radius0 = oceanCascadePCFRadius(0);
-  float margin0 = 2.0 * radius0 / oceanShadowMapSize[0].x;
+  float margin0 = oceanCascadeMarginUV(0);
   if(oceanCascadeContains(sc0, margin0)){
-    float biasScale0 = c0Range / oceanShadowDepthRange[0];
-    float shadow0 = sampleOceanCascadePCF(oceanShadowMap[0], oceanShadowMapSize[0], sc0, sc0.z + (oceanShadowBias - slopeBias) * biasScale0, radius0);
+    float shadow0 = sampleOceanCascadeEVSM(oceanShadowMap[0], sc0);
     float w0 = oceanCascadeFadeWeight(sc0, margin0);
     if(w0 >= 1.0) return shadow0;
     vec3 sc1 = shadowCoord1.xyz / shadowCoord1.w;
-    float radius1 = oceanCascadePCFRadius(1);
-    float margin1 = 2.0 * radius1 / oceanShadowMapSize[1].x;
+    float margin1 = oceanCascadeMarginUV(1);
     if(oceanCascadeContains(sc1, margin1)){
-      float biasScale1 = sqrt(oceanShadowTexelSizeWorld[1] / texel0) * c0Range / oceanShadowDepthRange[1];
-      float shadow1 = sampleOceanCascadePCF(oceanShadowMap[1], oceanShadowMapSize[1], sc1, sc1.z + (oceanShadowBias - slopeBias) * biasScale1, radius1);
+      float shadow1 = sampleOceanCascadeEVSM(oceanShadowMap[1], sc1);
       return mix(shadow1, shadow0, w0);
     }
     return shadow0;
@@ -408,19 +353,15 @@ float getOceanShadow(vec4 shadowCoord0, vec4 shadowCoord1, vec4 shadowCoord2, ve
 
   //C1 → fades into C2
   vec3 sc1 = shadowCoord1.xyz / shadowCoord1.w;
-  float radius1 = oceanCascadePCFRadius(1);
-  float margin1 = 2.0 * radius1 / oceanShadowMapSize[1].x;
+  float margin1 = oceanCascadeMarginUV(1);
   if(oceanCascadeContains(sc1, margin1)){
-    float biasScale1 = sqrt(oceanShadowTexelSizeWorld[1] / texel0) * c0Range / oceanShadowDepthRange[1];
-    float shadow1 = sampleOceanCascadePCF(oceanShadowMap[1], oceanShadowMapSize[1], sc1, sc1.z + (oceanShadowBias - slopeBias) * biasScale1, radius1);
+    float shadow1 = sampleOceanCascadeEVSM(oceanShadowMap[1], sc1);
     float w1 = oceanCascadeFadeWeight(sc1, margin1);
     if(w1 >= 1.0) return shadow1;
     vec3 sc2 = shadowCoord2.xyz / shadowCoord2.w;
-    float radius2 = oceanCascadePCFRadius(2);
-    float margin2 = 2.0 * radius2 / oceanShadowMapSize[2].x;
+    float margin2 = oceanCascadeMarginUV(2);
     if(oceanCascadeContains(sc2, margin2)){
-      float biasScale2 = sqrt(oceanShadowTexelSizeWorld[2] / texel0) * c0Range / oceanShadowDepthRange[2];
-      float shadow2 = sampleOceanCascadePCF(oceanShadowMap[2], oceanShadowMapSize[2], sc2, sc2.z + (oceanShadowBias - slopeBias) * biasScale2, radius2);
+      float shadow2 = sampleOceanCascadeEVSM(oceanShadowMap[2], sc2);
       return mix(shadow2, shadow1, w1);
     }
     return shadow1;
@@ -428,19 +369,15 @@ float getOceanShadow(vec4 shadowCoord0, vec4 shadowCoord1, vec4 shadowCoord2, ve
 
   //C2 → fades into C3
   vec3 sc2 = shadowCoord2.xyz / shadowCoord2.w;
-  float radius2 = oceanCascadePCFRadius(2);
-  float margin2 = 2.0 * radius2 / oceanShadowMapSize[2].x;
+  float margin2 = oceanCascadeMarginUV(2);
   if(oceanCascadeContains(sc2, margin2)){
-    float biasScale2 = sqrt(oceanShadowTexelSizeWorld[2] / texel0) * c0Range / oceanShadowDepthRange[2];
-    float shadow2 = sampleOceanCascadePCF(oceanShadowMap[2], oceanShadowMapSize[2], sc2, sc2.z + (oceanShadowBias - slopeBias) * biasScale2, radius2);
+    float shadow2 = sampleOceanCascadeEVSM(oceanShadowMap[2], sc2);
     float w2 = oceanCascadeFadeWeight(sc2, margin2);
     if(w2 >= 1.0) return shadow2;
     vec3 sc3 = shadowCoord3.xyz / shadowCoord3.w;
-    float radius3 = oceanCascadePCFRadius(3);
-    float margin3 = 2.0 * radius3 / oceanShadowMapSize[3].x;
+    float margin3 = oceanCascadeMarginUV(3);
     if(oceanCascadeContains(sc3, margin3)){
-      float biasScale3 = sqrt(oceanShadowTexelSizeWorld[3] / texel0) * c0Range / oceanShadowDepthRange[3];
-      float shadow3 = sampleOceanCascadePCF(oceanShadowMap[3], oceanShadowMapSize[3], sc3, sc3.z + (oceanShadowBias - slopeBias) * biasScale3, radius3);
+      float shadow3 = sampleOceanCascadeEVSM(oceanShadowMap[3], sc3);
       return mix(shadow3, shadow2, w2);
     }
     return shadow2;
@@ -450,11 +387,9 @@ float getOceanShadow(vec4 shadowCoord0, vec4 shadowCoord1, vec4 shadowCoord2, ve
   //That edge sits at the horizon for typical configs so the discontinuity
   //is barely visible.
   vec3 sc3 = shadowCoord3.xyz / shadowCoord3.w;
-  float radius3 = oceanCascadePCFRadius(3);
-  float margin3 = 2.0 * radius3 / oceanShadowMapSize[3].x;
+  float margin3 = oceanCascadeMarginUV(3);
   if(oceanCascadeContains(sc3, margin3)){
-    float biasScale3 = sqrt(oceanShadowTexelSizeWorld[3] / texel0) * c0Range / oceanShadowDepthRange[3];
-    return sampleOceanCascadePCF(oceanShadowMap[3], oceanShadowMapSize[3], sc3, sc3.z + (oceanShadowBias - slopeBias) * biasScale3, radius3);
+    return sampleOceanCascadeEVSM(oceanShadowMap[3], sc3);
   }
   return 1.0;
 }
@@ -1403,17 +1338,15 @@ void main(){
   }
   else if(oceanShadowDebugMode == 2){
     //Use the same per-cascade margins the lighting path uses so the tint
-    //rings match the cascade actually selected for shading. Without this,
-    //debug viz shows a wider C0/C1 footprint than the lighting actually
-    //samples, hiding cascade-edge artifacts behind a misleading visual.
+    //rings match the cascade actually selected for shading.
     vec3 sc0 = vOceanShadowCoord0.xyz / vOceanShadowCoord0.w;
     vec3 sc1 = vOceanShadowCoord1.xyz / vOceanShadowCoord1.w;
     vec3 sc2 = vOceanShadowCoord2.xyz / vOceanShadowCoord2.w;
     vec3 sc3 = vOceanShadowCoord3.xyz / vOceanShadowCoord3.w;
-    float dbgMargin0 = 2.0 * 1.0 / oceanShadowMapSize[0].x;
-    float dbgMargin1 = 2.0 * 1.5 / oceanShadowMapSize[1].x;
-    float dbgMargin2 = 2.0 * 2.0 / oceanShadowMapSize[2].x;
-    float dbgMargin3 = 2.0 * 3.0 / oceanShadowMapSize[3].x;
+    float dbgMargin0 = oceanCascadeMarginUV(0);
+    float dbgMargin1 = oceanCascadeMarginUV(1);
+    float dbgMargin2 = oceanCascadeMarginUV(2);
+    float dbgMargin3 = oceanCascadeMarginUV(3);
     //Default magenta = water fragment fell outside every cascade. Was black,
     //but black blends visually with deep water and made the no-cascade case
     //hard to distinguish from a near-zero tint. If a band is the no-cascade
@@ -1428,38 +1361,33 @@ void main(){
     gl_FragColor = vec4(tint, 1.0);
   }
   else if(oceanShadowDebugMode == 3 || oceanShadowDebugMode == 4){
-    //Mode 3 = receiver's sc.z. Mode 4 = caster-stored d sampled at sc.xy.
-    //Walk fine→coarse using the same margins as mode 2 so the cascade
-    //chosen for the readout matches the cascade chosen for shading. Both
-    //modes select the SAME cascade for the same fragment so the two
-    //full-screen captures can be diffed pixel-for-pixel — on flat water
-    //they should be identical inside every cascade. Sampler2D arrays
-    //demand a constant integral index, so the cascade pick is unrolled.
+    //Mode 3 = receiver's sc.z (linear depth in [0,1]). Mode 4 = caster's
+    //stored mean depth recovered from the M1_pos moment via z = log(M1)/c.
+    //On flat water the two should match texel-for-texel inside every
+    //cascade; differences indicate caster/receiver displacement drift.
     vec3 sc0d = vOceanShadowCoord0.xyz / vOceanShadowCoord0.w;
     vec3 sc1d = vOceanShadowCoord1.xyz / vOceanShadowCoord1.w;
     vec3 sc2d = vOceanShadowCoord2.xyz / vOceanShadowCoord2.w;
     vec3 sc3d = vOceanShadowCoord3.xyz / vOceanShadowCoord3.w;
-    float dbgMargin0 = 2.0 * 1.0 / oceanShadowMapSize[0].x;
-    float dbgMargin1 = 2.0 * 1.5 / oceanShadowMapSize[1].x;
-    float dbgMargin2 = 2.0 * 2.0 / oceanShadowMapSize[2].x;
-    float dbgMargin3 = 2.0 * 3.0 / oceanShadowMapSize[3].x;
+    float dbgMargin0 = oceanCascadeMarginUV(0);
+    float dbgMargin1 = oceanCascadeMarginUV(1);
+    float dbgMargin2 = oceanCascadeMarginUV(2);
+    float dbgMargin3 = oceanCascadeMarginUV(3);
     float refDepth = -1.0;
     float storedDepth = -1.0;
     if(oceanCascadeContains(sc0d, dbgMargin0)){
       refDepth = sc0d.z;
-      storedDepth = texture2D(oceanShadowMap[0], sc0d.xy).r;
+      storedDepth = log(max(texture2D(oceanShadowMap[0], sc0d.xy).r, 1.0)) / evsmExpC;
     } else if(oceanCascadeContains(sc1d, dbgMargin1)){
       refDepth = sc1d.z;
-      storedDepth = texture2D(oceanShadowMap[1], sc1d.xy).r;
+      storedDepth = log(max(texture2D(oceanShadowMap[1], sc1d.xy).r, 1.0)) / evsmExpC;
     } else if(oceanCascadeContains(sc2d, dbgMargin2)){
       refDepth = sc2d.z;
-      storedDepth = texture2D(oceanShadowMap[2], sc2d.xy).r;
+      storedDepth = log(max(texture2D(oceanShadowMap[2], sc2d.xy).r, 1.0)) / evsmExpC;
     } else if(oceanCascadeContains(sc3d, dbgMargin3)){
       refDepth = sc3d.z;
-      storedDepth = texture2D(oceanShadowMap[3], sc3d.xy).r;
+      storedDepth = log(max(texture2D(oceanShadowMap[3], sc3d.xy).r, 1.0)) / evsmExpC;
     }
-    //Magenta = fragment fell outside every cascade (impossible read).
-    //Visible flag — distinguishes the no-cascade case from a depth of 0.
     if(refDepth < 0.0){
       gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0);
     } else {
@@ -1491,15 +1419,18 @@ void main(){
       vec2 thumbUV = vec2((fc.x - float(cascadeIndex) * thumbSize) / thumbSize,
                           (fc.y - topY) / thumbSize);
       //Sampler2D arrays demand a constant integral index; unroll the four
-      //selections rather than dynamic-indexing the array.
-      float d = 1.0;
-      if(cascadeIndex == 0)      d = texture2D(oceanShadowMap[0], thumbUV).r;
-      else if(cascadeIndex == 1) d = texture2D(oceanShadowMap[1], thumbUV).r;
-      else if(cascadeIndex == 2) d = texture2D(oceanShadowMap[2], thumbUV).r;
-      else                       d = texture2D(oceanShadowMap[3], thumbUV).r;
-      //Sea-surface depths cluster in [0.3, 0.7] (200m depth window centred
-      //on a pivot 400m up-sun). Stretch that band so wave structure shows
-      //as gray gradients; cleared/no-caster texels (d=1) stay white.
+      //selections rather than dynamic-indexing the array. Recover the
+      //blurred mean depth from the M1_pos moment (R channel) via
+      //z = log(M1) / c — the inverse of the caster's exp(c·z) warp.
+      float m1 = 1.0;
+      if(cascadeIndex == 0)      m1 = texture2D(oceanShadowMap[0], thumbUV).r;
+      else if(cascadeIndex == 1) m1 = texture2D(oceanShadowMap[1], thumbUV).r;
+      else if(cascadeIndex == 2) m1 = texture2D(oceanShadowMap[2], thumbUV).r;
+      else                       m1 = texture2D(oceanShadowMap[3], thumbUV).r;
+      float d = log(max(m1, 1.0)) / evsmExpC;
+      //Sea-surface depths cluster in [0.3, 0.7]; stretch that band so wave
+      //structure shows as gray gradients; cleared/no-caster texels (d=1)
+      //stay white.
       float v = clamp((d - 0.3) * 2.5, 0.0, 1.0);
       gl_FragColor = vec4(vec3(v), 1.0);
     }

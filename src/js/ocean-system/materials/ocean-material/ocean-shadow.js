@@ -18,19 +18,47 @@ AWater.AOcean.Materials.Ocean.oceanShadowMaterial = {
     sizeOfOceanPatch: {type: 'f', value: 1.0},
     chop: {type: 'f', value: 1.0},
     ringIndex: {type: 'i', value: 0},
-    mainCameraPosition: {type: 'v3', value: new THREE.Vector3()}
+    mainCameraPosition: {type: 'v3', value: new THREE.Vector3()},
+    //EVSM warp constant. Larger values reduce light bleed but compress
+    //precision at depth extremes; ~5 is a good float32 balance. MUST
+    //match the receiver's evsmExpC exactly or the comparison breaks.
+    evsmExpC: {type: 'f', value: 5.0}
   },
 
   fragmentShader: [
     'precision highp float;',
 
-    '//Ocean shadow-caster fragment — depth-only. When the render target has',
-    '//a depth texture attached, the color output is ignored and only gl_FragDepth',
-    '//(implicit from gl_Position.z / gl_Position.w) is written. We still emit a',
-    '//black pixel because WebGL requires a color write to not DCE the pass.',
+    '//Ocean shadow-caster fragment — EVSM (Exponential Variance Shadow Map).',
+    '//Instead of letting the depth buffer record gl_FragDepth and reading it',
+    '//back, we write four warped depth moments into an RGBA32F color target.',
+    '//',
+    '//Why EVSM: per-triangle z-acne on smooth meshes (the ocean) is structural',
+    '//to depth-comparison shadow maps. The receiver and caster are the same',
+    '//mesh, so adjacent triangles produce slightly different sc.z values that',
+    '//flip the depth comparison even with a calibrated bias. EVSM replaces the',
+    '//binary comparison with a probabilistic upper bound (Chebyshev), which',
+    '//absorbs sub-texel depth jitter as a smooth shadow gradient.',
+    '//',
+    '//Layout: store positive and negative exponential warps of the linear',
+    '//depth z in [0,1]. The negative warp is kept negative so monotonicity',
+    '//survives linear filtering and Gaussian blur in the post-blur pass.',
+    '//Receiver does Chebyshev on each warp and takes the min — this is the',
+    '//"two-warp" trick that removes most of plain-VSM light bleed.',
+    '//  R = exp(c·z)',
+    '//  G = exp(c·z)^2 = exp(2c·z)',
+    '//  B = -exp(-c·z)',
+    '//  A = (-exp(-c·z))^2 = exp(-2c·z)',
+    '//Storing all four moments separately rather than computing them on the',
+    '//fly in the receiver is what makes the variance computation correct',
+    '//across the linear-filtered + Gaussian-blurred reads.',
+
+    'uniform float evsmExpC;',
 
     'void main(){',
-      'gl_FragColor = vec4(0.0);',
+      'float z = gl_FragCoord.z;',
+      'float pos = exp(evsmExpC * z);',
+      'float neg = -exp(-evsmExpC * z);',
+      'gl_FragColor = vec4(pos, pos * pos, neg, neg * neg);',
     '}',
   ].join('\n'),
 
