@@ -306,6 +306,79 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     this.oceanShadowCSM = null;
   }
 
+  //── Horizon skirt ─────────────────────────────────────────────────────────
+  //Flat ring at y=0 that fills the angular sliver where the FFT ocean's
+  //farthest patches fail the depth test against a-starry-sky's icosahedron
+  //sky dome (radius 5000), or are clipped by the camera far plane.
+  //
+  //Architecture: the skirt mesh uses the FFT ocean material directly (cloned
+  //so it has its own uniforms object that the per-frame tick loop updates
+  //identically to the FFT tiles). Only difference is one substituted line in
+  //the vertex shader to pin gl_Position.z to the far plane, so the outer rim
+  //extends past camera.far without being frustum-clipped. Result: the skirt
+  //inherits the full FFT lighting (Fresnel, refracted, body, specular,
+  //scattering, atm perspective) by construction — no parallel implementation.
+  //
+  //Depth choreography:
+  //  - Sky dome (renderOrder 0): depthWrite forced off in tick loop once its
+  //    renderer wires up — the dome stops blocking anything behind it.
+  //  - Skirt (renderOrder 1): depthTest:true, depthWrite:false. With the
+  //    z-clamp the skirt's depth is ~0.9995 (just inside the far plane) so
+  //    every closer scene object (island, lighthouse, etc.) wins the depth
+  //    test and the skirt does NOT overdraw them. The dome's pixels (which
+  //    skipped depthWrite) leave depth=1.0, so the skirt passes there and
+  //    overdraws the dome's lower hemisphere as intended.
+  //  - FFT ocean (renderOrder 2): default depth, draws last over the skirt
+  //    wherever real ocean geometry exists.
+  this.horizonSkirtMesh = null;
+  if(this.atmosphericPerspectiveEnabled && this.skyDirector){
+    const skirtMaterial = this.oceanMaterial.clone();
+    skirtMaterial.depthTest = true;
+    skirtMaterial.depthWrite = false;
+    skirtMaterial.fog = false;
+    //Substitute the final gl_Position assignment with a z-clamp variant so
+    //the rim verts (well past camera.far) survive frustum clipping. Every
+    //skirt fragment ends up at depth ~0.9995 — beyond any real scene depth
+    //but inside the dome's pixels (which write no depth at all).
+    skirtMaterial.vertexShader = skirtMaterial.vertexShader.replace(
+      'gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);',
+      'vec4 _skirtClipPos = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0); _skirtClipPos.z = _skirtClipPos.w * 0.99999; gl_Position = _skirtClipPos;'
+    );
+    //Pin a coarse ringIndex so the vertex shader skips the finer cascades
+    //2-5 in its displacement sum. The skirt is meant to be flat-ish; we just
+    //want the FFT fragment shader to read wave normals at the same XZ.
+    skirtMaterial.uniforms.ringIndex.value = 5;
+    skirtMaterial.uniforms.sizeOfOceanPatch.value = this.patchSize;
+
+    //RingGeometry: flat ring at y=0 rotated from the default XY plane. Outer
+    //radius capped at 1e7 m (10000 km) — the z-clamp keeps the rim fragments
+    //alive past camera.far. The FFT vertex shader expects tangent/bitangent
+    //attributes; supply constant world-aligned values for a flat surface.
+    const skirtGeometry = new THREE.RingGeometry(8.0, 1.0e7, 256, 1);
+    skirtGeometry.rotateX(-Math.PI / 2);
+    const vertCount = skirtGeometry.attributes.position.count;
+    const tangents = new Float32Array(vertCount * 3);
+    const bitangents = new Float32Array(vertCount * 3);
+    for(let i = 0; i < vertCount; i++){
+      tangents[i * 3 + 0] = 1.0;
+      bitangents[i * 3 + 2] = 1.0;
+    }
+    skirtGeometry.setAttribute('tangent', new THREE.BufferAttribute(tangents, 3));
+    skirtGeometry.setAttribute('bitangent', new THREE.BufferAttribute(bitangents, 3));
+
+    //InstancedMesh with a single identity instance — the FFT vertex shader
+    //multiplies by `instanceMatrix`, so we need the attribute present even
+    //though there is only one "instance" of the skirt.
+    this.horizonSkirtMesh = new THREE.InstancedMesh(skirtGeometry, skirtMaterial, 1);
+    this.horizonSkirtMesh.setMatrixAt(0, new THREE.Matrix4());
+    this.horizonSkirtMesh.instanceMatrix.needsUpdate = true;
+    this.horizonSkirtMesh.frustumCulled = false;
+    this.horizonSkirtMesh.castShadow = false;
+    this.horizonSkirtMesh.receiveShadow = false;
+    this.horizonSkirtMesh.renderOrder = 1;
+    scene.add(this.horizonSkirtMesh);
+  }
+
   //── Clipmap grid construction ────────────────────────────────────────────
   //All tiles use the same fixed tessellation (numCells cells/edge = numCells+1 verts/edge).
   //Ring k has tile world size patchSize*2^k.
@@ -360,6 +433,9 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       const geometry = AWater.OceanTile(tileSize, numCells, top, right, bottom, left);
       const mesh = new THREE.InstancedMesh(geometry, self.oceanMaterial.clone(), instanceCount[key]);
       mesh.frustumCulled = false;
+      //Sit above the horizon skirt (renderOrder 1) so FFT ocean overwrites the
+      //pure-inscatter skirt fragments wherever real ocean geometry exists.
+      mesh.renderOrder = 2;
       //Ocean self-shadow is handled by the dedicated ocean-only CSM below;
       //casting into the scene-wide sun shadow map would re-rasterise ~900K
       //ocean triangles into a large target every render call, for no useful
@@ -415,6 +491,16 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.numCells = numCells;
   this.ringCount = ringCount;
   this.globalCameraPosition = new THREE.Vector3();
+
+  //Register the horizon skirt as another instance key so the per-frame uniform
+  //loop pushes the same FFT-ocean updates into its (cloned) uniforms object.
+  //ringIndex was set to 5 at construction and is NOT touched in the per-frame
+  //loop, so the skirt keeps its coarse cascade-displacement settings.
+  if(this.horizonSkirtMesh){
+    const skirtKey = '__horizon_skirt__';
+    oceanPatchGeometryInstances[skirtKey] = this.horizonSkirtMesh;
+    oceanGridInstanceKeys.push(skirtKey);
+  }
 
   //Console helper — flip the ocean-shadow debug mode on every water tile
   //material at once. Call from the browser console as
@@ -806,9 +892,17 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
             );
             let newVtxSrc = AWater.AOcean.Materials.Ocean.waterMaterial.vertexShader;
             newVtxSrc = newVtxSrc.replace(/\$atmospheric_perspective_enabled/g, '1');
+            //Pre-build the skirt's vertex shader by re-applying the same final
+            //gl_Position substitution we did at construction — keeps the z-clamp
+            //alive across the AP recompile.
+            const skirtVtxSrc = newVtxSrc.replace(
+              'gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);',
+              'vec4 _skirtClipPos = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0); _skirtClipPos.z = _skirtClipPos.w * 0.99999; gl_Position = _skirtClipPos;'
+            );
             for(let j = 0; j < oceanGridInstanceKeys.length; ++j){
               const mesh = oceanPatchGeometryInstances[oceanGridInstanceKeys[j]];
-              mesh.material.vertexShader = newVtxSrc;
+              const isSkirt = (mesh === self.horizonSkirtMesh);
+              mesh.material.vertexShader = isSkirt ? skirtVtxSrc : newVtxSrc;
               mesh.material.fragmentShader = newFragShader;
               mesh.material.fog = false;
               mesh.material.needsUpdate = true;
@@ -818,6 +912,15 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
             self.oceanMaterial.fragmentShader = newFragShader;
             self.oceanMaterial.fog = false;
             self.oceanMaterial.needsUpdate = true;
+            //Stop the sky dome from writing depth so the skirt (renderOrder 1)
+            //can pass its depth test against dome pixels and overdraw the
+            //dome's lower hemisphere. The dome itself does not need its own
+            //depth in the buffer (single mesh, sky-radiance-only shader);
+            //sun/moon meshes depth-test against the unwritten far depth.
+            const atmRenderer = self.skyDirector && self.skyDirector.renderers && self.skyDirector.renderers.atmosphereRenderer;
+            if(atmRenderer && atmRenderer.skyMesh && atmRenderer.skyMesh.material){
+              atmRenderer.skyMesh.material.depthWrite = false;
+            }
           }
           const skyState = luts.skyState;
           uniformsRef.atmosphereTransmittance.value = luts.transmittance;
@@ -840,6 +943,14 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
       //Blue noise dithering — always update time, texture comes from sky if available
       uniformsRef.blueNoiseTime.value = performance.now();
+    }
+
+    //Horizon skirt follows the camera in XZ; it stays at y=0 (water plane).
+    //All uniform updates happen via the per-instance loop above — the skirt
+    //is registered in oceanGridInstanceKeys so it gets the same FFT cascade
+    //textures, light state, atm LUTs, etc. that real ocean tiles get.
+    if(self.horizonSkirtMesh){
+      self.horizonSkirtMesh.position.set(sceneCamera.position.x, 0.0, sceneCamera.position.z);
     }
 
     //Ocean-only CSM pass. Runs after every ocean material has had its cascade

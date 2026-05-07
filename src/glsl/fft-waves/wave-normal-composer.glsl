@@ -23,9 +23,12 @@ void main(){
   vec2 foamDdx = -chop * (rawR.xz - rawL.xz) / (2.0 * worldStepFoam);
   vec2 foamDdy = -chop * (rawB.xz - rawT.xz) / (2.0 * worldStepFoam);
   float jacobian = (1.0 + foamDdx.x) * (1.0 + foamDdy.y) - foamDdx.y * foamDdy.x;
-  //Foam where surface compresses significantly (J well below 1)
+  //Foam where surface compresses (J below 1). Original (0.1, 1.0) was too
+  //conservative; full (0.0, 0.5) painted every wave back. (0.05, 0.7) is the
+  //middle: ordinary steep crests get a thin foam line, only true breakers
+  //saturate the alpha channel.
   float turbulence = max(0.0, 1.0 - jacobian);
-  float foam = smoothstep(0.1, 1.0, turbulence);
+  float foam = smoothstep(0.05, 0.7, turbulence);
 
   //Apply sign inversion + chop scaling for normals (matching water shader convention)
   vec3 dispTL = rawTL; dispTL.x *= -chop; dispTL.z *= -chop;

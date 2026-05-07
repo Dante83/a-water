@@ -1,0 +1,58 @@
+//Horizon skirt — pure-inscatter flat ring at y=0 that fills the angular sliver
+//between the FFT ocean's last visible patch and the geometric horizon line of
+//the sky dome. Reuses a-starry-sky's atmospheric LUTs so the seam between
+//water and sky is continuous.
+AWater.AOcean.Materials.Ocean.horizonSkirtMaterial = {
+  uniforms: {
+    atmosphereTransmittance: {type: 't', value: null},
+    atmosphereMieInscattering: {type: 't', value: null},
+    atmosphereRayleighInscattering: {type: 't', value: null},
+    atmSunPosition: {type: 'vec3', value: new THREE.Vector3(0.0, 1.0, 0.0)},
+    atmMoonPosition: {type: 'vec3', value: new THREE.Vector3(0.0, -1.0, 0.0)},
+    atmSunHorizonFade: {type: 'f', value: 1.0},
+    atmMoonHorizonFade: {type: 'f', value: 0.0},
+    atmScatteringSunIntensity: {type: 'f', value: 1.0},
+    atmScatteringMoonIntensity: {type: 'f', value: 0.0},
+    atmMoonLightColor: {type: 'vec3', value: new THREE.Vector3(1.0, 1.0, 1.0)},
+    atmCameraHeight: {type: 'f', value: 0.0},
+    atmDistanceScale: {type: 'f', value: 1.0},
+    //Pre-lit deep-water body color = waterAlbedo * (direct + ambient downwelling).
+    //Computed CPU-side in ocean-grid.js so the skirt matches the FFT ocean's
+    //inscatterEquilibrium without re-deriving the lighting on the GPU.
+    oceanBodyColor: {type: 'vec3', value: new THREE.Vector3(0.04, 0.17, 0.33)},
+    //Cascade displacement maps (just the two coarsest, 0+1) so the skirt can
+    //reuse the FFT ocean wave normal computation and pick up the same surface
+    //chop. Bound from oceanHeightComposer in the per-frame tick block.
+    cascadeDisplacementTextures: {value: [null, null]},
+    cascadePatchSizes: {value: [1000.0, 250.0]},
+    cascadeSpatialOffsets: {value: [
+      new THREE.Vector2(382.0,  618.0),
+      new THREE.Vector2( 59.0,  154.5)
+    ]},
+    patchDataSize: {type: 'f', value: 1024.0},
+    waveHeightMultiplier: {type: 'f', value: 1.0},
+    chop: {type: 'f', value: 0.75}
+  },
+
+  fragmentShader: function(atmosphericPerspectiveEnabled, atmosphereFunctionsGLSL){
+    let originalGLSL = [
+      {fragment_glsl}
+    ];
+
+    let updatedLines = [];
+    for(let i = 0, numLines = originalGLSL.length; i < numLines; ++i){
+      let updatedCode = originalGLSL[i];
+      updatedCode = updatedCode.replace(/\$atmospheric_perspective_enabled/g, atmosphericPerspectiveEnabled ? '1' : '0');
+      if(atmosphericPerspectiveEnabled && atmosphereFunctionsGLSL && updatedCode.indexOf('//ATMOSPHERE_FUNCTIONS_INJECTION_POINT') !== -1){
+        updatedCode = atmosphereFunctionsGLSL;
+      }
+      updatedLines.push(updatedCode);
+    }
+
+    return updatedLines.join('\n');
+  },
+
+  vertexShader: [
+    {vertex_glsl}
+  ].join('\n'),
+};

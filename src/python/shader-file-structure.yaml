@@ -58,3 +58,8 @@ groups:
         vertex:   'ocean-shadow-vertex.glsl'
         template: 'ocean-shadow-template.txt'
         material: 'ocean-shadow.js'
+      -
+        fragment: 'horizon-skirt.glsl'
+        vertex:   'horizon-skirt-vertex.glsl'
+        template: 'horizon-skirt-template.txt'
+        material: 'horizon-skirt.js'

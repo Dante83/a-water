@@ -117,9 +117,13 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     //(scattering / extinction) lands navy-heavy and (b) extinction is ordered
     //red > green > blue — matching Pope & Fry 1997 clean-ocean measurements,
     //so blue survives long refraction paths and dusk doesn't read olive-green.
-    //Extinction = (0.204, 0.048, 0.040). Albedo = (0.02, 0.17, 0.75).
+    //waterScattering at 0.02 is ~4× clean-ocean Pope&Fry — "tropical bay" turbidity.
+    //Higher than this reads as coastal/turbid; lower approaches gin-clear open ocean.
+    //With absorption (0.45,0.10,0.04) and scattering (0.02,0.02,0.02):
+    //  extinction ≈ (0.47, 0.12, 0.06), albedo ≈ (0.04, 0.17, 0.33).
+    //Lower albedo → dimmer inscatterEquilibrium → seabed visible through shallows.
     waterAbsorption: {type: 'vec3', value: new THREE.Vector3(0.45, 0.10, 0.04)},
-    waterScattering: {type: 'vec3', value: new THREE.Vector3(0.08, 0.08, 0.08)},
+    waterScattering: {type: 'vec3', value: new THREE.Vector3(0.02, 0.02, 0.02)},
     waterMieG: {type: 'f', value: 0.7},
     // New physically-based scattering parameters
     k1ScatterAmount: {type: 'f', value: 1.5},

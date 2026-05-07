@@ -41,11 +41,16 @@
 //
 //Caster ring filtering: each cascade has a maxRing index. The mesh's
 //ringIndex (the clipmap LOD it was built with) determines which cascades
-//it can cast into — close, fine ring 0 belongs to all four cascades but
-//ring 2's huge 1km tile only contributes meaningfully to C3. Each cascade
-//owns a layer (7..10). At addCaster time we enable the cascade's layer
-//on the mesh iff the mesh's ring is small enough to qualify; the light
-//camera per-cascade renders only its own layer.
+//it can cast into — rings 0 and 1 belong to all four cascades but ring 2's
+//huge 1km tile only contributes meaningfully to C3. Each cascade owns a
+//layer (7..10). At addCaster time we enable the cascade's layer on the
+//mesh iff the mesh's ring is small enough to qualify; the light camera
+//per-cascade renders only its own layer.
+//
+//C0 deliberately admits ring 1 (not just ring 0) to soften the C0/C1
+//boundary. Without this the cascade swap is visible because C0's caster
+//set is strictly smaller than C1's, so a fragment crossing the boundary
+//can lose a shadow that came from a ring-1 wave just outside C0.
 
 AWater.AOcean.OceanShadowCSM = function(oceanGrid, scene, configOverrides){
   this.oceanGrid = oceanGrid;
@@ -69,7 +74,7 @@ AWater.AOcean.OceanShadowCSM = function(oceanGrid, scene, configOverrides){
   const drawDistance = oceanGrid.drawDistance;
   const cfg = configOverrides || {};
   this.cascadeConfigs = cfg.cascades || [
-    {extent: 60.0,                 mapSize: 2048, layer: 7,  maxRing: 0},
+    {extent: 60.0,                 mapSize: 2048, layer: 7,  maxRing: 1},
     {extent: 240.0,                mapSize: 2048, layer: 8,  maxRing: 1},
     {extent: 0.4 * drawDistance,   mapSize: 4096, layer: 9,  maxRing: 99},
     {extent: 2.0 * drawDistance,   mapSize: 4096, layer: 10, maxRing: 99}
@@ -283,6 +288,17 @@ AWater.AOcean.OceanShadowCSM.prototype.render = function(renderer, mainCamera, s
   const unsnappedRight = this._unsnappedPivot.dot(this._lightRight);
   const unsnappedUp    = this._unsnappedPivot.dot(this._lightUp);
 
+  //Sun-aware depth slab. The original halfDepth = halfExtent + waveMargin
+  //was sized for the worst case (sun grazing the horizon, where a fragment
+  //at +halfExtent on the sea plane projects ~halfExtent along the light
+  //ray). At high sun the lateral projection collapses and the slab is
+  //wildly oversized — wave heights of a few metres get encoded across a
+  //110m+ depth window, so EVSM moment precision goes to hell and triangle
+  //silhouettes start showing through. Scale by the sine of the zenith
+  //angle (sqrt of the horizontal component of sunDir) so the slab tracks
+  //the actual depth range the casters need.
+  const sunHorizontalFactor = Math.sqrt(Math.max(0.0, 1.0 - sunDirection.y * sunDirection.y));
+
   const prevMaterials = [];
   for(let i = 0, L = this.oceanMeshes.length; i < L; i++){
     prevMaterials.push(this.oceanMeshes[i].material);
@@ -302,7 +318,7 @@ AWater.AOcean.OceanShadowCSM.prototype.render = function(renderer, mainCamera, s
     const lightCamera = cascade.lightCamera;
 
     const halfExtent = cfg.extent * 0.5;
-    const halfDepth = halfExtent + this._waveMargin;
+    const halfDepth = halfExtent * sunHorizontalFactor + this._waveMargin;
     const lightDistance = halfDepth + 100.0;
     cascade.depthRange = halfDepth * 2.0;
 
@@ -355,8 +371,12 @@ AWater.AOcean.OceanShadowCSM.prototype.render = function(renderer, mainCamera, s
     //texel) and the EVSM Chebyshev bound degenerates back to a hard depth
     //comparison — exactly the artifact we replaced. The blur is what makes
     //the variance term meaningful.
+    //Stride of 2 texels per tap (instead of 1) doubles the kernel reach
+    //from 4 to 8 texels each side without adding taps. Receiver-side
+    //oceanCascadeMarginUV must stay >= 9 texels to keep cascade-edge
+    //fragments out of the blur footprint.
     const blurTarget = (cfg.mapSize <= 2048) ? this._blurTargetSmall : this._blurTargetLarge;
-    const texelUv = 1.0 / cfg.mapSize;
+    const texelUv = 2.0 / cfg.mapSize;
 
     this._blurMaterial.uniforms.sourceTexture.value = cascade.renderTarget.texture;
     this._blurMaterial.uniforms.blurDirection.value.set(texelUv, 0.0);
