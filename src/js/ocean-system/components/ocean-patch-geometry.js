@@ -90,7 +90,7 @@ AWater.OceanTile = function(worldSize, numCells, top, right, bottom, left){
   //Set up all indices
 
   this.vertexCoordinates = vertexCoordinates;
-  geometry = new THREE.BufferGeometry();
+  const geometry = new THREE.BufferGeometry();
   geometry.setAttribute( 'position', new THREE.BufferAttribute( this.vertexCoordinates, 3 ) );
   geometry.setAttribute( 'normal', new THREE.BufferAttribute( normals, 3 ) );
   geometry.normalizeNormals();

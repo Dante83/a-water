@@ -2,7 +2,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //Variable for holding all of our patches
   //For now, just create 1 plane
   this.scene = scene;
-  data = parentComponent.data;
+  const data = parentComponent.data;
   this.parentComponent = parentComponent;
   this.renderer = renderer;
   this.camera = camera;
@@ -33,8 +33,6 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.skyDirector = null;
   this.atmosphereFunctionsGLSL = null;
   //Clip planes with small bias to prevent waterline artifacts
-  this.reflectionClipPlane = new THREE.Plane();
-  this.reflectionClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, this.heightOffset + 0.5, 0));
   this.refractionClipPlane = new THREE.Plane();
   this.refractionClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, -1, 0), new THREE.Vector3(0, this.heightOffset, 0));
   this.foamClipPlane = new THREE.Plane();
@@ -188,19 +186,8 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //Number of cascades (matches ocean-height-band-library cascade count)
   this.numberOfOceanHeightBands = 6;
 
-  //Set up planar reflection render target and mirrored camera
   let rendererSize = new THREE.Vector2();
   this.renderer.getDrawingBufferSize(rendererSize);
-  this.reflectionRenderTarget = new THREE.WebGLRenderTarget(
-    rendererSize.x, rendererSize.y,
-    {
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
-      format: THREE.RGBAFormat,
-      type: THREE.HalfFloatType
-    }
-  );
-  this.reflectionCamera = new THREE.PerspectiveCamera();
 
   //Set up screen-space refraction render target
   this.refractionColorTarget = new THREE.WebGLRenderTarget(
@@ -507,10 +494,10 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //  setOceanShadowDebug(0|1|2)
   //  0 = normal render, 1 = shadow factor as full-screen grayscale,
   //  2 = cascade-index tint (red C0, green C1, blue C2, yellow C3).
-  //Cascade-depth thumbnails along the top of the screen are always on
-  //regardless of mode.
+  //Cascade-depth thumbnails and the bottom-corner jacobian/foam panels
+  //appear only when mode is non-zero.
   this.setOceanShadowDebug = function(mode){
-    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
       oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.oceanShadowDebugMode.value = mode | 0;
     }
   };
@@ -520,13 +507,13 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //from the browser console.
   this.setSunShadowEnabled = function(enabled){
     const v = enabled ? 1 : 0;
-    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
       oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.sunShadowEnabled.value = v;
     }
   };
   this.setOceanShadowEnabled = function(enabled){
     const v = enabled ? 1 : 0;
-    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
       oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.oceanShadowEnabled.value = v;
     }
   };
@@ -534,7 +521,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //to every water tile material at once so the change is visible next
   //frame. Pass a value in WORLD METERS — typical range 0.05 to 2.0.
   this.setOceanShadowNormalBias = function(meters){
-    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
       oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.oceanShadowNormalBias.value = +meters;
     }
   };
@@ -544,7 +531,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //makes every comparison nonsense.
   this.setOceanEvsmExpC = function(c){
     const v = +c;
-    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
       oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.evsmExpC.value = v;
     }
     if(self.oceanShadowCSM){
@@ -556,7 +543,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //too soft.
   this.setOceanEvsmMinVariance = function(v){
     const f = +v;
-    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
       oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.evsmMinVariance.value = f;
     }
   };
@@ -564,7 +551,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //shadows, more contrast; lower = softer with risk of light bleed.
   this.setOceanEvsmLightBleedReduction = function(v){
     const f = +v;
-    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
       oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.evsmLightBleedReduction.value = f;
     }
   };
@@ -578,15 +565,13 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     window.setOceanEvsmLightBleedReduction = this.setOceanEvsmLightBleedReduction;
   }
   const oceanPatchTranslationMatrices = [];
-  for(let i = 0; numOceanPatches = self.oceanPatches.length, i < numOceanPatches; ++i){
+  for(let i = 0, numOceanPatches = self.oceanPatches.length; i < numOceanPatches; ++i){
     oceanPatchTranslationMatrices.push(new THREE.Matrix4());
   }
   //Snapped camera offset (reused each frame, avoids allocation)
   const ringSnapX = new Float64Array(1);
   const ringSnapZ = new Float64Array(1);
   const directionalLightDirection = new THREE.Vector3();
-  const reflectionVPMatrix = new THREE.Matrix4();
-  const cameraWorldDirection = new THREE.Vector3();
   this.tick = function(time){
     //Update directional lights list (collect all in scene)
     if(self.directionalLights.length === 0){
@@ -613,8 +598,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
     //Ensure render targets match current drawing buffer size (A-Frame may resize after construction)
     self.renderer.getDrawingBufferSize(rendererSize);
-    if(self.reflectionRenderTarget.width !== rendererSize.x || self.reflectionRenderTarget.height !== rendererSize.y){
-      self.reflectionRenderTarget.setSize(rendererSize.x, rendererSize.y);
+    if(self.refractionColorTarget.width !== rendererSize.x || self.refractionColorTarget.height !== rendererSize.y){
       self.refractionColorTarget.setSize(rendererSize.x, rendererSize.y);
       self.refractionColorTarget.depthTexture = new THREE.DepthTexture(
         rendererSize.x, rendererSize.y, THREE.UnsignedIntType
@@ -635,7 +619,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     ringSnapX[0] = Math.floor(self.globalCameraPosition.x / snapCellSize) * snapCellSize;
     ringSnapZ[0] = Math.floor(self.globalCameraPosition.z / snapCellSize) * snapCellSize;
 
-    for(let i = 0; numOceanPatches = self.oceanPatches.length, i < numOceanPatches; ++i){
+    for(let i = 0, numOceanPatches = self.oceanPatches.length; i < numOceanPatches; ++i){
       const oceanPatch = self.oceanPatches[i];
       const xOffset = oceanPatch.initialPosition.x + ringSnapX[0];
       const yOffset = oceanPatch.initialPosition.y;
@@ -646,7 +630,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     }
 
     //Inform the system that we need to update all the instance matrices every frame
-    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
       oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].instanceMatrix.needsUpdate = true;
     }
 
@@ -654,61 +638,11 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //self.cameraFrustum.setFromProjectionMatrix(self.camera.projectionMatrix.clone().multiply(self.camera.matrixWorldInverse));
 
     //Hide all of our ocean grid elements
-    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
       oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].visible = false;
     }
 
-    //Planar reflection: mirror the camera across the water plane (y = heightOffset)
-    const waterY = self.heightOffset;
-    self.reflectionCamera.copy(sceneCamera);
-    self.reflectionCamera.position.copy(self.globalCameraPosition);
-    self.reflectionCamera.position.y = 2.0 * waterY - self.reflectionCamera.position.y;
-
-    //Compute the camera's world-space look target (not local quaternion, which ignores parent transforms)
-    sceneCamera.getWorldDirection(cameraWorldDirection);
-    const cameraTarget = self.globalCameraPosition.clone().add(cameraWorldDirection);
-    const mirroredTarget = new THREE.Vector3(cameraTarget.x, 2.0 * waterY - cameraTarget.y, cameraTarget.z);
-    self.reflectionCamera.up.set(0, -1, 0);
-    self.reflectionCamera.lookAt(mirroredTarget);
-    self.reflectionCamera.updateMatrixWorld(true);
-    self.reflectionCamera.updateProjectionMatrix();
-    //matrixWorldInverse is not updated by updateMatrixWorld, compute it explicitly
-    self.reflectionCamera.matrixWorldInverse.copy(self.reflectionCamera.matrixWorld).invert();
-
-    //Modify projection matrix with oblique clip plane so near plane aligns with water surface
-    //This prevents artifacts from geometry between the camera and the water plane
-    const clipPlaneView = new THREE.Vector4();
-    const reflClipPlane = self.reflectionClipPlane;
-    clipPlaneView.set(reflClipPlane.normal.x, reflClipPlane.normal.y, reflClipPlane.normal.z, reflClipPlane.constant);
-    clipPlaneView.applyMatrix4(self.reflectionCamera.matrixWorldInverse.clone().transpose().invert());
-    const projMatrix = self.reflectionCamera.projectionMatrix;
-    const q = new THREE.Vector4();
-    q.x = (Math.sign(clipPlaneView.x) + projMatrix.elements[8]) / projMatrix.elements[0];
-    q.y = (Math.sign(clipPlaneView.y) + projMatrix.elements[9]) / projMatrix.elements[5];
-    q.z = -1.0;
-    q.w = (1.0 + projMatrix.elements[10]) / projMatrix.elements[14];
-    const c = clipPlaneView.multiplyScalar(2.0 / clipPlaneView.dot(q));
-    projMatrix.elements[2] = c.x;
-    projMatrix.elements[6] = c.y;
-    projMatrix.elements[10] = c.z + 1.0;
-    projMatrix.elements[14] = c.w;
-
-    //Compute the reflection view-projection matrix for correct UV sampling in the shader
-    reflectionVPMatrix.multiplyMatrices(self.reflectionCamera.projectionMatrix, self.reflectionCamera.matrixWorldInverse);
-
-    const rendererClippingEnabledBefore = self.renderer.localClippingEnabled;
-    const originalGlobalClipPlane = self.renderer.clippingPlanes.length > 0 ? self.renderer.clippingPlanes : [];
-
-    //Render reflection with clip plane (only above-water geometry)
-    self.renderer.clippingPlanes = [self.reflectionClipPlane];
-    const currentReflectionRT = self.renderer.getRenderTarget();
-    self.renderer.setRenderTarget(self.reflectionRenderTarget);
-    self.renderer.clear();
-    self.renderer.render(scene, self.reflectionCamera);
-    self.renderer.setRenderTarget(currentReflectionRT);
-
     //Render scene to screen-space refraction target (no clip plane - depth comparison in shader)
-    self.renderer.clippingPlanes = originalGlobalClipPlane;
     const currentRefractionRT = self.renderer.getRenderTarget();
     self.renderer.setRenderTarget(self.refractionColorTarget);
     self.renderer.clear();
@@ -747,7 +681,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     self.renderer.setClearAlpha(clearAlpha);
 
     //Show all of our ocean grid elements again
-    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
       oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].visible = true;
     }
 
@@ -760,11 +694,10 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     if(self.brightestDirectionalLight){
       brightestDirectionalLight = self.brightestDirectionalLight;
     }
-    for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
       const uniformsRef = oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms;
       for(let c = 0; c < 6; c++){
         uniformsRef.cascadeDisplacementTextures.value[c] = self.oceanHeightComposer.cascadeDisplacementTextures[c];
-        uniformsRef.cascadeSlopeTextures.value[c] = self.oceanHeightComposer.cascadeSlopeTextures[c];
       }
       uniformsRef.cascadePatchSizes.value = self.oceanHeightComposer._cascadePatchSizes;
       uniformsRef.waveHeightMultiplier.value = self.oceanHeightComposer.waveHeightMultiplier;
@@ -790,8 +723,6 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         }
         uniformsRef.meteringSurveyTexture.value = meterTex;
       }
-      uniformsRef.reflectionTexture.value = self.reflectionRenderTarget.texture;
-      uniformsRef.reflectionViewProjectionMatrix.value.copy(reflectionVPMatrix);
       uniformsRef.smallNormalMap.value = self.smallNormalMap;
       uniformsRef.largeNormalMap.value = self.largeNormalMap;
       uniformsRef.causticMap.value = self.causticMap;
@@ -829,22 +760,6 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         } else {
           uniformsRef.sunShadowEnabled.value = 0;
         }
-        //DEBUG: snapshot of shadow-enable state on every tick. Inspect via
-        //  window.__OCEAN_SHADOW_DEBUG__  in devtools to see why shadows are
-        //  (or aren't) firing. Remove once shadow path is confirmed working.
-        window.__OCEAN_SHADOW_DEBUG__ = {
-          mainLight_castShadow: mainLight.castShadow,
-          mainLight_has_shadow: !!mainLight.shadow,
-          mainLight_has_shadow_map: !!(mainLight.shadow && mainLight.shadow.map),
-          sunShadowEnabled: uniformsRef.sunShadowEnabled.value,
-          sunShadowBias: uniformsRef.sunShadowBias.value,
-          oceanShadowCSM_exists: !!self.oceanShadowCSM,
-          oceanShadowCSM_caster_count: self.oceanShadowCSM ? self.oceanShadowCSM.oceanMeshes.length : -1,
-          oceanShadowEnabled: uniformsRef.oceanShadowEnabled.value,
-          evsmExpC: uniformsRef.evsmExpC.value,
-          sunDir_y: -directionalLightDirection.y,
-          rendererShadowMapEnabled: self.renderer && self.renderer.shadowMap ? self.renderer.shadowMap.enabled : 'no-renderer'
-        };
 
         // Pass all lights as arrays
         const lightCount = Math.min(self.directionalLights.length, 8); // Cap at 8 lights for perf
@@ -969,7 +884,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       const sunBelowHorizon = -directionalLightDirection.y <= 0.0;
       const cascades = self.oceanShadowCSM.cascades;
       const numCascades = self.oceanShadowCSM.numCascades;
-      for(let i = 0; numKeys = oceanGridInstanceKeys.length, i < numKeys; ++i){
+      for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
         const u = oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms;
         if(sunBelowHorizon){
           u.oceanShadowEnabled.value = 0;

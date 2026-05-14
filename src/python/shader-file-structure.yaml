@@ -4,17 +4,9 @@ groups:
     base_js_dir: '../js/ocean-system/materials/fft-waves'
     shaders:
       -
-        fragment: 'amplitude-filter.glsl'
-        template: 'amplitude-filter-template.txt'
-        material: 'amplitude-filter.js'
-      -
         fragment: 'butterfly-pass.glsl'
         template: 'butterfly-pass-template.txt'
         material: 'butterfly-pass.js'
-      -
-        fragment: 'fft-inverter.glsl'
-        template: 'fft-inverter-template.txt'
-        material: 'fft-inverter.js'
       -
         fragment: 'h_0-pass.glsl'
         template: 'h_0-pass-template.txt'
@@ -27,18 +19,6 @@ groups:
         fragment: 'noise-pass.glsl'
         template: 'noise-pass-template.txt'
         material: 'noise-pass.js'
-      -
-        fragment: 'wave-composer.glsl'
-        template: 'wave-composer-template.txt'
-        material: 'wave-composer.js'
-      -
-        fragment: 'wave-normal-composer.glsl'
-        template: 'wave-normal-composer-template.txt'
-        material: 'wave-normal-composer.js'
-      -
-        fragment: 'wave-height.glsl'
-        template: 'wave-height-template.txt'
-        material: 'wave-height.js'
   -
     base_glsl_dir: '../glsl/ocean-material'
     base_js_dir: '../js/ocean-system/materials/ocean-material'

@@ -24,21 +24,18 @@ uniform float largeNormalMapStrength;
 uniform float smallNormalMapStrength;
 uniform float baseHeightOffset;
 uniform sampler2D cascadeDisplacementTextures[6];
-uniform sampler2D cascadeSlopeTextures[6];
 uniform float cascadePatchSizes[6];
 uniform vec2 cascadeSpatialOffsets[6];
 uniform float waveHeightMultiplier;
 uniform sampler2D smallNormalMap;
 uniform sampler2D largeNormalMap;
 uniform sampler2D exclusionMap;
-uniform sampler2D reflectionTexture;
 uniform sampler2D refractionColorTexture;
 uniform sampler2D refractionDepthTexture;
 uniform vec2 screenResolution;
 uniform vec2 cameraNearFar;
 uniform mat4 inverseProjectionMatrix;
 uniform mat4 inverseViewMatrix;
-uniform mat4 reflectionViewProjectionMatrix;
 uniform mat4 ssrViewMatrix;
 uniform mat4 ssrProjectionMatrix;
 uniform sampler2D meteringSurveyTexture;
@@ -113,7 +110,8 @@ uniform float evsmLightBleedReduction;
 //and 4 must match texel-for-texel; any visible difference means the
 //caster/receiver matrices or the displacement-texture references are out
 //of sync. The 4-up cascade-depth thumbnail strip along the top of the
-//screen is always on regardless of mode.
+//screen and the bottom-corner jacobian/foam panels are drawn only when
+//this is non-zero.
 uniform int oceanShadowDebugMode;
 uniform vec3 skyAmbientColor;
 uniform float ambientWaterWeight;
@@ -182,10 +180,6 @@ uniform float blueNoiseTime;
 const float r0 = 0.02;
 const vec3 inverseGamma = vec3(0.454545454545454545454545);
 const vec3 gamma = vec3(2.2);
-
-vec2 vec2Modulo(vec2 inputUV){
-  return (inputUV - floor(inputUV));
-}
 
 float linearizeDepth(float depthSample){
   float near = cameraNearFar.x;
@@ -526,39 +520,9 @@ vec4 linearTosRGB(vec4 value ) {
   return vec4( mix( pow( value.rgb, vec3( 0.41666 ) ) * 1.055 - vec3( 0.055 ), value.rgb * 12.92, vec3( lessThanEqual( value.rgb, vec3( 0.0031308 ) ) ) ), value.a );
 }
 
-//From https://blog.selfshadow.com/publications/blending-in-detail/
-vec3 combineNormals(vec3 normal1, vec3 normal2){
-  vec4 n1 = vec4(normal1.xyz, 1.0);
-  vec4 n2 = vec4(normal2.xyz, 1.0);
-  n1 = n1.xyzz * vec4(2.0, 2.0, 2.0, -2.0) + vec4(-1.0, -1.0, -1.0, 1.0);
-  n2 = n2 * 2.0 - vec4(1.0);
-  vec3 r;
-  r.x = dot(n1.zxx,  n2.xyz);
-  r.y = dot(n1.yzy,  n2.xyz);
-  r.z = dot(n1.xyw, -n2.xyz);
-
-  return 0.5 * (normalize(r) + vec3(1.0));
-}
-
 //Including this because someone removed this in a future versio of THREE. Why?!
 vec3 MyAESFilmicToneMapping(vec3 color) {
   return clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), 0.0, 1.0);
-}
-
-//GGX microfacet normal distribution (D term)
-//From Atlas GDC 2019 / Cook-Torrance: cos_theta = dot(N, H), alpha = roughness
-float ggxDistribution(float cosTheta, float alpha) {
-  float a2 = alpha * alpha;
-  float d = 1.0 + (a2 - 1.0) * cosTheta * cosTheta;
-  return a2 / (3.14159265 * d * d);
-}
-
-//Smith masking-shadowing (G term) — Beckmann rational approximation
-//cos_theta is either NdotL or NdotV depending on which term you're computing
-float smithMaskingShadowing(float cosTheta, float alpha) {
-  float a = cosTheta / (alpha * sqrt(max(1.0 - cosTheta * cosTheta, 1e-6)));
-  float a2 = a * a;
-  return a < 1.6 ? (1.0 - 1.259 * a + 0.396 * a2) / (3.535 * a + 2.181 * a2) : 0.0;
 }
 
 //Henyey-Greenstein phase function for Mie scattering in water
@@ -570,16 +534,9 @@ float waterMiePhase(float cosTheta, float g){
 }
 
 //Fresnel reflectance at air->water interface (for light entering the water from above)
-//Schlick approximation with n_water = 1.33
+//Schlick approximation with n_water = 1.33 — uses the file-level r0 constant.
 float fresnelAirToWater(float cosTheta){
-  float r0 = 0.02;
   return r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
-}
-
-// New physically-based scattering terms
-// H(x) - Heaviside step function (0 if x < 0, 1 if x >= 0)
-float heaviside(float x) {
-  return x >= 0.0 ? 1.0 : 0.0;
 }
 
 // Term 1: k₁ H ⟨ωᵢ · -ωₒ⟩⁴(0.5 - 0.5(ωᵢ · ωₙ))³
@@ -1048,8 +1005,6 @@ void main(){
   //high-frequency per-pixel noise that displacedNormal causes in reflection lookups.
   vec3 ssrReflectDir    = reflect(worldIncidentDir, macroNormal);
   //screenSpaceReflection() always returns LINEAR values (see function comment).
-  //DIAGNOSTIC: reflection zeroed to isolate the refraction/equilibrium term.
-  //vec3 reflectedLight   = vec3(0.0);
   vec3 reflectedLight   = screenSpaceReflection(worldPosition.xyz, ssrReflectDir);
 
   //Screen-space refraction
@@ -1166,16 +1121,12 @@ void main(){
   float term2 = scatterTerm2(normalizedViewVector, displacedNormal, k2ViewDependence);
   float fresnelFresnel = fresnelAbsorption(-brightestDirectionalLightDirection, displacedNormal, fresnelAbsorptionAmount);
   float term3 = scatterTerm3(-brightestDirectionalLightDirection, displacedNormal, k3DirectScatter);
-  //Bubble turbidity: microbubble haze present in all ocean water, not just at foam crests.
-  //Uses turbulence (instant Jacobian compression) for wave-dependent churn, plus a constant
-  //floor (0.2) for the baseline scatter always present in ocean water.
-  //fftFoamAmount is kept for white foam rendering; turbulence drives the scatter model.
-  float bubbleDensity = clamp(turbulence + 0.2, 0.0, 1.0);
-  //DIAGNOSTIC: term4 (bubble-density haze) zeroed to test whether its raw
-  //sun-color * density output (no waterScattering multiplier) is the source of
-  //the dusk olive-green tint. Restore by re-enabling the scatterTerm4() call.
+  //Bubble-density haze disabled until the physical-model review (see
+  //improvements.txt #11): its raw sun-color * density output had no
+  //waterScattering multiplier and was the suspect for an olive dusk tint.
+  //Reinstate with scatterTerm4(bubbleDensity, k4ParallaxScatter) once the
+  //volume model is unified.
   float term4 = 0.0;
-  //float term4 = scatterTerm4(bubbleDensity, k4ParallaxScatter);
 
   // First scattering term: (k₁ ... + k₂ ...) * C_ss * L_sun * Fresnel
   vec3 mainScatter = (term1 + term2) * waterScattering * brightestDirectionalLight * fresnelFresnel * sunShadowFactor;
@@ -1498,14 +1449,15 @@ void main(){
     gl_FragColor = vec4(vec3(dbgFresnelFactor), 1.0);
   }
 
-  //TEMP DEBUG: bottom-left = raw jacobian mapped [0,2] → [0,1] (grey=1.0=flat, black=0=folded, white=2=stretched)
-  //            bottom-right = fftFoamAmount [0,1]
-  //            top strip = 4-up ocean-CSM cascade depth thumbnails (C0..C3 left→right).
-  //            Depth values land in a narrow band (~0.3-0.7 of the 200m depth window)
-  //            so the visualisation contrast-stretches that range to black-white.
-  //            White edges are texels with no caster (cleared to 1.0) — useful for
-  //            seeing the cascade footprint shrink as you move toward C0.
-  {
+  //Debug overlays — only drawn when oceanShadowDebugMode is non-zero. Bottom-
+  //left: raw jacobian mapped [0,2] → [0,1] (grey=1.0=flat, black=0=folded,
+  //white=2=stretched). Bottom-right: fftFoamAmount [0,1]. Top strip: 4-up
+  //ocean-CSM cascade depth thumbnails (C0..C3 left→right). Depth values land
+  //in a narrow band (~0.3-0.7 of the 200m depth window) so the visualisation
+  //contrast-stretches that range to black-white. White edges are texels with
+  //no caster (cleared to 1.0) — useful for seeing the cascade footprint
+  //shrink as you move toward C0.
+  if(oceanShadowDebugMode != 0){
     float panelSize = 200.0;
     vec2 fc = gl_FragCoord.xy;
     if(fc.x < panelSize && fc.y < panelSize){

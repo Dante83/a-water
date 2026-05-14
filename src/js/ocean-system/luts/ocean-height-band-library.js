@@ -188,26 +188,6 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
     this.hkVars.push(cascadeVars);
   }
 
-  //Slope h_k variables — one per cascade, packed: IFFT gives R=dh/dx, G=dh/dz
-  //Spectrum: P(k) = (kx + i*kz) * i*H(k,t) — see h_k-pass.js isSlope variant
-  this.hkSlopeVars = [];
-  for(let c = 0; c < this.numCascades; c++){
-    let h0Texture = staticGPUCompute.getCurrentRenderTarget(this.h0Vars[c]).texture;
-    let cascadeL = this.cascadePatchSizes[c];
-
-    let hkSlopeTexture = this.hkRenderer.createTexture();
-    let hkSlopeVar = this.hkRenderer.addVariable(`textureHkSlope_${c}`, materials.hkShaderMaterialData.fragmentShader(false, false, true), hkSlopeTexture);
-    hkSlopeVar.minFilter = THREE.ClosestFilter;
-    hkSlopeVar.magFilter = THREE.ClosestFilter;
-    this.hkRenderer.setVariableDependencies(hkSlopeVar, []);
-    hkSlopeVar.material.uniforms = JSON.parse(JSON.stringify(materials.hkShaderMaterialData.uniforms));
-    hkSlopeVar.material.uniforms.textureH0.value = h0Texture;
-    hkSlopeVar.material.uniforms.L.value = cascadeL;
-    hkSlopeVar.material.uniforms.uTime.value = 500.0;
-    hkSlopeVar.material.uniforms.N.value = this.N;
-    this.hkSlopeVars.push(hkSlopeVar);
-  }
-
   let error3 = this.hkRenderer.init();
   if(error3 !== null){
     console.error(`Dynamic GPU Compute Renderer: ${error3}`);
@@ -278,31 +258,6 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
     this.wavesPerCascade.push([null, null, null]); //[X, Y, Z]
   }
 
-  //Slope ping-pong targets — mipmapped so fine cascades filter correctly at distance
-  let slopeRtOptions = {
-    minFilter: THREE.LinearMipmapLinearFilter,
-    magFilter: THREE.LinearFilter,
-    wrapS: THREE.RepeatWrapping,
-    wrapT: THREE.RepeatWrapping,
-    format: THREE.RGBAFormat,
-    type: THREE.FloatType,
-    depthBuffer: false,
-    stencilBuffer: false
-  };
-  this.slopeButterflyTargets = [];
-  for(let c = 0; c < this.numCascades; c++){
-    const ping = new THREE.WebGLRenderTarget(textureWidth, textureHeight, slopeRtOptions);
-    const pong = new THREE.WebGLRenderTarget(textureWidth, textureHeight, slopeRtOptions);
-    ping.texture.wrapS = ping.texture.wrapT = THREE.RepeatWrapping;
-    pong.texture.wrapS = pong.texture.wrapT = THREE.RepeatWrapping;
-    ping.texture.generateMipmaps = true;
-    pong.texture.generateMipmaps = true;
-    this.slopeButterflyTargets.push([ping, pong]);
-  }
-
-  //Output slope textures per cascade (set each tick)
-  this.slopesPerCascade = new Array(this.numCascades).fill(null);
-
   //Helper: run full 2D butterfly FFT on an input texture, return result texture
   let self = this;
   function runButterflyFFT(inputTexture, pingTarget, pongTarget){
@@ -364,7 +319,6 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
       for(let axis = 0; axis < 3; axis++){
         self.hkVars[c][axis].material.uniforms.textureH0.value = newH0Texture;
       }
-      self.hkSlopeVars[c].material.uniforms.textureH0.value = newH0Texture;
     }
 
     self.w = newW;
@@ -375,12 +329,11 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
   // TICK: Per-frame update
   // ========================================================================
   this.tick = function(time){
-    //Update time for all h_k variables across all cascades (displacement + slope)
+    //Update time for all h_k variables across all cascades
     for(let c = 0; c < self.numCascades; c++){
       for(let axis = 0; axis < 3; axis++){
         self.hkVars[c][axis].material.uniforms.uTime.value = time / 512.0;
       }
-      self.hkSlopeVars[c].material.uniforms.uTime.value = time / 512.0;
     }
     self.hkRenderer.compute();
 
@@ -392,24 +345,5 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
         self.wavesPerCascade[c][axis] = runButterflyFFT(hkTexture, targets[0], targets[1]);
       }
     }
-
-    //Run butterfly FFT for slope packed spectra (R=dh/dx, G=dh/dz after IFFT)
-    for(let c = 0; c < self.numCascades; c++){
-      let hkTexture = self.hkRenderer.getCurrentRenderTarget(self.hkSlopeVars[c]).texture;
-      let targets = self.slopeButterflyTargets[c];
-      self.slopesPerCascade[c] = runButterflyFFT(hkTexture, targets[0], targets[1]);
-    }
-
-    //Generate mipmaps for slope textures — allows hardware to area-average fine
-    //cascade normals at distance, eliminating aliasing without manual distance fades.
-    const gl = renderer.getContext();
-    for(let c = 0; c < self.numCascades; c++){
-      const props = renderer.properties.get(self.slopesPerCascade[c]);
-      if(props && props.__webglTexture){
-        gl.bindTexture(gl.TEXTURE_2D, props.__webglTexture);
-        gl.generateMipmap(gl.TEXTURE_2D);
-      }
-    }
-    gl.bindTexture(gl.TEXTURE_2D, null);
   };
 }

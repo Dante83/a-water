@@ -4,7 +4,6 @@
 AWater.AOcean.Materials.Ocean.waterMaterial = {
   uniforms: {
     cascadeDisplacementTextures: {value: [null, null, null, null, null, null]},
-    cascadeSlopeTextures: {value: [null, null, null, null, null, null]},
     cascadePatchSizes: {value: [1000.0, 250.0, 64.0, 16.0, 4.0, 1.0]},
     //Per-cascade spatial UV offsets to break visual tiling periodicity.
     //Golden-ratio derived fractions of each cascade's patch size — different per cascade
@@ -31,14 +30,12 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     exclusionMap: {type: 't', value: null},
     smallNormalMapVelocity: {type: 'vec2', value: new THREE.Vector2()},
     largeNormalMapVelocity: {type: 'vec2', value: new THREE.Vector2()},
-    reflectionTexture: {type: 't', value: null},
     refractionColorTexture: {type: 't', value: null},
     refractionDepthTexture: {type: 't', value: null},
     screenResolution: {type: 'vec2', value: new THREE.Vector2()},
     cameraNearFar: {type: 'vec2', value: new THREE.Vector2()},
     inverseProjectionMatrix: {type: 'mat4', value: new THREE.Matrix4()},
     inverseViewMatrix: {type: 'mat4', value: new THREE.Matrix4()},
-    reflectionViewProjectionMatrix: {type: 'mat4', value: new THREE.Matrix4()},
     ssrViewMatrix: {type: 'mat4', value: new THREE.Matrix4()},
     ssrProjectionMatrix: {type: 'mat4', value: new THREE.Matrix4()},
     meteringSurveyTexture: {type: 't', value: null},
@@ -99,8 +96,8 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     oceanShadowEnabled: {type: 'i', value: 0},
     //Debug visualisation switch (see water-shader.glsl). 0 = normal,
     //1 = shadow-factor full-screen, 2 = cascade-index full-screen.
-    //Cascade-depth thumbnails along the top of the screen are
-    //unconditional regardless of this value.
+    //Cascade-depth thumbnails and the bottom-corner jacobian/foam panels
+    //draw only when this is non-zero.
     oceanShadowDebugMode: {type: 'i', value: 0},
     // Ambient directional lights (for water scattering)
     ambientLightCount: {type: 'i', value: 0},
