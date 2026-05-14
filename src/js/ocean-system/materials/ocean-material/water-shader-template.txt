@@ -31,6 +31,10 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     largeNormalMapVelocity: {type: 'vec2', value: new THREE.Vector2()},
     refractionColorTexture: {type: 't', value: null},
     refractionDepthTexture: {type: 't', value: null},
+    //Pre-linearised depth in R channel; produced by a one-quad post-process
+    //pass in ocean-grid.js, sampled directly by SSR to skip ~58 per-pixel
+    //linearizeDepth divides per frame.
+    refractionLinearDepth: {type: 't', value: null},
     screenResolution: {type: 'vec2', value: new THREE.Vector2()},
     cameraNearFar: {type: 'vec2', value: new THREE.Vector2()},
     inverseProjectionMatrix: {type: 'mat4', value: new THREE.Matrix4()},
@@ -70,8 +74,8 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     oceanShadowMapSize: {type: 'v2v', value: [
       new THREE.Vector2(2048.0, 2048.0),
       new THREE.Vector2(2048.0, 2048.0),
-      new THREE.Vector2(4096.0, 4096.0),
-      new THREE.Vector2(4096.0, 4096.0)
+      new THREE.Vector2(2048.0, 2048.0),
+      new THREE.Vector2(2048.0, 2048.0)
     ]},
     //EVSM warp constant. MUST match the caster's evsmExpC. Larger values
     //reduce light bleed but compress depth precision; ~5 is a good
@@ -120,7 +124,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     //Lower albedo → dimmer inscatterEquilibrium → seabed visible through shallows.
     waterAbsorption: {type: 'vec3', value: new THREE.Vector3(0.45, 0.10, 0.04)},
     waterScattering: {type: 'vec3', value: new THREE.Vector3(0.02, 0.02, 0.02)},
-    waterMieG: {type: 'f', value: 0.7},
+    waterMieG: {type: 'f', value: 0.85},
     // New physically-based scattering parameters
     k1ScatterAmount: {type: 'f', value: 1.5},
     k2ViewDependence: {type: 'f', value: 1.2},
@@ -128,8 +132,8 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     k4ParallaxScatter: {type: 'f', value: 0.2},
     waterTurbidity: {type: 'f', value: 1.0},
     fresnelAbsorptionAmount: {type: 'f', value: 1.0},
-    linearScatteringHeightOffset: {type: 'f', value: 10.0},
-    linearScatteringTotalScatteringWaveHeight: {type: 'f', value: 20.0},
+    linearScatteringHeightOffset: {type: 'f', value: 5.0},
+    linearScatteringTotalScatteringWaveHeight: {type: 'f', value: 12.0},
     patchDataSize: {type: 'f', value: 1024.0},
     atmosphereTransmittance: {type: 't', value: null},
     atmosphereMieInscattering: {type: 't', value: null},
@@ -145,7 +149,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     atmDistanceScale: {type: 'f', value: 1.0},
     blueNoiseTexture: {type: 't', value: null},
     blueNoiseTime: {type: 'f', value: 0.0},
-    chop: {type: 'f', value: 1.0}
+    chop: {type: 'f', value: 0.75}
   },
 
   fragmentShader: function(causticsEnabled, foamEnabled, atmosphericPerspectiveEnabled, atmosphereFunctionsGLSL){

@@ -26,18 +26,26 @@
 //its smoothness — without them, per-texel variance is near-zero and the
 //Chebyshev bound degenerates to a depth comparison.
 //
-//Four cascades by default (Plan E):
+//Four cascades by default:
 //  C0   60 m  × 2048² → ~2.9 cm/texel  (sharp wave-on-wave near camera)
 //  C1  240 m  × 2048² → ~11.7 cm/texel (mid distance)
-//  C2 0.4 × drawDistance × 4096²       (broad chop / mid-far)
-//  C3  2  × drawDistance × 4096²       (full draw-distance horizon coverage)
+//  C2 0.4 × drawDistance × 2048²       (broad chop / mid-far)
+//  C3  2  × drawDistance × 2048²       (full draw-distance horizon coverage)
 //C0/C1 stay fixed because wave-scale near you is a property of the
 //simulation, not the world. C2/C3 scale with drawDistance so a smaller
 //world automatically gets tighter horizon shadows.
 //
-//Memory: 4 × moment-target (RGBA32F) = 64+64+256+256 = 640 MB. Plus two
-//shared ping-pong buffers (one 2048², one 4096²) = 64+256 = 320 MB.
-//Total ~960 MB. The user explicitly opted in (1070-class GPU target).
+//C2/C3 were 4096² in earlier iterations; halved to 2048² because at
+//drawDistance 10 km, C3's texel size is ~10 m anyway, and the 9-tap
+//stride-2 EVSM blur already softens any sub-blur-radius detail (~16 m
+//world reach). The sun-zenith fade also kills shadows at high sun angles
+//where the blur footprint would otherwise smear most. Visual cost is
+//small; VRAM cost was 256+256+256 = 768 MB for the two big cascades plus
+//the matching 4096² blur ping-pong. Now everything fits in the single
+//2048² ping-pong.
+//
+//Memory: 4 × moment-target (RGBA32F 2048²) = 64+64+64+64 = 256 MB.
+//Plus one 2048² ping-pong = 64 MB. Total ~320 MB (was ~960 MB).
 //
 //Caster ring filtering: each cascade has a maxRing index. The mesh's
 //ringIndex (the clipmap LOD it was built with) determines which cascades
@@ -76,8 +84,8 @@ AWater.AOcean.OceanShadowCSM = function(oceanGrid, scene, configOverrides){
   this.cascadeConfigs = cfg.cascades || [
     {extent: 60.0,                 mapSize: 2048, layer: 7,  maxRing: 1},
     {extent: 240.0,                mapSize: 2048, layer: 8,  maxRing: 1},
-    {extent: 0.4 * drawDistance,   mapSize: 4096, layer: 9,  maxRing: 99},
-    {extent: 2.0 * drawDistance,   mapSize: 4096, layer: 10, maxRing: 99}
+    {extent: 0.4 * drawDistance,   mapSize: 2048, layer: 9,  maxRing: 99},
+    {extent: 2.0 * drawDistance,   mapSize: 2048, layer: 10, maxRing: 99}
   ];
   this.numCascades = this.cascadeConfigs.length;
   this._waveMargin = 50.0;
@@ -115,11 +123,11 @@ AWater.AOcean.OceanShadowCSM = function(oceanGrid, scene, configOverrides){
     });
   }
 
-  //Two shared blur ping-pong buffers, sized to the two cascade size classes
-  //we use (2048² and 4096²). Sharing avoids allocating a full ping-pong per
-  //cascade — at RGBA32F that would double total memory. We never blur two
-  //cascades at the same time, so one buffer per size class is sufficient.
-  const blurOptions = {
+  //Shared blur ping-pong buffer. All cascades currently use 2048² so a single
+  //buffer is sufficient (we never blur two cascades simultaneously). If a
+  //future config introduces a larger cascade, gate this on max(cascade
+  //mapSize) and reintroduce per-size-class buffers.
+  this._blurTarget = new THREE.WebGLRenderTarget(2048, 2048, {
     format: THREE.RGBAFormat,
     type: THREE.FloatType,
     minFilter: THREE.LinearFilter,
@@ -127,9 +135,7 @@ AWater.AOcean.OceanShadowCSM = function(oceanGrid, scene, configOverrides){
     depthBuffer: false,
     stencilBuffer: false,
     generateMipmaps: false
-  };
-  this._blurTargetSmall = new THREE.WebGLRenderTarget(2048, 2048, blurOptions);
-  this._blurTargetLarge = new THREE.WebGLRenderTarget(4096, 4096, blurOptions);
+  });
 
   //Inline EVSM Gaussian blur material. Separable 9-tap; weights from a
   //pixel-sigma-1.5 Gaussian normalised to sum=1. Defined here rather than
@@ -377,7 +383,7 @@ AWater.AOcean.OceanShadowCSM.prototype.render = function(renderer, mainCamera, s
     //from 4 to 8 texels each side without adding taps. Receiver-side
     //oceanCascadeMarginUV must stay >= 9 texels to keep cascade-edge
     //fragments out of the blur footprint.
-    const blurTarget = (cfg.mapSize <= 2048) ? this._blurTargetSmall : this._blurTargetLarge;
+    const blurTarget = this._blurTarget;
     const texelUv = 2.0 / cfg.mapSize;
 
     this._blurMaterial.uniforms.sourceTexture.value = cascade.renderTarget.texture;

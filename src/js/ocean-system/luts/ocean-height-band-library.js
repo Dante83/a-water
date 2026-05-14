@@ -2,7 +2,10 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
   let renderer = parentOceanGrid.renderer;
   let data = parentOceanGrid.data;
 
-  //Enable the OES_texture_float_linear extension
+  //Linear filtering of float textures is core in WebGL2; only probe the
+  //extension on WebGL1. The short-circuit order matters in three.js v173+,
+  //where extensions.get() logs a console warning whenever the extension is
+  //missing even if the result is then ignored.
   if(!renderer.capabilities.isWebGL2 && !renderer.extensions.get("OES_texture_float_linear")){
     console.error("No linear interpolation of OES textures allowed.");
     return false;
@@ -17,7 +20,23 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
   this.renderer = renderer;
   document.body.appendChild(renderer.domElement);
 
-  //Wind and JONSWAP parameters (shared across cascades)
+  //Wind and JONSWAP parameters (shared across cascades).
+  //
+  //Sanity check for the default config (wind {8,5} → U=9.43 m/s, fetch 100 km,
+  //gamma 3.3, wave_scale_multiple 1.5):
+  //  omega_p   ≈ 22 · (g² / (U·F))^(1/3)        ≈ 1.03 rad/s
+  //  T_p       = 2π / omega_p                   ≈ 6.1 s
+  //  λ_p       = g·T_p² / (2π)                  ≈ 58 m
+  //  H_s (PM)  = 0.21 · U² / g                  ≈ 1.91 m
+  //  H_s (J3.3) ≈ H_s_PM · gamma^0.3            ≈ 2.73 m
+  //  H_s × 1.5 (artistic boost from data.wave_scale_multiple) ≈ 4.1 m
+  //
+  //So with default settings expect significant wave height around 4 m and a
+  //dominant wavelength near 58 m. The linearScattering* uniforms map this to
+  //the [offset, offset + total] band (default [5..17] m); H_s sitting below
+  //the offset means thin-crest scattering only kicks in on the larger waves
+  //of the spectrum, not the median. If you raise wave_scale_multiple, raise
+  //linearScatteringHeightOffset accordingly so scatter terms stay in range.
   let windVelocity = new THREE.Vector2(data.wind_velocity.x, data.wind_velocity.y);
   this.w = windVelocity.clone().normalize();
   const g = 9.80665;

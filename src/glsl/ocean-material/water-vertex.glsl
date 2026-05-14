@@ -122,5 +122,15 @@ void main() {
     #include <fog_vertex>
   #endif
 
-  gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);
+  vec4 clipPos = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);
+  #if($horizon_skirt)
+    //Horizon-skirt ring: pin Z just inside the far plane so rim verts (tens
+    //of km past camera.far) survive frustum clipping. The skirt sets
+    //depthWrite:false / renderOrder 1, so this clipPos.z value never
+    //occludes real geometry (which writes its own correct depth). It only
+    //makes the skirt survive long enough to draw beneath the FFT ocean and
+    //above the sky dome's unwritten depth.
+    clipPos.z = clipPos.w * 0.99999;
+  #endif
+  gl_Position = clipPos;
 }

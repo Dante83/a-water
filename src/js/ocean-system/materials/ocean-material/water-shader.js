@@ -31,6 +31,10 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     largeNormalMapVelocity: {type: 'vec2', value: new THREE.Vector2()},
     refractionColorTexture: {type: 't', value: null},
     refractionDepthTexture: {type: 't', value: null},
+    //Pre-linearised depth in R channel; produced by a one-quad post-process
+    //pass in ocean-grid.js, sampled directly by SSR to skip ~58 per-pixel
+    //linearizeDepth divides per frame.
+    refractionLinearDepth: {type: 't', value: null},
     screenResolution: {type: 'vec2', value: new THREE.Vector2()},
     cameraNearFar: {type: 'vec2', value: new THREE.Vector2()},
     inverseProjectionMatrix: {type: 'mat4', value: new THREE.Matrix4()},
@@ -70,8 +74,8 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     oceanShadowMapSize: {type: 'v2v', value: [
       new THREE.Vector2(2048.0, 2048.0),
       new THREE.Vector2(2048.0, 2048.0),
-      new THREE.Vector2(4096.0, 4096.0),
-      new THREE.Vector2(4096.0, 4096.0)
+      new THREE.Vector2(2048.0, 2048.0),
+      new THREE.Vector2(2048.0, 2048.0)
     ]},
     //EVSM warp constant. MUST match the caster's evsmExpC. Larger values
     //reduce light bleed but compress depth precision; ~5 is a good
@@ -120,7 +124,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     //Lower albedo → dimmer inscatterEquilibrium → seabed visible through shallows.
     waterAbsorption: {type: 'vec3', value: new THREE.Vector3(0.45, 0.10, 0.04)},
     waterScattering: {type: 'vec3', value: new THREE.Vector3(0.02, 0.02, 0.02)},
-    waterMieG: {type: 'f', value: 0.7},
+    waterMieG: {type: 'f', value: 0.85},
     // New physically-based scattering parameters
     k1ScatterAmount: {type: 'f', value: 1.5},
     k2ViewDependence: {type: 'f', value: 1.2},
@@ -128,8 +132,8 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     k4ParallaxScatter: {type: 'f', value: 0.2},
     waterTurbidity: {type: 'f', value: 1.0},
     fresnelAbsorptionAmount: {type: 'f', value: 1.0},
-    linearScatteringHeightOffset: {type: 'f', value: 10.0},
-    linearScatteringTotalScatteringWaveHeight: {type: 'f', value: 20.0},
+    linearScatteringHeightOffset: {type: 'f', value: 5.0},
+    linearScatteringTotalScatteringWaveHeight: {type: 'f', value: 12.0},
     patchDataSize: {type: 'f', value: 1024.0},
     atmosphereTransmittance: {type: 't', value: null},
     atmosphereMieInscattering: {type: 't', value: null},
@@ -145,7 +149,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     atmDistanceScale: {type: 'f', value: 1.0},
     blueNoiseTexture: {type: 't', value: null},
     blueNoiseTime: {type: 'f', value: 0.0},
-    chop: {type: 'f', value: 1.0}
+    chop: {type: 'f', value: 0.75}
   },
 
   fragmentShader: function(causticsEnabled, foamEnabled, atmosphericPerspectiveEnabled, atmosphereFunctionsGLSL){
@@ -179,6 +183,9 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     'uniform sampler2D exclusionMap;',
     'uniform sampler2D refractionColorTexture;',
     'uniform sampler2D refractionDepthTexture;',
+    '//Pre-linearised depth (R channel = near*far / (far - d*(far-near))) — see',
+    '//ocean-grid.js. SSR samples this directly to skip a per-tap divide.',
+    'uniform sampler2D refractionLinearDepth;',
     'uniform vec2 screenResolution;',
     'uniform vec2 cameraNearFar;',
     'uniform mat4 inverseProjectionMatrix;',
@@ -630,7 +637,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
           'return skyColor;',
         '}',
 
-        'float sceneDepth = linearizeDepth(texture2D(refractionDepthTexture, uv).r);',
+        'float sceneDepth = texture2D(refractionLinearDepth, uv).r;',
         'float rayDepth   = -curPos.z;',
         'float depthDelta = rayDepth - sceneDepth;',
         'float farThreshold = cameraNearFar.y * 0.95;',
@@ -656,7 +663,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
             'vec3 mid = 0.5 * (lo + hi);',
             'vec4 midClip = ssrProjectionMatrix * vec4(mid, 1.0);',
             'vec2 midUV   = midClip.xy / midClip.w * 0.5 + 0.5;',
-            'float midDepth = linearizeDepth(texture2D(refractionDepthTexture, midUV).r);',
+            'float midDepth = texture2D(refractionLinearDepth, midUV).r;',
             'float midDelta = -mid.z - midDepth;',
             'if(midDelta > 0.0){',
               'hi            = mid;',
@@ -675,10 +682,10 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
           '//delta instead of the max distinguishes the two cases and stops us',
           '//from rejecting the outline of every solid object.',
           'vec2 px = vec2(0.002);',
-          'float dN = abs(linearizeDepth(texture2D(refractionDepthTexture, hitUV + vec2( 0.0,  px.y)).r) - hitSceneDepth);',
-          'float dS = abs(linearizeDepth(texture2D(refractionDepthTexture, hitUV + vec2( 0.0, -px.y)).r) - hitSceneDepth);',
-          'float dE = abs(linearizeDepth(texture2D(refractionDepthTexture, hitUV + vec2( px.x, 0.0)).r) - hitSceneDepth);',
-          'float dW = abs(linearizeDepth(texture2D(refractionDepthTexture, hitUV + vec2(-px.x, 0.0)).r) - hitSceneDepth);',
+          'float dN = abs(texture2D(refractionLinearDepth, hitUV + vec2( 0.0,  px.y)).r - hitSceneDepth);',
+          'float dS = abs(texture2D(refractionLinearDepth, hitUV + vec2( 0.0, -px.y)).r - hitSceneDepth);',
+          'float dE = abs(texture2D(refractionLinearDepth, hitUV + vec2( px.x, 0.0)).r - hitSceneDepth);',
+          'float dW = abs(texture2D(refractionLinearDepth, hitUV + vec2(-px.x, 0.0)).r - hitSceneDepth);',
           '//Second-largest of four: max of (min-of-each-pair, min-of-the-two-maxes).',
           'float secondMax = max(max(min(dN, dS), min(dE, dW)),',
                                 'min(max(dN, dS), max(dE, dW)));',
@@ -938,7 +945,11 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       'vec3 displacement = offsetPosition - vPosition;',
       'float height = (offsetPosition.y + linearScatteringHeightOffset) / linearScatteringTotalScatteringWaveHeight;',
       'vec4 worldPosition = vModelMatrix * vInstanceMatrix * vec4(offsetPosition, 1.0);',
-      'vec2 exclusionPosition = 0.5 * (((worldPosition.xz - cameraPosition.xz) / vec2(1024.0)) + 1.0);',
+      "//Exclusion sample. Half-width here MUST match exclusionCamera's ortho",
+      '//half-width in ocean-grid.js (currently 250 m). The exclusion target',
+      '//covers only the small layer-30 mask volumes near the camera (boat',
+      "//interior hulls etc.), not the broad terrain — that's foamRenderMap.",
+      'vec2 exclusionPosition = 0.5 * (((worldPosition.xz - cameraPosition.xz) / vec2(250.0)) + 1.0);',
       'exclusionPosition = vec2(exclusionPosition.x, 1.0 - exclusionPosition.y);',
       'if(exclusionPosition.x < 1.0 && exclusionPosition.x > 0.0 && exclusionPosition.y < 1.0 && exclusionPosition.y > 0.0){',
         'vec2 discardHeightData = texture2D(exclusionMap, exclusionPosition).ga;',
@@ -1207,15 +1218,19 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       'vec2 refractedUV = clamp(screenUV + distortion, 0.001, 0.999);',
 
       '//Sample refraction color and depth',
+      '//Raw NDC depth is kept only for the unprojection at line ~1080',
+      '//(refractedUV + refractionDepthRaw → clipPos → viewPos → world). The',
+      '//linear-depth comparisons below sample the pre-linearised target — no',
+      '//per-pixel divide here either.',
       'float refractionDepthRaw = texture2D(refractionDepthTexture, refractedUV).r;',
-      'float refractionDepthLinear = linearizeDepth(refractionDepthRaw);',
+      'float refractionDepthLinear = texture2D(refractionLinearDepth, refractedUV).r;',
       'float surfaceDepthLinear = linearizeDepth(gl_FragCoord.z);',
 
       '//If distorted UV samples something closer than the water surface, fall back to undistorted',
       'if(refractionDepthLinear < surfaceDepthLinear - 0.5){',
         'refractedUV = screenUV;',
         'refractionDepthRaw = texture2D(refractionDepthTexture, refractedUV).r;',
-        'refractionDepthLinear = linearizeDepth(refractionDepthRaw);',
+        'refractionDepthLinear = texture2D(refractionLinearDepth, refractedUV).r;',
       '}',
 
       'vec3 refractedLight = sRGBToLinear(vec4(texture2D(refractionColorTexture, refractedUV).rgb, 1.0)).rgb;',
@@ -1846,7 +1861,17 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
         '#include <fog_vertex>',
       '#endif',
 
-      'gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);',
+      'vec4 clipPos = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);',
+      '#if($horizon_skirt)',
+        '//Horizon-skirt ring: pin Z just inside the far plane so rim verts (tens',
+        '//of km past camera.far) survive frustum clipping. The skirt sets',
+        '//depthWrite:false / renderOrder 1, so this clipPos.z value never',
+        '//occludes real geometry (which writes its own correct depth). It only',
+        '//makes the skirt survive long enough to draw beneath the FFT ocean and',
+        "//above the sky dome's unwritten depth.",
+        'clipPos.z = clipPos.w * 0.99999;',
+      '#endif',
+      'gl_Position = clipPos;',
     '}',
   ].join('\n'),
 };

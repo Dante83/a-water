@@ -188,6 +188,56 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   );
   this.refractionColorTarget.depthTexture.format = THREE.DepthFormat;
 
+  //Linear-depth scratch target for SSR — eliminates a per-tap divide.
+  //The water shader's screenSpaceReflection() does up to ~58 depth reads per
+  //fragment (48 march + 5 binary refine + 4 silhouette + 1 hit), and the
+  //old code called linearizeDepth() on every one of them. That's ~58
+  //divides per ocean pixel × ~1M ocean pixels ≈ 58M divides per frame just
+  //to convert NDC depth to linear. Pre-linearise once into this target
+  //(single full-screen quad) and SSR reads linear depth directly.
+  this.refractionLinearDepthTarget = new THREE.WebGLRenderTarget(
+    rendererSize.x, rendererSize.y,
+    {
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      format: THREE.RGBAFormat,
+      type: THREE.FloatType,
+      depthBuffer: false,
+      stencilBuffer: false,
+      generateMipmaps: false
+    }
+  );
+  this._depthLinearizeMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+      sourceDepth: {value: null},
+      cameraNearFar: {value: new THREE.Vector2(0.1, 10000.0)}
+    },
+    vertexShader: [
+      'varying vec2 vUv;',
+      'void main(){',
+      '  vUv = position.xy * 0.5 + 0.5;',
+      '  gl_Position = vec4(position.xy, 0.0, 1.0);',
+      '}'
+    ].join('\n'),
+    fragmentShader: [
+      'precision highp float;',
+      'uniform sampler2D sourceDepth;',
+      'uniform vec2 cameraNearFar;',
+      'varying vec2 vUv;',
+      'void main(){',
+      '  float d = texture2D(sourceDepth, vUv).r;',
+      '  float near = cameraNearFar.x;',
+      '  float far = cameraNearFar.y;',
+      '  gl_FragColor = vec4(near * far / (far - d * (far - near)), 0.0, 0.0, 1.0);',
+      '}'
+    ].join('\n'),
+    depthTest: false,
+    depthWrite: false
+  });
+  this._depthLinearizeScene = new THREE.Scene();
+  this._depthLinearizeScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this._depthLinearizeMaterial));
+  this._depthLinearizeCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
   //Set up depth camera pointing down for edge foam
   this.foamRenderTarget = new THREE.WebGLRenderTarget(4096, 4096, {
     type: THREE.FloatType
@@ -195,11 +245,20 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.foamCamera = new THREE.OrthographicCamera(-2048.0, 2048.0, 2048.0, -2048.0, 0.1, 1000.0);
   this.scene.add(this.foamCamera);
 
-  //Set up a depth camera pointing down for ocean exclusion mapping
-  this.exclusionRenderTarget = new THREE.WebGLRenderTarget(4096, 4096, {
+  //Set up a depth camera pointing down for ocean exclusion mapping.
+  //Unlike foamCamera this is NOT a terrain-height capture — it renders only
+  //layer-30 meshes (boat interior hulls and similar volumes that need water
+  //masked inside them). One small mesh near the camera, so the render
+  //target is sized to that scope: 500 m × 500 m at 1024² ≈ 0.49 m/texel.
+  //The previous 4096² × 2048 m × 2048 m sizing was a 256 MB FloatType
+  //buffer to mask a single boat — pure VRAM waste.
+  //
+  //Keep the shader's exclusion-sample radius (water-shader.glsl, divide-by
+  //in vec2(...)) in sync with this ortho extent's half-width.
+  this.exclusionRenderTarget = new THREE.WebGLRenderTarget(1024, 1024, {
     type: THREE.FloatType
   });
-  this.exclusionCamera = new THREE.OrthographicCamera(-1024.0, 1024.0, 1024.0, -1024.0, 0.1, 1000.0);
+  this.exclusionCamera = new THREE.OrthographicCamera(-250.0, 250.0, 250.0, -250.0, 0.1, 1000.0);
   this.exclusionCamera.layers.disableAll();
   this.exclusionCamera.layers.set(30);
   this.scene.add(this.exclusionCamera);
@@ -234,8 +293,16 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //and recompile when the sky becomes available
   const atmosphereReady = this.atmosphericPerspectiveEnabled && this.atmosphereFunctionsGLSL;
   const useFog = !atmosphereReady;
-  let vertexShaderSource = AWater.AOcean.Materials.Ocean.waterMaterial.vertexShader;
-  vertexShaderSource = vertexShaderSource.replace(/\$atmospheric_perspective_enabled/g, atmosphereReady ? '1' : '0');
+  //Vertex shader takes two template flags: $atmospheric_perspective_enabled
+  //and $horizon_skirt. Ocean tiles use the {AP, no-skirt} variant; the
+  //horizon skirt clones the material and uses the {AP, skirt} variant
+  //which pins gl_Position.z just inside the far plane.
+  function buildVertexShader(atmEnabled, skirt){
+    return AWater.AOcean.Materials.Ocean.waterMaterial.vertexShader
+      .replace(/\$atmospheric_perspective_enabled/g, atmEnabled ? '1' : '0')
+      .replace(/\$horizon_skirt/g, skirt ? '1' : '0');
+  }
+  const vertexShaderSource = buildVertexShader(atmosphereReady, false);
   this.oceanMaterial = new THREE.ShaderMaterial({
     vertexShader: vertexShaderSource,
     fragmentShader: AWater.AOcean.Materials.Ocean.waterMaterial.fragmentShader(this.causticsEnabled, this.foamEnabled, atmosphereReady, this.atmosphereFunctionsGLSL),
@@ -306,14 +373,10 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     skirtMaterial.depthTest = true;
     skirtMaterial.depthWrite = false;
     skirtMaterial.fog = false;
-    //Substitute the final gl_Position assignment with a z-clamp variant so
-    //the rim verts (well past camera.far) survive frustum clipping. Every
-    //skirt fragment ends up at depth ~0.9995 — beyond any real scene depth
-    //but inside the dome's pixels (which write no depth at all).
-    skirtMaterial.vertexShader = skirtMaterial.vertexShader.replace(
-      'gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);',
-      'vec4 _skirtClipPos = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0); _skirtClipPos.z = _skirtClipPos.w * 0.99999; gl_Position = _skirtClipPos;'
-    );
+    //Rebuild the vertex shader with the $horizon_skirt template flag set so
+    //the rim verts (well past camera.far) survive frustum clipping via the
+    //in-shader Z clamp. See water-vertex.glsl tail.
+    skirtMaterial.vertexShader = buildVertexShader(atmosphereReady, true);
     //Pin a coarse ringIndex so the vertex shader skips the finer cascades
     //2-5 in its displacement sum. The skirt is meant to be flat-ish; we just
     //want the FFT fragment shader to read wave normals at the same XZ.
@@ -577,6 +640,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         rendererSize.x, rendererSize.y, THREE.UnsignedIntType
       );
       self.refractionColorTarget.depthTexture.format = THREE.DepthFormat;
+      self.refractionLinearDepthTarget.setSize(rendererSize.x, rendererSize.y);
     }
 
     //Update the state of our ocean grid
@@ -620,6 +684,14 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     self.renderer.setRenderTarget(self.refractionColorTarget);
     self.renderer.clear();
     self.renderer.render(scene, sceneCamera);
+
+    //Pre-linearize the refraction depth into a float target so the water
+    //shader's SSR loop can sample linear depth directly. One full-screen
+    //quad's worth of work amortises ~58 divides per ocean pixel.
+    self._depthLinearizeMaterial.uniforms.sourceDepth.value = self.refractionColorTarget.depthTexture;
+    self._depthLinearizeMaterial.uniforms.cameraNearFar.value.set(sceneCamera.near, sceneCamera.far);
+    self.renderer.setRenderTarget(self.refractionLinearDepthTarget);
+    self.renderer.render(self._depthLinearizeScene, self._depthLinearizeCamera);
     self.renderer.setRenderTarget(currentRefractionRT);
 
     //Update our sea foam camera - use position pass material to output world-space height data
@@ -676,6 +748,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       uniformsRef.waveHeightMultiplier.value = self.oceanHeightComposer.waveHeightMultiplier;
       uniformsRef.refractionColorTexture.value = self.refractionColorTarget.texture;
       uniformsRef.refractionDepthTexture.value = self.refractionColorTarget.depthTexture;
+      uniformsRef.refractionLinearDepth.value = self.refractionLinearDepthTarget.texture;
       uniformsRef.screenResolution.value.set(self.refractionColorTarget.width, self.refractionColorTarget.height);
       uniformsRef.cameraNearFar.value.set(sceneCamera.near, sceneCamera.far);
       uniformsRef.inverseProjectionMatrix.value.copy(sceneCamera.projectionMatrixInverse);
@@ -777,15 +850,11 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
             const newFragShader = AWater.AOcean.Materials.Ocean.waterMaterial.fragmentShader(
               self.causticsEnabled, self.foamEnabled, true, self.atmosphereFunctionsGLSL
             );
-            let newVtxSrc = AWater.AOcean.Materials.Ocean.waterMaterial.vertexShader;
-            newVtxSrc = newVtxSrc.replace(/\$atmospheric_perspective_enabled/g, '1');
-            //Pre-build the skirt's vertex shader by re-applying the same final
-            //gl_Position substitution we did at construction — keeps the z-clamp
-            //alive across the AP recompile.
-            const skirtVtxSrc = newVtxSrc.replace(
-              'gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);',
-              'vec4 _skirtClipPos = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0); _skirtClipPos.z = _skirtClipPos.w * 0.99999; gl_Position = _skirtClipPos;'
-            );
+            //Build both vertex variants once via the shared helper so the
+            //skirt z-clamp stays in lockstep with the regular ocean across
+            //this AP-recompile path.
+            const newVtxSrc = buildVertexShader(true, false);
+            const skirtVtxSrc = buildVertexShader(true, true);
             for(let j = 0; j < oceanGridInstanceKeys.length; ++j){
               const mesh = oceanPatchGeometryInstances[oceanGridInstanceKeys[j]];
               const isSkirt = (mesh === self.horizonSkirtMesh);

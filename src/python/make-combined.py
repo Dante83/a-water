@@ -28,7 +28,7 @@ def main():
     'ocean-system/components/ocean-shadow-csm.js',\
     'ocean-system/components/ocean-grid.js',\
     'ocean-system/components/ocean-state.js',\
-    'ocean-system/components/a-ocean.js']
+    'ocean-system/components/a-restless-ocean.js']
 
     #Grab the strings for each of these files, and pull out any branches of code related to if(typeof exports !== 'undefined') {..}
     code_blocks = []

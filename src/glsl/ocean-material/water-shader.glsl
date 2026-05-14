@@ -27,6 +27,9 @@ uniform sampler2D largeNormalMap;
 uniform sampler2D exclusionMap;
 uniform sampler2D refractionColorTexture;
 uniform sampler2D refractionDepthTexture;
+//Pre-linearised depth (R channel = near*far / (far - d*(far-near))) — see
+//ocean-grid.js. SSR samples this directly to skip a per-tap divide.
+uniform sampler2D refractionLinearDepth;
 uniform vec2 screenResolution;
 uniform vec2 cameraNearFar;
 uniform mat4 inverseProjectionMatrix;
@@ -478,7 +481,7 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 reflectDir){
       return skyColor;
     }
 
-    float sceneDepth = linearizeDepth(texture2D(refractionDepthTexture, uv).r);
+    float sceneDepth = texture2D(refractionLinearDepth, uv).r;
     float rayDepth   = -curPos.z;
     float depthDelta = rayDepth - sceneDepth;
     float farThreshold = cameraNearFar.y * 0.95;
@@ -504,7 +507,7 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 reflectDir){
         vec3 mid = 0.5 * (lo + hi);
         vec4 midClip = ssrProjectionMatrix * vec4(mid, 1.0);
         vec2 midUV   = midClip.xy / midClip.w * 0.5 + 0.5;
-        float midDepth = linearizeDepth(texture2D(refractionDepthTexture, midUV).r);
+        float midDepth = texture2D(refractionLinearDepth, midUV).r;
         float midDelta = -mid.z - midDepth;
         if(midDelta > 0.0){
           hi            = mid;
@@ -523,10 +526,10 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 reflectDir){
       //delta instead of the max distinguishes the two cases and stops us
       //from rejecting the outline of every solid object.
       vec2 px = vec2(0.002);
-      float dN = abs(linearizeDepth(texture2D(refractionDepthTexture, hitUV + vec2( 0.0,  px.y)).r) - hitSceneDepth);
-      float dS = abs(linearizeDepth(texture2D(refractionDepthTexture, hitUV + vec2( 0.0, -px.y)).r) - hitSceneDepth);
-      float dE = abs(linearizeDepth(texture2D(refractionDepthTexture, hitUV + vec2( px.x, 0.0)).r) - hitSceneDepth);
-      float dW = abs(linearizeDepth(texture2D(refractionDepthTexture, hitUV + vec2(-px.x, 0.0)).r) - hitSceneDepth);
+      float dN = abs(texture2D(refractionLinearDepth, hitUV + vec2( 0.0,  px.y)).r - hitSceneDepth);
+      float dS = abs(texture2D(refractionLinearDepth, hitUV + vec2( 0.0, -px.y)).r - hitSceneDepth);
+      float dE = abs(texture2D(refractionLinearDepth, hitUV + vec2( px.x, 0.0)).r - hitSceneDepth);
+      float dW = abs(texture2D(refractionLinearDepth, hitUV + vec2(-px.x, 0.0)).r - hitSceneDepth);
       //Second-largest of four: max of (min-of-each-pair, min-of-the-two-maxes).
       float secondMax = max(max(min(dN, dS), min(dE, dW)),
                             min(max(dN, dS), max(dE, dW)));
@@ -786,7 +789,11 @@ void main(){
   vec3 displacement = offsetPosition - vPosition;
   float height = (offsetPosition.y + linearScatteringHeightOffset) / linearScatteringTotalScatteringWaveHeight;
   vec4 worldPosition = vModelMatrix * vInstanceMatrix * vec4(offsetPosition, 1.0);
-  vec2 exclusionPosition = 0.5 * (((worldPosition.xz - cameraPosition.xz) / vec2(1024.0)) + 1.0);
+  //Exclusion sample. Half-width here MUST match exclusionCamera's ortho
+  //half-width in ocean-grid.js (currently 250 m). The exclusion target
+  //covers only the small layer-30 mask volumes near the camera (boat
+  //interior hulls etc.), not the broad terrain — that's foamRenderMap.
+  vec2 exclusionPosition = 0.5 * (((worldPosition.xz - cameraPosition.xz) / vec2(250.0)) + 1.0);
   exclusionPosition = vec2(exclusionPosition.x, 1.0 - exclusionPosition.y);
   if(exclusionPosition.x < 1.0 && exclusionPosition.x > 0.0 && exclusionPosition.y < 1.0 && exclusionPosition.y > 0.0){
     vec2 discardHeightData = texture2D(exclusionMap, exclusionPosition).ga;
@@ -1055,15 +1062,19 @@ void main(){
   vec2 refractedUV = clamp(screenUV + distortion, 0.001, 0.999);
 
   //Sample refraction color and depth
+  //Raw NDC depth is kept only for the unprojection at line ~1080
+  //(refractedUV + refractionDepthRaw → clipPos → viewPos → world). The
+  //linear-depth comparisons below sample the pre-linearised target — no
+  //per-pixel divide here either.
   float refractionDepthRaw = texture2D(refractionDepthTexture, refractedUV).r;
-  float refractionDepthLinear = linearizeDepth(refractionDepthRaw);
+  float refractionDepthLinear = texture2D(refractionLinearDepth, refractedUV).r;
   float surfaceDepthLinear = linearizeDepth(gl_FragCoord.z);
 
   //If distorted UV samples something closer than the water surface, fall back to undistorted
   if(refractionDepthLinear < surfaceDepthLinear - 0.5){
     refractedUV = screenUV;
     refractionDepthRaw = texture2D(refractionDepthTexture, refractedUV).r;
-    refractionDepthLinear = linearizeDepth(refractionDepthRaw);
+    refractionDepthLinear = texture2D(refractionLinearDepth, refractedUV).r;
   }
 
   vec3 refractedLight = sRGBToLinear(vec4(texture2D(refractionColorTexture, refractedUV).rgb, 1.0)).rgb;

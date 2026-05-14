@@ -148,8 +148,12 @@ THREE.GPUComputationRenderer = function ( sizeX, sizeY, renderer ) {
 
 	this.init = function () {
 
-		if ( ! renderer.extensions.get( "OES_texture_float" ) &&
-			 ! renderer.capabilities.isWebGL2 ) {
+		//Float textures are core in WebGL2 — only probe the extension on WebGL1.
+		//three.js v173+ logs a console warning whenever extensions.get() misses,
+		//so guarding on capabilities.isWebGL2 first keeps the console clean on
+		//the WebGL2 platform we actually target.
+		if ( ! renderer.capabilities.isWebGL2 &&
+			 ! renderer.extensions.get( "OES_texture_float" ) ) {
 
 			return "No OES_texture_float support for float textures.";
 
