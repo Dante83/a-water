@@ -1,18 +1,10 @@
 precision highp float;
 
-attribute vec3 tangent;
-attribute vec3 bitangent;
-
-varying vec2 vUv;
 varying vec2 vWorldXZ;
 varying vec3 vPosition;
 varying vec3 vDisplacedPosition;
-varying vec3 vTangent;
-varying vec3 vBitangent;
-varying vec3 vInView;
 varying mat4 vInstanceMatrix;
 varying mat4 vModelMatrix;
-varying mat3 vNormalMatrix;
 varying vec4 vSunShadowCoord;
 //Four ocean-CSM shadow coords, fine→coarse. Split into individual varyings
 //rather than an array so older GLSL ES drivers don't choke on varying arrays.
@@ -53,8 +45,6 @@ uniform mat4 oceanShadowMatrix3;
 
 void main() {
   vec3 offsetPosition = position;
-  mat3 instanceMatrixMat3 = mat3(instanceMatrix[0].xyz, instanceMatrix[1].xyz, instanceMatrix[2].xyz );
-  mat3 modelMatrixMat3 = mat3(modelMatrix[0].xyz, modelMatrix[1].xyz, modelMatrix[2].xyz );
 
   vec4 worldPositionOfVertex = (modelMatrix * instanceMatrix * vec4(position, 1.0));
   float distanceToVertex = distance(cameraPosition.xyz, worldPositionOfVertex.xyz);
@@ -86,19 +76,11 @@ void main() {
   offsetPosition += displacement;
 
   //Set up our varyings
-  vUv = uv;
   vWorldXZ = worldPositionOfVertex.xz;
   vDisplacedPosition = offsetPosition;
-  vTangent = tangent;
-  vBitangent = bitangent;
   vPosition = position;
-  //From https://stackoverflow.com/questions/59492385/angle-between-view-vector-and-normal
-  vec4 posInView = (modelViewMatrix * instanceMatrix * vec4(offsetPosition, 1.0));
-  posInView /= posInView[3];
-  vInView = normalize(-posInView.xyz);
   vInstanceMatrix = instanceMatrix;
   vModelMatrix = modelMatrix;
-  vNormalMatrix = normalMatrix;
 
   //Shadow coord — project the displaced world position into the sun's light-clip
   //space so the fragment shader can compare against the shadow depth texture.

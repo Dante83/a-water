@@ -1,15 +1,10 @@
 precision highp float;
 
-varying vec2 vUv;
 varying vec2 vWorldXZ;
 varying vec3 vPosition;
 varying vec3 vDisplacedPosition;
-varying vec3 vTangent;
-varying vec3 vBitangent;
-varying vec3 vInView;
 varying mat4 vInstanceMatrix;
 varying mat4 vModelMatrix;
-varying mat3 vNormalMatrix;
 varying vec4 vSunShadowCoord;
 varying vec4 vOceanShadowCoord0;
 varying vec4 vOceanShadowCoord1;
@@ -51,7 +46,6 @@ uniform sampler2D meteringSurveyTexture;
   uniform sampler2D foamDiffuseMap;
   uniform sampler2D foamOpacityMap;
   uniform sampler2D foamNormalMap;
-  uniform sampler2D foamRoughnessMap;
   uniform float foamStartLevel;
 #endif
 
@@ -180,6 +174,53 @@ uniform float blueNoiseTime;
 const float r0 = 0.02;
 const vec3 inverseGamma = vec3(0.454545454545454545454545);
 const vec3 gamma = vec3(2.2);
+
+//── Tunable shading constants ────────────────────────────────────────────
+//Pulled out of inline literals so the physical-review session can locate
+//and judge each fudge in one place. Anything labelled "empirical" here is
+//a candidate to derive from a physical quantity once the unified scatter
+//model in improvements.txt #11 lands.
+
+//Strength multiplier on small + large micro-ripple normal maps before
+//perturbing the FFT macro normal. Low to avoid stamping a stony texture
+//on the surface; raise once softer ripple textures replace the current
+//water-normal-1/2 art.
+const float NORMAL_MAP_SCALE = 0.15;
+
+//Refraction-UV distortion magnitude, in screen-space, scaled by the
+//displaced FFT normal. Higher = more refractive shimmer but more visible
+//tile-edge bleed near opaque geometry.
+const float REFRACTION_DISTORTION = 0.03;
+
+//Effective-depth proxy: meters of underwater path per meter of horizontal
+//camera-to-fragment distance. Lets transmittance decay toward the horizon
+//even when no underwater geometry was hit by the refraction ray.
+const float HORIZONTAL_DEPTH_SCALE = 0.008;
+
+//Seabed re-illumination multiplier (improvements.txt #11 / #30). Empirical
+//scalar applied to the post-refraction sample, matches a refraction sample
+//that already contains baked above-water lighting back to "albedo-ish"
+//magnitude before re-lighting. Flagged in memory as a fudge pending the
+//physical review.
+const float SEABED_BRIGHTEN = 4.0;
+
+//Phong sun-glint specular boost. Crest's _DirectionalLightBoost defaults
+//~5; lowered to 3 because the Fresnel gate already pushes grazing waves
+//to near-full intensity.
+const float SPECULAR_BOOST = 3.0;
+
+//Sky-dome diffuse irradiance weight on the wave surface. skyAmbientColor
+//is in non-physical "lighting" units (a-starry-sky hemispherical light
+//intensity), not radiance, so this scalar tunes it down to match the
+//Fresnel body weight. Tuned empirically.
+const float SKY_AMBIENT_WEIGHT = 0.1;
+
+//Macro-normal slope clamp. Caps |∇h| before forming the cascade-0 macro
+//normal so a wave face steeper than ~50° tilt doesn't produce a near-
+//horizontal lighting normal (which blooms specular on the wrong faces).
+//foldBlend below is the structural fold-handling step; this clamp is a
+//numerical guard for the linearised slope→normal map.
+const float MACRO_SLOPE_MAX = 1.2;
 
 float linearizeDepth(float depthSample){
   float near = cameraNearFar.x;
@@ -737,9 +778,6 @@ void main(){
   //ocean CSM uses a normal-based slope bias to avoid the per-triangle
   //faceting that dFdx/dFdy produces.
 
-  mat3 instanceMatrixMat3 = mat3(vInstanceMatrix[0].xyz, vInstanceMatrix[1].xyz, vInstanceMatrix[2].xyz );
-  mat3 modelMatrixMat3 = mat3(vModelMatrix[0].xyz, vModelMatrix[1].xyz, vModelMatrix[2].xyz );
-
   //Use the displaced position from the vertex shader directly — ensures worldPosition
   //matches the actual geometry (vertex shader applies displacementFade; resampling here
   //would skip that, causing LOD tile edge divergence).
@@ -907,7 +945,7 @@ void main(){
   //Fresnel still uses displacedNormal (cascade 0+1) so it correctly matches the geometry.
   vec2 macroSlope = cascade0HeightSlope * waveHeightMultiplier;
   float macroSlopeLen = length(macroSlope);
-  if(macroSlopeLen > 1.2) macroSlope *= 1.2 / macroSlopeLen;
+  if(macroSlopeLen > MACRO_SLOPE_MAX) macroSlope *= MACRO_SLOPE_MAX / macroSlopeLen;
   vec3 macroNormal = normalize(vec3(-macroSlope.x, 1.0, -macroSlope.y));
   if(macroNormal.y < 0.0) macroNormal = -macroNormal;
   macroNormal = normalize(mix(vec3(0.0, 1.0, 0.0), macroNormal, foldBlend * normalDetailFade));
@@ -958,14 +996,18 @@ void main(){
   //with softer water ripple textures (like Crest's WaveNormals.png). For now, use
   //very low multipliers (0.05) so they add subtle variation to break up coherent FFT
   //banding without imposing a stone-like texture on the surface.
-  float normalMapScale = 0.15;
   vec2 smallNM = texture2D(smallNormalMap, smallNormalMapOffset).xy * 2.0 - 1.0;
-  vec2 largeNM = (texture2D(largeNormalMap, largeNormalMapOffset).xy +
-                  texture2D(largeNormalMap, largeNormalMapOffset2).xy) - 1.0;
+  //Average two perpendicular large-NM samples, then decode to [-1,1].
+  //Averaging the two [0,1] encoded samples and then mapping to [-1,1] is
+  //equivalent to (s1 + s2) - 1.0, but the explicit average + decode form
+  //matches the smallNM line above and is easier to read.
+  vec2 largeNMRaw = 0.5 * (texture2D(largeNormalMap, largeNormalMapOffset).xy +
+                          texture2D(largeNormalMap, largeNormalMapOffset2).xy);
+  vec2 largeNM = largeNMRaw * 2.0 - 1.0;
 
   vec3 combinedNormalMap = displacedNormal;
-  combinedNormalMap.xz += smallNM * smallNormalMapStrength * normalMapScale * smallNormalMapFadeout;
-  combinedNormalMap.xz += largeNM * largeNormalMapStrength * normalMapScale * largeNormalMapFadeout;
+  combinedNormalMap.xz += smallNM * smallNormalMapStrength * NORMAL_MAP_SCALE * smallNormalMapFadeout;
+  combinedNormalMap.xz += largeNM * largeNormalMapStrength * NORMAL_MAP_SCALE * largeNormalMapFadeout;
   #if($foam_enabled)
     float foamAmount = fftFoamAmount;
     vec2 foamPosition = 0.5 * (((worldPosition.xz - cameraPosition.xz) / vec2(2048.0)) + 1.0);
@@ -1009,7 +1051,7 @@ void main(){
 
   //Screen-space refraction
   //Distort UVs based on FFT normal only — same reason as reflection: avoids visible normal map tiling
-  vec2 distortion = displacedNormal.xz * 0.03;
+  vec2 distortion = displacedNormal.xz * REFRACTION_DISTORTION;
   vec2 refractedUV = clamp(screenUV + distortion, 0.001, 0.999);
 
   //Sample refraction color and depth
@@ -1058,8 +1100,7 @@ void main(){
   //distance. 0.008 → 100m of horizontal fetch ≈ 0.8m of water, 1000m ≈ 8m — enough
   //for the horizon to asymptote to inscatter without choking shallows from a high
   //camera angle (where horizontalDist is large but the actual water column is thin).
-  float horizontalDepthScale = 0.008;
-  float effectiveDepth = min(verticalDepth + horizontalDist * horizontalDepthScale, 500.0);
+  float effectiveDepth = min(verticalDepth + horizontalDist * HORIZONTAL_DEPTH_SCALE, 500.0);
   //Physically-based underwater light transport
   //Extinction = absorption + scattering (Beer-Lambert for both)
   vec3 extinction = waterAbsorption + waterScattering;
@@ -1209,18 +1250,18 @@ void main(){
     //plus a sky-ambient floor. The camera-leg Beer-Lambert attenuation is applied
     //by the transmittance blend below, so we deliberately do NOT attenuate the
     //sun-leg here — depth attenuation on both legs would double-dim and kill any
-    //chance of seeing the seabed. seabedBrighten is a tunable scalar to match
-    //terrain-albedo magnitude (refraction sample isn't pure albedo).
+    //chance of seeing the seabed. SEABED_BRIGHTEN (top of file) matches the
+    //refraction sample magnitude back toward terrain-albedo units; flagged as
+    //a fudge in improvements.txt #11 pending the physical-model review.
     if(hasUnderwaterGeom){
       float causticLightingR = causticShader(0.02 * pointXYZ.xz + 0.005, t);
       float causticLightingG = causticShader(0.02 * pointXYZ.xz, t);
       float causticLightingB = causticShader(0.02 * pointXYZ.xz - 0.005, t);
       vec3 caustic = causticIntensityMultiplier * vec3(causticLightingR, causticLightingG, causticLightingB);
-      float seabedBrighten = 4.0;
       vec3 seabedDirect = brightestDirectionalLight * sunTransmission * sunCosZenith
                           * (1.0 + caustic) * sunShadowFactor;
       vec3 seabedAmbient = skyAmbientColor;
-      refractedLight *= seabedBrighten * (seabedDirect + seabedAmbient);
+      refractedLight *= SEABED_BRIGHTEN * (seabedDirect + seabedAmbient);
     }
   #endif
   //DEBUG snapshots (read by oceanShadowDebugMode 5..10 at bottom of shader).
@@ -1273,8 +1314,7 @@ void main(){
   float fresnelSpec = r0 + (1.0 - r0) * pow(1.0 - NdotV, 5.0);
   //Specular boost: Crest's _DirectionalLightBoost defaults ~5; dropped to 3 because
   //the Fresnel gate already pushes grazing waves to full intensity.
-  float specularBoost = 3.0;
-  vec3 specular = sunLobe * fresnelSpec * specularBoost * lightMag * normalizedLightIntensity * sunShadowFactor;
+  vec3 specular = sunLobe * fresnelSpec * SPECULAR_BOOST * lightMag * normalizedLightIntensity * sunShadowFactor;
 
   //Total light. Sky reflection is geometric — the sky itself isn't darkened
   //by a cloud passing overhead — but in real photos shadowed water reflects
@@ -1297,7 +1337,7 @@ void main(){
   //Use FFT geometry normal (no texture maps) for ambient — avoids printing normal map pattern onto the lighting.
   //Crest does the same: geometry normals for SSS/ambient, texture normals only for specular/refraction.
   float skyFactor = 0.5 + 0.5 * dot(displacedNormal, vec3(0.0, 1.0, 0.0));
-  totalLight += skyAmbientColor * skyFactor * (1.0 - fresnelFactor) * 0.1;
+  totalLight += skyAmbientColor * skyFactor * (1.0 - fresnelFactor) * SKY_AMBIENT_WEIGHT;
 
   #if($foam_enabled)
     //Two-layer foam sampling: average a 90°-rotated, differently-scaled second sample
@@ -1329,7 +1369,12 @@ void main(){
   #endif
 
   #if($atmospheric_perspective_enabled)
-    totalLight = applyAtmosphericPerspective(totalLight, worldPosition.xyz);
+    //Atmospheric perspective is the most expensive post-lighting step (multiple
+    //3D LUT samples). Any non-zero debug mode clobbers gl_FragColor below, so
+    //skip it then — keeps debug captures snappy on dense ocean scenes.
+    if(oceanShadowDebugMode == 0){
+      totalLight = applyAtmosphericPerspective(totalLight, worldPosition.xyz);
+    }
   #endif
 
   gl_FragColor = linearTosRGB(vec4(MyAESFilmicToneMapping(totalLight), 1.0));
@@ -1490,14 +1535,17 @@ void main(){
     }
   }
 
-  //Blue noise dithering to break banding (same technique as a-starry-sky)
-  float goldenRatio = 1.61803398875;
-  float framePhase = fract(blueNoiseTime * 0.001);
-  ivec2 temporalOffset = ivec2(
-    128.0 * fract(framePhase * goldenRatio),
-    128.0 * fract(framePhase * goldenRatio * goldenRatio)
-  );
-  gl_FragColor.rgb += (texelFetch(blueNoiseTexture, (ivec2(mod(gl_FragCoord.xy, 128.0)) + temporalOffset) % 128, 0).rgb - vec3(0.5)) / vec3(128.0);
+  //Blue noise dithering to break banding (same technique as a-starry-sky).
+  //Skipped when a debug mode is active so visualisations aren't speckled.
+  if(oceanShadowDebugMode == 0){
+    float goldenRatio = 1.61803398875;
+    float framePhase = fract(blueNoiseTime * 0.001);
+    ivec2 temporalOffset = ivec2(
+      128.0 * fract(framePhase * goldenRatio),
+      128.0 * fract(framePhase * goldenRatio * goldenRatio)
+    );
+    gl_FragColor.rgb += (texelFetch(blueNoiseTexture, (ivec2(mod(gl_FragCoord.xy, 128.0)) + temporalOffset) % 128, 0).rgb - vec3(0.5)) / vec3(128.0);
+  }
 
   #if(!$atmospheric_perspective_enabled)
     #include <fog_fragment>

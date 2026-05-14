@@ -24,7 +24,6 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     foamDiffuseMap: {type: 't', value: null},
     foamOpacityMap: {type: 't', value: null},
     foamNormalMap: {type: 't', value: null},
-    foamRoughnessMap: {type: 't', value: null},
     foamRenderMap: {type: 't', value: null},
     foamStartLevel: {type: 'f', value: 0.0},
     exclusionMap: {type: 't', value: null},

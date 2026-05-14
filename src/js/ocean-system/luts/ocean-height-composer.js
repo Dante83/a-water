@@ -29,7 +29,7 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
     'uniform float patchSize;',
     'uniform float chop;',
     'uniform float foamBias;',
-    'uniform float foamDecayRate;',
+    'uniform float foamDecayMultiplier;',
     'uniform float foamAdd;',
     'uniform float foamThreshold;',
     'void main(){',
@@ -65,7 +65,7 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
     '  float foamS = texture2D(prevFoamTexture, uv + vec2(0.0, -eps)).a;',
     '  float foamE = texture2D(prevFoamTexture, uv + vec2( eps, 0.0)).a;',
     '  float foamW = texture2D(prevFoamTexture, uv + vec2(-eps, 0.0)).a;',
-    '  float foam = mix(prevFoam, 0.25 * (foamN + foamS + foamE + foamW), 0.15) * exp(-foamDecayRate);',
+    '  float foam = mix(prevFoam, 0.25 * (foamN + foamS + foamE + foamW), 0.15) * foamDecayMultiplier;',
     '  foam = clamp(foam, 0.0, 1.0);',
     //Crests have J < 1 (compressed), troughs have J > 1 (stretched).
     //Accumulate where J falls below the bias threshold (compressed/breaking crests).
@@ -92,7 +92,11 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
       //Crest saturate(_WaveFoamCoverage - det). Flat water J=1.0 always, so foamBias must be
       //<= 1.0 or flat water accumulates foam. Crest default is 0.95; raise toward 1.0 for more coverage.
       foamBias: {type: 'f', value: 0.9},
-      foamDecayRate: {type: 'f', value: 0.015}, //faster than pure Crest to prevent long-term saturation
+      //Pre-multiplied by Math.exp(-decay_rate). Default decay_rate = 0.015,
+      //slightly faster than Crest to prevent long-term saturation. Mutate
+      //via _packMaterial.uniforms.foamDecayMultiplier.value = Math.exp(-rate)
+      //if the rate needs to be tuned at runtime.
+      foamDecayMultiplier: {type: 'f', value: Math.exp(-0.015)},
       foamAdd: {type: 'f', value: 0.08},
       foamThreshold: {type: 'f', value: 0.0}
     },

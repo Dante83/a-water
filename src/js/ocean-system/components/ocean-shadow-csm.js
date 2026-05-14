@@ -194,6 +194,9 @@ AWater.AOcean.OceanShadowCSM = function(oceanGrid, scene, configOverrides){
   this._worldUp = new THREE.Vector3(0.0, 1.0, 0.0);
   this._unsnappedPivot = new THREE.Vector3();
   this._snappedPivot = new THREE.Vector3();
+  //Reusable scratch for render() — keeps the per-frame path allocation-free.
+  this._prevClearColor = new THREE.Color();
+  this._prevMaterials = [];
 
   //Cached "no occluder" clear color: moments for depth=1.0 (far plane).
   //Receiver Chebyshev with these reads as fully lit for any refZ < 1.0.
@@ -299,14 +302,15 @@ AWater.AOcean.OceanShadowCSM.prototype.render = function(renderer, mainCamera, s
   //the actual depth range the casters need.
   const sunHorizontalFactor = Math.sqrt(Math.max(0.0, 1.0 - sunDirection.y * sunDirection.y));
 
-  const prevMaterials = [];
+  const prevMaterials = this._prevMaterials;
+  prevMaterials.length = 0;
   for(let i = 0, L = this.oceanMeshes.length; i < L; i++){
     prevMaterials.push(this.oceanMeshes[i].material);
     this.oceanMeshes[i].material = this.shadowMaterials[i];
   }
 
   const prevTarget = renderer.getRenderTarget();
-  const prevClearColor = new THREE.Color();
+  const prevClearColor = this._prevClearColor;
   renderer.getClearColor(prevClearColor);
   const prevClearAlpha = renderer.getClearAlpha();
   const prevShadowAutoUpdate = renderer.shadowMap.autoUpdate;
@@ -338,8 +342,6 @@ AWater.AOcean.OceanShadowCSM.prototype.render = function(renderer, mainCamera, s
       snappedPivotY - sunDirection.y * lightDistance,
       snappedPivotZ - sunDirection.z * lightDistance
     );
-    lightCamera.updateMatrix();
-    lightCamera.updateMatrixWorld(true);
     lightCamera.lookAt(snappedPivotX, snappedPivotY, snappedPivotZ);
     lightCamera.updateMatrix();
     lightCamera.updateMatrixWorld(true);

@@ -97,8 +97,8 @@ AWater.AOcean.Materials.FFTWaves.h0ShaderMaterialData = {
       '}',
       'float d_k = dot(normalize(k), normalize(w));',
       'float d_minus_k = dot(normalize(-k), normalize(w));',
-      'float h0_k = clamp(h0_coefficient * d_k * d_k, 0.0, 1000000.0);',
-      'float h0_minus_k = clamp(h0_coefficient * d_minus_k * d_minus_k, 0.0, 1000000.0);',
+      'float h0_k = h0_coefficient * d_k * d_k;',
+      'float h0_minus_k = h0_coefficient * d_minus_k * d_minus_k;',
 
       'vec4 gaussianRandomNumber = gaussRand(uv);',
 

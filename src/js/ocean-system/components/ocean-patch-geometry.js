@@ -1,101 +1,107 @@
-//A false for any of the top, right, bottom or left values
-//means we're transitioning to a lower value (coarser outer ring).
-//worldSize: world-space size of this tile. numCells: cells per edge (verts = numCells+1).
+//A false for any of the top, right, bottom or left values means we are
+//bordering a lower-resolution outer ring at that edge. The affected outer
+//cells merge their two triangles along that edge into a single triangle
+//that skips the edge midpoint, eliminating the T-junction crack that
+//would otherwise appear where this ring abuts the next coarser one.
+//
+//worldSize: world-space size of this tile. numCells: cells per edge.
+//
+//Vertex layout: a regular (2*numCells+1) × (2*numCells+1) grid of unique
+//positions, stored once and reused by indices.
+//  even gx, even gy = cell corner
+//  odd  gx, odd  gy = cell center
+//  mixed parity     = edge midpoint
+//Cell (cx, cy) has its center at grid index (2*cx+1, 2*cy+1) and emits up
+//to 8 indexed triangles fanning from that center to alternating
+//corner/edge-midpoint pairs. A downgraded outer segment emits 1 merged
+//triangle instead of 2.
+//
+//The water vertex shader only reads `position`; no normal / uv / tangent /
+//bitangent attribute is written here. The displaced normal is reconstructed
+//in the fragment shader from cascade-displacement central differences.
 AWater.OceanTile = function(worldSize, numCells, top, right, bottom, left){
-  const totalNumberOfTiles = numCells * numCells;
-  const numberOfInnerTiles = Math.max(numCells - 2, 0) * (numCells - 2);
-  const numberOfEdgeTiles = totalNumberOfTiles - numberOfInnerTiles;
+  const gridSize = 2 * numCells + 1;
+  const numberOfVertices = gridSize * gridSize;
+  const positions = new Float32Array(numberOfVertices * 3);
   const scaler = worldSize / (numCells * 2.0);
-  const tilesOnAnEdge = Math.max((numberOfEdgeTiles - 4), 0) / 4;
-  const totalNumberOfTriangles = 8 * numberOfInnerTiles + 28 * tilesOnAnEdge + (tilesOnAnEdge + Math.min(4, numberOfEdgeTiles)) * (4 + top + right + bottom + left);
-  const numberOfVertices = totalNumberOfTriangles * 3;
-  const vertexCoordinates = new Float32Array(numberOfVertices * 3);
-  const normals = new Float32Array(numberOfVertices * 3);
-  const uvs = new Float32Array(numberOfVertices * 2);
-  const tangents = new Float32Array(numberOfVertices * 3);
-  const bitangents = new Float32Array(numberOfVertices * 3);
-  for(let i = 0; i < numberOfVertices; ++i){
-    normals[i * 3 + 1] = 1.0; //Y is Normal
-    tangents[i * 3] = 1.0; //X is Tangent
-    bitangents[i * 3 + 2] = -1.0; //Z is bitangent
+
+  for(let gy = 0; gy < gridSize; ++gy){
+    for(let gx = 0; gx < gridSize; ++gx){
+      const i = gy * gridSize + gx;
+      positions[i * 3 + 0] = gx * scaler;
+      //positions[i * 3 + 1] stays 0 — FFT vertex shader displaces Y at draw time.
+      positions[i * 3 + 2] = gy * scaler;
+    }
   }
+
+  //Each cell contributes 8 triangles by default; each downgraded outer-edge
+  //segment removes 1 triangle (two triangles merged into one).
+  const downgradeCount = numCells *
+    ((!top ? 1 : 0) + (!right ? 1 : 0) + (!bottom ? 1 : 0) + (!left ? 1 : 0));
+  const totalNumberOfTriangles = 8 * numCells * numCells - downgradeCount;
+
+  //Default numCells (32) → gridSize 65 → 4225 verts, fits comfortably in
+  //16-bit indices. Promote to Uint32 automatically for very dense tiles.
+  const indices = (numberOfVertices < 65536)
+    ? new Uint16Array(totalNumberOfTriangles * 3)
+    : new Uint32Array(totalNumberOfTriangles * 3);
+  let iWrite = 0;
+
   const numCellsMinusOne = numCells - 1;
-  let vindex = 0;
-  let triIndex = 0;
-  for(let x = 0; x < numCells; ++x){
-    const rightTriSkip = x === numCellsMinusOne && !right;
-    const leftTriSkip = x === 0 && !left;
-    for(let y = 0; y < numCells; ++y){
-      const topTriSkip = y === numCellsMinusOne && !top;
-      const bottomTriSkip = y === 0 && !bottom;
+  for(let cx = 0; cx < numCells; ++cx){
+    const downgradeRight = cx === numCellsMinusOne && !right;
+    const downgradeLeft  = cx === 0 && !left;
+    for(let cy = 0; cy < numCells; ++cy){
+      const downgradeTop    = cy === numCellsMinusOne && !top;
+      const downgradeBottom = cy === 0 && !bottom;
 
-      //Iterate through each potential triangle in the inner tile
-      for(let tri = 0; tri < 8; ++tri){
-        const segmentIndex = Math.floor(tri / 2);
-        const flipXY = segmentIndex % 2;
-        const xSign = (((tri + 7) % 8) < 4) * 2 - 1;
-        const ySign = (((tri + 9) % 8) < 4) * 2 - 1;
-        const segment = tri % 2;
-        const downgradeTriangle = (topTriSkip && segmentIndex === 0) || (rightTriSkip && segmentIndex === 1) || (bottomTriSkip && segmentIndex === 2) || (leftTriSkip && segmentIndex === 3);
+      const gx0 = 2 * cx,     gx1 = 2 * cx + 1, gx2 = 2 * cx + 2;
+      const gy0 = 2 * cy,     gy1 = 2 * cy + 1, gy2 = 2 * cy + 2;
+      const center      = gy1 * gridSize + gx1;
+      const bottomLeft  = gy0 * gridSize + gx0;
+      const bottomRight = gy0 * gridSize + gx2;
+      const topLeft     = gy2 * gridSize + gx0;
+      const topRight    = gy2 * gridSize + gx2;
+      const bottomMid   = gy0 * gridSize + gx1;
+      const topMid      = gy2 * gridSize + gx1;
+      const leftMid     = gy1 * gridSize + gx0;
+      const rightMid    = gy1 * gridSize + gx2;
 
-        if(downgradeTriangle && !segment){
-          //First triangle of a downgraded LOD-seam pair: emit the merged triangle.
-          //The two segment triangles normally share a center vertex and each touch one
-          //outer corner. Downgrading collapses them into a single triangle that spans
-          //both outer corners with the cell center, eliminating the T-junction.
-          //Emit: outer_B, center, outer_A (CW winding, consistent with normal triangles).
+      //Each segment is a pair of triangles around one edge midpoint, or a
+      //single merged triangle that skips the midpoint when downgraded.
+      //Winding matches the original non-indexed mesh exactly.
+      if(downgradeTop){
+        indices[iWrite++] = topRight;    indices[iWrite++] = center; indices[iWrite++] = topLeft;
+      } else {
+        indices[iWrite++] = topMid;      indices[iWrite++] = center; indices[iWrite++] = topLeft;
+        indices[iWrite++] = topRight;    indices[iWrite++] = center; indices[iWrite++] = topMid;
+      }
 
-          //outer_B: the far corner owned by the second triangle (segment=1).
-          //For flipXY=0 segments (top/bottom) xSign alternates; negate it.
-          //For flipXY=1 segments (left/right) ySign alternates; negate it.
-          vertexCoordinates[vindex + 2 * flipXY] = scaler * (1.0 + 2 * (flipXY ? y : x) + (flipXY ? -ySign : -xSign));
-          vertexCoordinates[vindex + 2 * (!flipXY)] = scaler * (1.0 + 2 * (flipXY ? x : y) + (flipXY ? xSign : ySign));
-          vindex += 3;
+      if(downgradeRight){
+        indices[iWrite++] = bottomRight; indices[iWrite++] = center; indices[iWrite++] = topRight;
+      } else {
+        indices[iWrite++] = rightMid;    indices[iWrite++] = center; indices[iWrite++] = topRight;
+        indices[iWrite++] = bottomRight; indices[iWrite++] = center; indices[iWrite++] = rightMid;
+      }
 
-          //center
-          vertexCoordinates[vindex + 2 * flipXY] = scaler * (1.0 + 2 * (flipXY ? y : x));
-          vertexCoordinates[vindex + 2 * (!flipXY)] = scaler * (1.0 + 2 * (flipXY ? x : y));
-          vindex += 3;
+      if(downgradeBottom){
+        indices[iWrite++] = bottomLeft;  indices[iWrite++] = center; indices[iWrite++] = bottomRight;
+      } else {
+        indices[iWrite++] = bottomMid;   indices[iWrite++] = center; indices[iWrite++] = bottomRight;
+        indices[iWrite++] = bottomLeft;  indices[iWrite++] = center; indices[iWrite++] = bottomMid;
+      }
 
-          //outer_A: the near corner of this (segment=0) triangle.
-          vertexCoordinates[vindex + 2 * flipXY] = scaler * (1.0 + 2 * (flipXY ? y : x) + (flipXY ? ySign : xSign));
-          vertexCoordinates[vindex + 2 * (!flipXY)] = scaler * (1.0 + 2 * (flipXY ? x : y) + (flipXY ? xSign : ySign));
-          vindex += 3;
-        } else if(downgradeTriangle && segment){
-          //Second triangle of a downgraded pair: emit a zero-area degenerate triangle.
-          //All vertices stay at their zero-initialized positions (which map to the patch
-          //corner via instanceMatrix — same point, zero area, no pixels rendered).
-          vindex += 9;
-        } else {
-          for(let v = 2; v > -1; --v){
-            const triV = v + segment * 3;
-            vertexCoordinates[vindex + 2 * flipXY] = scaler * (1.0 + 2 * (flipXY ? y : x) + (flipXY ? ySign : xSign) * ((triV === 0) || (triV === 5)));
-            //vertexCoordinates[vindex] = 0.0 - Y is zero
-            vertexCoordinates[vindex + 2 * (!flipXY)] = scaler * (1.0 + 2 * (flipXY ? x : y) + (flipXY ? xSign : ySign) * ((triV + (!segment)) % 2));
-            vindex += 3;
-          }
-        }
-
-        triIndex++;
+      if(downgradeLeft){
+        indices[iWrite++] = topLeft;     indices[iWrite++] = center; indices[iWrite++] = bottomLeft;
+      } else {
+        indices[iWrite++] = leftMid;     indices[iWrite++] = center; indices[iWrite++] = bottomLeft;
+        indices[iWrite++] = topLeft;     indices[iWrite++] = center; indices[iWrite++] = leftMid;
       }
     }
   }
 
-  //Set up all UV-Coordinates
-  for(let i = 0; i < numberOfVertices; ++i){
-    uvs[i * 2] = vertexCoordinates[i * 3] / worldSize;
-    uvs[i * 2 + 1] = vertexCoordinates[i * 3 + 2] / worldSize;
-  }
-
-  //Set up all indices
-
-  this.vertexCoordinates = vertexCoordinates;
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute( 'position', new THREE.BufferAttribute( this.vertexCoordinates, 3 ) );
-  geometry.setAttribute( 'normal', new THREE.BufferAttribute( normals, 3 ) );
-  geometry.normalizeNormals();
-  geometry.setAttribute( 'uv', new THREE.BufferAttribute( uvs, 2 ) );
-  geometry.setAttribute( 'tangent', new THREE.BufferAttribute( tangents, 3 ) );
-  geometry.setAttribute( 'bitangent', new THREE.BufferAttribute( bitangents, 3 ) );
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setIndex(new THREE.BufferAttribute(indices, 1));
   return geometry;
 }

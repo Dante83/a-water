@@ -16,7 +16,6 @@ AFRAME.registerComponent('ocean-state', {
     'foam_color_map': {type: 'string', default: './image-dir/a-water-assets/Foam002_1K_Color.png'},
     'foam_opacity_map': {type: 'string', default: './image-dir/a-water-assets/Foam002_1K_Opacity.png'},
     'foam_normal_map': {type: 'string', default: './image-dir/a-water-assets/Foam002_1K_NormalGL.png'},
-    'foam_roughness_map': {type: 'string', default: './image-dir/a-water-assets/Foam002_1K_Roughness.png'},
     'caustics_enabled': {type: 'bool', default: 1},
     'caustics_strength': {type: 'number', default: 1.0},
     'foam_enabled': {type: 'bool', default: 1},

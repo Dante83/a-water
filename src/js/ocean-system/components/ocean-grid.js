@@ -24,7 +24,6 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.foamColorMap;
   this.foamOpacityMap;
   this.foamNormalMap;
-  this.foamRoughnessMap;
   this.foamRenderMap;
   this.exclusionMap;
   this.windVelocity = data.wind_velocity;
@@ -163,22 +162,6 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     texture.colorSpace = THREE.LinearSRGBColorSpace;
     texture.format = THREE.RGBAFormat;
     self.foamNormalMap = texture;
-  }, function(err){
-    console.error(err);
-  });
-
-  let foamRoughnessMapPromise = new Promise(function(resolve, reject){
-    textureLoader.load(data.foam_roughness_map, function(texture){resolve(texture);});
-  });
-  foamRoughnessMapPromise.then(function(texture){
-    //Fill in the details of our texture
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.magFilter = THREE.LinearFilter;
-    texture.minFilter = THREE.LinearMipmapLinearFilter;
-    texture.colorSpace = THREE.LinearSRGBColorSpace;
-    texture.format = THREE.RGBAFormat;
-    self.foamRoughnessMap = texture;
   }, function(err){
     console.error(err);
   });
@@ -339,19 +322,9 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
     //RingGeometry: flat ring at y=0 rotated from the default XY plane. Outer
     //radius capped at 1e7 m (10000 km) — the z-clamp keeps the rim fragments
-    //alive past camera.far. The FFT vertex shader expects tangent/bitangent
-    //attributes; supply constant world-aligned values for a flat surface.
+    //alive past camera.far.
     const skirtGeometry = new THREE.RingGeometry(8.0, 1.0e7, 256, 1);
     skirtGeometry.rotateX(-Math.PI / 2);
-    const vertCount = skirtGeometry.attributes.position.count;
-    const tangents = new Float32Array(vertCount * 3);
-    const bitangents = new Float32Array(vertCount * 3);
-    for(let i = 0; i < vertCount; i++){
-      tangents[i * 3 + 0] = 1.0;
-      bitangents[i * 3 + 2] = 1.0;
-    }
-    skirtGeometry.setAttribute('tangent', new THREE.BufferAttribute(tangents, 3));
-    skirtGeometry.setAttribute('bitangent', new THREE.BufferAttribute(bitangents, 3));
 
     //InstancedMesh with a single identity instance — the FFT vertex shader
     //multiplies by `instanceMatrix`, so we need the attribute present even
@@ -731,7 +704,6 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       uniformsRef.foamDiffuseMap.value = self.foamColorMap;
       uniformsRef.foamOpacityMap.value = self.foamOpacityMap;
       uniformsRef.foamNormalMap.value = self.foamNormalMap;
-      uniformsRef.foamRoughnessMap.value = self.foamRoughnessMap;
       uniformsRef.foamRenderMap.value = self.foamRenderMap;
       uniformsRef.exclusionMap.value = self.exclusionMap;
       uniformsRef.baseHeightOffset.value = self.heightOffset;
