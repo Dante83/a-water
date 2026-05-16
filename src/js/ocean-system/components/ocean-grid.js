@@ -1,3 +1,33 @@
+//Jerlov ocean water type presets (Jerlov 1968, 1976). Each row is
+//{ absorption, scattering } in m^-1 at RGB sampling wavelengths (~615/540/465 nm).
+//Index 0 is null — selects "custom" mode (use explicit water_absorption /
+//water_scattering attributes). Indices 1..7 walk the Jerlov classification
+//from clearest open ocean to turbid coastal water; resulting body-color
+//albedo (b/(a+b)) shifts saturated-blue → blue-green → teal → green-grey
+//as the type number rises, matching real ocean photography.
+//
+//   1 — Jerlov I:     open ocean, clearest, deep indigo/cobalt
+//   2 — Jerlov IB:    clear open ocean, slightly less saturated
+//   3 — Jerlov II:    typical open ocean, blue with hint of green
+//   4 — Jerlov III:   Mediterranean-style blue-teal
+//   5 — Coastal 1C:   clear coastal, turquoise/teal
+//   6 — Coastal 3C:   green coastal
+//   7 — Coastal 5C:   turbid green-grey
+//
+//Pope & Fry 1997 pure-water absorption sits just under Type 1. If the rendered
+//water reads "too cobalt," step up the type number — higher types add CDOM /
+//particulate scattering that lifts the green channel and desaturates the blue.
+AWater.AOcean.JERLOV_PRESETS = [
+  null,
+  { absorption: {x: 0.279, y: 0.061, z: 0.015}, scattering: {x: 0.001, y: 0.002, z: 0.003} }, // I
+  { absorption: {x: 0.284, y: 0.074, z: 0.025}, scattering: {x: 0.003, y: 0.004, z: 0.005} }, // IB
+  { absorption: {x: 0.286, y: 0.078, z: 0.050}, scattering: {x: 0.005, y: 0.006, z: 0.008} }, // II
+  { absorption: {x: 0.291, y: 0.099, z: 0.090}, scattering: {x: 0.010, y: 0.012, z: 0.015} }, // III
+  { absorption: {x: 0.330, y: 0.135, z: 0.155}, scattering: {x: 0.030, y: 0.035, z: 0.040} }, // 1C
+  { absorption: {x: 0.370, y: 0.190, z: 0.275}, scattering: {x: 0.050, y: 0.060, z: 0.060} }, // 3C
+  { absorption: {x: 0.520, y: 0.330, z: 0.530}, scattering: {x: 0.080, y: 0.090, z: 0.090} }, // 5C
+];
+
 AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //Variable for holding all of our patches
   //For now, just create 1 plane
@@ -288,7 +318,8 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.foamRenderTarget = new THREE.WebGLRenderTarget(4096, 4096, {
     type: THREE.FloatType
   });
-  this.foamCamera = new THREE.OrthographicCamera(-2048.0, 2048.0, 2048.0, -2048.0, 0.1, 1000.0);
+  this.foamCameraHeight = data.foam_camera_height;
+  this.foamCamera = new THREE.OrthographicCamera(-2048.0, 2048.0, 2048.0, -2048.0, 0.1, this.foamCameraHeight + 500.0);
   this.scene.add(this.foamCamera);
 
   //Set up a depth camera pointing down for ocean exclusion mapping.
@@ -304,7 +335,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.exclusionRenderTarget = new THREE.WebGLRenderTarget(1024, 1024, {
     type: THREE.FloatType
   });
-  this.exclusionCamera = new THREE.OrthographicCamera(-250.0, 250.0, 250.0, -250.0, 0.1, 1000.0);
+  this.exclusionCamera = new THREE.OrthographicCamera(-250.0, 250.0, 250.0, -250.0, 0.1, this.foamCameraHeight + 500.0);
   this.exclusionCamera.layers.disableAll();
   this.exclusionCamera.layers.set(30);
   this.scene.add(this.exclusionCamera);
@@ -528,8 +559,16 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       const uniformsRef = mesh.material.uniforms;
       uniformsRef.smallNormalMapVelocity.value.set(self.randomWindVelocities[0], self.randomWindVelocities[1]);
       uniformsRef.largeNormalMapVelocity.value.set(self.randomWindVelocities[2], self.randomWindVelocities[3]);
-      uniformsRef.waterAbsorption.value.copy(self.data.water_absorption);
-      uniformsRef.waterScattering.value.copy(self.data.water_scattering);
+      //Jerlov preset wins over the explicit RGB vec3s when water_type is in
+      //range (1..N). water_type == 0 ⇒ fall through to the custom values.
+      const jerlovPreset = AWater.AOcean.JERLOV_PRESETS[self.data.water_type | 0];
+      if(jerlovPreset){
+        uniformsRef.waterAbsorption.value.copy(jerlovPreset.absorption);
+        uniformsRef.waterScattering.value.copy(jerlovPreset.scattering);
+      } else {
+        uniformsRef.waterAbsorption.value.copy(self.data.water_absorption);
+        uniformsRef.waterScattering.value.copy(self.data.water_scattering);
+      }
       uniformsRef.waterTurbidity.value = self.data.water_turbidity;
       uniformsRef.k1ScatterAmount.value = self.data.k1_scatter_amount;
       uniformsRef.k2ViewDependence.value = self.data.k2_view_dependence;
@@ -758,7 +797,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     self.renderer.setClearAlpha(0.0);
     const currentRenderTarget = self.renderer.getRenderTarget();
     self.foamCamera.position.copy(self.globalCameraPosition);
-    self.foamCamera.position.y = this.heightOffset + 100.0;
+    self.foamCamera.position.y = this.heightOffset + self.foamCameraHeight;
     self.foamCamera.lookAt(self.globalCameraPosition.x, this.heightOffset - 1.0, self.globalCameraPosition.z);
     self.foamCamera.updateProjectionMatrix();
     self.renderer.setRenderTarget(self.foamRenderTarget);
@@ -769,7 +808,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     self.renderer.setRenderTarget(null);
     //Update our exclusion camera - also needs position pass material for height data
     self.exclusionCamera.position.copy(self.globalCameraPosition);
-    self.exclusionCamera.position.y = this.heightOffset + 100.0;
+    self.exclusionCamera.position.y = this.heightOffset + self.foamCameraHeight;
     self.exclusionCamera.lookAt(self.globalCameraPosition.x, this.heightOffset - 1.0, self.globalCameraPosition.z);
     self.exclusionCamera.updateProjectionMatrix();
     self.renderer.setRenderTarget(self.exclusionRenderTarget);

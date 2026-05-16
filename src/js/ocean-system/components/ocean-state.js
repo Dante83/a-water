@@ -16,19 +16,27 @@ AFRAME.registerComponent('ocean-state', {
     'foam_color_map': {type: 'string', default: './image-dir/a-water-assets/Foam002_1K_Color.png'},
     'foam_opacity_map': {type: 'string', default: './image-dir/a-water-assets/Foam002_1K_Opacity.png'},
     'foam_normal_map': {type: 'string', default: './image-dir/a-water-assets/Foam002_1K_NormalGL.png'},
+    //Height (m) of the foam + exclusion ortho cameras above rest water plane.
+    //Raise above your tallest island/cliff or its top gets clipped.
+    'foam_camera_height': {type: 'number', default: 100.0},
     'caustics_enabled': {type: 'bool', default: true},
     'caustics_strength': {type: 'number', default: 1.0},
     'foam_enabled': {type: 'bool', default: true},
     'foam_start': {type: 'number', default: 0.10},
     'large_normal_map_strength': {type: 'number', default: 0.30},
     'small_normal_map_strength': {type: 'number', default: 0.20},
-    //Absorption/scattering in m^-1. Tropical-clean preset from 2026-05-14
-    //water-review SUMMARY, sitting just under Pope & Fry 1997 pure-water
-    //(R=0.35, G=0.045, B=0.011) at RGB sampling wavelengths. Wavelength-flat
-    //scattering at clean-ocean magnitude (~0.005 m^-1). Yields albedo
-    //≈(0.016, 0.080, 0.333) — navy body color, not cyan; red-heavy
-    //extinction so deep water reads blue. Keep in sync with the matching
-    //defaults in water-shader-template.txt.
+    //Jerlov water type preset selector. 0 = custom (use the explicit
+    //water_absorption/water_scattering vec3 attributes below). 1..7 picks a
+    //preset from AWater.AOcean.JERLOV_PRESETS in ocean-grid.js — open-ocean
+    //types 1..4, coastal types 5..7. See that table for the (a, b) values
+    //and a per-type description.
+    'water_type': {type: 'number', default: 0},
+    //Custom absorption/scattering in m^-1, used only when water_type == 0.
+    //Tropical-clean preset from the 2026-05-14 water-review SUMMARY, sitting
+    //just under Pope & Fry 1997 pure-water (R=0.35, G=0.045, B=0.011) at RGB
+    //sampling wavelengths. Wavelength-flat scattering at clean-ocean magnitude.
+    //Yields albedo ≈(0.016, 0.080, 0.333) — navy body, red-heavy extinction so
+    //deep water reads blue. Keep in sync with water-shader-template.txt.
     'water_absorption': {type: 'vec3', default: {x: 0.30, y: 0.057, z: 0.010}},
     'water_scattering': {type: 'vec3', default: {x: 0.005, y: 0.005, z: 0.005}},
     //Turbidity: overall scatter multiplier. 1=clear tropical, 3=murky coastal, 8=river mouth.

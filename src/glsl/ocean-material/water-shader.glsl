@@ -217,6 +217,29 @@ const float SPECULAR_BOOST = 3.0;
 //numerical guard for the linearised slope→normal map.
 const float MACRO_SLOPE_MAX = 1.2;
 
+//── Crest sun back-scatter (Q8 sunset back-glow) ─────────────────────────
+//A thin-slab forward-scatter term that lights the visible face of a wave
+//crest when the sun is roughly OPPOSITE the camera (looking down-sun).
+//Light enters the back of the wave, scatters forward through the thin
+//water column at the crest, and exits toward the eye — producing the
+//green-gold halo on backlit crests at sunrise/sunset. Crest-style
+//(_SubSurfaceSunFallOff / _SubSurfaceHeightMax) shape; gated by wave
+//height so flat water never glows, and by Fresnel-T so grazing waves
+//reflect rather than transmit.
+//
+//SUB_SURFACE_HEIGHT_MIN  — wave height above rest (m) at which crests start
+//                          to transmit. Below this the term is zero.
+//SUB_SURFACE_HEIGHT_RANGE — softening range over which the term ramps in.
+//SUB_SURFACE_FALL_OFF    — exponent of the forward-scatter lobe along the
+//                          view-aligned-to-sun axis. Higher = tighter halo
+//                          aligned with the sun direction; ~5-8 reads as a
+//                          plausible Henyey-Greenstein forward peak.
+//SUB_SURFACE_STRENGTH    — overall scalar on the contribution.
+const float SUB_SURFACE_HEIGHT_MIN   = 0.4;
+const float SUB_SURFACE_HEIGHT_RANGE = 1.8;
+const float SUB_SURFACE_FALL_OFF     = 6.0;
+const float SUB_SURFACE_STRENGTH     = 1.4;
+
 float linearizeDepth(float depthSample){
   float near = cameraNearFar.x;
   float far = cameraNearFar.y;
@@ -1035,15 +1058,26 @@ void main(){
   //a semi-infinite water column actually looks like. Kills sky-dome-through-water
   //leak without a depth threshold or deep-water color swap.
   bool isFarPlane = refractionDepthLinear > cameraNearFar.y * 0.99;
-  bool hasUnderwaterGeom = !isFarPlane && pointXYZ.y < baseHeightOffset && refractionDepthLinear > surfaceDepthLinear;
+  //Compare the sampled point against the actual displaced water surface
+  //(worldPosition.y), NOT the flat rest plane — wave crests routinely sit
+  //several metres above baseHeightOffset and the flat-plane test would
+  //wrongly call a rock under such a crest "above water."
+  bool hasUnderwaterGeom = !isFarPlane && pointXYZ.y < worldPosition.y && refractionDepthLinear > surfaceDepthLinear;
   //Refraction ray hit no opaque geometry → the water column physically extends to
   //infinity below the surface, so we should behave as deep water and let the
   //refraction term hand off cleanly to inscatterEquilibrium. Without this, looking
   //straight down (where horizontalDist is tiny) leaves transmittance ≈ 1 and the
   //cleared-far-plane sky pixel from the refraction texture leaks through as white.
   //500.0 matches the effectiveDepth cap below — saturates transmittance to ~0.
+  //  hasUnderwaterGeom — real water column.
+  //  isFarPlane        — ray missed all geom; 500m saturates transmittance ~0
+  //                      so the cleared sky pixel doesn't leak through bright.
+  //  above-wave hit    — ray landed above the actual displaced surface; use
+  //                      3D distance as a Beer-Lambert proxy so the blend
+  //                      still mixes inscatter and we don't get a dark rim.
   float verticalDepth = hasUnderwaterGeom ? max(worldPosition.y - pointXYZ.y, 0.0)
-                                          : (isFarPlane ? 500.0 : 0.0);
+                                          : (isFarPlane ? 500.0
+                                                        : distance(worldPosition.xyz, pointXYZ));
   float horizontalDist = length(worldPosition.xz - cameraPosition.xz);
   //horizontalDepthScale: how many meters of effective depth per meter of horizontal
   //distance. 0.008 → 100m of horizontal fetch ≈ 0.8m of water, 1000m ≈ 8m — enough
@@ -1215,16 +1249,60 @@ void main(){
   vec3 dbgPostRelight = refractedLight;
   vec3 dbgTransmittance = transmittance;
   bool dbgHasUW = hasUnderwaterGeom;
+  bool dbgIsFarPlane = isFarPlane;
   float dbgVerticalDepth = verticalDepth;
   float dbgEffectiveDepth = effectiveDepth;
   vec3 dbgInscatterEquilibrium = inscatterEquilibrium;
   vec3 dbgReflectedLight = reflectedLight;
   float dbgFresnelFactor = fresnelFactor;
+  //Crest sun back-scatter (Q8). Forward-scatter lobe peaks when the camera
+  //is looking AT the sun — sun behind the wave from camera POV ⇒ light
+  //transmits through the thin water at the crest and exits toward the eye.
+  //
+  //Sign convention: `brightestDirectionalLightDirection` points FROM sun TO
+  //surface (the direction sunlight travels). `normalizedViewVector` points
+  //FROM camera TO surface. The scattering-angle cosine in Henyey-Greenstein
+  //is dot(incident, scattered) measured outward from the scatter point.
+  //Incident is +lightDir; scattered toward the camera is -viewDir; so
+  //  cosScatter = dot(lightDir, -viewDir) = -dot(lightDir, viewDir).
+  //Equivalently dot(-lightDir, viewDir) — the form used here, mirroring
+  //the rest of the shader where -lightDir is the toward-sun vector.
+  //Reaches +1 when the camera looks straight at the sun.
+  //
+  //Multiplied by waterAlbedo so the contribution picks up the body hue, and
+  //by brightestDirectionalLight so dawn/dusk crests glow gold (warm sun
+  //color) rather than white.
+  //
+  //Three gates keep this term invisible everywhere except backlit crests:
+  //  crestGate    — only waves above SUB_SURFACE_HEIGHT_MIN contribute, so
+  //                 the flat near-field never blooms (the failure mode of
+  //                 the scrapped 2026-05-15 first attempt).
+  //  sunUp        — fades to 0 below the horizon (no moon back-glow).
+  //  fresnelT     — grazing-view waves reflect rather than transmit.
+  //Additionally the body weight (1 - fresnelFactor) is applied at the
+  //final composition step, so view-aligned grazing geometry never
+  //double-counts a transmitted halo on top of a strong specular reflection.
+  float waveHeightAboveRest = max(0.0, worldPosition.y - baseHeightOffset);
+  float crestGate = smoothstep(SUB_SURFACE_HEIGHT_MIN,
+                               SUB_SURFACE_HEIGHT_MIN + SUB_SURFACE_HEIGHT_RANGE,
+                               waveHeightAboveRest);
+  float cosScatter = max(0.0, dot(-brightestDirectionalLightDirection, normalizedViewVector));
+  float backScatterLobe = pow(cosScatter, SUB_SURFACE_FALL_OFF);
+  float sunUpForSubsurface = smoothstep(0.0, 0.15, sunZenithFactor);
+  float fresnelT = 1.0 - fresnelFactor;
+  vec3 crestTranslucency = waterAlbedo * brightestDirectionalLight
+                         * backScatterLobe * crestGate * sunUpForSubsurface
+                         * fresnelT * sunShadowFactor * SUB_SURFACE_STRENGTH;
+
   //Blend refracted sample with backscatter equilibrium by transmittance.
   //Near-field, shallow: transmittance ≈ 1, refractedLight ≈ sampled scene.
   //Far-horizon / deep: transmittance → 0, refractedLight → inscatterEquilibrium.
   //Continuous across the whole range — no branching, no far-plane cliff.
-  refractedLight = refractedLight * transmittance + inscatterEquilibrium * (vec3(1.0) - transmittance);
+  //Crest translucency adds to the body channel — it's transmitted light, so
+  //it picks up the same (1 - fresnelFactor) weight as the rest of the body
+  //at the final composition step.
+  refractedLight = refractedLight * transmittance + inscatterEquilibrium * (vec3(1.0) - transmittance) + crestTranslucency;
+  vec3 dbgBody = refractedLight;
 
   //Calculate specular lighting and surface lighting
   float lightMag = length(brightestDirectionalLight);
@@ -1395,10 +1473,18 @@ void main(){
   else if(oceanShadowDebugMode == 5){
     gl_FragColor = linearTosRGB(vec4(dbgPostRelight, 1.0));
   }
-  //Mode 6: hasUnderwaterGeom — red = true (refraction sample is real seabed),
-  //blue = false (sample is sky/far-plane and verticalDepth is forced to zero).
+  //Mode 6: depth-path classification, 3-tone.
+  //  RED   = hasUnderwaterGeom (refraction ray hit real seabed; correct path).
+  //  BLUE  = isFarPlane (refraction ray missed all geometry → 500 m fallback,
+  //          renders as dark deep body color).
+  //  GREEN = !hasUnderwaterGeom && !isFarPlane (refraction ray landed on
+  //          above-water geometry, e.g. a rock above the waterline; goes
+  //          into the above-water relight branch with verticalDepth = 0).
   else if(oceanShadowDebugMode == 6){
-    gl_FragColor = vec4(dbgHasUW ? vec3(1.0, 0.2, 0.2) : vec3(0.2, 0.2, 1.0), 1.0);
+    vec3 tint = dbgHasUW       ? vec3(1.0, 0.2, 0.2)
+              : dbgIsFarPlane  ? vec3(0.2, 0.2, 1.0)
+                               : vec3(0.2, 1.0, 0.2);
+    gl_FragColor = vec4(tint, 1.0);
   }
   //Mode 7: transmittance grayscale (white = clear, black = fully attenuated).
   //Use luminance of the per-channel transmittance vector.
@@ -1443,6 +1529,14 @@ void main(){
   //calibration is still needed.
   else if(oceanShadowDebugMode == 13){
     gl_FragColor = linearTosRGB(vec4(skyAmbientColor, 1.0));
+  }
+  //Mode 15: body channel only (post seabed-relight + transmittance blend +
+  //inscatter + crest translucency), shown without any Fresnel mixing, sky
+  //reflection, or specular. This is exactly what the shader composites at
+  //weight (1 - fresnelFactor); compare to mode 11 (reflection) to see who
+  //dominates at this fragment.
+  else if(oceanShadowDebugMode == 15){
+    gl_FragColor = linearTosRGB(vec4(dbgBody, 1.0));
   }
   //Mode 14: raw causticShader sample (R, G, B from the three offset taps used
   //for chromatic dispersion). Outputs the value BEFORE any *15 amplitude or
