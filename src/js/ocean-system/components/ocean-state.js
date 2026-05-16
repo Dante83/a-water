@@ -39,6 +39,15 @@ AFRAME.registerComponent('ocean-state', {
     //deep water reads blue. Keep in sync with water-shader-template.txt.
     'water_absorption': {type: 'vec3', default: {x: 0.30, y: 0.057, z: 0.010}},
     'water_scattering': {type: 'vec3', default: {x: 0.005, y: 0.005, z: 0.005}},
+    //Sky-reflection attenuators. 1.0 = full HDR sky reflection (current physical
+    //value, can look unrealistically bright vs photo). reflection_distance_falloff
+    //subtracts additional reflection at horizon-ish distances to fake the
+    //statistical roughness convolution real water provides at range.
+    'reflection_scale': {type: 'number', default: 1.0},
+    'reflection_distance_falloff': {type: 'number', default: 0.0},
+    //Distance-based Fresnel grazing-peak cap (Kulla-Conty-style roll-off).
+    //0 = no effect. 0.85 ≈ ocean-photo-like horizon.
+    'fresnel_distance_roughness': {type: 'number', default: 0.7},
     //Turbidity: overall scatter multiplier. 1=clear tropical, 3=murky coastal, 8=river mouth.
     //Scales inscatterLight — higher values make body color more visible and water cloudier.
     'water_turbidity': {type: 'number', default: 1.0},

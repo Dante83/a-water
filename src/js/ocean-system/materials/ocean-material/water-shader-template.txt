@@ -129,6 +129,9 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     waterAbsorption: {type: 'vec3', value: new THREE.Vector3(0.30, 0.057, 0.010)},
     waterScattering: {type: 'vec3', value: new THREE.Vector3(0.005, 0.005, 0.005)},
     waterMieG: {type: 'f', value: 0.85},
+    reflectionScale: {type: 'f', value: 1.0},
+    reflectionDistanceFalloff: {type: 'f', value: 0.0},
+    fresnelDistanceRoughness: {type: 'f', value: 0.7},
     // New physically-based scattering parameters
     k1ScatterAmount: {type: 'f', value: 1.5},
     k2ViewDependence: {type: 'f', value: 1.2},

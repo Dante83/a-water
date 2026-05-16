@@ -44,6 +44,9 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.heightOffset = data.height_offset;
   this.causticsEnabled = data.caustics_enabled;
   this.causticsStrength = data.caustics_strength;
+  this.reflectionScale = data.reflection_scale;
+  this.reflectionDistanceFalloff = data.reflection_distance_falloff;
+  this.fresnelDistanceRoughness = data.fresnel_distance_roughness;
   this.foamEnabled = data.foam_enabled;
   this.foamStart = data.foam_start;
   this.data = data;
@@ -569,6 +572,9 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         uniformsRef.waterAbsorption.value.copy(self.data.water_absorption);
         uniformsRef.waterScattering.value.copy(self.data.water_scattering);
       }
+      uniformsRef.reflectionScale.value = self.reflectionScale;
+      uniformsRef.reflectionDistanceFalloff.value = self.reflectionDistanceFalloff;
+      uniformsRef.fresnelDistanceRoughness.value = self.fresnelDistanceRoughness;
       uniformsRef.waterTurbidity.value = self.data.water_turbidity;
       uniformsRef.k1ScatterAmount.value = self.data.k1_scatter_amount;
       uniformsRef.k2ViewDependence.value = self.data.k2_view_dependence;
@@ -676,6 +682,15 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.evsmLightBleedReduction.value = f;
     }
   };
+  this.setReflectionScale = function(v){
+    self.reflectionScale = +v;
+  };
+  this.setReflectionDistanceFalloff = function(v){
+    self.reflectionDistanceFalloff = +v;
+  };
+  this.setFresnelDistanceRoughness = function(v){
+    self.fresnelDistanceRoughness = +v;
+  };
   if(typeof window !== 'undefined'){
     window.setOceanShadowDebug = this.setOceanShadowDebug;
     window.setSunShadowEnabled = this.setSunShadowEnabled;
@@ -684,6 +699,9 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     window.setOceanEvsmExpC = this.setOceanEvsmExpC;
     window.setOceanEvsmMinVariance = this.setOceanEvsmMinVariance;
     window.setOceanEvsmLightBleedReduction = this.setOceanEvsmLightBleedReduction;
+    window.setReflectionScale = this.setReflectionScale;
+    window.setReflectionDistanceFalloff = this.setReflectionDistanceFalloff;
+    window.setFresnelDistanceRoughness = this.setFresnelDistanceRoughness;
   }
   const oceanPatchTranslationMatrices = [];
   for(let i = 0, numOceanPatches = self.oceanPatches.length; i < numOceanPatches; ++i){
@@ -874,6 +892,9 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       uniformsRef.largeNormalMap.value = self.largeNormalMap;
       uniformsRef.causticMap.value = self.causticMap;
       uniformsRef.causticIntensityMultiplier.value = self.causticsStrength;
+      uniformsRef.reflectionScale.value = self.reflectionScale;
+      uniformsRef.reflectionDistanceFalloff.value = self.reflectionDistanceFalloff;
+      uniformsRef.fresnelDistanceRoughness.value = self.fresnelDistanceRoughness;
       uniformsRef.foamStartLevel.value = self.foamStart;
       uniformsRef.foamDiffuseMap.value = self.foamColorMap;
       uniformsRef.foamOpacityMap.value = self.foamOpacityMap;

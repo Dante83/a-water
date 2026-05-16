@@ -120,6 +120,21 @@ uniform vec3 skyAmbientColor;
 uniform vec3 waterAbsorption;
 uniform vec3 waterScattering;
 uniform float waterMieG;
+//Sky-reflection attenuators. Real water has micro-roughness that statistically
+//averages incident sky radiance over a cone; our FFT+normal-map captures that
+//near camera only, so distant water acts as a perfect mirror against the HDR
+//sky LUT. reflectionScale is a flat global multiplier; reflectionDistanceFalloff
+//is the extra attenuation applied at distance to fake the roughness convolution.
+uniform float reflectionScale;
+uniform float reflectionDistanceFalloff;
+//Distance-based Fresnel peak compression. At sub-pixel facet density the
+//correct Fresnel is the integral of Schlick over the slope PDF, not the
+//evaluation at the LOD-flattened mean normal — without this, the horizon
+//reads as a bright mirror because every distant pixel collapses to a single
+//"flat upward" facet that gives near-100% grazing F. Compressing the grazing
+//peak with distance approximates the Kulla-Conty / Burley energy roll-off.
+//Range 0..1. 0 = standard Schlick everywhere; 0.85 ≈ ocean-photo-like horizon.
+uniform float fresnelDistanceRoughness;
 
 // Ambient directional lights (for scattering contributions)
 uniform int ambientLightCount;
@@ -1135,7 +1150,13 @@ void main(){
   //Micro-ripples drive the GGX specular D term above; using them here too floods every steep
   //wave face with sky reflection, washing out the whole surface with white.
   float cosTheta = clamp(dot(displacedNormal, -normalizedViewVector), 0.0, 1.0);
-  float fresnelFactor = r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
+  //Compress the Fresnel grazing peak with distance — stand-in for slope-PDF
+  //integration (see fresnelDistanceRoughness uniform comment). At close range
+  //peakFresnel = 1.0 (standard Schlick). At range it shrinks toward r0, so
+  //even at grazing angles the reflection contribution stays bounded.
+  float fresnelDistAttenuation = smoothstep(50.0, 800.0, distanceToWorldPosition);
+  float peakFresnel = mix(1.0, mix(1.0, r0, fresnelDistanceRoughness), fresnelDistAttenuation);
+  float fresnelFactor = r0 + (peakFresnel - r0) * pow(1.0 - cosTheta, 5.0);
 
   //Energy-conserving Schlick: body and reflection share a single fresnelFactor.
   //  body weight       = 1 - fresnelFactor  (1 looking down, 0 at horizon)
@@ -1348,7 +1369,14 @@ void main(){
   //the body blend). Sky reflection and refraction stay untouched.
   //The body term `refractedLight` is the unified Beer-Lambert/inscatter
   //blend assembled above (T * sceneBack + (1 - T) * inscatterEquilibrium).
-  vec3 totalLight = specular + (2.0 / 255.0) * directionalSurfaceLighting + (253.0 / 255.0) * (refractedLight * (1.0 - fresnelFactor) + reflectedLight * fresnelFactor);
+  //Distance-based reflection attenuation. distanceLodFactor goes ~1 near
+  //camera → 0 at ~7 cascade-0 wavelengths; we want the OPPOSITE shape (1
+  //near, falls off far) for an attenuator. smoothstep keeps the transition
+  //gentle so there's no visible band.
+  float reflectionDistanceAttenuation = mix(1.0, 1.0 - reflectionDistanceFalloff,
+                                            smoothstep(0.0, 1.0, distanceToWorldPosition / 800.0));
+  vec3 attenuatedReflection = reflectedLight * reflectionScale * reflectionDistanceAttenuation;
+  vec3 totalLight = specular + (2.0 / 255.0) * directionalSurfaceLighting + (253.0 / 255.0) * (refractedLight * (1.0 - fresnelFactor) + attenuatedReflection * fresnelFactor);
   //2026-05-14 unit reconciliation, Step 2 finalizer: removed the additive
   //"hemisphere sky fill" term that used to live here. skyAmbientColor is
   //already consumed inside inscatterEquilibrium (= waterAlbedo * (direct +
