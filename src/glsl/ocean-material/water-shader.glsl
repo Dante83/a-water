@@ -449,6 +449,15 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 reflectDir){
     vec3 skyColor = min(texture2D(meteringSurveyTexture, skyUV).rgb, vec3(4.0));
   #endif
 
+  //Note: a procedural sun-disk/halo addition was attempted here to fill the
+  //"dark hole" in computeSkyRadiance at the sun direction at sunset (the
+  //Mie forward-scattering peak gets crushed by atmSunHorizonFade^3). It
+  //produced wrong colors when combined with the LUT's dim plum baseline.
+  //The proper fix is to either (a) sample a-starry-sky's actual sun render
+  //target in the SSR fallback, or (b) hide the sun mesh during the G-buffer
+  //refraction pass and have the sky LUT include a proper sun peak.
+  //Deferred to a follow-up session.
+
   //Reflected ray pointing behind the camera — skip march, return sky directly.
   if(viewReflect.z > 0.0){
     return skyColor;
@@ -1102,10 +1111,15 @@ void main(){
   //weight ≥ 0.7 everywhere AND reflection at full Schlick, summing to 1.4 — which
   //made the bright sky reflection dominate ~70% of every pixel and pulled the whole
   //ocean toward "blue-white sheet." If horizon tint returns, fix the horizon source
-  //(reflection cap, inscatterEquilibrium hue) instead of double-weighting.
-  //Clamp HDR values — metering survey is linear float and can be bright near the sun.
-  //Cap at 4.0 to prevent saturation while preserving sky brightness range.
-  reflectedLight = min(reflectedLight, vec3(4.0));
+  //(inscatterEquilibrium hue) instead of double-weighting.
+  //
+  //Reflection HDR cap deleted in SUMMARY Step 3: the AES-Filmic tonemap below
+  //has a smooth shoulder that absorbs HDR>1 cleanly (4.0 → 0.97, 10.0 → 1.0),
+  //so a body-wide min(reflectedLight, 4.0) was throwing away ~1.5 stops of
+  //sun-disk dynamic range AND distorting hue at the clamp (orange→grey). If
+  //a firefly artifact appears on a single sun-disk specular sample, fix with
+  //a localized clamp on the specular lobe only, not by reinstating this cap.
+
 
   //Relight the G-buffer sample. Two branches, picked by whether the sampled
   //point is below or above the water rest plane:
@@ -1241,9 +1255,15 @@ void main(){
   //Fresnel gate at N·V: head-on barely reflects, grazing catches the full lobe.
   float NdotV = max(dot(specNormal, -normalizedViewVector), 0.0);
   float fresnelSpec = r0 + (1.0 - r0) * pow(1.0 - NdotV, 5.0);
+  //Horizon fade: a-starry-sky's brightestDirectionalLight still carries meaningful
+  //orange magnitude when the sun is below the horizon (twilight residual), which
+  //multiplied by SPECULAR_BOOST blooms every wave crest with bright orange post-
+  //sunset. Fade specular to zero from ~9° above horizon down. sunZenithFactor
+  //= -direction.y so it's negative when the sun is below the horizon.
+  float specularSunFade = smoothstep(0.0, 0.15, sunZenithFactor);
   //Specular boost: Crest's _DirectionalLightBoost defaults ~5; dropped to 3 because
   //the Fresnel gate already pushes grazing waves to full intensity.
-  vec3 specular = sunLobe * fresnelSpec * SPECULAR_BOOST * lightMag * normalizedLightIntensity * sunShadowFactor;
+  vec3 specular = sunLobe * fresnelSpec * SPECULAR_BOOST * lightMag * normalizedLightIntensity * sunShadowFactor * specularSunFade;
 
   //Total light. Sun shadow is applied only to direct-sun terms (specular
   //and the directionalSurfaceLighting / inscatterShadow contributions inside
