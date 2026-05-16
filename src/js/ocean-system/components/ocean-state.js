@@ -22,11 +22,15 @@ AFRAME.registerComponent('ocean-state', {
     'foam_start': {type: 'number', default: 0.10},
     'large_normal_map_strength': {type: 'number', default: 0.30},
     'small_normal_map_strength': {type: 'number', default: 0.20},
-    //Absorption/scattering in m^-1. Tuned for clear tropical ocean with ~70m visibility.
-    //At 70m: transmittance ~35% green/blue, ~25% red (strong blue-green tint at depth).
-    //At 20m: transmittance ~79% — very clear near shore.
-    'water_absorption': {type: 'vec3', default: {x: 0.012, y: 0.004, z: 0.001}},
-    'water_scattering': {type: 'vec3', default: {x: 0.003, y: 0.008, z: 0.010}},
+    //Absorption/scattering in m^-1. Tropical-clean preset from 2026-05-14
+    //water-review SUMMARY, sitting just under Pope & Fry 1997 pure-water
+    //(R=0.35, G=0.045, B=0.011) at RGB sampling wavelengths. Wavelength-flat
+    //scattering at clean-ocean magnitude (~0.005 m^-1). Yields albedo
+    //≈(0.016, 0.080, 0.333) — navy body color, not cyan; red-heavy
+    //extinction so deep water reads blue. Keep in sync with the matching
+    //defaults in water-shader-template.txt.
+    'water_absorption': {type: 'vec3', default: {x: 0.30, y: 0.057, z: 0.010}},
+    'water_scattering': {type: 'vec3', default: {x: 0.005, y: 0.005, z: 0.005}},
     //Turbidity: overall scatter multiplier. 1=clear tropical, 3=murky coastal, 8=river mouth.
     //Scales inscatterLight — higher values make body color more visible and water cloudier.
     'water_turbidity': {type: 'number', default: 1.0},

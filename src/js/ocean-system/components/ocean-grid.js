@@ -172,10 +172,17 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   let rendererSize = new THREE.Vector2();
   this.renderer.getDrawingBufferSize(rendererSize);
 
-  //Set up screen-space refraction render target
-  this.refractionColorTarget = new THREE.WebGLRenderTarget(
+  //Set up screen-space G-buffer for refraction pass. Three attachments:
+  //  0: albedo + opaque-mask in .a   (stub-grey for now; per-mesh in A1)
+  //  1: world-space normal in .rgb
+  //  2: linear view-space depth in .r (replaces the old separate linearize pass)
+  //A WebGL2 MRT — the scene is rendered once via scene.overrideMaterial below,
+  //and the water shader later samples albedo + normal to relight the seabed
+  //inside the body-color path (Step 5 of docs/water-review/SUMMARY.txt).
+  this.refractionGBufferTarget = new THREE.WebGLRenderTarget(
     rendererSize.x, rendererSize.y,
     {
+      count: 3,
       minFilter: THREE.LinearFilter,
       magFilter: THREE.LinearFilter,
       format: THREE.RGBAFormat,
@@ -186,57 +193,96 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       )
     }
   );
-  this.refractionColorTarget.depthTexture.format = THREE.DepthFormat;
+  this.refractionGBufferTarget.depthTexture.format = THREE.DepthFormat;
 
-  //Linear-depth scratch target for SSR — eliminates a per-tap divide.
-  //The water shader's screenSpaceReflection() does up to ~58 depth reads per
-  //fragment (48 march + 5 binary refine + 4 silhouette + 1 hit), and the
-  //old code called linearizeDepth() on every one of them. That's ~58
-  //divides per ocean pixel × ~1M ocean pixels ≈ 58M divides per frame just
-  //to convert NDC depth to linear. Pre-linearise once into this target
-  //(single full-screen quad) and SSR reads linear depth directly.
-  this.refractionLinearDepthTarget = new THREE.WebGLRenderTarget(
-    rendererSize.x, rendererSize.y,
-    {
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
-      format: THREE.RGBAFormat,
-      type: THREE.FloatType,
-      depthBuffer: false,
-      stencilBuffer: false,
-      generateMipmaps: false
+  //G-buffer override material — one per source material, built on demand.
+  //Writes linear albedo (baseColor × decoded albedoMap) + geometric world-
+  //space normal + linear view-space depth. Per-mesh material swap in tick()
+  //below picks the right variant for each mesh before the refraction render.
+  //
+  //Fallback texture for materials without a .map — sampling a null sampler
+  //is undefined; bind a 1×1 white pixel and gate via hasAlbedoMap uniform.
+  const whiteData = new Uint8Array([255, 255, 255, 255]);
+  this._gBufferWhitePixel = new THREE.DataTexture(whiteData, 1, 1, THREE.RGBAFormat, THREE.UnsignedByteType);
+  this._gBufferWhitePixel.needsUpdate = true;
+
+  const gBufferVertexShader = [
+    'out vec3 vWorldNormal;',
+    'out float vViewZ;',
+    'out vec2 vUv;',
+    'void main(){',
+    '  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);',
+    '  vViewZ = -mvPosition.z;',
+    '  vWorldNormal = normalize(mat3(modelMatrix) * normal);',
+    '  vUv = uv;',
+    '  gl_Position = projectionMatrix * mvPosition;',
+    '}'
+  ].join('\n');
+
+  //Albedo path stores LINEAR values into the HalfFloat target. Source albedo
+  //maps from GLTF (the island model) are sRGB-encoded, so decode here once.
+  //Material.color values are already linear (THREE.Color stores linear).
+  const gBufferFragmentShader = [
+    'precision highp float;',
+    'layout(location = 0) out vec4 gAlbedo;',
+    'layout(location = 1) out vec4 gNormal;',
+    'layout(location = 2) out vec4 gLinearDepth;',
+    'in vec3 vWorldNormal;',
+    'in float vViewZ;',
+    'in vec2 vUv;',
+    'uniform vec3 baseColor;',
+    'uniform sampler2D albedoMap;',
+    'uniform int hasAlbedoMap;',
+    'vec3 srgbToLinear(vec3 c){ return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }',
+    'void main(){',
+    '  vec3 albedo = baseColor;',
+    '  if(hasAlbedoMap == 1){',
+    '    vec3 texel = texture(albedoMap, vUv).rgb;',
+    '    albedo *= srgbToLinear(texel);',
+    '  }',
+    '  gAlbedo = vec4(albedo, 1.0);',
+    '  gNormal = vec4(normalize(vWorldNormal), 1.0);',
+    '  gLinearDepth = vec4(vViewZ, 0.0, 0.0, 1.0);',
+    '}'
+  ].join('\n');
+
+  //Cache keyed by source-material UUID; built lazily on first sight.
+  this._gBufferMaterialCache = new Map();
+  this._swappedMeshes = [];
+
+  const grid = this;
+  this._buildGBufferMaterialFor = function(srcMat){
+    const hasMap = !!(srcMat.map && srcMat.map.isTexture);
+    const fallbackColor = new THREE.Color(0.5, 0.42, 0.32);
+    const baseColorRef = (srcMat.color && srcMat.color.isColor) ? srcMat.color : fallbackColor;
+    return new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      uniforms: {
+        baseColor: { value: baseColorRef },
+        albedoMap: { value: hasMap ? srcMat.map : grid._gBufferWhitePixel },
+        hasAlbedoMap: { value: hasMap ? 1 : 0 }
+      },
+      vertexShader: gBufferVertexShader,
+      fragmentShader: gBufferFragmentShader,
+      side: srcMat.side !== undefined ? srcMat.side : THREE.FrontSide
+    });
+  };
+
+  this._resolveGBufferMaterial = function(srcMat){
+    if(Array.isArray(srcMat)){
+      const arr = new Array(srcMat.length);
+      for(let i = 0; i < srcMat.length; ++i){
+        arr[i] = grid._resolveGBufferMaterial(srcMat[i]);
+      }
+      return arr;
     }
-  );
-  this._depthLinearizeMaterial = new THREE.ShaderMaterial({
-    uniforms: {
-      sourceDepth: {value: null},
-      cameraNearFar: {value: new THREE.Vector2(0.1, 10000.0)}
-    },
-    vertexShader: [
-      'varying vec2 vUv;',
-      'void main(){',
-      '  vUv = position.xy * 0.5 + 0.5;',
-      '  gl_Position = vec4(position.xy, 0.0, 1.0);',
-      '}'
-    ].join('\n'),
-    fragmentShader: [
-      'precision highp float;',
-      'uniform sampler2D sourceDepth;',
-      'uniform vec2 cameraNearFar;',
-      'varying vec2 vUv;',
-      'void main(){',
-      '  float d = texture2D(sourceDepth, vUv).r;',
-      '  float near = cameraNearFar.x;',
-      '  float far = cameraNearFar.y;',
-      '  gl_FragColor = vec4(near * far / (far - d * (far - near)), 0.0, 0.0, 1.0);',
-      '}'
-    ].join('\n'),
-    depthTest: false,
-    depthWrite: false
-  });
-  this._depthLinearizeScene = new THREE.Scene();
-  this._depthLinearizeScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this._depthLinearizeMaterial));
-  this._depthLinearizeCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    let cached = grid._gBufferMaterialCache.get(srcMat.uuid);
+    if(!cached){
+      cached = grid._buildGBufferMaterialFor(srcMat);
+      grid._gBufferMaterialCache.set(srcMat.uuid, cached);
+    }
+    return cached;
+  };
 
   //Set up depth camera pointing down for edge foam
   this.foamRenderTarget = new THREE.WebGLRenderTarget(4096, 4096, {
@@ -634,13 +680,12 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
     //Ensure render targets match current drawing buffer size (A-Frame may resize after construction)
     self.renderer.getDrawingBufferSize(rendererSize);
-    if(self.refractionColorTarget.width !== rendererSize.x || self.refractionColorTarget.height !== rendererSize.y){
-      self.refractionColorTarget.setSize(rendererSize.x, rendererSize.y);
-      self.refractionColorTarget.depthTexture = new THREE.DepthTexture(
+    if(self.refractionGBufferTarget.width !== rendererSize.x || self.refractionGBufferTarget.height !== rendererSize.y){
+      self.refractionGBufferTarget.setSize(rendererSize.x, rendererSize.y);
+      self.refractionGBufferTarget.depthTexture = new THREE.DepthTexture(
         rendererSize.x, rendererSize.y, THREE.UnsignedIntType
       );
-      self.refractionColorTarget.depthTexture.format = THREE.DepthFormat;
-      self.refractionLinearDepthTarget.setSize(rendererSize.x, rendererSize.y);
+      self.refractionGBufferTarget.depthTexture.format = THREE.DepthFormat;
     }
 
     //Update the state of our ocean grid
@@ -679,20 +724,34 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].visible = false;
     }
 
-    //Render scene to screen-space refraction target (no clip plane - depth comparison in shader)
+    //Render scene to G-buffer (3 MRT attachments: albedo, world-normal,
+    //linear-depth). scene.overrideMaterial can't carry per-mesh albedo, so
+    //we swap each visible non-ocean mesh's material to a cached G-buffer
+    //variant that reads that source material's own .color / .map. Restored
+    //immediately after render.
+    self._swappedMeshes.length = 0;
+    scene.traverse(function(obj){
+      if(!obj.isMesh || !obj.visible || !obj.material) return;
+      //Skip ShaderMaterial sources — they're custom shaders (ocean, etc.)
+      //whose attribute usage we can't safely replace with our G-buffer shader.
+      if(obj.material.isShaderMaterial) return;
+      if(Array.isArray(obj.material) && obj.material.some(function(m){ return m.isShaderMaterial; })) return;
+      const gBuf = self._resolveGBufferMaterial(obj.material);
+      self._swappedMeshes.push({ mesh: obj, original: obj.material });
+      obj.material = gBuf;
+    });
+
     const currentRefractionRT = self.renderer.getRenderTarget();
-    self.renderer.setRenderTarget(self.refractionColorTarget);
+    self.renderer.setRenderTarget(self.refractionGBufferTarget);
     self.renderer.clear();
     self.renderer.render(scene, sceneCamera);
-
-    //Pre-linearize the refraction depth into a float target so the water
-    //shader's SSR loop can sample linear depth directly. One full-screen
-    //quad's worth of work amortises ~58 divides per ocean pixel.
-    self._depthLinearizeMaterial.uniforms.sourceDepth.value = self.refractionColorTarget.depthTexture;
-    self._depthLinearizeMaterial.uniforms.cameraNearFar.value.set(sceneCamera.near, sceneCamera.far);
-    self.renderer.setRenderTarget(self.refractionLinearDepthTarget);
-    self.renderer.render(self._depthLinearizeScene, self._depthLinearizeCamera);
     self.renderer.setRenderTarget(currentRefractionRT);
+
+    for(let i = 0, n = self._swappedMeshes.length; i < n; ++i){
+      const entry = self._swappedMeshes[i];
+      entry.mesh.material = entry.original;
+    }
+    self._swappedMeshes.length = 0;
 
     //Update our sea foam camera - use position pass material to output world-space height data
     self.scene.overrideMaterial = self.positionPassMaterial;
@@ -746,10 +805,13 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       }
       uniformsRef.cascadePatchSizes.value = self.oceanHeightComposer._cascadePatchSizes;
       uniformsRef.waveHeightMultiplier.value = self.oceanHeightComposer.waveHeightMultiplier;
-      uniformsRef.refractionColorTexture.value = self.refractionColorTarget.texture;
-      uniformsRef.refractionDepthTexture.value = self.refractionColorTarget.depthTexture;
-      uniformsRef.refractionLinearDepth.value = self.refractionLinearDepthTarget.texture;
-      uniformsRef.screenResolution.value.set(self.refractionColorTarget.width, self.refractionColorTarget.height);
+      //G-buffer attachments — albedo (0), normal (1), linear-depth (2);
+      //depthTexture is the MRT's own depth attachment, kept for unprojection.
+      uniformsRef.refractionColorTexture.value = self.refractionGBufferTarget.textures[0];
+      uniformsRef.gBufferNormal.value = self.refractionGBufferTarget.textures[1];
+      uniformsRef.refractionDepthTexture.value = self.refractionGBufferTarget.depthTexture;
+      uniformsRef.refractionLinearDepth.value = self.refractionGBufferTarget.textures[2];
+      uniformsRef.screenResolution.value.set(self.refractionGBufferTarget.width, self.refractionGBufferTarget.height);
       uniformsRef.cameraNearFar.value.set(sceneCamera.near, sceneCamera.far);
       uniformsRef.inverseProjectionMatrix.value.copy(sceneCamera.projectionMatrixInverse);
       uniformsRef.inverseViewMatrix.value.copy(sceneCamera.matrixWorld);

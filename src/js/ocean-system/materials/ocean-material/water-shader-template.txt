@@ -29,11 +29,16 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     exclusionMap: {type: 't', value: null},
     smallNormalMapVelocity: {type: 'vec2', value: new THREE.Vector2()},
     largeNormalMapVelocity: {type: 'vec2', value: new THREE.Vector2()},
+    //Refraction G-buffer (3-attachment MRT, allocated in ocean-grid.js):
+    //  refractionColorTexture = attachment 0, LINEAR albedo (decoded per-mesh
+    //    in the G-buffer override shader); .a = 1 where geometry exists.
+    //  gBufferNormal          = attachment 1, world-space surface normal.
+    //  refractionLinearDepth  = attachment 2, view-space linear depth in .r.
+    //  refractionDepthTexture = the MRT's own depth attachment (raw NDC), kept
+    //    for the unprojection that recovers world-space seabed position.
     refractionColorTexture: {type: 't', value: null},
+    gBufferNormal: {type: 't', value: null},
     refractionDepthTexture: {type: 't', value: null},
-    //Pre-linearised depth in R channel; produced by a one-quad post-process
-    //pass in ocean-grid.js, sampled directly by SSR to skip ~58 per-pixel
-    //linearizeDepth divides per frame.
     refractionLinearDepth: {type: 't', value: null},
     screenResolution: {type: 'vec2', value: new THREE.Vector2()},
     cameraNearFar: {type: 'vec2', value: new THREE.Vector2()},
@@ -106,24 +111,23 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     ambientLightCount: {type: 'i', value: 0},
     ambientLightColors: {type: 'vec3', value: [new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0)]},
     ambientLightDirections: {type: 'vec3', value: [new THREE.Vector3(0,1,0), new THREE.Vector3(1,0,0), new THREE.Vector3(0,-1,0), new THREE.Vector3(-1,0,0), new THREE.Vector3(0,0,1), new THREE.Vector3(0,0,-1), new THREE.Vector3(0,1,0), new THREE.Vector3(0,1,0)]},
+    //skyAmbientColor is synthesized in ocean-grid.js from a-starry-sky's
+    //y-axis hemispherical light (color * intensity). After the 2026-05-14
+    //unit reconciliation it is consumed RAW in the water shader — same scale
+    //as brightestDirectionalLight, no bridging scalars.
     skyAmbientColor: {type: 'vec3', value: new THREE.Vector3(0.1, 0.15, 0.2)},
-    //How strongly diffuse sky irradiance drives underwater backscatter, relative to
-    //direct sun. Physically ~0.15-0.2 on a clear day, but skyAmbientColor isn't in
-    //the same units as brightestDirectionalLight — tune empirically in the dev GUI.
-    ambientWaterWeight: {type: 'f', value: 0.1},
     largeNormalMapStrength: {type: 'f', value: 0.45},
     smallNormalMapStrength: {type: 'f', value: 0.35},
-    //Petzold "clear ocean" coefficients rebalanced so (a) single-scatter albedo
-    //(scattering / extinction) lands navy-heavy and (b) extinction is ordered
-    //red > green > blue — matching Pope & Fry 1997 clean-ocean measurements,
-    //so blue survives long refraction paths and dusk doesn't read olive-green.
-    //waterScattering at 0.02 is ~4× clean-ocean Pope&Fry — "tropical bay" turbidity.
-    //Higher than this reads as coastal/turbid; lower approaches gin-clear open ocean.
-    //With absorption (0.45,0.10,0.04) and scattering (0.02,0.02,0.02):
-    //  extinction ≈ (0.47, 0.12, 0.06), albedo ≈ (0.04, 0.17, 0.33).
-    //Lower albedo → dimmer inscatterEquilibrium → seabed visible through shallows.
-    waterAbsorption: {type: 'vec3', value: new THREE.Vector3(0.45, 0.10, 0.04)},
-    waterScattering: {type: 'vec3', value: new THREE.Vector3(0.02, 0.02, 0.02)},
+    //Pope & Fry 1997 pure-water absorption at RGB sampling wavelengths
+    //(615/535/465 nm) is ≈(0.35, 0.045, 0.011) m^-1; the values below are
+    //the "tropical-clean" preset from the 2026-05-14 water-review SUMMARY,
+    //sitting just under that for clarity. Scattering is wavelength-flat at
+    //clean-ocean magnitude (~0.005 m^-1, Pope & Fry).
+    //With absorption (0.30, 0.057, 0.010) and scattering (0.005, 0.005, 0.005):
+    //  extinction ≈ (0.305, 0.062, 0.015), albedo ≈ (0.016, 0.080, 0.333).
+    //Navy body color (not cyan), red-heavy extinction so deep water reads blue.
+    waterAbsorption: {type: 'vec3', value: new THREE.Vector3(0.30, 0.057, 0.010)},
+    waterScattering: {type: 'vec3', value: new THREE.Vector3(0.005, 0.005, 0.005)},
     waterMieG: {type: 'f', value: 0.85},
     // New physically-based scattering parameters
     k1ScatterAmount: {type: 'f', value: 1.5},

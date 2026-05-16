@@ -25,11 +25,12 @@ uniform float waveHeightMultiplier;
 uniform sampler2D smallNormalMap;
 uniform sampler2D largeNormalMap;
 uniform sampler2D exclusionMap;
-uniform sampler2D refractionColorTexture;
-uniform sampler2D refractionDepthTexture;
-//Pre-linearised depth (R channel = near*far / (far - d*(far-near))) — see
-//ocean-grid.js. SSR samples this directly to skip a per-tap divide.
-uniform sampler2D refractionLinearDepth;
+//Refraction G-buffer attachments — see water-shader-template.txt for the
+//layout. The MRT is allocated and populated in ocean-grid.js's refraction pass.
+uniform sampler2D refractionColorTexture;   //attachment 0: linear albedo
+uniform sampler2D gBufferNormal;            //attachment 1: world-space normal
+uniform sampler2D refractionDepthTexture;   //raw NDC depth (unprojection)
+uniform sampler2D refractionLinearDepth;    //attachment 2: linear view-space depth
 uniform vec2 screenResolution;
 uniform vec2 cameraNearFar;
 uniform mat4 inverseProjectionMatrix;
@@ -65,6 +66,11 @@ uniform vec2 sunShadowMapSize;
 uniform float sunShadowRadius;
 uniform float sunShadowBias;
 uniform int sunShadowEnabled;
+//Matrix is also declared in the vertex shader (where it builds vSunShadowCoord
+//for the surface fragment); the fragment shader needs its own copy so it can
+//project arbitrary world-space points (e.g. the Snell-refracted seabed-emergence
+//point) into shadow space.
+uniform mat4 sunShadowMatrix;
 
 //Ocean-only cascaded shadow map — EVSM (Exponential Variance Shadow Map).
 //Each cascade's texture stores 4 warped depth moments per texel (written
@@ -111,7 +117,6 @@ uniform float evsmLightBleedReduction;
 //this is non-zero.
 uniform int oceanShadowDebugMode;
 uniform vec3 skyAmbientColor;
-uniform float ambientWaterWeight;
 uniform vec3 waterAbsorption;
 uniform vec3 waterScattering;
 uniform float waterMieG;
@@ -200,23 +205,10 @@ const float REFRACTION_DISTORTION = 0.03;
 //even when no underwater geometry was hit by the refraction ray.
 const float HORIZONTAL_DEPTH_SCALE = 0.008;
 
-//Seabed re-illumination multiplier (improvements.txt #11 / #30). Empirical
-//scalar applied to the post-refraction sample, matches a refraction sample
-//that already contains baked above-water lighting back to "albedo-ish"
-//magnitude before re-lighting. Flagged in memory as a fudge pending the
-//physical review.
-const float SEABED_BRIGHTEN = 4.0;
-
 //Phong sun-glint specular boost. Crest's _DirectionalLightBoost defaults
 //~5; lowered to 3 because the Fresnel gate already pushes grazing waves
 //to near-full intensity.
 const float SPECULAR_BOOST = 3.0;
-
-//Sky-dome diffuse irradiance weight on the wave surface. skyAmbientColor
-//is in non-physical "lighting" units (a-starry-sky hemispherical light
-//intensity), not radiance, so this scalar tunes it down to match the
-//Fresnel body weight. Tuned empirically.
-const float SKY_AMBIENT_WEIGHT = 0.1;
 
 //Macro-normal slope clamp. Caps |∇h| before forming the cascade-0 macro
 //normal so a wave face steeper than ~50° tilt doesn't produce a near-
@@ -569,89 +561,18 @@ vec3 MyAESFilmicToneMapping(vec3 color) {
   return clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), 0.0, 1.0);
 }
 
-//Henyey-Greenstein phase function for Mie scattering in water
-//g = asymmetry parameter (0.85-0.95 for ocean particles, strongly forward-scattering)
-float waterMiePhase(float cosTheta, float g){
-  float g2 = g * g;
-  float denom = 1.0 + g2 - 2.0 * g * cosTheta;
-  return (1.0 - g2) / (4.0 * 3.14159265 * denom * sqrt(denom));
-}
-
 //Fresnel reflectance at air->water interface (for light entering the water from above)
 //Schlick approximation with n_water = 1.33 — uses the file-level r0 constant.
 float fresnelAirToWater(float cosTheta){
   return r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
 }
 
-// Term 1: k₁ H ⟨ωᵢ · -ωₒ⟩⁴(0.5 - 0.5(ωᵢ · ωₙ))³
-// Wave height scattering — H is wave height, backlit + normal modulation
-float scatterTerm1(vec3 sunDir, vec3 viewDir, vec3 normal, float waveHeight, float k1) {
-  // H: wave height drives scattering amount (reference: displacementFoam.y * _HeightModifier)
-  float H = max(0.0, waveHeight);
-
-  // ⟨ωᵢ · -ωₒ⟩⁴: clamped backlit dot raised to 4th power
-  float backlitDot = max(dot(sunDir, -viewDir), 0.0);
-  float backlitTerm = backlitDot * backlitDot * backlitDot * backlitDot; // pow 4
-
-  // (0.5 - 0.5(ωᵢ · ωₙ))³: sun-normal angle modulation
-  float sunNormalDot = dot(sunDir, normal);
-  float normalModulation = pow(0.5 - 0.5 * sunNormalDot, 3.0);
-
-  return k1 * H * backlitTerm * normalModulation;
-}
-
-// Term 2: k₂(ωₒ · ωₙ)²
-// View-dependent scattering from surface orientation
-// Bright when normal faces camera, dark at grazing angles
-float scatterTerm2(vec3 viewDir, vec3 normal, float k2) {
-  // Use negative view direction: points FROM camera TO surface
-  // This makes it positive when normal faces camera
-  float viewNormalDot = max(dot(-viewDir, normal), 0.0);
-  return k2 * viewNormalDot * viewNormalDot;
-}
-
-// Fresnel denominator: 1/(1 + A(ωᵢ))
-// A(ωᵢ) based on absorption at incident angle
-float fresnelAbsorption(vec3 sunDir, vec3 normal, float absorptionAmount) {
-  float sunNormalDot = max(dot(sunDir, normal), 0.0);
-  float A = absorptionAmount * (1.0 - sunNormalDot);
-  return 1.0 / (1.0 + A);
-}
-
-// Term 3: k₃(ωᵢ · ωₙ)
-// Direct sun-normal scattering
-float scatterTerm3(vec3 sunDir, vec3 normal, float k3) {
-  return k3 * max(dot(sunDir, normal), 0.0);
-}
-
-// Term 4: k₄ P_f
-// P_f = bubble density (foam/turbulence driven)
-float scatterTerm4(float bubbleDensity, float k4) {
-  return k4 * bubbleDensity;
-}
-
-// Accumulate ambient light scattering from all directional lights
-vec3 ambientLightScattering(vec3 viewDir, vec3 normal, float waveElevation) {
-  vec3 totalAmbientScatter = vec3(0.0);
-
-  for(int i = 0; i < ambientLightCount && i < 8; ++i) {
-    // Simple ambient contribution: backlit scattering weighted by light color
-    float ambientBacklit = max(-dot(viewDir, ambientLightDirections[i]), 0.0);
-    ambientBacklit *= ambientBacklit; // Square for contrast
-
-    // Modulate by wave elevation (higher crests scatter more)
-    float ambientTerm = ambientBacklit * waveElevation;
-
-    // Add contribution from this light
-    totalAmbientScatter += ambientLightColors[i] * ambientTerm;
-  }
-
-  return totalAmbientScatter;
-}
-
 #if($caustics_enabled)
   float causticShader(vec2 uv, float t){
-    float tModified = (t / 20.0);
+    //Animation speed: t/8 — gentle ocean shimmer rather than rapids. Original
+    //was t/20 (glacial); t/4 read as frantic. Two scrolling UVs with non-
+    //parallel velocities create the interlock look.
+    float tModified = (t / 8.0);
     vec2 uv1 = uv + vec2(0.8, 0.1) * tModified;
     vec2 uv2 = uv - vec2(0.2, 0.7) * tModified;
     float aSample1 = texture(causticMap, uv1).r;
@@ -1068,6 +989,10 @@ void main(){
   //per-pixel divide here either.
   float refractionDepthRaw = texture2D(refractionDepthTexture, refractedUV).r;
   float refractionDepthLinear = texture2D(refractionLinearDepth, refractedUV).r;
+  //G-buffer clear leaves linear depth at 0 in pixels with no scene geometry;
+  //fold those into the far-plane so the isFarPlane test below behaves
+  //identically to the old separate linearize pass (NDC=1 → far).
+  if(refractionDepthLinear < 0.0001) refractionDepthLinear = cameraNearFar.y;
   float surfaceDepthLinear = linearizeDepth(gl_FragCoord.z);
 
   //If distorted UV samples something closer than the water surface, fall back to undistorted
@@ -1075,9 +1000,13 @@ void main(){
     refractedUV = screenUV;
     refractionDepthRaw = texture2D(refractionDepthTexture, refractedUV).r;
     refractionDepthLinear = texture2D(refractionLinearDepth, refractedUV).r;
+    if(refractionDepthLinear < 0.0001) refractionDepthLinear = cameraNearFar.y;
   }
 
-  vec3 refractedLight = sRGBToLinear(vec4(texture2D(refractionColorTexture, refractedUV).rgb, 1.0)).rgb;
+  //G-buffer attachment 0 stores LINEAR albedo (sRGB-encoded source textures
+  //are decoded inside the G-buffer fragment shader before write), so sample
+  //directly here — no second decode.
+  vec3 refractedLight = texture2D(refractionColorTexture, refractedUV).rgb;
 
   //Reconstruct world-space position from refraction depth
   vec4 clipPos = vec4(refractedUV * 2.0 - 1.0, refractionDepthRaw * 2.0 - 1.0, 1.0);
@@ -1129,12 +1058,10 @@ void main(){
   //  directDownwelling  — brightestDirectionalLight * surface Fresnel * cos zenith.
   //                       Sun by day, moon by night (dim but physical). Zero at sub-
   //                       horizon so polar night ocean goes dark as it should.
-  //  ambientDownwelling — diffuse sky hemisphere irradiance (skyAmbientColor).
-  //                       Weighted by ambientWaterWeight because skyAmbientColor's
-  //                       magnitude isn't in the same units as direct light; a
-  //                       literal 1.0 multiplier over-drives the blue glow.
-  //The 0.5 is the round-trip factor: light travels down to the scattering event and
-  //back up, so the integrated radiance is ∫ L * exp(-2*ext*d) dd = L * albedo / 2.
+  //  ambientDownwelling — diffuse sky hemisphere irradiance from a-starry-sky's
+  //                       y-axis hemispherical light. After the 2026-05-14 unit
+  //                       reconciliation (water-review SUMMARY Step 2), this is
+  //                       used raw — same scale as brightestDirectionalLight.
   //Extinction ordering matters for dusk: orange sky sampled through the water is
   //filtered by transmittance = exp(-extinction * d). Blue must have the SMALLEST
   //extinction so it survives long paths (real clean ocean: Pope & Fry 1997), else
@@ -1143,94 +1070,21 @@ void main(){
   //Crest-style: dim the DIRECT downwelling in shadow so the body reads
   //visibly cooler/darker, but lerp toward a floor instead of multiplying
   //to zero — fully shadowed water otherwise becomes a near-black void
-  //because ambientDownwelling alone is tiny (skyAmbientColor *
-  //ambientWaterWeight ≈ 0.1). The 0.65 floor keeps shadowed crests reading
-  //as "blue but a touch deeper" rather than "ink." Reflection, refracted
-  //scene, and ambient stay untouched.
+  //if ambientDownwelling happens to be tiny. The 0.65 floor keeps shadowed
+  //crests reading as "blue but a touch deeper" rather than "ink." Reflection,
+  //refracted scene, and ambient stay untouched.
   float inscatterShadow = mix(0.65, 1.0, sunShadowFactor);
   vec3 directDownwelling = brightestDirectionalLight * sunTransmission * sunCosZenith * inscatterShadow;
-  vec3 ambientDownwelling = skyAmbientColor * ambientWaterWeight;
-  vec3 inscatterEquilibrium = waterAlbedo * (directDownwelling + ambientDownwelling) * 0.5;
-
-  //Mie phase function: how much scattered light reaches the camera
-  //The scattered light must travel TOWARD the camera (-normalizedViewVector),
-  //so the scattering angle is between the incoming sun direction and the
-  //outgoing direction toward the camera.
-  float cosViewSun = dot(-normalizedViewVector, brightestDirectionalLightDirection);
-  float phaseSingle = waterMiePhase(cosViewSun, waterMieG);
-
-  //Multi-scattering approximation: in a thick water column, repeated scattering
-  //events isotropize the light field. Model this as an additive isotropic term.
-  float phaseMulti = 1.0 / (4.0 * 3.14159265);
-
-  // === NEW PHYSICALLY-BASED SCATTERING MODEL ===
-  // Calculate each scattering term separately for debugging/visualization
-
-  float waveElevation = max(height, 0.0);
-
-  // Calculate individual scattering terms
-  float term1 = scatterTerm1(-brightestDirectionalLightDirection, normalizedViewVector, displacedNormal, height, k1ScatterAmount);
-  float term2 = scatterTerm2(normalizedViewVector, displacedNormal, k2ViewDependence);
-  float fresnelFresnel = fresnelAbsorption(-brightestDirectionalLightDirection, displacedNormal, fresnelAbsorptionAmount);
-  float term3 = scatterTerm3(-brightestDirectionalLightDirection, displacedNormal, k3DirectScatter);
-  //Bubble-density haze disabled until the physical-model review (see
-  //improvements.txt #11): its raw sun-color * density output had no
-  //waterScattering multiplier and was the suspect for an olive dusk tint.
-  //Reinstate with scatterTerm4(bubbleDensity, k4ParallaxScatter) once the
-  //volume model is unified.
-  float term4 = 0.0;
-
-  // First scattering term: (k₁ ... + k₂ ...) * C_ss * L_sun * Fresnel
-  vec3 mainScatter = (term1 + term2) * waterScattering * brightestDirectionalLight * fresnelFresnel * sunShadowFactor;
-
-  // Second scattering term: k₃(ωᵢ · ωₙ) * C_ss * L_sun
-  vec3 directScatter = term3 * waterScattering * brightestDirectionalLight * sunShadowFactor;
-
-  // Fourth scattering term: k₄ P_b * L_sun (bubble density, not foam accumulation)
-  vec3 term4Scatter = term4 * brightestDirectionalLight * sunShadowFactor;
-
-  // L_scatter = (k1 + k2) * C_ss * L_sun * 1/(1 + A(ωᵢ))
-  //           + k3 * C_ss * L_sun
-  //           + k4 * P_f * L_sun
-  vec3 inscatterLight = (mainScatter + directScatter + term4Scatter) * waterTurbidity;
-
-  // Add ambient light contributions from all directional lights
-  vec3 ambientScatter = ambientLightScattering(normalizedViewVector, displacedNormal, waveElevation);
-  inscatterLight += ambientScatter * waterScattering;
-
-  /* OLD CODE - COMMENTED OUT FOR REFERENCE
-  //Jacobian SSS modulation (Crest technique): flat areas appear clearer/deeper by reducing
-  //inscatter; wave crests remain bright as the Jacobian pinches and thins the water column.
-  //turbulence is 0 on flat water, >0 at compressed crests.
-  //NOTE: was mix(0.5, 1.0) but the 2x contrast made wave crests pitch-black at night
-  //(crests have turbulence=0 → inscatter halved → only visible light source gone).
-  //Reduced to mix(0.8, 1.0) — still physically meaningful but visually acceptable at night.
-  inscatterLight *= mix(0.8, 1.0, turbulence);
-
-  //Wave-crest translucency: estimate light path thickness through the wave body.
-  //At a crest the water is thin - light from the sun side passes through a short
-  //path and exits toward the camera, giving the characteristic green-gold glow.
-  //This only occurs when the crest is backlit (looking through the wave toward the sun).
-  //
-  //Thickness is approximated from wave height above base water level and the
-  //angle between the surface normal and the sun direction. No ray marching needed -
-  //just geometry: a steep wave face lit from behind has a very short internal path.
-  float minCrestThickness = 3.0;
-  float crestThickness = max(linearScatteringTotalScatteringWaveHeight * (1.0 - waveElevation) / sunNormalDot, minCrestThickness);
-  float waveThickness = mix(distanceToPoint, crestThickness, waveElevation);
-  vec3 waveTransmittance = exp(-extinction * waveThickness);
-
-  //Backlit factor: the translucent glow is only visible when looking through
-  //the wave toward the sun. The view vector and light direction face toward each
-  //other when backlit (dot < 0), so negate to get a positive value for backlit crests.
-  float backlitFactor = max(-dot(normalizedViewVector, brightestDirectionalLightDirection), 0.0);
-  backlitFactor *= backlitFactor;
-
-  //Thin crests: transmitted sunlight passes through the wave body with its own
-  //absorption color (green-gold for thin water), added on top of the volume inscatter.
-  vec3 crestLight = waveTransmittance * sunTransmission * brightestDirectionalLight * waveElevation * backlitFactor;
-  inscatterLight += crestLight;
-  */
+  vec3 ambientDownwelling = skyAmbientColor;
+  vec3 inscatterEquilibrium = waterAlbedo * (directDownwelling + ambientDownwelling);
+  //Unified body color is computed in the transmittance-weighted blend below:
+  //  bodyColor = refractedLight * T + inscatterEquilibrium * (1 - T)
+  //which is the UE-SLW / Bruneton form `waterAlbedo * (1 - T) * Edown` plus
+  //the attenuated seabed sample. The phenomenological k1..k4 scatter stack and
+  //the Crest-style crest-translucency block were deleted in the 2026-05-14
+  //water-review Step 4. See SUMMARY Q8 for the crest-translucency follow-up
+  //(currently no thin-slab term — sunset backlit crests will read less golden
+  //until that lobe is re-introduced).
 
   //Apply Schlick's approximation for the fresnel amount
   //https://graphicscompendium.com/raytracing/11-fresnel-beer
@@ -1253,28 +1107,93 @@ void main(){
   //Cap at 4.0 to prevent saturation while preserving sky brightness range.
   reflectedLight = min(reflectedLight, vec3(4.0));
 
-  #if($caustics_enabled)
-    //Seabed re-illumination: the terrain shader bakes in above-water lighting,
-    //which leaves shadowed/steep underwater surfaces near-black in the refraction
-    //sample. Treat refractedLight as ~albedo and multiply by an above-surface
-    //downwelling proxy: direct sun (Fresnel-transmitted, modulated by caustics)
-    //plus a sky-ambient floor. The camera-leg Beer-Lambert attenuation is applied
-    //by the transmittance blend below, so we deliberately do NOT attenuate the
-    //sun-leg here — depth attenuation on both legs would double-dim and kill any
-    //chance of seeing the seabed. SEABED_BRIGHTEN (top of file) matches the
-    //refraction sample magnitude back toward terrain-albedo units; flagged as
-    //a fudge in improvements.txt #11 pending the physical-model review.
-    if(hasUnderwaterGeom){
+  //Relight the G-buffer sample. Two branches, picked by whether the sampled
+  //point is below or above the water rest plane:
+  //  (a) UNDERWATER:  Snell-bent sun + Beer-Lambert downpath + caustics +
+  //                   underwater ambient (skyAmbient × waterAlbedo).
+  //  (b) ABOVE WATER: standard sun × NdotL × sunShadow + skyAmbient.
+  //Both branches drive the lit value from albedo × lighting, so at zero
+  //ambient + zero direct, the body contribution is zero (no raw albedo leak).
+  //Going above-water-style instead of "saturate to deep blue" lets us see
+  //distant shore and just-above-water terrain naturally, with the thin water
+  //layer between camera and sample handled by the transmittance blend below.
+  //
+  //Cheap planar Snell for the underwater branch: approximate the water surface
+  //as a flat plane at y = worldPosition.y, refract once, attenuate the sun
+  //leg along the refracted path (shorter than the air direction at low sun),
+  //and sample the air-side sunShadowMap at the point where the sun ray
+  //emerged from the surface (so the island casts a shadow on the seabed
+  //beneath it). Ignores wave-surface curvature — that high-frequency
+  //variation is what caustics encode.
+  //Diagnostic: capture the raw causticShader output so debug mode 14 can
+  //visualise it independently of the dim multiplicative chain.
+  vec3 dbgCausticSample = vec3(0.0);
+  if(hasUnderwaterGeom){
+    vec3 seabedNormal = normalize(texture2D(gBufferNormal, refractedUV).rgb);
+
+    //Snell refraction at the flat water surface (n_air/n_water = 1/1.33).
+    vec3 sunDirInWater = refract(brightestDirectionalLightDirection, vec3(0.0, 1.0, 0.0), 1.0 / 1.33);
+    vec3 sunDirToSeabed = -sunDirInWater;
+    float upY = max(sunDirToSeabed.y, 0.05);
+    float NdotL_seabed = max(0.0, dot(seabedNormal, sunDirToSeabed));
+
+    //Refracted-path length from seabed up to the surface — shorter than
+    //the air-direction approximation at grazing sun.
+    float downPath = max(0.0, worldPosition.y - pointXYZ.y) / upY;
+    vec3 sunDown = brightestDirectionalLight * sunTransmission * exp(-extinction * downPath);
+
+    //Air-side surface emergence point for the shadow lookup.
+    vec3 pSurfaceHit = pointXYZ + sunDirToSeabed * downPath;
+    float seabedShadowFactor = 1.0;
+    if(sunShadowEnabled == 1){
+      vec4 seabedShadowCoord = sunShadowMatrix * vec4(pSurfaceHit, 1.0);
+      seabedShadowFactor = getSunShadow(seabedShadowCoord);
+    }
+
+    vec3 causticMod = vec3(1.0);
+    #if($caustics_enabled)
+      //Additive caustic modulation riding on sunDown (auto-fade at sunset,
+      //depth, and shadow). smoothstep curves the raw min(U1, U2) sample so
+      //the dim noise floor reads as 0 and bright peaks dominate — produces
+      //punchy bright spots instead of muddy ripples. With CAUSTIC_PEAK_SCALE
+      //≈ 12 and intensity=1, peak boost is ~12× while troughs sit near 1×;
+      //caustic-rich vs caustic-dim regions become high-contrast on a per-pixel
+      //basis. Overall caustic visibility still fades with depth automatically
+      //because the whole term multiplies into sunDown × exp(-extinction × downPath).
+      //dbgCausticSample feeds mode 14 visualisation.
+      const float CAUSTIC_PEAK_SCALE = 12.0;
+      const float CAUSTIC_THRESHOLD_LO = 0.15;
+      const float CAUSTIC_THRESHOLD_HI = 0.85;
       float causticLightingR = causticShader(0.02 * pointXYZ.xz + 0.005, t);
       float causticLightingG = causticShader(0.02 * pointXYZ.xz, t);
       float causticLightingB = causticShader(0.02 * pointXYZ.xz - 0.005, t);
-      vec3 caustic = causticIntensityMultiplier * vec3(causticLightingR, causticLightingG, causticLightingB);
-      vec3 seabedDirect = brightestDirectionalLight * sunTransmission * sunCosZenith
-                          * (1.0 + caustic) * sunShadowFactor;
-      vec3 seabedAmbient = skyAmbientColor;
-      refractedLight *= SEABED_BRIGHTEN * (seabedDirect + seabedAmbient);
+      vec3 causticSampleRaw = vec3(causticLightingR, causticLightingG, causticLightingB);
+      vec3 causticSample = smoothstep(vec3(CAUSTIC_THRESHOLD_LO), vec3(CAUSTIC_THRESHOLD_HI), causticSampleRaw);
+      dbgCausticSample = causticSample;
+      causticMod = vec3(1.0) + causticIntensityMultiplier * CAUSTIC_PEAK_SCALE * causticSample;
+    #endif
+
+    vec3 ambientUW = skyAmbientColor * waterAlbedo;
+    refractedLight *= (sunDown * NdotL_seabed * causticMod * seabedShadowFactor + ambientUW);
+  }
+  else if(!isFarPlane){
+    //Above-water terrain visible through wave distortion / grazing-angle
+    //refraction. Light it the same way the terrain shader would: direct sun
+    //× NdotL × sunShadow + sky ambient. The thin water column between the
+    //water surface and the sample point is handled by the transmittance
+    //blend below — short column ⇒ transmittance ≈ 1 ⇒ pass-through; long
+    //column (e.g. far shore behind a wide ocean stretch) ⇒ transmittance
+    //→ 0 ⇒ inscatter dominates.
+    vec3 sampleNormal = normalize(texture2D(gBufferNormal, refractedUV).rgb);
+    vec3 sunDirAir = -brightestDirectionalLightDirection;
+    float NdotL_terrain = max(0.0, dot(sampleNormal, sunDirAir));
+    float terrainShadowFactor = 1.0;
+    if(sunShadowEnabled == 1){
+      vec4 terrainShadowCoord = sunShadowMatrix * vec4(pointXYZ, 1.0);
+      terrainShadowFactor = getSunShadow(terrainShadowCoord);
     }
-  #endif
+    refractedLight *= (brightestDirectionalLight * NdotL_terrain * terrainShadowFactor + skyAmbientColor);
+  }
   //DEBUG snapshots (read by oceanShadowDebugMode 5..10 at bottom of shader).
   //dbgRawRefraction here is post-seabed-relight (since we already passed the
   //caustics block) — that's what we actually feed into the blend, so it's the
@@ -1284,7 +1203,6 @@ void main(){
   bool dbgHasUW = hasUnderwaterGeom;
   float dbgVerticalDepth = verticalDepth;
   float dbgEffectiveDepth = effectiveDepth;
-  vec3 dbgInscatterLight = inscatterLight;
   vec3 dbgInscatterEquilibrium = inscatterEquilibrium;
   vec3 dbgReflectedLight = reflectedLight;
   float dbgFresnelFactor = fresnelFactor;
@@ -1327,28 +1245,21 @@ void main(){
   //the Fresnel gate already pushes grazing waves to full intensity.
   vec3 specular = sunLobe * fresnelSpec * SPECULAR_BOOST * lightMag * normalizedLightIntensity * sunShadowFactor;
 
-  //Total light. Sky reflection is geometric — the sky itself isn't darkened
-  //by a cloud passing overhead — but in real photos shadowed water reflects
-  //Sun shadow is applied only to direct-sun terms (specular,
-  //directionalSurfaceLighting, the four scatter contributions). Sky
-  //reflection, refraction, and ambient are not sun-driven and stay at
-  //full brightness in shadowed regions — physically correct, and avoids
-  //the over-darkening that the EVSM-era crisp shadow factor produced
-  //through the previous "perceptual nudge" multipliers.
-  vec3 totalLight = specular + (2.0 / 255.0) * directionalSurfaceLighting + (253.0 / 255.0) * ((inscatterLight + refractedLight) * (1.0 - fresnelFactor) + reflectedLight * fresnelFactor);
-  //Ambient sky irradiance: diffuse illumination from the sky dome hitting the surface.
-  //Without this, high-Fresnel wave faces (crests tilted toward camera) appear black when
-  //there is nothing bright to reflect — the Fresnel model alone produces no light there.
-  //NdotUp weights by sky exposure; (1-fresnel) keeps this from fighting reflections.
-  //Hemisphere ambient: 1.0 facing straight up, 0.5 facing horizontal, 0.0 facing down.
-  //Prevents steep wave faces from going black — a vertical face still sees half the sky dome.
-  //Hemisphere sky ambient: color from a-starry-sky's y-axis hemisphere light.
-  //View-independent and color-correct at all times of day (blue at noon, orange-tinted at sunset).
-  //skyFactor: 1.0 facing straight up, 0.5 horizontal, 0.0 facing down.
-  //Use FFT geometry normal (no texture maps) for ambient — avoids printing normal map pattern onto the lighting.
-  //Crest does the same: geometry normals for SSS/ambient, texture normals only for specular/refraction.
-  float skyFactor = 0.5 + 0.5 * dot(displacedNormal, vec3(0.0, 1.0, 0.0));
-  totalLight += skyAmbientColor * skyFactor * (1.0 - fresnelFactor) * SKY_AMBIENT_WEIGHT;
+  //Total light. Sun shadow is applied only to direct-sun terms (specular
+  //and the directionalSurfaceLighting / inscatterShadow contributions inside
+  //the body blend). Sky reflection and refraction stay untouched.
+  //The body term `refractedLight` is the unified Beer-Lambert/inscatter
+  //blend assembled above (T * sceneBack + (1 - T) * inscatterEquilibrium).
+  vec3 totalLight = specular + (2.0 / 255.0) * directionalSurfaceLighting + (253.0 / 255.0) * (refractedLight * (1.0 - fresnelFactor) + reflectedLight * fresnelFactor);
+  //2026-05-14 unit reconciliation, Step 2 finalizer: removed the additive
+  //"hemisphere sky fill" term that used to live here. skyAmbientColor is
+  //already consumed inside inscatterEquilibrium (= waterAlbedo * (direct +
+  //skyAmbientColor)), which the transmittance-weighted refractedLight blend
+  //carries into the body color. The sky's reflective contribution is already
+  //handled by reflectedLight * fresnelFactor. Adding skyAmbientColor a third
+  //time here was double-counting and produced a milky-white whitewash on top
+  //of the saturated-but-dim navy body color. The Fresnel + body model is the
+  //correct physical answer.
 
   #if($foam_enabled)
     //Two-layer foam sampling: average a 90°-rotated, differently-scaled second sample
@@ -1479,11 +1390,11 @@ void main(){
   else if(oceanShadowDebugMode == 8){
     gl_FragColor = vec4(vec3(clamp(dbgVerticalDepth / 30.0, 0.0, 1.0)), 1.0);
   }
-  //Mode 9: inscatterLight in isolation — active single-scatter overlay.
-  //If this is bright/blue/saturated where the seabed should show, scatter is
-  //the "thickness" culprit.
+  //Mode 9: retired. The k1..k4 phenomenological scatter stack was deleted in
+  //the 2026-05-14 water-review Step 4; this slot now returns black so the
+  //debug-key index for modes 10..12 stays stable.
   else if(oceanShadowDebugMode == 9){
-    gl_FragColor = linearTosRGB(vec4(dbgInscatterLight, 1.0));
+    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
   }
   //Mode 10: inscatterEquilibrium in isolation — backscatter color blended into
   //refractedLight by (1 - transmittance). At transmittance ~0.7 this contributes
@@ -1503,6 +1414,24 @@ void main(){
   //actually carries in the final blend at this fragment.
   else if(oceanShadowDebugMode == 12){
     gl_FragColor = vec4(vec3(dbgFresnelFactor), 1.0);
+  }
+  //Mode 13: skyAmbientColor in isolation — diagnostic added 2026-05-14 after
+  //Step 2 of the unit reconciliation deleted the 0.1 bridging scalars. Compare
+  //against mode 11 (reflectedLight) and mode 10 (inscatterEquilibrium) on flat
+  //water to see whether skyAmbientColor's actual runtime magnitude justifies
+  //treating it as same-scale as brightestDirectionalLight, or whether a JS-side
+  //calibration is still needed.
+  else if(oceanShadowDebugMode == 13){
+    gl_FragColor = linearTosRGB(vec4(skyAmbientColor, 1.0));
+  }
+  //Mode 14: raw causticShader sample (R, G, B from the three offset taps used
+  //for chromatic dispersion). Outputs the value BEFORE any *15 amplitude or
+  //multiplication by sunDown/NdotL/shadow. If this reads black, causticShader
+  //is returning zero (texture not bound, or hasUnderwaterGeom false). If it
+  //reads as a clear ripple pattern, caustics ARE computing and the visibility
+  //problem is downstream (absolute brightness against the dim relit seabed).
+  else if(oceanShadowDebugMode == 14){
+    gl_FragColor = vec4(dbgCausticSample, 1.0);
   }
 
   //Debug overlays — only drawn when oceanShadowDebugMode is non-zero. Bottom-
