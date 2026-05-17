@@ -48,18 +48,6 @@ AFRAME.registerComponent('ocean-state', {
     //Distance-based Fresnel grazing-peak cap (Kulla-Conty-style roll-off).
     //0 = no effect. 0.85 ≈ ocean-photo-like horizon.
     'fresnel_distance_roughness': {type: 'number', default: 0.7},
-    //Turbidity: overall scatter multiplier. 1=clear tropical, 3=murky coastal, 8=river mouth.
-    //Scales inscatterLight — higher values make body color more visible and water cloudier.
-    'water_turbidity': {type: 'number', default: 1.0},
-    //Scatter term weights — exposed so you can tune body color visibility without touching
-    //physical absorption/scattering coefficients.
-    'k1_scatter_amount': {type: 'number', default: 1.5},
-    'k2_view_dependence': {type: 'number', default: 1.2},
-    'k3_direct_scatter': {type: 'number', default: 0.6},
-    'k4_parallax_scatter': {type: 'number', default: 0.2},
-    'water_mie_g': {type: 'number', default: 0.85},
-    'linear_scattering_height_offset': {type: 'number', default: 5.0},
-    'linear_scattering_total_wave_height': {type: 'number', default: 12.0},
     'atmospheric_perspective_enabled': {type: 'bool', default: true},
     'atmospheric_perspective_distance_scale': {type: 'number', default: 1.0},
     'jonswap_gamma': {type: 'number', default: 3.3},

@@ -107,10 +107,6 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     //Cascade-depth thumbnails and the bottom-corner jacobian/foam panels
     //draw only when this is non-zero.
     oceanShadowDebugMode: {type: 'i', value: 0},
-    // Ambient directional lights (for water scattering)
-    ambientLightCount: {type: 'i', value: 0},
-    ambientLightColors: {type: 'vec3', value: [new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0)]},
-    ambientLightDirections: {type: 'vec3', value: [new THREE.Vector3(0,1,0), new THREE.Vector3(1,0,0), new THREE.Vector3(0,-1,0), new THREE.Vector3(-1,0,0), new THREE.Vector3(0,0,1), new THREE.Vector3(0,0,-1), new THREE.Vector3(0,1,0), new THREE.Vector3(0,1,0)]},
     //skyAmbientColor is synthesized in ocean-grid.js from a-starry-sky's
     //y-axis hemispherical light (color * intensity). After the 2026-05-14
     //unit reconciliation it is consumed RAW in the water shader — same scale
@@ -128,19 +124,9 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     //Navy body color (not cyan), red-heavy extinction so deep water reads blue.
     waterAbsorption: {type: 'vec3', value: new THREE.Vector3(0.30, 0.057, 0.010)},
     waterScattering: {type: 'vec3', value: new THREE.Vector3(0.005, 0.005, 0.005)},
-    waterMieG: {type: 'f', value: 0.85},
     reflectionScale: {type: 'f', value: 1.0},
     reflectionDistanceFalloff: {type: 'f', value: 0.0},
     fresnelDistanceRoughness: {type: 'f', value: 0.7},
-    // New physically-based scattering parameters
-    k1ScatterAmount: {type: 'f', value: 1.5},
-    k2ViewDependence: {type: 'f', value: 1.2},
-    k3DirectScatter: {type: 'f', value: 0.6},
-    k4ParallaxScatter: {type: 'f', value: 0.2},
-    waterTurbidity: {type: 'f', value: 1.0},
-    fresnelAbsorptionAmount: {type: 'f', value: 1.0},
-    linearScatteringHeightOffset: {type: 'f', value: 5.0},
-    linearScatteringTotalScatteringWaveHeight: {type: 'f', value: 12.0},
     patchDataSize: {type: 'f', value: 1024.0},
     atmosphereTransmittance: {type: 't', value: null},
     atmosphereMieInscattering: {type: 't', value: null},
@@ -282,7 +268,6 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     'uniform vec3 skyAmbientColor;',
     'uniform vec3 waterAbsorption;',
     'uniform vec3 waterScattering;',
-    'uniform float waterMieG;',
     '//Sky-reflection attenuators. Real water has micro-roughness that statistically',
     '//averages incident sky radiance over a cone; our FFT+normal-map captures that',
     '//near camera only, so distant water acts as a perfect mirror against the HDR',
@@ -298,22 +283,6 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     '//peak with distance approximates the Kulla-Conty / Burley energy roll-off.',
     '//Range 0..1. 0 = standard Schlick everywhere; 0.85 ≈ ocean-photo-like horizon.',
     'uniform float fresnelDistanceRoughness;',
-
-    '// Ambient directional lights (for scattering contributions)',
-    'uniform int ambientLightCount;',
-    'uniform vec3 ambientLightColors[8];',
-    'uniform vec3 ambientLightDirections[8];',
-
-    '// New physically-based scattering parameters',
-    'uniform float k1ScatterAmount;',
-    'uniform float k2ViewDependence;',
-    'uniform float k3DirectScatter;',
-    'uniform float k4ParallaxScatter;',
-    'uniform float waterTurbidity;',
-    'uniform float fresnelAbsorptionAmount;',
-
-    'uniform float linearScatteringHeightOffset;',
-    'uniform float linearScatteringTotalScatteringWaveHeight;',
 
     'uniform float t;',
     'uniform float patchDataSize;',
@@ -358,8 +327,6 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     "//R0 For Schlick's Approximation",
     '//With n1 = 1.33 and n0 = 1.0',
     'const float r0 = 0.02;',
-    'const vec3 inverseGamma = vec3(0.454545454545454545454545);',
-    'const vec3 gamma = vec3(2.2);',
 
     '//── Tunable shading constants ────────────────────────────────────────────',
     '//Pulled out of inline literals so the physical-review session can locate',
@@ -647,7 +614,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
         'vec3 skyColor = computeSkyRadiance(reflectDir);',
       '#else',
         'vec2 skyUV = clamp(reflectDir.xz * 0.5 + 0.5, 0.01, 0.99);',
-        'vec3 skyColor = min(texture2D(meteringSurveyTexture, skyUV).rgb, vec3(4.0));',
+        'vec3 skyColor = texture2D(meteringSurveyTexture, skyUV).rgb;',
       '#endif',
 
       '//Note: a procedural sun-disk/halo addition was attempted here to fill the',
@@ -916,9 +883,6 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       '//matches the actual geometry (vertex shader applies displacementFade; resampling here',
       '//would skip that, causing LOD tile edge divergence).',
       'vec3 offsetPosition = vDisplacedPosition;',
-      '//Still need displacement for height-based effects (translucency, scattering)',
-      'vec3 displacement = offsetPosition - vPosition;',
-      'float height = (offsetPosition.y + linearScatteringHeightOffset) / linearScatteringTotalScatteringWaveHeight;',
       'vec4 worldPosition = vModelMatrix * vInstanceMatrix * vec4(offsetPosition, 1.0);',
       "//Exclusion sample. Half-width here MUST match exclusionCamera's ortho",
       '//half-width in ocean-grid.js (currently 250 m). The exclusion target',

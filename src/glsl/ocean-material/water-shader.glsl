@@ -119,7 +119,6 @@ uniform int oceanShadowDebugMode;
 uniform vec3 skyAmbientColor;
 uniform vec3 waterAbsorption;
 uniform vec3 waterScattering;
-uniform float waterMieG;
 //Sky-reflection attenuators. Real water has micro-roughness that statistically
 //averages incident sky radiance over a cone; our FFT+normal-map captures that
 //near camera only, so distant water acts as a perfect mirror against the HDR
@@ -135,22 +134,6 @@ uniform float reflectionDistanceFalloff;
 //peak with distance approximates the Kulla-Conty / Burley energy roll-off.
 //Range 0..1. 0 = standard Schlick everywhere; 0.85 ≈ ocean-photo-like horizon.
 uniform float fresnelDistanceRoughness;
-
-// Ambient directional lights (for scattering contributions)
-uniform int ambientLightCount;
-uniform vec3 ambientLightColors[8];
-uniform vec3 ambientLightDirections[8];
-
-// New physically-based scattering parameters
-uniform float k1ScatterAmount;
-uniform float k2ViewDependence;
-uniform float k3DirectScatter;
-uniform float k4ParallaxScatter;
-uniform float waterTurbidity;
-uniform float fresnelAbsorptionAmount;
-
-uniform float linearScatteringHeightOffset;
-uniform float linearScatteringTotalScatteringWaveHeight;
 
 uniform float t;
 uniform float patchDataSize;
@@ -195,8 +178,6 @@ uniform float blueNoiseTime;
 //R0 For Schlick's Approximation
 //With n1 = 1.33 and n0 = 1.0
 const float r0 = 0.02;
-const vec3 inverseGamma = vec3(0.454545454545454545454545);
-const vec3 gamma = vec3(2.2);
 
 //── Tunable shading constants ────────────────────────────────────────────
 //Pulled out of inline literals so the physical-review session can locate
@@ -484,7 +465,7 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 reflectDir){
     vec3 skyColor = computeSkyRadiance(reflectDir);
   #else
     vec2 skyUV = clamp(reflectDir.xz * 0.5 + 0.5, 0.01, 0.99);
-    vec3 skyColor = min(texture2D(meteringSurveyTexture, skyUV).rgb, vec3(4.0));
+    vec3 skyColor = texture2D(meteringSurveyTexture, skyUV).rgb;
   #endif
 
   //Note: a procedural sun-disk/halo addition was attempted here to fill the
@@ -753,9 +734,6 @@ void main(){
   //matches the actual geometry (vertex shader applies displacementFade; resampling here
   //would skip that, causing LOD tile edge divergence).
   vec3 offsetPosition = vDisplacedPosition;
-  //Still need displacement for height-based effects (translucency, scattering)
-  vec3 displacement = offsetPosition - vPosition;
-  float height = (offsetPosition.y + linearScatteringHeightOffset) / linearScatteringTotalScatteringWaveHeight;
   vec4 worldPosition = vModelMatrix * vInstanceMatrix * vec4(offsetPosition, 1.0);
   //Exclusion sample. Half-width here MUST match exclusionCamera's ortho
   //half-width in ocean-grid.js (currently 250 m). The exclusion target

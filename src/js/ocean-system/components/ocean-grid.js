@@ -575,16 +575,8 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       uniformsRef.reflectionScale.value = self.reflectionScale;
       uniformsRef.reflectionDistanceFalloff.value = self.reflectionDistanceFalloff;
       uniformsRef.fresnelDistanceRoughness.value = self.fresnelDistanceRoughness;
-      uniformsRef.waterTurbidity.value = self.data.water_turbidity;
-      uniformsRef.k1ScatterAmount.value = self.data.k1_scatter_amount;
-      uniformsRef.k2ViewDependence.value = self.data.k2_view_dependence;
-      uniformsRef.k3DirectScatter.value = self.data.k3_direct_scatter;
-      uniformsRef.k4ParallaxScatter.value = self.data.k4_parallax_scatter;
-      uniformsRef.waterMieG.value = self.data.water_mie_g;
       uniformsRef.smallNormalMapStrength.value = self.data.small_normal_map_strength;
       uniformsRef.largeNormalMapStrength.value = self.data.large_normal_map_strength;
-      uniformsRef.linearScatteringHeightOffset.value = self.data.linear_scattering_height_offset;
-      uniformsRef.linearScatteringTotalScatteringWaveHeight.value = self.data.linear_scattering_total_wave_height;
       uniformsRef.patchDataSize.value = self.data.patch_data_size;
       uniformsRef.chop.value = self.data.chop;
       uniformsRef.ringIndex.value = k;
@@ -928,21 +920,6 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           uniformsRef.sunShadowEnabled.value = 0;
         }
 
-        // Pass all lights as arrays
-        const lightCount = Math.min(self.directionalLights.length, 8); // Cap at 8 lights for perf
-        if(uniformsRef.ambientLightColors && uniformsRef.ambientLightDirections && uniformsRef.ambientLightCount){
-          uniformsRef.ambientLightCount.value = lightCount;
-          for(let l = 0; l < lightCount; ++l){
-            const light = self.directionalLights[l];
-            const lIntensity = light.intensity;
-            const lColor = light.color;
-            uniformsRef.ambientLightColors.value[l].set(lColor.r * lIntensity, lColor.g * lIntensity, lColor.b * lIntensity);
-
-            directionalLightDirection.set(light.position.x, light.position.y, light.position.z);
-            directionalLightDirection.sub(light.target.position).negate().normalize();
-            uniformsRef.ambientLightDirections.value[l].set(directionalLightDirection.x, directionalLightDirection.y, directionalLightDirection.z);
-          }
-        }
       }
       else{
         uniformsRef.brightestDirectionalLight.value.set(1.0,1.0,1.0);

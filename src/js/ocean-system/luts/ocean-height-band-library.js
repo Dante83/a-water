@@ -32,11 +32,7 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
   //  H_s × 1.5 (artistic boost from data.wave_scale_multiple) ≈ 4.1 m
   //
   //So with default settings expect significant wave height around 4 m and a
-  //dominant wavelength near 58 m. The linearScattering* uniforms map this to
-  //the [offset, offset + total] band (default [5..17] m); H_s sitting below
-  //the offset means thin-crest scattering only kicks in on the larger waves
-  //of the spectrum, not the median. If you raise wave_scale_multiple, raise
-  //linearScatteringHeightOffset accordingly so scatter terms stay in range.
+  //dominant wavelength near 58 m.
   let windVelocity = new THREE.Vector2(data.wind_velocity.x, data.wind_velocity.y);
   this.w = windVelocity.clone().normalize();
   const g = 9.80665;
