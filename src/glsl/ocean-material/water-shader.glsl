@@ -1134,7 +1134,15 @@ void main(){
   float inscatterShadow = mix(0.65, 1.0, sunShadowFactor);
   vec3 directDownwelling = brightestDirectionalLight * sunTransmission * sunCosZenith * inscatterShadow;
   vec3 ambientDownwelling = skyAmbientColor;
-  vec3 inscatterEquilibrium = waterAlbedo * (directDownwelling + ambientDownwelling);
+  //Lambertian flux→radiance conversion. Bruneton 2010 (CGF 29(2)):
+  //  Lsea = SeaColor * Esky / pi
+  //Esky here is irradiance (sun+sky downwelling at the surface, integrated
+  //over solid angle). Treating it as radiance directly — the pre-2026-05-16
+  //form — over-drives the body by ~π, which against AES-Filmic's shoulder
+  //read as a glowing surface at midday once Jerlov 1C lifted the G/B
+  //channels above ~2.0 pre-tonemap. The 1/π puts inscatter back onto the
+  //same scale as the SSR reflection term it's blended against.
+  vec3 inscatterEquilibrium = waterAlbedo * (directDownwelling + ambientDownwelling) * (1.0 / 3.14159265);
   //Unified body color is computed in the transmittance-weighted blend below:
   //  bodyColor = refractedLight * T + inscatterEquilibrium * (1 - T)
   //which is the UE-SLW / Bruneton form `waterAlbedo * (1 - T) * Edown` plus
