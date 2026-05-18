@@ -11,8 +11,12 @@ AWater.AOcean.Materials.FFTWaves.h0ShaderMaterialData = {
     omega_p: {type: 'f', value: 1.0},
     gamma: {type: 'f', value: 3.3},
     noiseUVOffset: {type: 'v2', value: new THREE.Vector2(0.0, 0.0)},
-    kMin: {type: 'f', value: 0.0},
-    kMax: {type: 'f', value: 1000000.0}
+    //Centered-FFT-coord band: keep maxCoord = max(|nx|, |ny|) in [sampleLow, sampleHigh).
+    //Edge cascades widen to 0..N so the long-swell and capillary tails survive.
+    sampleLow: {type: 'f', value: 2.0},
+    sampleHigh: {type: 'f', value: 8.0},
+    //Mix factor toward isotropic directional spread. 0.145 = Crest default.
+    directionalTurbulence: {type: 'f', value: 0.145}
   },
 
   fragmentShader: [

@@ -11,8 +11,12 @@ AWater.AOcean.Materials.FFTWaves.h0ShaderMaterialData = {
     omega_p: {type: 'f', value: 1.0},
     gamma: {type: 'f', value: 3.3},
     noiseUVOffset: {type: 'v2', value: new THREE.Vector2(0.0, 0.0)},
-    kMin: {type: 'f', value: 0.0},
-    kMax: {type: 'f', value: 1000000.0}
+    //Centered-FFT-coord band: keep maxCoord = max(|nx|, |ny|) in [sampleLow, sampleHigh).
+    //Edge cascades widen to 0..N so the long-swell and capillary tails survive.
+    sampleLow: {type: 'f', value: 2.0},
+    sampleHigh: {type: 'f', value: 8.0},
+    //Mix factor toward isotropic directional spread. 0.145 = Crest default.
+    directionalTurbulence: {type: 'f', value: 0.145}
   },
 
   fragmentShader: [
@@ -27,8 +31,16 @@ AWater.AOcean.Materials.FFTWaves.h0ShaderMaterialData = {
     'uniform float omega_p; //peak angular frequency',
     'uniform float gamma; //JONSWAP peak enhancement (typically 3.3)',
     'uniform vec2 noiseUVOffset; //Per-cascade offset for decorrelated random phases',
-    'uniform float kMin; //Low wavenumber cutoff for this cascade band',
-    'uniform float kMax; //High wavenumber cutoff for this cascade band',
+    '//Centered-FFT-coord band: keep maxCoord = max(|nx|, |ny|) in [sampleLow, sampleHigh).',
+    '//This is the Crest WAVE_SAMPLE_FACTOR scheme — each cascade is restricted to',
+    '//a narrow octave-range of bins so the 256² spectral budget concentrates on',
+    '//the wavelengths that cascade is meant to render.',
+    'uniform float sampleLow;',
+    'uniform float sampleHigh;',
+    '//Directional spreading turbulence. 0 = pure cos²(θ) (waves perfectly aligned',
+    "//to wind), 1 = fully isotropic. Crest's default is 0.145 — enough cross-wind",
+    '//content to break the parallel-streak look without losing the wind direction.',
+    'uniform float directionalTurbulence;',
 
     'const float g = 9.80665;',
     'const float pi = 3.141592653589793238462643383279502884197169;',
@@ -53,13 +65,19 @@ AWater.AOcean.Materials.FFTWaves.h0ShaderMaterialData = {
 
     'void main(){',
       'vec2 uv = gl_FragCoord.xy / resolution.xy;',
-      'vec2 x = uv.xy * N;',
-      'vec2 k = vec2(piTimes2 / L) * x;',
+      '//Centered DFT coord: pixel (N/2, N/2) is DC. Bins above N/2 are negative',
+      '//frequencies. The pack stage applies an (-1)^(x+y) sign flip to undo the',
+      '//centering shift in the IFFT output.',
+      'vec2 coord = floor(uv * N) - N * 0.5;',
+      'vec2 k = vec2(piTimes2 / L) * coord;',
       'float magK = length(k);',
       'if (magK < 0.0001) magK = 0.0001;',
 
-      "//Band-limit: zero out frequencies outside this cascade's range",
-      'if (magK < kMin || magK > kMax){',
+      '//Band-limit on centered coord magnitude (Crest WAVE_SAMPLE_FACTOR scheme).',
+      '//Always cull DC (maxCoord < 1) — mean sea level is 0 and normalize(vec2(0))',
+      '//downstream would NaN, contaminating the entire IFFT output.',
+      'float maxCoord = max(abs(coord.x), abs(coord.y));',
+      'if (maxCoord < max(sampleLow, 1.0) || maxCoord >= sampleHigh){',
         'gl_FragColor = vec4(0.0);',
         'return;',
       '}',
@@ -97,8 +115,14 @@ AWater.AOcean.Materials.FFTWaves.h0ShaderMaterialData = {
       '}',
       'float d_k = dot(normalize(k), normalize(w));',
       'float d_minus_k = dot(normalize(-k), normalize(w));',
-      'float h0_k = h0_coefficient * d_k * d_k;',
-      'float h0_minus_k = h0_coefficient * d_minus_k * d_minus_k;',
+      "//Blend cos²(θ) toward isotropic (1/2) by turbulence. Same form as Crest's",
+      '//PosCosSquaredDirectionalSpreading: mix(cos²θ, ½, turbulence). The ½ is the',
+      '//average of cos²θ over the full circle (so total directional integral is',
+      '//preserved) — picking it instead of 1 keeps amplitude calibration intact.',
+      'float spread_k = mix(d_k * d_k, 0.5, clamp(directionalTurbulence, 0.0, 1.0));',
+      'float spread_minus_k = mix(d_minus_k * d_minus_k, 0.5, clamp(directionalTurbulence, 0.0, 1.0));',
+      'float h0_k = h0_coefficient * spread_k;',
+      'float h0_minus_k = h0_coefficient * spread_minus_k;',
 
       'vec4 gaussianRandomNumber = gaussRand(uv);',
 

@@ -4,21 +4,19 @@
 AWater.AOcean.Materials.Ocean.waterMaterial = {
   uniforms: {
     cascadeDisplacementTextures: {value: [null, null, null, null, null, null]},
-    cascadePatchSizes: {value: [1000.0, 250.0, 64.0, 16.0, 4.0, 1.0]},
+    cascadePatchSizes: {value: [4096.0, 1024.0, 256.0, 64.0, 16.0, 4.0]},
     //Per-cascade spatial UV offsets to break visual tiling periodicity.
-    //Golden-ratio derived fractions of each cascade's patch size — different per cascade
-    //so tile seams never align with each other.
+    //Golden-ratio derived fractions of each cascade's patch size — different
+    //per cascade so tile seams never align with each other.
     cascadeSpatialOffsets: {value: [
-      new THREE.Vector2(382.0,  618.0),  //C0 1000m: 0.382L, 0.618L
-      new THREE.Vector2( 59.0,  154.5),  //C1  250m: 0.236L, 0.618L
-      new THREE.Vector2( 54.7,   15.1),  //C2   64m: 0.854L, 0.236L
-      new THREE.Vector2(  7.55,  13.7),  //C3   16m: 0.472L, 0.854L
-      new THREE.Vector2(  0.36,   1.89), //C4    4m: 0.090L, 0.472L
-      new THREE.Vector2(  0.708,  0.09)  //C5    1m: 0.708L, 0.090L
+      new THREE.Vector2(1564.7, 2531.3), //C0 4096m: 0.382L, 0.618L
+      new THREE.Vector2( 241.7,  632.8), //C1 1024m: 0.236L, 0.618L
+      new THREE.Vector2( 218.6,   60.4), //C2  256m: 0.854L, 0.236L
+      new THREE.Vector2(  30.2,   54.7), //C3   64m: 0.472L, 0.854L
+      new THREE.Vector2(   1.44,   7.55),//C4   16m: 0.090L, 0.472L
+      new THREE.Vector2(   2.83,   0.36) //C5    4m: 0.708L, 0.090L
     ]},
     waveHeightMultiplier: {type: 'f', value: 1.0},
-    smallNormalMap: {type: 't', value: null},
-    largeNormalMap: {type: 't', value: null},
     causticMap: {type: 't', value: null},
     causticIntensityMultiplier: {type: 'f', value: null},
     foamDiffuseMap: {type: 't', value: null},
@@ -27,8 +25,13 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     foamRenderMap: {type: 't', value: null},
     foamStartLevel: {type: 'f', value: 0.0},
     exclusionMap: {type: 't', value: null},
-    smallNormalMapVelocity: {type: 'vec2', value: new THREE.Vector2()},
-    largeNormalMapVelocity: {type: 'vec2', value: new THREE.Vector2()},
+    //Snapped XZ origin used when the foam/exclusion ortho cameras rendered
+    //their atlas this frame. The shader MUST subtract this (not the player
+    //cameraPosition) when computing atlas UVs, or the atlas pattern drifts
+    //by a sub-texel amount each frame as the player moves → visible flicker.
+    foamCameraXZ: {type: 'vec2', value: new THREE.Vector2()},
+    exclusionCameraXZ: {type: 'vec2', value: new THREE.Vector2()},
+    foamScrollVelocity: {type: 'vec2', value: new THREE.Vector2()},
     //Refraction G-buffer (3-attachment MRT, allocated in ocean-grid.js):
     //  refractionColorTexture = attachment 0, LINEAR albedo (decoded per-mesh
     //    in the G-buffer override shader); .a = 1 where geometry exists.
@@ -112,8 +115,6 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     //unit reconciliation it is consumed RAW in the water shader — same scale
     //as brightestDirectionalLight, no bridging scalars.
     skyAmbientColor: {type: 'vec3', value: new THREE.Vector3(0.1, 0.15, 0.2)},
-    largeNormalMapStrength: {type: 'f', value: 0.45},
-    smallNormalMapStrength: {type: 'f', value: 0.35},
     //Pope & Fry 1997 pure-water absorption at RGB sampling wavelengths
     //(615/535/465 nm) is ≈(0.35, 0.045, 0.011) m^-1; the values below are
     //the "tropical-clean" preset from the 2026-05-14 water-review SUMMARY,

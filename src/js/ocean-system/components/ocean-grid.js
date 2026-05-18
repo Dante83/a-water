@@ -28,6 +28,28 @@ AWater.AOcean.JERLOV_PRESETS = [
   { absorption: {x: 0.520, y: 0.330, z: 0.530}, scattering: {x: 0.080, y: 0.090, z: 0.090} }, // 5C
 ];
 
+//Dedicated layer for ocean geometry (water patches + horizon skirt).
+//
+//Water meshes are taken OFF the default layer 0 and placed on this layer
+//instead so that:
+//  - the foam ortho camera (default layer 0) does not capture the water
+//    surface itself — its position-pass output is meant to be terrain Y for
+//    shore-foam height comparison, and capturing water mesh baseline Y
+//    instead produced false shore-foam across the entire open ocean.
+//  - the per-cascade ocean-CSM light cameras already use their own layers
+//    (7..10, set by ocean-shadow-csm.js:addCaster) and are unaffected.
+//  - any future cameras (or third-party scene cameras) that want to see the
+//    ocean must `camera.layers.enable(AWater.AOcean.OCEAN_LAYER)` —
+//    likewise any future ocean-class meshes (extra water bodies, foam
+//    decals, etc.) should call `mesh.layers.set(AWater.AOcean.OCEAN_LAYER)`.
+//  - cameras that should NOT see water (foam capture, exclusion capture)
+//    intentionally do nothing — staying on layer 0 keeps them ignorant of
+//    ocean geometry by design.
+//
+//Picked 29 because the exclusion camera already uses 30; keeping them
+//adjacent makes the "ocean-system reserved layers" cluster obvious.
+AWater.AOcean.OCEAN_LAYER = 29;
+
 AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //Variable for holding all of our patches
   //For now, just create 1 plane
@@ -36,6 +58,9 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.parentComponent = parentComponent;
   this.renderer = renderer;
   this.camera = camera;
+  //Main scene camera needs to see the ocean even though water meshes have
+  //been moved off layer 0 — see OCEAN_LAYER comment above.
+  this.camera.layers.enable(AWater.AOcean.OCEAN_LAYER);
   this.oceanPatches = [];
   this.oceanPatchIsInFrustrum = [];
   this.drawDistance = data.draw_distance;
@@ -51,8 +76,6 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.foamStart = data.foam_start;
   this.data = data;
   this.time = 0.0;
-  this.smallNormalMap;
-  this.largeNormalMap;
   this.causticMap;
   this.foamColorMap;
   this.foamOpacityMap;
@@ -69,19 +92,15 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.refractionClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, -1, 0), new THREE.Vector3(0, this.heightOffset, 0));
   this.foamClipPlane = new THREE.Plane();
   this.foamClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, -1, 0), new THREE.Vector3(0, this.heightOffset + 1.0, 0));
-  //Normal map scroll velocities: wind-relative fixed angles (Crest-style).
-  //Both maps scroll in the same general direction with slight non-perpendicular offsets.
-  //Random angles caused the maps to sometimes scroll nearly perpendicular/opposite,
-  //creating a plaid cross-hatch interference pattern.
+  //Foam-texture scroll velocity: wind-relative, ~20° off wind axis at 4% of
+  //wind speed. Slow drift so the foam-bubble texture doesn't read as racing
+  //across the surface.
   const windAngle = Math.atan2(this.windVelocity.y, this.windVelocity.x);
   const windSpeed = Math.sqrt(this.windVelocity.x ** 2 + this.windVelocity.y ** 2);
-  const nmSpeed0 = windSpeed * 0.04; // 4% of wind speed, primary map
-  const nmSpeed1 = windSpeed * 0.025; // 2.5% of wind speed, secondary map
-  this.randomWindVelocities = [
-    nmSpeed0 * Math.cos(windAngle + 0.34), // ~20deg off wind
-    nmSpeed0 * Math.sin(windAngle + 0.34),
-    nmSpeed1 * Math.cos(windAngle - 0.20), // ~12deg off wind, other side
-    nmSpeed1 * Math.sin(windAngle - 0.20),
+  const foamScrollSpeed = windSpeed * 0.04;
+  this.foamScrollVelocityVec = [
+    foamScrollSpeed * Math.cos(windAngle + 0.34),
+    foamScrollSpeed * Math.sin(windAngle + 0.34),
   ];
   this.raycaster = new THREE.Raycaster(
     new THREE.Vector3(0.0,100.0,0.0),
@@ -99,39 +118,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.windVelocity.x = Math.abs(this.data.wind_velocity.x) < 0.01 ? 0.01 : this.windVelocity.x;
   this.windVelocity.y = Math.abs(this.data.wind_velocity.y) < 0.01 ? 0.01 : this.windVelocity.y;
 
-  //Load up the textures for our ocean smaller waves
   const textureLoader = new THREE.TextureLoader();
-  let smallNormalMapTexturePromise = new Promise(function(resolve, reject){
-    textureLoader.load(data.small_normal_map, function(texture){resolve(texture);});
-  });
-  smallNormalMapTexturePromise.then(function(texture){
-    //Fill in the details of our texture
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.magFilter = THREE.LinearFilter;
-    texture.minFilter = THREE.LinearMipmapLinearFilter;
-    texture.colorSpace = THREE.LinearSRGBColorSpace;
-    texture.format = THREE.RGBAFormat;
-    self.smallNormalMap = texture;
-  }, function(err){
-    console.error(err);
-  });
-
-  let largeNormalMapTexturePromise = new Promise(function(resolve, reject){
-    textureLoader.load(data.large_normal_map, function(texture){resolve(texture);});
-  });
-  largeNormalMapTexturePromise.then(function(texture){
-    //Fill in the details of our texture
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.magFilter = THREE.LinearFilter;
-    texture.minFilter = THREE.LinearMipmapLinearFilter;
-    texture.colorSpace = THREE.LinearSRGBColorSpace;
-    texture.format = THREE.RGBAFormat;
-    self.largeNormalMap = texture;
-  }, function(err){
-    console.error(err);
-  });
 
   //Load our caustics texture
   let causticMapTexturePromise = new Promise(function(resolve, reject){
@@ -479,6 +466,9 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     this.horizonSkirtMesh.castShadow = false;
     this.horizonSkirtMesh.receiveShadow = false;
     this.horizonSkirtMesh.renderOrder = 1;
+    //Horizon skirt is water-class geometry — move off the default layer so
+    //the foam ortho camera does not capture it. See OCEAN_LAYER comment.
+    this.horizonSkirtMesh.layers.set(AWater.AOcean.OCEAN_LAYER);
     scene.add(this.horizonSkirtMesh);
   }
 
@@ -558,10 +548,14 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       if(self.oceanShadowCSM){
         self.oceanShadowCSM.addCaster(mesh, k);
       }
+      //Move ocean patch off the default layer onto OCEAN_LAYER. Must happen
+      //after addCaster, which enables the per-cascade caster layers (7..10);
+      //we keep those, only swap default 0 → OCEAN_LAYER.
+      mesh.layers.disable(0);
+      mesh.layers.enable(AWater.AOcean.OCEAN_LAYER);
 
       const uniformsRef = mesh.material.uniforms;
-      uniformsRef.smallNormalMapVelocity.value.set(self.randomWindVelocities[0], self.randomWindVelocities[1]);
-      uniformsRef.largeNormalMapVelocity.value.set(self.randomWindVelocities[2], self.randomWindVelocities[3]);
+      uniformsRef.foamScrollVelocity.value.set(self.foamScrollVelocityVec[0], self.foamScrollVelocityVec[1]);
       //Jerlov preset wins over the explicit RGB vec3s when water_type is in
       //range (1..N). water_type == 0 ⇒ fall through to the custom values.
       const jerlovPreset = AWater.AOcean.JERLOV_PRESETS[self.data.water_type | 0];
@@ -575,8 +569,6 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       uniformsRef.reflectionScale.value = self.reflectionScale;
       uniformsRef.reflectionDistanceFalloff.value = self.reflectionDistanceFalloff;
       uniformsRef.fresnelDistanceRoughness.value = self.fresnelDistanceRoughness;
-      uniformsRef.smallNormalMapStrength.value = self.data.small_normal_map_strength;
-      uniformsRef.largeNormalMapStrength.value = self.data.large_normal_map_strength;
       uniformsRef.patchDataSize.value = self.data.patch_data_size;
       uniformsRef.chop.value = self.data.chop;
       uniformsRef.ringIndex.value = k;
@@ -683,6 +675,16 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.setFresnelDistanceRoughness = function(v){
     self.fresnelDistanceRoughness = +v;
   };
+  //Render every ocean tile (FFT tiles + horizon skirt) as wireframe so the
+  //clipmap cell structure and per-ring tessellation density are visible.
+  //ShaderMaterial honours `wireframe` natively — no shader recompile needed.
+  //Call from the console: setOceanWireframe(1) on, setOceanWireframe(0) off.
+  this.setOceanWireframe = function(enabled){
+    const flag = !!enabled;
+    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
+      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.wireframe = flag;
+    }
+  };
   if(typeof window !== 'undefined'){
     window.setOceanShadowDebug = this.setOceanShadowDebug;
     window.setSunShadowEnabled = this.setSunShadowEnabled;
@@ -694,6 +696,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     window.setReflectionScale = this.setReflectionScale;
     window.setReflectionDistanceFalloff = this.setReflectionDistanceFalloff;
     window.setFresnelDistanceRoughness = this.setFresnelDistanceRoughness;
+    window.setOceanWireframe = this.setOceanWireframe;
   }
   const oceanPatchTranslationMatrices = [];
   for(let i = 0, numOceanPatches = self.oceanPatches.length; i < numOceanPatches; ++i){
@@ -806,9 +809,26 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     self.scene.overrideMaterial = self.positionPassMaterial;
     self.renderer.setClearAlpha(0.0);
     const currentRenderTarget = self.renderer.getRenderTarget();
-    self.foamCamera.position.copy(self.globalCameraPosition);
-    self.foamCamera.position.y = this.heightOffset + self.foamCameraHeight;
-    self.foamCamera.lookAt(self.globalCameraPosition.x, this.heightOffset - 1.0, self.globalCameraPosition.z);
+    //Snap foam/exclusion camera XZ to texel-sized increments so the orthos
+    //sample the same world-space points across frames — otherwise the foam
+    //and exclusion atlases shift by a fractional pixel each frame as the
+    //player moves, producing visible flicker on the foam pattern. The water
+    //shader must then sample using these SNAPPED positions (uploaded as
+    //foamCameraXZ / exclusionCameraXZ uniforms), not raw cameraPosition.
+    //Same pattern as the per-cell clipmap snap at the top of this tick.
+    const foamTexel = (2.0 * 2048.0) / self.foamRenderTarget.width; // 4096m / 4096px = 1m
+    const exclTexel = (2.0 *  250.0) / self.exclusionRenderTarget.width; // 500m / 1024px ≈ 0.488m
+    const foamSnapX = Math.round(self.globalCameraPosition.x / foamTexel) * foamTexel;
+    const foamSnapZ = Math.round(self.globalCameraPosition.z / foamTexel) * foamTexel;
+    const exclSnapX = Math.round(self.globalCameraPosition.x / exclTexel) * exclTexel;
+    const exclSnapZ = Math.round(self.globalCameraPosition.z / exclTexel) * exclTexel;
+    self._foamCameraXZ = self._foamCameraXZ || new THREE.Vector2();
+    self._exclusionCameraXZ = self._exclusionCameraXZ || new THREE.Vector2();
+    self._foamCameraXZ.set(foamSnapX, foamSnapZ);
+    self._exclusionCameraXZ.set(exclSnapX, exclSnapZ);
+
+    self.foamCamera.position.set(foamSnapX, this.heightOffset + self.foamCameraHeight, foamSnapZ);
+    self.foamCamera.lookAt(foamSnapX, this.heightOffset - 1.0, foamSnapZ);
     self.foamCamera.updateProjectionMatrix();
     self.renderer.setRenderTarget(self.foamRenderTarget);
     const clearAlpha = renderer.getClearAlpha();
@@ -817,9 +837,8 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     this.foamRenderMap = self.foamRenderTarget.texture;
     self.renderer.setRenderTarget(null);
     //Update our exclusion camera - also needs position pass material for height data
-    self.exclusionCamera.position.copy(self.globalCameraPosition);
-    self.exclusionCamera.position.y = this.heightOffset + self.foamCameraHeight;
-    self.exclusionCamera.lookAt(self.globalCameraPosition.x, this.heightOffset - 1.0, self.globalCameraPosition.z);
+    self.exclusionCamera.position.set(exclSnapX, this.heightOffset + self.foamCameraHeight, exclSnapZ);
+    self.exclusionCamera.lookAt(exclSnapX, this.heightOffset - 1.0, exclSnapZ);
     self.exclusionCamera.updateProjectionMatrix();
     self.renderer.setRenderTarget(self.exclusionRenderTarget);
     self.renderer.clear();
@@ -860,6 +879,10 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       uniformsRef.gBufferNormal.value = self.refractionGBufferTarget.textures[1];
       uniformsRef.refractionDepthTexture.value = self.refractionGBufferTarget.depthTexture;
       uniformsRef.refractionLinearDepth.value = self.refractionGBufferTarget.textures[2];
+      //Atlas snap origins — must match the snapped positions the foam/exclusion
+      //cameras rendered at, so the water shader samples the right world point.
+      uniformsRef.foamCameraXZ.value.copy(self._foamCameraXZ);
+      uniformsRef.exclusionCameraXZ.value.copy(self._exclusionCameraXZ);
       uniformsRef.screenResolution.value.set(self.refractionGBufferTarget.width, self.refractionGBufferTarget.height);
       uniformsRef.cameraNearFar.value.set(sceneCamera.near, sceneCamera.far);
       uniformsRef.inverseProjectionMatrix.value.copy(sceneCamera.projectionMatrixInverse);
@@ -880,8 +903,6 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         }
         uniformsRef.meteringSurveyTexture.value = meterTex;
       }
-      uniformsRef.smallNormalMap.value = self.smallNormalMap;
-      uniformsRef.largeNormalMap.value = self.largeNormalMap;
       uniformsRef.causticMap.value = self.causticMap;
       uniformsRef.causticIntensityMultiplier.value = self.causticsStrength;
       uniformsRef.reflectionScale.value = self.reflectionScale;

@@ -23,8 +23,12 @@ vec2 conjugate(vec2 a){
 
 void main(){
   vec2 uv = gl_FragCoord.xy / resolution.xy;
-  vec2 x = uv.xy * N;
-  vec2 k = vec2(piTimes2 / L) * x;
+  //Centered DFT coord — must match h_0-pass so the dispersion ω and the
+  //slope/chop weights apply to the actual physical k, not the upper-half
+  //alias. The IFFT output of this centered spectrum is shifted by N/2; the
+  //pack stage applies an (-1)^(x+y) sign flip to undo that.
+  vec2 coord = floor(uv * N) - N * 0.5;
+  vec2 k = vec2(piTimes2 / L) * coord;
   float magK = length(k);
   if (magK < 0.0001) magK = 0.0001;
   float w = sqrt(g * magK);
@@ -43,19 +47,6 @@ void main(){
   //dy
   vec2 hk_tilda = cAdd(cMult(tilda_h0_k, expIwt), cMult(tilda_h0_minus_k_conj, expIwtConj));
 
-  //k runs 0..2π·N/L over the FFT grid, but n > N/2 are negative frequencies
-  //and should wrap into [-π·N/L, 0]. Without centering, every k-weighted
-  //term below picks up a sign error at high n. The slope spectrum's error
-  //scales as k × H (up to N× too large); chop's only as -kx/|k| (bounded,
-  //hence "benign" in earlier comments) — but always doing the unwrap keeps
-  //the math consistent and removes a footnote.
-  float halfKmax = piTimes2 * N / (2.0 * L);
-  vec2 kCentered = vec2(
-    k.x > halfKmax ? k.x - 2.0 * halfKmax : k.x,
-    k.y > halfKmax ? k.y - 2.0 * halfKmax : k.y
-  );
-  float magKCentered = max(length(kCentered), 0.0001);
-
   #if($isSlope)
     //Packed analytical slope spectrum: P(k) = (kx + i*kz) * i*H(k,t)
     //After IFFT: R = dh/dx, G = dh/dz — exact derivatives, zero aliasing at
@@ -63,12 +54,12 @@ void main(){
     //P = slopeX + i*slopeZ. Then IFFT(P) = slopeX(x) + i*slopeZ(x), giving
     //both slopes in one FFT chain.
     vec2 iH = vec2(-hk_tilda.y, hk_tilda.x);
-    hk_tilda = cMult(kCentered, iH);
+    hk_tilda = cMult(k, iH);
   #elif($isXAxis)
-    vec2 dx = vec2(0.0, -kCentered.x / magKCentered);
+    vec2 dx = vec2(0.0, -k.x / magK);
     hk_tilda = cMult(dx, hk_tilda);
   #elif(!$isXAxis && !$isYAxis)
-    vec2 dy = vec2(0.0, -kCentered.y / magKCentered);
+    vec2 dy = vec2(0.0, -k.y / magK);
     hk_tilda = cMult(dy, hk_tilda);
   #endif
   gl_FragColor = vec4(hk_tilda, 0.0, 1.0);

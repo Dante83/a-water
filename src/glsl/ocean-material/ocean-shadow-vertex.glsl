@@ -31,21 +31,17 @@ void main() {
   float distanceToVertex = distance(mainCameraPosition.xyz, worldPositionOfVertex.xyz);
   vec2 worldXZ = worldPositionOfVertex.xz;
 
+  //Mirrors water-vertex.glsl exactly: smoothstep distance fade per cascade,
+  //L*20 range. Keep this in lockstep with water-vertex.glsl — caster Y must
+  //match receiver Y at the same world XZ or the entire EVSM shadow cascade
+  //flips to fully-shadowed.
   vec3 displacement = vec3(0.0);
   displacement += texture2D(cascadeDisplacementTextures[0], (worldXZ + cascadeSpatialOffsets[0]) / cascadePatchSizes[0]).xyz;
   displacement += texture2D(cascadeDisplacementTextures[1], (worldXZ + cascadeSpatialOffsets[1]) / cascadePatchSizes[1]).xyz;
-  if(ringIndex <= 3){
-    displacement += clamp(1.0 - distanceToVertex / (cascadePatchSizes[2] * 10.0), 0.0, 1.0) * texture2D(cascadeDisplacementTextures[2], (worldXZ + cascadeSpatialOffsets[2]) / cascadePatchSizes[2]).xyz;
-  }
-  if(ringIndex <= 2){
-    displacement += clamp(1.0 - distanceToVertex / (cascadePatchSizes[3] * 10.0), 0.0, 1.0) * texture2D(cascadeDisplacementTextures[3], (worldXZ + cascadeSpatialOffsets[3]) / cascadePatchSizes[3]).xyz;
-  }
-  if(ringIndex <= 1){
-    displacement += clamp(1.0 - distanceToVertex / (cascadePatchSizes[4] * 10.0), 0.0, 1.0) * texture2D(cascadeDisplacementTextures[4], (worldXZ + cascadeSpatialOffsets[4]) / cascadePatchSizes[4]).xyz;
-  }
-  if(ringIndex == 0){
-    displacement += clamp(1.0 - distanceToVertex / (cascadePatchSizes[5] * 10.0), 0.0, 1.0) * texture2D(cascadeDisplacementTextures[5], (worldXZ + cascadeSpatialOffsets[5]) / cascadePatchSizes[5]).xyz;
-  }
+  displacement += smoothstep(cascadePatchSizes[2] *  30.0, 0.0, distanceToVertex) * texture2D(cascadeDisplacementTextures[2], (worldXZ + cascadeSpatialOffsets[2]) / cascadePatchSizes[2]).xyz;
+  displacement += smoothstep(cascadePatchSizes[3] *  50.0, 0.0, distanceToVertex) * texture2D(cascadeDisplacementTextures[3], (worldXZ + cascadeSpatialOffsets[3]) / cascadePatchSizes[3]).xyz;
+  displacement += smoothstep(cascadePatchSizes[4] * 100.0, 0.0, distanceToVertex) * texture2D(cascadeDisplacementTextures[4], (worldXZ + cascadeSpatialOffsets[4]) / cascadePatchSizes[4]).xyz;
+  displacement += smoothstep(cascadePatchSizes[5] * 200.0, 0.0, distanceToVertex) * texture2D(cascadeDisplacementTextures[5], (worldXZ + cascadeSpatialOffsets[5]) / cascadePatchSizes[5]).xyz;
   displacement *= waveHeightMultiplier;
   displacement.x *= -chop;
   displacement.z *= -chop;

@@ -24,10 +24,10 @@ AWater.AOcean.Materials.Ocean.horizonSkirtMaterial = {
     //reuse the FFT ocean wave normal computation and pick up the same surface
     //chop. Bound from oceanHeightComposer in the per-frame tick block.
     cascadeDisplacementTextures: {value: [null, null]},
-    cascadePatchSizes: {value: [1000.0, 250.0]},
+    cascadePatchSizes: {value: [4096.0, 1024.0]},
     cascadeSpatialOffsets: {value: [
-      new THREE.Vector2(382.0,  618.0),
-      new THREE.Vector2( 59.0,  154.5)
+      new THREE.Vector2(1564.7, 2531.3),
+      new THREE.Vector2( 241.7,  632.8)
     ]},
     patchDataSize: {type: 'f', value: 1024.0},
     waveHeightMultiplier: {type: 'f', value: 1.0},

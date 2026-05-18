@@ -5,14 +5,14 @@
 AWater.AOcean.Materials.Ocean.oceanShadowMaterial = {
   uniforms: {
     cascadeDisplacementTextures: {value: [null, null, null, null, null, null]},
-    cascadePatchSizes: {value: [1000.0, 250.0, 64.0, 16.0, 4.0, 1.0]},
+    cascadePatchSizes: {value: [4096.0, 1024.0, 256.0, 64.0, 16.0, 4.0]},
     cascadeSpatialOffsets: {value: [
-      new THREE.Vector2(382.0,  618.0),
-      new THREE.Vector2( 59.0,  154.5),
-      new THREE.Vector2( 54.7,   15.1),
-      new THREE.Vector2(  7.55,  13.7),
-      new THREE.Vector2(  0.36,   1.89),
-      new THREE.Vector2(  0.708,  0.09)
+      new THREE.Vector2(1564.7, 2531.3),
+      new THREE.Vector2( 241.7,  632.8),
+      new THREE.Vector2( 218.6,   60.4),
+      new THREE.Vector2(  30.2,   54.7),
+      new THREE.Vector2(   1.44,   7.55),
+      new THREE.Vector2(   2.83,   0.36)
     ]},
     waveHeightMultiplier: {type: 'f', value: 1.0},
     sizeOfOceanPatch: {type: 'f', value: 1.0},

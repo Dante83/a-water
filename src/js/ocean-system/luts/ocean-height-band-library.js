@@ -11,8 +11,38 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
     return false;
   }
 
-  //Cascade configuration: 6 cascades at exponentially decreasing patch sizes
-  this.cascadePatchSizes = [1000.0, 250.0, 64.0, 16.0, 4.0, 1.0];
+  //Cascade configuration: 6 tiles at ×4 doubling, each carrying a 2-octave
+  //wavelength slice [L/8, L/2]. Adopted from Crest's FFTSpectrum.compute
+  //WAVE_SAMPLE_FACTOR pattern (Crest uses 16 cascades at ×2; we compress to
+  //6 at ×4 since our shader-side arrays are hardcoded [6]).
+  //
+  //  c=0 L=4096  → λ ∈ [512, 2048] m  (long swell, no upper cap on largest)
+  //  c=1 L=1024  → λ ∈ [128, 512]  m
+  //  c=2 L=256   → λ ∈ [32,  128]  m
+  //  c=3 L=64    → λ ∈ [8,   32]   m
+  //  c=4 L=16    → λ ∈ [2,   8]    m
+  //  c=5 L=4     → λ ∈ [0.5, 2]    m  (capillary chop, no lower cap on smallest)
+  //
+  //Contiguous: each cascade's upper bound = next cascade's lower bound.
+  //
+  //The point of the L/8..L/2 slice is that each tile contains only 2–8
+  //wavelengths of its dominant chop, so the tile's repeat distance is many
+  //times the dominant wavelength — no visible tiling artifacts. The narrow
+  //spectral band concentrates the FFT's 256² bin budget into the wavelengths
+  //we want at that scale, instead of dribbling it across the whole k^-4 tail
+  //(which is what wasted cascade 5's content under the previous design and
+  //caused the "flat goo up close" look).
+  //
+  //Dispersion (ω = √(g·k)) reads cascadePatchSizes as meters so wave period/
+  //speed remain physical.
+  this.cascadePatchSizes = [4096.0, 1024.0, 256.0, 64.0, 16.0, 4.0];
+  //Per-cascade spectral band in centered-FFT coord units (maxCoord = max(|nx|, |ny|)).
+  //WAVE_SAMPLE_LOW..HIGH defines the kept octaves; non-edge cascades cull both
+  //ends, the largest cascade allows everything below its HIGH, and the
+  //smallest cascade allows everything above its LOW (so the long-swell and
+  //capillary tails aren't lost at the band edges).
+  const WAVE_SAMPLE_LOW = 2.0;
+  const WAVE_SAMPLE_HIGH = 8.0;
   this.numCascades = this.cascadePatchSizes.length;
   this.textureWidth = data.patch_data_size;
   this.textureHeight = data.patch_data_size;
@@ -39,7 +69,15 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
   let windSpeed = windVelocity.length();
   let fetch = data.jonswap_fetch || 100000.0;
   this.jonswapGamma = data.jonswap_gamma || 3.3;
-  this.omega_p = windSpeed > 0.001 ? 22.0 * Math.pow(g * g / (windSpeed * fetch), 1.0 / 3.0) : 1000000.0;
+  //ω_p, the peak angular frequency. The JONSWAP fetch formula 22·(g²/(U·F))^(1/3)
+  //is calibrated for moderate-to-strong winds; at very low wind speeds it returns
+  //unphysically low ω_p (e.g. U=1 m/s gives ω_p ≈ 2.17 → λ_p ≈ 13 m, but a 1 m/s
+  //breeze can't actually produce 13-m waves regardless of fetch). Cap from below
+  //with the full Pierson-Moskowitz rule ω_p = 0.86·g/U so the dominant wavelength
+  //collapses with the wind at low speeds.
+  this.omega_p = windSpeed > 0.001
+    ? Math.max(22.0 * Math.pow(g * g / (windSpeed * fetch), 1.0 / 3.0), 0.86 * g / windSpeed)
+    : 1000000.0;
 
   //Shared twiddle texture (same N for all cascades)
   this.twiddleTexture = AWater.AOcean.Materials.FFTWaves.computeTwiddleIndices(this.N, renderer);
@@ -47,10 +85,14 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
   //Make a shortcut to our materials namespace
   const materials = AWater.AOcean.Materials.FFTWaves;
 
-  //A is a dimensionless multiplier for the JONSWAP spectrum
-  //Physical alpha (0.0081) is baked into the shader; waveHeightMultiplier in the
-  //composer provides user-facing artistic scale via wave_scale_multiple.
-  let maxWaveAmplitude = 2.5;
+  //A is a dimensionless multiplier on the JONSWAP h_0 coefficient. Physical
+  //alpha (0.0081) is baked into the shader and gives the true variance, so
+  //A=1.0 = strictly physical amplitudes. `wave_scale_multiple` (applied as
+  //waveHeightMultiplier in the vertex shader) is the user-facing artistic
+  //dial. Previous A=2.5 was a hidden 2.5× boost that doubled-up with
+  //wave_scale_multiple — it dated to the pre-rescale era where the world
+  //was 14× too big and physical amplitudes read too small on-screen.
+  let maxWaveAmplitude = 1.0;
 
   //Per-cascade noise UV offsets for decorrelation (golden-ratio based)
   const noiseOffsets = [];
@@ -102,19 +144,14 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
   this.noiseVar4.minFilter = THREE.ClosestFilter;
   this.noiseVar4.magFilter = THREE.ClosestFilter;
 
-  //Compute wavenumber band boundaries for each cascade
-  //Each cascade only generates waves in its own frequency band to prevent
-  //double-counting spectral energy across overlapping k-ranges.
-  //Boundary = Nyquist frequency of the next-larger cascade: pi * N / L
-  this.cascadeKMin = [];
-  this.cascadeKMax = [];
+  //Per-cascade coord-space band [sampleLow, sampleHigh) on max(|nx|,|ny|).
+  //Largest cascade keeps everything below HIGH (no LOW cull → long-swell tail);
+  //smallest cascade keeps everything above LOW (no HIGH cull → capillary tail).
+  this.cascadeSampleLow = [];
+  this.cascadeSampleHigh = [];
   for(let c = 0; c < this.numCascades; c++){
-    //kMin: Nyquist of previous (larger) cascade, or 0 for the first cascade
-    let kMin = (c === 0) ? 0.0 : Math.PI * this.N / this.cascadePatchSizes[c - 1];
-    //kMax: Nyquist of this cascade, or very large for the last cascade
-    let kMax = (c === this.numCascades - 1) ? 1000000.0 : Math.PI * this.N / this.cascadePatchSizes[c];
-    this.cascadeKMin.push(kMin);
-    this.cascadeKMax.push(kMax);
+    this.cascadeSampleLow.push(c === 0 ? 0.0 : WAVE_SAMPLE_LOW);
+    this.cascadeSampleHigh.push(c === this.numCascades - 1 ? this.N : WAVE_SAMPLE_HIGH);
   }
 
   //Create h0 for each cascade (different L, noise offset, and k-band)
@@ -137,8 +174,9 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
     h0Var.material.uniforms.omega_p.value = this.omega_p;
     h0Var.material.uniforms.gamma.value = this.jonswapGamma;
     h0Var.material.uniforms.noiseUVOffset.value = noiseOffsets[c];
-    h0Var.material.uniforms.kMin.value = this.cascadeKMin[c];
-    h0Var.material.uniforms.kMax.value = this.cascadeKMax[c];
+    h0Var.material.uniforms.sampleLow.value = this.cascadeSampleLow[c];
+    h0Var.material.uniforms.sampleHigh.value = this.cascadeSampleHigh[c];
+    h0Var.material.uniforms.directionalTurbulence.value = (data.directional_turbulence !== undefined) ? data.directional_turbulence : 0.145;
     this.h0Vars.push(h0Var);
   }
 
@@ -316,7 +354,11 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
     let wv = new THREE.Vector2(newWindVelocity.x, newWindVelocity.y);
     let windSpeed = wv.length();
     let newW = windSpeed > 0.001 ? wv.clone().normalize() : new THREE.Vector2(0.0, 0.0);
-    let newOmega_p = windSpeed > 0.001 ? 22.0 * Math.pow(g * g / (windSpeed * fetch), 1.0 / 3.0) : 1000000.0;
+    //Mirror the construction-time ω_p cap (see above). Without this, the
+    //fetch formula gives unphysically low ω_p at very low wind speeds.
+    let newOmega_p = windSpeed > 0.001
+      ? Math.max(22.0 * Math.pow(g * g / (windSpeed * fetch), 1.0 / 3.0), 0.86 * g / windSpeed)
+      : 1000000.0;
 
     //Update h0 uniforms for every cascade
     for(let c = 0; c < self.numCascades; c++){
@@ -344,10 +386,14 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
   // TICK: Per-frame update
   // ========================================================================
   this.tick = function(time){
-    //Update time for all h_k variables across all cascades
+    //`time` is A-Frame's tick clock in MILLISECONDS. The h_k shader uses
+    //uTime in cos(w * uTime) where w has units rad/s, so uTime must be in
+    //seconds for physical dispersion to read correctly. /1000.0 = real time.
+    //(The historical /512.0 ran the simulation at ~1.95x real-time, a fudge
+    //tuned for the old huge-world scale where waves looked too slow.)
     for(let c = 0; c < self.numCascades; c++){
       for(let axis = 0; axis < 3; axis++){
-        self.hkVars[c][axis].material.uniforms.uTime.value = time / 512.0;
+        self.hkVars[c][axis].material.uniforms.uTime.value = time / 1000.0;
       }
     }
     self.hkRenderer.compute();

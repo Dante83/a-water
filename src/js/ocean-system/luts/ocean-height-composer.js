@@ -35,18 +35,26 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
     'void main(){',
     '  vec2 uv = gl_FragCoord.xy / resolution.xy;',
     '  float eps = 1.0 / resolution.x;',
-    '  float dx = texture2D(xTexture, uv).x;',
-    '  float dy = texture2D(yTexture, uv).x;',
-    '  float dz = texture2D(zTexture, uv).x;',
+    //h_0 and h_k pack the spectrum with DC centered at (N/2, N/2). The IFFT
+    //then produces a result shifted by N/2 in both axes. Undo that with the
+    //standard checkerboard (-1)^(x+y) sign flip applied per IFFT output texel.
+    //Neighbour taps for the Jacobian read texels one step over — opposite
+    //parity — so each tap gets its own sign before the finite-difference math.
+    '  vec2 texCoord = floor(uv * resolution);',
+    '  float ifftSignC = mod(texCoord.x + texCoord.y, 2.0) < 0.5 ? 1.0 : -1.0;',
+    '  float ifftSignN = -ifftSignC;',
+    '  float dx = texture2D(xTexture, uv).x * ifftSignC;',
+    '  float dy = texture2D(yTexture, uv).x * ifftSignC;',
+    '  float dz = texture2D(zTexture, uv).x * ifftSignC;',
     //Central differences on XZ displacement for Jacobian
-    '  float dxR = texture2D(xTexture, uv + vec2(eps, 0.0)).x;',
-    '  float dxL = texture2D(xTexture, uv + vec2(-eps, 0.0)).x;',
-    '  float dxT = texture2D(xTexture, uv + vec2(0.0, eps)).x;',
-    '  float dxB = texture2D(xTexture, uv + vec2(0.0, -eps)).x;',
-    '  float dzR = texture2D(zTexture, uv + vec2(eps, 0.0)).x;',
-    '  float dzL = texture2D(zTexture, uv + vec2(-eps, 0.0)).x;',
-    '  float dzT = texture2D(zTexture, uv + vec2(0.0, eps)).x;',
-    '  float dzB = texture2D(zTexture, uv + vec2(0.0, -eps)).x;',
+    '  float dxR = texture2D(xTexture, uv + vec2(eps, 0.0)).x * ifftSignN;',
+    '  float dxL = texture2D(xTexture, uv + vec2(-eps, 0.0)).x * ifftSignN;',
+    '  float dxT = texture2D(xTexture, uv + vec2(0.0, eps)).x * ifftSignN;',
+    '  float dxB = texture2D(xTexture, uv + vec2(0.0, -eps)).x * ifftSignN;',
+    '  float dzR = texture2D(zTexture, uv + vec2(eps, 0.0)).x * ifftSignN;',
+    '  float dzL = texture2D(zTexture, uv + vec2(-eps, 0.0)).x * ifftSignN;',
+    '  float dzT = texture2D(zTexture, uv + vec2(0.0, eps)).x * ifftSignN;',
+    '  float dzB = texture2D(zTexture, uv + vec2(0.0, -eps)).x * ifftSignN;',
     //dDx/dx, dDz/dz, dDx/dz (cross term)
     //One UV texel = patchSize/resolution meters, so dD/dx = dD/duv / patchSize
     '  float worldStep = patchSize / resolution.x;',
@@ -90,8 +98,11 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
       chop: {type: 'f', value: data.chop || 0.75},
       //Equivalent to Crest _WaveFoamCoverage. Formula is max(0, foamBias - jacobian), same as
       //Crest saturate(_WaveFoamCoverage - det). Flat water J=1.0 always, so foamBias must be
-      //<= 1.0 or flat water accumulates foam. Crest default is 0.95; raise toward 1.0 for more coverage.
-      foamBias: {type: 'f', value: 0.9},
+      //<= 1.0 or flat water accumulates foam. With the post-Crest-port spectrum the per-cascade
+      //Jacobian fires more readily (sharper crests in each cascade's narrow band), so 0.9 was
+      //producing constant fine sparkle from any slight compression. 0.5 keeps real breaker
+      //events firing while ignoring the small fluctuations.
+      foamBias: {type: 'f', value: 0.5},
       //Pre-multiplied by Math.exp(-decay_rate). Default decay_rate = 0.015,
       //slightly faster than Crest to prevent long-term saturation. Mutate
       //via _packMaterial.uniforms.foamDecayMultiplier.value = Math.exp(-rate)
@@ -112,15 +123,26 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
   this._cascadePatchSizes = this.OceanMaterialHeightBandLibrary.cascadePatchSizes;
   this.waveHeightMultiplier = data.wave_scale_multiple;
 
+  //Mipmaps on the displacement RT let the GPU pick the right LOD as the camera
+  //pulls back, which fixes two problems at once:
+  //  - Foam alpha aliasing: the C0/C1 foam channels stop reading as 1-pixel
+  //    sparkle at mid-distance because the GPU integrates them properly.
+  //  - Normal sampling stability: the per-fragment central-difference normals
+  //    sample a mip level matched to screen-pixel footprint, killing the
+  //    high-freq shimmer that comes from sub-pixel cascade content.
+  //Three.js auto-calls gl.generateMipmap on the RT texture after each render
+  //when generateMipmaps:true. Float RTs need OES_texture_float_linear (gated
+  //in ocean-height-band-library.js).
   const cascadeRTOptions = {
-    minFilter: THREE.LinearFilter,
+    minFilter: THREE.LinearMipMapLinearFilter,
     magFilter: THREE.LinearFilter,
     wrapS: THREE.RepeatWrapping,
     wrapT: THREE.RepeatWrapping,
     format: THREE.RGBAFormat,
     type: THREE.FloatType,
     depthBuffer: false,
-    stencilBuffer: false
+    stencilBuffer: false,
+    generateMipmaps: true
   };
 
   //Ping-pong displacement+foam targets per cascade.
