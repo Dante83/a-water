@@ -1489,9 +1489,16 @@ void main(){
     //Foam normal: perturb the FFT surface normal with the foam normal map.
     vec3 foamSurfaceNormal = normalize(displacedNormal + vec3(foamNMXZ.x, 0.0, foamNMXZ.y) * 0.5);
 
-    //Lambert diffuse from the primary directional light (sun/moon)
+    //Energy-conserving Lambert: a real diffuse plate returns albedo/π × E_inc
+    //after integrating the cosine lobe over the hemisphere. Foam is the only
+    //surface in this shader actually shaded as a Lambert plate, so it's the
+    //only place that visibly suffers from a missing 1/π. With HDR sun magnitude
+    //~5-6 at noon and a near-white foam albedo, dropping the factor returns
+    //~5× the radiance the plate would physically emit, slamming the AES tonemap
+    //shoulder and leaving no headroom for the foam normal map to modulate.
+    const float INV_PI = 0.31830988618;
     float foamNdotL = max(0.0, dot(foamSurfaceNormal, -brightestDirectionalLightDirection));
-    vec3 foamDiffuse = foamNdotL * lightMag * normalizedLightIntensity * foamAlbedo * sunShadowFactor;
+    vec3 foamDiffuse = INV_PI * foamNdotL * lightMag * normalizedLightIntensity * foamAlbedo * sunShadowFactor;
 
     //Sky ambient: same hemisphere model as the water surface ambient above.
     float foamSkyFactor = 0.5 + 0.5 * dot(foamSurfaceNormal, vec3(0.0, 1.0, 0.0));
