@@ -675,6 +675,13 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.setFresnelDistanceRoughness = function(v){
     self.fresnelDistanceRoughness = +v;
   };
+  //Live-tune atmospheric perspective strength. Default 1.0. Set to 0.0 to
+  //fully bypass extinction + inscatter on the water surface (the per-frame
+  //tick will still overwrite at the next ocean-grid update unless we keep
+  //it in sync — that's why we also mirror onto the cached field).
+  this.setAtmDistanceScale = function(v){
+    self.atmosphericPerspectiveDistanceScale = +v;
+  };
   //Render every ocean tile (FFT tiles + horizon skirt) as wireframe so the
   //clipmap cell structure and per-ring tessellation density are visible.
   //ShaderMaterial honours `wireframe` natively — no shader recompile needed.
@@ -697,6 +704,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     window.setReflectionDistanceFalloff = this.setReflectionDistanceFalloff;
     window.setFresnelDistanceRoughness = this.setFresnelDistanceRoughness;
     window.setOceanWireframe = this.setOceanWireframe;
+    window.setAtmDistanceScale = this.setAtmDistanceScale;
   }
   const oceanPatchTranslationMatrices = [];
   for(let i = 0, numOceanPatches = self.oceanPatches.length; i < numOceanPatches; ++i){

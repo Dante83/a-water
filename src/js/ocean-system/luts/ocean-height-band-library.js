@@ -170,7 +170,12 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
     h0Var.material.uniforms.L.value = this.cascadePatchSizes[c];
     h0Var.material.uniforms.A.value = maxWaveAmplitude;
     h0Var.material.uniforms.L_.value = 0.0;
-    h0Var.material.uniforms.w.value = this.w.clone();
+    //Per-cascade wind rotation — each cascade's wave fronts run a slightly
+    //different direction so the dominant visual motif can't recur at a
+    //single cascade's tile period. ±30° spread keeps the overall "wind
+    //from one direction" feel intact while decorrelating the cascades'
+    //wave-front orientations. Hardcoded; see also [c] index below.
+    h0Var.material.uniforms.w.value = AWater.AOcean.LUTlibraries.OceanHeightBandLibrary.rotateWindForCascade(this.w, c);
     h0Var.material.uniforms.omega_p.value = this.omega_p;
     h0Var.material.uniforms.gamma.value = this.jonswapGamma;
     h0Var.material.uniforms.noiseUVOffset.value = noiseOffsets[c];
@@ -360,9 +365,12 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
       ? Math.max(22.0 * Math.pow(g * g / (windSpeed * fetch), 1.0 / 3.0), 0.86 * g / windSpeed)
       : 1000000.0;
 
-    //Update h0 uniforms for every cascade
+    //Update h0 uniforms for every cascade. Wind direction gets per-cascade
+    //rotation (see construction-time comment) so cascades' wave-front
+    //directions decorrelate, breaking visible motif recurrence at single-
+    //cascade tile periods.
     for(let c = 0; c < self.numCascades; c++){
-      self.h0Vars[c].material.uniforms.w.value = newW.clone();
+      self.h0Vars[c].material.uniforms.w.value = AWater.AOcean.LUTlibraries.OceanHeightBandLibrary.rotateWindForCascade(newW, c);
       self.h0Vars[c].material.uniforms.omega_p.value = newOmega_p;
     }
 
@@ -408,3 +416,26 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
     }
   };
 }
+
+//Per-cascade wind-direction rotation. Each cascade's h_0 spectrum is built
+//from a rotated copy of the master wind vector so the resulting wave-front
+//orientation differs slightly between cascades. The cascades still tile at
+//their physical L periods, but because each cascade's dominant wave fronts
+//run a different way, the combined visual signature can't repeat with one
+//cascade's period — the recurrent "motif" is broken.
+//
+//Angles in degrees, indexed by cascade 0..5. C0 is the anchor (0°); the
+//others fan out within a ±30° envelope. Order alternates sign so adjacent
+//cascades sit on opposite sides of the master direction — keeps the total
+//directional moment near zero so the surface still reads as "wind from one
+//direction" rather than a chaotic chop-from-everywhere look.
+AWater.AOcean.LUTlibraries.OceanHeightBandLibrary.CASCADE_WIND_ANGLES_DEG = [0, 10, -10, 20, -20, 30];
+
+AWater.AOcean.LUTlibraries.OceanHeightBandLibrary.rotateWindForCascade = function(w, c){
+  const angles = AWater.AOcean.LUTlibraries.OceanHeightBandLibrary.CASCADE_WIND_ANGLES_DEG;
+  const angleDeg = (c >= 0 && c < angles.length) ? angles[c] : 0;
+  const angle = angleDeg * Math.PI / 180;
+  const cs = Math.cos(angle);
+  const sn = Math.sin(angle);
+  return new THREE.Vector2(w.x * cs - w.y * sn, w.x * sn + w.y * cs);
+};
