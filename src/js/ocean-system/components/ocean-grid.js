@@ -880,6 +880,11 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         uniformsRef.cascadeDisplacementTextures.value[c] = self.oceanHeightComposer.cascadeDisplacementTextures[c];
       }
       uniformsRef.cascadePatchSizes.value = self.oceanHeightComposer._cascadePatchSizes;
+      //Per-cascade slope variance σ² — sourced from the height-band library.
+      //Re-pushed every frame because regenerateH0() (called when wind changes
+      //at runtime) rewrites the array; pointing at the live ref keeps the
+      //shader in sync without an extra change-detection path.
+      uniformsRef.cascadeRMSSlope.value = self.oceanHeightBandLibrary.cascadeRMSSlope;
       uniformsRef.waveHeightMultiplier.value = self.oceanHeightComposer.waveHeightMultiplier;
       //G-buffer attachments — albedo (0), normal (1), linear-depth (2);
       //depthTexture is the MRT's own depth attachment, kept for unprojection.

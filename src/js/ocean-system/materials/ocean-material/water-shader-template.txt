@@ -5,6 +5,14 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
   uniforms: {
     cascadeDisplacementTextures: {value: [null, null, null, null, null, null]},
     cascadePatchSizes: {value: [4096.0, 1024.0, 256.0, 64.0, 16.0, 4.0]},
+    //Per-cascade slope variance σ² (units of slope²). Precomputed from JONSWAP
+    //+ directional spread for each cascade's k-band in ocean-height-band-library.
+    //The water shader sums these (weighted by per-cascade distance-fade) into
+    //an effective α²_GGX driving a Karis-style horizon clamp on Fresnel — so
+    //distant rough water doesn't read as a perfect sky mirror at grazing.
+    //Initial zeros are placeholder; real values pushed every frame from
+    //ocean-grid.js once the height-band library has integrated them.
+    cascadeRMSSlope: {value: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]},
     //Per-cascade spatial UV offsets to break visual tiling periodicity.
     //Golden-ratio derived fractions of each cascade's patch size — different
     //per cascade so tile seams never align with each other.

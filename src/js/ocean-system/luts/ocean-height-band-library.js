@@ -79,6 +79,20 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
     ? Math.max(22.0 * Math.pow(g * g / (windSpeed * fetch), 1.0 / 3.0), 0.86 * g / windSpeed)
     : 1000000.0;
 
+  //Per-cascade slope variance σ², computed analytically from the same JONSWAP
+  //integrand the GPU h_0 pass uses. The water shader uses this to rebuild the
+  //"effective roughness" of distant water: as the renderer mips/aliases away
+  //a cascade's slope detail, that cascade's σ² contributes to a Karis-style
+  //horizon clamp on Fresnel. Without it, distant water collapses to a smooth
+  //macroNormal (NaN slope variance at the pixel scale) → full-Schlick at
+  //grazing → bright sky mirror to the horizon. See water-shader.glsl Fresnel
+  //block. cascadeRMSSlope is in units of (slope)² — feed directly into α²_GGX
+  //after multiplying by waveHeightMultiplier² (which the shader does).
+  this.cascadeRMSSlope = AWater.AOcean.LUTlibraries.OceanHeightBandLibrary.computeCascadeSlopeVariance(
+    this.cascadePatchSizes, this.N, this.omega_p, this.jonswapGamma,
+    (data.directional_turbulence !== undefined) ? data.directional_turbulence : 0.145
+  );
+
   //Shared twiddle texture (same N for all cascades)
   this.twiddleTexture = AWater.AOcean.Materials.FFTWaves.computeTwiddleIndices(this.N, renderer);
 
@@ -388,6 +402,12 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
 
     self.w = newW;
     self.omega_p = newOmega_p;
+
+    //Recompute per-cascade slope variances — depends on omega_p.
+    self.cascadeRMSSlope = AWater.AOcean.LUTlibraries.OceanHeightBandLibrary.computeCascadeSlopeVariance(
+      self.cascadePatchSizes, self.N, self.omega_p, self.jonswapGamma,
+      (data.directional_turbulence !== undefined) ? data.directional_turbulence : 0.145
+    );
   };
 
   // ========================================================================
@@ -430,6 +450,109 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
 //directional moment near zero so the surface still reads as "wind from one
 //direction" rather than a chaotic chop-from-everywhere look.
 AWater.AOcean.LUTlibraries.OceanHeightBandLibrary.CASCADE_WIND_ANGLES_DEG = [0, 10, -10, 20, -20, 30];
+
+//Compute per-cascade slope variance σ² by mirroring the discrete h_0 spectrum
+//the GPU writes. For each cascade we loop over every (nx, ny) bin in the same
+//[sampleLow, sampleHigh) centered-FFT band, build h_0_coefficient² with the
+//same JONSWAP + cos² spread + amplitude scaling, then accumulate k² ·
+//E[|h(k,t)|²] across the band. The result is the total slope variance the
+//ocean surface would carry in that cascade if every wavelength were
+//well-resolved on screen — the water shader uses this as the "energy lost
+//to mipping/aliasing" budget that drives a distance-roughness Fresnel clamp.
+//
+//Variance derivation:
+//  Each texel stores h_0(k_+) AND h_0*(k_-) in (xy, zw). gaussRand gives
+//  unit-variance real+imaginary parts, so:
+//    E[|h_0(k_+)|²] = 2 · h0_coef² · spread_k²       (xy magnitude squared)
+//    E[|h_0(k_-)|²] = 2 · h0_coef² · spread_-k²      (zw magnitude squared)
+//  The hk pass forms h(k,t) = h_0(k_+) e^{iωt} + h_0*(k_-) e^{-iωt}, whose
+//  expected squared magnitude (cross terms vanish under independence) is the
+//  sum of the two terms above. spread_-k² = spread_k² because the spread is
+//  symmetric under k → -k.
+//  Slope variance accumulates k² weight: σ²_slope += k² · E[|h(k,t)|²].
+//
+//Returns Float32Array length numCascades. Result is in units of (slope)² —
+//feed into α²_GGX in the shader after scaling by waveHeightMultiplier².
+AWater.AOcean.LUTlibraries.OceanHeightBandLibrary.computeCascadeSlopeVariance = function(
+    cascadePatchSizes, N, omega_p, gamma, directionalTurbulence){
+  const g = 9.80665;
+  const piTimes2 = 2.0 * Math.PI;
+  const JONSWAP_ALPHA = 0.0081;
+  const WAVE_SAMPLE_LOW = 2.0;
+  const WAVE_SAMPLE_HIGH = 8.0;
+  const turb = Math.max(0.0, Math.min(1.0, directionalTurbulence));
+
+  const numCascades = cascadePatchSizes.length;
+  //Plain Array (not Float32Array) to match the three.js uniform-upload pattern
+  //used for cascadePatchSizes — the GLSL `float[6]` uniform reads a JS Array.
+  const out = new Array(numCascades);
+
+  const halfN = N * 0.5;
+
+  for(let c = 0; c < numCascades; c++){
+    const L = cascadePatchSizes[c];
+    const dk = piTimes2 / L;
+    const sampleLow  = (c === 0) ? 0.0 : WAVE_SAMPLE_LOW;
+    const sampleHigh = (c === numCascades - 1) ? N : WAVE_SAMPLE_HIGH;
+    const sampleLowCulled = Math.max(sampleLow, 1.0);
+
+    //Angle-average of spread² over the full ring (see derivation in the
+    //inner-loop comment block below). Constant per cascade.
+    //  <(mix(cos²θ, ½, turb))²>_θ = (1-t)²·3/8 + (1-t)·t·½ + t²/4
+    const oneMinusTurb = 1.0 - turb;
+    const spreadSqAvg = oneMinusTurb * oneMinusTurb * (3.0 / 8.0)
+                      + oneMinusTurb * turb * 0.5
+                      + turb * turb * 0.25;
+
+    let acc = 0.0;
+    for(let ny = 0; ny < N; ny++){
+      const coordY = ny - halfN;
+      for(let nx = 0; nx < N; nx++){
+        const coordX = nx - halfN;
+        const maxCoord = Math.max(Math.abs(coordX), Math.abs(coordY));
+        if(maxCoord < sampleLowCulled || maxCoord >= sampleHigh) continue;
+
+        const kx = dk * coordX;
+        const ky = dk * coordY;
+        const k2 = kx * kx + ky * ky;
+        const magK = Math.sqrt(k2);
+        if(magK < 1e-4) continue;
+
+        //JONSWAP S(ω) → S(k) via |dω/dk| = g/(2ω); 1D-omni → 2D via /k.
+        const omega = Math.sqrt(g * magK);
+        const sigma = omega <= omega_p ? 0.07 : 0.09;
+        const r = Math.exp(-((omega - omega_p) * (omega - omega_p)) /
+                           (2.0 * sigma * sigma * omega_p * omega_p));
+        const pm = JONSWAP_ALPHA * g * g / Math.pow(omega, 5.0) *
+                   Math.exp(-1.25 * Math.pow(omega_p / omega, 4.0));
+        const jonswap = pm * Math.pow(gamma, r);
+        const Sk = jonswap * g / (2.0 * omega);
+
+        //h_0 coefficient (A=1 in current build; physical amplitudes baked in).
+        const h0CoefSq = Sk * dk * dk / (2.0 * magK);
+
+        //Spread² is angle-averaged because we're integrating over the whole
+        //band; per-bin direction cancels in the sum. Derivation:
+        //  <(mix(cos²θ, ½, turb))²>_θ
+        //    = (1-turb)² · <cos⁴θ> + 2(1-turb)·turb · ½ · <cos²θ> + turb² · ¼
+        //    = (1-turb)² · 3/8     + (1-turb)·turb · ½             + turb² / 4
+        //Cascade wind rotation doesn't affect the band sum (rotating k and w
+        //by the same angle is invariant under dot). spreadSqAvg computed once
+        //above this loop.
+
+        //Texel-total variance (h_0(k_+) and h_0*(k_-) packed together).
+        //gauss.xy carries variance 2; the +k and -k parts each contribute
+        //2 · h0_coef² · spread² → factor of 4 combined (spread_-k² = spread_k²).
+        const texelVar = 4.0 * h0CoefSq * spreadSqAvg;
+
+        acc += k2 * texelVar;
+      }
+    }
+    out[c] = acc;
+  }
+
+  return out;
+};
 
 AWater.AOcean.LUTlibraries.OceanHeightBandLibrary.rotateWindForCascade = function(w, c){
   const angles = AWater.AOcean.LUTlibraries.OceanHeightBandLibrary.CASCADE_WIND_ANGLES_DEG;
