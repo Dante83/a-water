@@ -143,6 +143,15 @@ uniform float reflectionDistanceFalloff;
 //Range 0..1. 0 = standard Schlick everywhere; 0.85 ≈ ocean-photo-like horizon.
 uniform float fresnelDistanceRoughness;
 
+//Microfacet roughness for the Cook-Torrance sun-glint BRDF. Represents the
+//sub-pixel slope variance the FFT spectrum cannot resolve — capillary waves
+//and ripples below the smallest cascade's wavelength. The mesh-resolved
+//FFT slopes (cascade chain) drive the meso-normal, the roughness drives
+//the statistical microfacet distribution within each pixel. Low values
+//(~0.05) give tight pinpoint glints, higher (~0.15) widen into a soft glow.
+//Live-tunable from the console via setSurfaceRoughness().
+uniform float surfaceRoughness;
+
 uniform float t;
 uniform float patchDataSize;
 
@@ -202,11 +211,6 @@ const float REFRACTION_DISTORTION = 0.03;
 //camera-to-fragment distance. Lets transmittance decay toward the horizon
 //even when no underwater geometry was hit by the refraction ray.
 const float HORIZONTAL_DEPTH_SCALE = 0.008;
-
-//Phong sun-glint specular boost. Crest's _DirectionalLightBoost defaults
-//~5; lowered to 3 because the Fresnel gate already pushes grazing waves
-//to near-full intensity.
-const float SPECULAR_BOOST = 3.0;
 
 //Macro-normal slope clamp. Caps |∇h| before forming the cascade-0 macro
 //normal so a wave face steeper than ~50° tilt doesn't produce a near-
@@ -619,6 +623,18 @@ float fresnelAirToWater(float cosTheta){
   return r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
 }
 
+//Smith masking-shadowing function for a Beckmann microfacet distribution.
+//Rational-fit Lambda approximation: cheap, accurate to ~1%, branch-friendly.
+//Ported verbatim from the Water sibling (Acerola FFTWater.shader) which in
+//turn cites Walter et al. 2007 ("Microfacet Models for Refraction"). Result
+//is the Lambda(omega) term that combines as G = 1/(1 + Lambda_v + Lambda_l).
+float smithMaskingBeckmann(vec3 H, vec3 S, float roughness){
+  float hdots = max(0.001, dot(H, S));
+  float a = hdots / (roughness * sqrt(1.0 - hdots * hdots));
+  float a2 = a * a;
+  return a < 1.6 ? (1.0 - 1.259 * a + 0.396 * a2) / (3.535 * a + 2.181 * a2) : 0.0;
+}
+
 #if($caustics_enabled)
   float causticShader(vec2 uv, float t){
     //Animation speed: t/8 — gentle ocean shimmer rather than rapids. Original
@@ -802,6 +818,11 @@ void main(){
   float lostSlopeVar = 0.0;
   //Cascade 0 height slope saved separately for macro normal (specular)
   vec2 cascade0HeightSlope;
+  //Cascade 5 height-slope contribution to rawDdx/rawDdz saved separately so
+  //the spec-normal block can subtract its 1-texel-eps version and add back a
+  //wide-eps low-pass version (option 2 — sub-pixel sampling correlation for
+  //the Beckmann lobe without disturbing displacedNormal).
+  vec2 c5NativeHeightSlope = vec2(0.0);
   {
     float eps = 1.0 / patchDataSize;
     float worldStep = cascadePatchSizes[0] / patchDataSize;
@@ -893,11 +914,15 @@ void main(){
     vec3 cDdz = (rawT - rawB) / (2.0 * worldStep);
     rawDdx += fade * cDdx;
     rawDdz += fade * cDdz;
+    //Save cascade 5's height-slope contribution (with the same fade, pre
+    //waveHeightMultiplier) so specNormal can swap it for a low-pass version.
+    c5NativeHeightSlope = vec2(fade * cDdx.y, fade * cDdz.y);
     float oneMinusFade = 1.0 - fade;
     lostSlopeVar += oneMinusFade * oneMinusFade * (cDdx.y * cDdx.y + cDdz.y * cDdz.y);
   }
   rawDdx *= waveHeightMultiplier;
   rawDdz *= waveHeightMultiplier;
+  c5NativeHeightSlope *= waveHeightMultiplier;
   lostSlopeVar *= waveHeightMultiplier * waveHeightMultiplier;
 
   //Jacobian: detect surface folds — still used for inscatter modulation and normal blending
@@ -1411,48 +1436,139 @@ void main(){
   vec3 normalizedLightIntensity = lightMag > 0.001 ? brightestDirectionalLight / lightMag : vec3(0.0);
   vec3 directionalSurfaceLighting = normalizedLightIntensity * max(dot(macroNormal, -brightestDirectionalLightDirection), 0.0) * sunShadowFactor;
 
-  //Crest-style Phong sun-glint specular.
-  //The FFT cascades already encode microfacet statistics as explicit geometry, so a
-  //full GGX D/G/F BRDF double-counts: the normal variance IS the roughness. Use a
-  //clean Phong lobe centered on the reflected-sun direction with a distance-varying
-  //exponent plus a distance-varying normal. Foam surfaces collapse to a low exponent.
+  //── Cook-Torrance microfacet sun-glint specular ─────────────────────────
+  //Ported from the Water sibling (Acerola FFTWater.shader): Beckmann D +
+  //Smith-Beckmann G + roughness-aware Schlick F. The FFT cascade chain
+  //(sampled per-fragment from the displacement textures) drives the
+  //per-pixel meso-normal; the surfaceRoughness uniform drives the
+  //statistical microfacet distribution width for the sub-pixel slope
+  //variance the spectrum cannot resolve (capillary waves, sub-cascade-5
+  //ripples). This replaces the previous Phong lobe — Phong's mesh-scale
+  //facet integration produced wave-face-sized bright smears instead of
+  //the pinpoint glints real ocean has, because a Phong pow(NdotR, n)
+  //fires whenever an entire mesh facet aligns rather than statistically
+  //weighting the unresolved facets within each pixel.
   //
-  //Key trick: the N used to reflect() fades from displacedNormal (all cascades) near
-  //to macroNormal (cascade-0 only, ~2m/texel) far. Keeping cascade-1 ripple detail
-  //in the reflect direction at long distance would land some sub-pixel facet in the
-  //sun cone on every single wave — producing the mid-field "every crest blooms"
-  //look. Cascade-0 only at the horizon gives a clean glint trail down the sun path
-  //and darker water elsewhere.
-  //specDistAlpha goes 0→1 over ~40 m (was 200 m for old huge-world tuning).
-  float specDistAlpha = sqrt(clamp(distanceToWorldPosition / 40.0, 0.0, 1.0));
-  vec3 specNormal = normalize(mix(displacedNormal, macroNormal, specDistAlpha));
-  //Toksvig shininess reduction: the per-cascade fades upstream throw away
-  //slope variance with distance (lostSlopeVar). Real water at those distances
-  //is still rough — the facets just can't be resolved geometrically. Widen
-  //the Phong lobe with classical Toksvig: s' = s / (1 + k·σ²). Without this
-  //the surface collapses to mirror-flat specular as cascades fade and
-  //mid/far-distance reads as "shiny but smooth" instead of "shiny + bumpy".
-  //Start conservative — easy to dial toksvigK up if the effect is too subtle.
-  const float toksvigK = 3.0;
-  float sunFallOff = mix(600.0, 300.0, specDistAlpha) / (1.0 + toksvigK * lostSlopeVar);
-  //NOTE: no foam-exponent collapse. fftFoamAmount is a wave-compression proxy and
-  //reads nonzero on every steep crest — collapsing fallOff there paints the mid-
-  //field with broad white highlights that look like wet splatter. The foam diffuse/
-  //opacity pass below handles actual whitewater visuals separately.
-  vec3 sunReflect = reflect(brightestDirectionalLightDirection, specNormal);
-  float sunLobe = pow(max(dot(sunReflect, -normalizedViewVector), 0.0), sunFallOff);
-  //Fresnel gate at N·V: head-on barely reflects, grazing catches the full lobe.
-  float NdotV = max(dot(specNormal, -normalizedViewVector), 0.0);
-  float fresnelSpec = r0 + (1.0 - r0) * pow(1.0 - NdotV, 5.0);
-  //Horizon fade: a-starry-sky's brightestDirectionalLight still carries meaningful
-  //orange magnitude when the sun is below the horizon (twilight residual), which
-  //multiplied by SPECULAR_BOOST blooms every wave crest with bright orange post-
-  //sunset. Fade specular to zero from ~9° above horizon down. sunZenithFactor
-  //= -direction.y so it's negative when the sun is below the horizon.
+  //Hypothesis (2026-05-19): the BRDF was being fed a per-pixel sample of
+  //cascade 5's high-k content via 1-texel-eps central differences. Adjacent
+  //pixels landed on nearly-uncorrelated samples, so Cook-Torrance fired
+  //only on the lucky-aligned ones (quartz fleck), and widening α to
+  //compensate collapsed everything to a fuzzy blob.
+  //
+  //Fix: build specNormal exactly as displacedNormal — same Crest-style
+  //choppy cross product, same Tx/Tz form, all 6 cascades present — but
+  //swap cascade 5's height-slope contribution from the native 1-texel-eps
+  //to an 8-texel-eps central difference. The wider stride lets the GPU's
+  //bilinear filter average across cascade 5's sub-meter content, giving a
+  //slope value that varies smoothly per-pixel instead of independently
+  //per-pixel. Cascades 0-4 (meter-to-km wave faces — the visible swell)
+  //are untouched, so the sun pillar's geometry still rides the real waves.
+  //
+  //This is the analogue of Acerola's slope-texture-with-tile-8 sampling
+  //(FFTWater.shader:251-264) but using a wide eps to get the same
+  //implicit-low-pass behavior on a height texture.
+  vec2 c5FilteredHeightSlope = vec2(0.0);
+  {
+    float specEps = 8.0 / patchDataSize;
+    float specWorldStep = cascadePatchSizes[5] * 8.0 / patchDataSize;
+    float fade5 = smoothstep(cascadePatchSizes[5] * 500.0, 0.0, distanceToWorldPosition);
+    vec2 uv5 = (vWorldXZ + cascadeSpatialOffsets[5]) / cascadePatchSizes[5];
+    float hL = texture2D(cascadeDisplacementTextures[5], uv5 + vec2(-specEps, 0.0)).y;
+    float hR = texture2D(cascadeDisplacementTextures[5], uv5 + vec2( specEps, 0.0)).y;
+    float hB = texture2D(cascadeDisplacementTextures[5], uv5 + vec2( 0.0, -specEps)).y;
+    float hT = texture2D(cascadeDisplacementTextures[5], uv5 + vec2( 0.0,  specEps)).y;
+    c5FilteredHeightSlope = vec2(hR - hL, hT - hB) / (2.0 * specWorldStep);
+    c5FilteredHeightSlope *= fade5 * waveHeightMultiplier;
+  }
+  //Total height slope for spec = full displacedNormal slope minus cascade-5
+  //native contribution plus cascade-5 filtered contribution. Same cross
+  //product form (chop derivatives unchanged — they don't suffer from
+  //per-pixel noise the way the height slope does).
+  vec2 specHeightSlope = vec2(
+    rawDdx.y - c5NativeHeightSlope.x + c5FilteredHeightSlope.x,
+    rawDdz.y - c5NativeHeightSlope.y + c5FilteredHeightSlope.y
+  );
+  vec3 specTx = vec3(1.0 + foamDdx.x, specHeightSlope.x, foamDdx.y);
+  vec3 specTz = vec3(foamDdz.x, specHeightSlope.y, 1.0 + foamDdz.y);
+  vec3 specNormal = normalize(cross(specTz, specTx));
+  if(specNormal.y < 0.0) specNormal = -specNormal;
+  specNormal = normalize(mix(vec3(0.0, 1.0, 0.0), specNormal, foldBlend));
+  if(specNormal.y < 0.0) specNormal = -specNormal;
+
+  //Effective roughness: max of the artist-controlled baseline and the
+  //distance-grown σ²_GGX from the cascade fade (already computed above
+  //for the Fresnel horizon clamp). Near camera α ≈ surfaceRoughness;
+  //at distance the cascade-fade slopes pile in, widening the lobe so the
+  //horizon doesn't collapse to a mirror.
+  float ctAlpha = max(surfaceRoughness, alphaRough);
+  float ctAlpha2 = ctAlpha * ctAlpha;
+
+  vec3 ctLightDir = -brightestDirectionalLightDirection;
+  vec3 ctViewDir  = -normalizedViewVector;
+  vec3 ctHalfDir  = normalize(ctLightDir + ctViewDir);
+  vec3 ctMacroN   = vec3(0.0, 1.0, 0.0);
+
+  float ctNdotH = max(0.0001, dot(specNormal, ctHalfDir));
+  float ctNdotL = max(0.0,    dot(specNormal, ctLightDir));
+  float ctNdotV = max(0.0001, dot(specNormal, ctViewDir));
+  float ctMacroNdotL = max(0.001, dot(ctMacroN, ctLightDir));
+  float ctNdotH2 = ctNdotH * ctNdotH;
+
+  //Beckmann normal distribution
+  float ctD = exp((ctNdotH2 - 1.0) / (ctAlpha2 * ctNdotH2))
+            / (3.14159265 * ctAlpha2 * ctNdotH2 * ctNdotH2);
+
+  //Smith masking-shadowing (Beckmann form)
+  float ctMaskV = smithMaskingBeckmann(ctHalfDir, ctViewDir,  ctAlpha);
+  float ctMaskL = smithMaskingBeckmann(ctHalfDir, ctLightDir, ctAlpha);
+  float ctG = 1.0 / (1.0 + ctMaskV + ctMaskL);
+
+  //Roughness-aware Schlick Fresnel (Water sibling variant — Schlick's exponent
+  //softens with α so rough surfaces don't get a sharp grazing peak).
+  float ctFNum = pow(1.0 - ctNdotV, 5.0 * exp(-2.69 * ctAlpha));
+  float ctF = r0 + (1.0 - r0) * ctFNum / (1.0 + 22.7 * pow(ctAlpha, 1.5));
+  ctF = clamp(ctF, 0.0, 1.0);
+
+  //Sun fade: a-starry-sky's brightestDirectionalLight carries meaningful
+  //magnitude when the sun is below the horizon (twilight residual). Fade
+  //specular to zero from ~9° above horizon down so post-sunset crests
+  //don't bloom orange.
   float specularSunFade = smoothstep(0.0, 0.15, sunZenithFactor);
-  //Specular boost: Crest's _DirectionalLightBoost defaults ~5; dropped to 3 because
-  //the Fresnel gate already pushes grazing waves to full intensity.
-  vec3 specular = sunLobe * fresnelSpec * SPECULAR_BOOST * lightMag * normalizedLightIntensity * sunShadowFactor * specularSunFade;
+
+  //── Crest-style sun-disk highlight ─────────────────────────────────────
+  //Crest (Ocean.shader:113): pow(dot(reflect(view, N), L), n) · boost ·
+  //lightColor · shadow. No F, no G, no /4·NdotL_macro divider — just a
+  //Phong term on the reflected ray with a brightness boost. Sidesteps
+  //Cook-Torrance's lobe-width trade-off: a true microfacet BRDF can't
+  //simultaneously be tight (peaky for pinpoint glints) and wide (covers
+  //the actual ±15-25° wave-face spread) — too tight gives sparse flecks,
+  //too wide smears diffusely. Phong-on-R with boost decouples the visual
+  //sharpness (controlled by exponent) from the apparent brightness
+  //(controlled by boost), which is why Crest's pillar reads as the
+  //dazzling pinpoint a real sun glint looks like.
+  //
+  //Falloff 275.0 and boost 7.0 are Crest's defaults; tune via uniform
+  //later if you want live control.
+  //
+  //The Cook-Torrance ctF/ctG/ctD machinery above is left computed so
+  //debug modes 23/24 still work — they're free as dead code once the
+  //compiler proves the result is unused, and they document the path we
+  //tried.
+  vec3 specReflectDir = reflect(-ctViewDir, specNormal);
+  specReflectDir.y = max(specReflectDir.y, 0.0);
+  float specRdotL = max(0.0, dot(specReflectDir, ctLightDir));
+  //Constant falloff: tried Crest's 275→42 distance ramp and it bloomed
+  //the far half of the ocean into one giant sheen — their default
+  //config (sun elevation ~50°, view 1.5m above sea) puts the pillar in
+  //a different geometry than ours, and the wide-at-distance lobe over-
+  //triggers for us. Keep one tight value; the mid-distance "dead band"
+  //is a real geometric artifact (R(flat-normal) doesn't land on L
+  //except at very specific view angles for a given sun elevation),
+  //and live with it rather than smear the horizon.
+  const float SPEC_PHONG_FALLOFF = 275.0;
+  const float SPEC_PHONG_BOOST = 7.0;
+  vec3 specular = brightestDirectionalLight * pow(specRdotL, SPEC_PHONG_FALLOFF) * SPEC_PHONG_BOOST;
+  specular *= specularSunFade * sunShadowFactor;
 
   //Total light. Sun shadow is applied only to direct-sun terms (specular
   //and the directionalSurfaceLighting / inscatterShadow contributions inside
@@ -1725,6 +1841,51 @@ void main(){
   //we've over-multiplied somewhere. Range-stretched ×4 for visibility.
   else if(oceanShadowDebugMode == 20){
     gl_FragColor = vec4(vec3(clamp(lostSlopeVar * 4.0, 0.0, 1.0)), 1.0);
+  }
+  //Mode 21: specNormal (the normal actually fed to Cook-Torrance) as RGB,
+  //same [-1,1] → [0,1] encoding as modes 18/19. Compare against 18 to see
+  //whether the option-(2) low-pass cascade-5 build is producing the smooth
+  //meso-normal we intended, or collapsing to plain macroNormal (would read
+  //identical to mode 19) or carrying too much high-k content (would read
+  //identical to mode 18).
+  else if(oceanShadowDebugMode == 21){
+    gl_FragColor = vec4(specNormal * 0.5 + 0.5, 1.0);
+  }
+  //Mode 22: isolated specular contribution as RGB. This is the full Cook-
+  //Torrance output that gets folded into totalLight at the composite line —
+  //sun shadow and specularSunFade are baked in, so this is what the lobe
+  //ACTUALLY produces at this fragment. Tone-mapped with the same
+  //AESFilmic+sRGB pair as the main path so the dynamic range reads in
+  //gamma space (raw HDR clamps to ~white at the sun pillar). If this is
+  //black across the whole image when the sun is in front of camera, the
+  //BRDF is silent and we have a normal/lobe problem; if it's bright but
+  //scattered as fleck noise, the spec normal is too high-frequency.
+  else if(oceanShadowDebugMode == 22){
+    gl_FragColor = linearTosRGB(vec4(MyAESFilmicToneMapping(specular), 1.0));
+  }
+  //Mode 23: NdotH grayscale, raised to a strong contrast so the lobe-firing
+  //zone reads. White (≈1.0) where specNormal aligns with the half-vector
+  //(lobe fires); 0.5 means N⊥H (lobe is dead). Use this to see whether the
+  //sun pillar's GEOMETRY is forming — i.e., are there pixels achieving
+  //NdotH > 0.95 in the band where you'd expect the pillar? If yes, the
+  //pillar IS there in the half-vector sense and the dimness is downstream
+  //(F, G, ctMacroNdotL divider). If everywhere reads dark grey, the
+  //specNormal distribution isn't reaching H at all and we need a wider α
+  //or a different lobe shape.
+  else if(oceanShadowDebugMode == 23){
+    float v = pow(max(0.0, ctNdotH), 64.0);
+    gl_FragColor = vec4(vec3(v), 1.0);
+  }
+  //Mode 24: raw ctF * ctG * ctD product (the BRDF amplitude before
+  //ctNdotL / ctMacroNdotL scaling and light/shadow/fade multiplication).
+  //Scaled by 1/5 so the wider-α lobe (Beckmann peak ~14 at α=0.15) reads
+  //as bright in the pillar zone. If this lights up where mode 23 lights
+  //up, the BRDF lobe is firing correctly on the actual specNormal
+  //distribution. If mode 23 is bright but this is still dim, α is still
+  //too narrow for our wave-face slope spread.
+  else if(oceanShadowDebugMode == 24){
+    float v = ctF * ctG * ctD / 5.0;
+    gl_FragColor = vec4(vec3(clamp(v, 0.0, 1.0)), 1.0);
   }
 
   //Debug overlays — only drawn when oceanShadowDebugMode is non-zero. Bottom-

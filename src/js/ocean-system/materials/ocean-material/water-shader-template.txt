@@ -136,6 +136,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     reflectionScale: {type: 'f', value: 1.0},
     reflectionDistanceFalloff: {type: 'f', value: 0.0},
     fresnelDistanceRoughness: {type: 'f', value: 0.7},
+    surfaceRoughness: {type: 'f', value: 0.15},
     patchDataSize: {type: 'f', value: 1024.0},
     atmosphereTransmittance: {type: 't', value: null},
     atmosphereMieInscattering: {type: 't', value: null},

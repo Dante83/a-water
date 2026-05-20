@@ -72,6 +72,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.reflectionScale = data.reflection_scale;
   this.reflectionDistanceFalloff = data.reflection_distance_falloff;
   this.fresnelDistanceRoughness = data.fresnel_distance_roughness;
+  this.surfaceRoughness = 0.08;
   this.foamEnabled = data.foam_enabled;
   this.foamStart = data.foam_start;
   this.data = data;
@@ -675,6 +676,9 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.setFresnelDistanceRoughness = function(v){
     self.fresnelDistanceRoughness = +v;
   };
+  this.setSurfaceRoughness = function(v){
+    self.surfaceRoughness = +v;
+  };
   //Live-tune atmospheric perspective strength. Default 1.0. Set to 0.0 to
   //fully bypass extinction + inscatter on the water surface (the per-frame
   //tick will still overwrite at the next ocean-grid update unless we keep
@@ -703,6 +707,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     window.setReflectionScale = this.setReflectionScale;
     window.setReflectionDistanceFalloff = this.setReflectionDistanceFalloff;
     window.setFresnelDistanceRoughness = this.setFresnelDistanceRoughness;
+    window.setSurfaceRoughness = this.setSurfaceRoughness;
     window.setOceanWireframe = this.setOceanWireframe;
     window.setAtmDistanceScale = this.setAtmDistanceScale;
   }
@@ -921,6 +926,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       uniformsRef.reflectionScale.value = self.reflectionScale;
       uniformsRef.reflectionDistanceFalloff.value = self.reflectionDistanceFalloff;
       uniformsRef.fresnelDistanceRoughness.value = self.fresnelDistanceRoughness;
+      uniformsRef.surfaceRoughness.value = self.surfaceRoughness;
       uniformsRef.foamStartLevel.value = self.foamStart;
       uniformsRef.foamDiffuseMap.value = self.foamColorMap;
       uniformsRef.foamOpacityMap.value = self.foamOpacityMap;
