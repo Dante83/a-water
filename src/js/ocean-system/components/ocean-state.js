@@ -21,6 +21,22 @@ AFRAME.registerComponent('ocean-state', {
     'caustics_strength': {type: 'number', default: 1.0},
     'foam_enabled': {type: 'bool', default: true},
     'foam_start': {type: 'number', default: 0.10},
+    //Broadband foam (Crest UpdateFoam port). All four feed the broadband
+    //pack material in ocean-height-composer.js.
+    //  foam_coverage: foam fires when broadband Jacobian < this. Higher =
+    //    more crests covered. 0.55 (Crest default) is sparse, 0.80 is busy,
+    //    0.95 blankets everything.
+    //  foam_fade_rate: per-second decay. 0.3 = ~3.3 s e-fold (lingering),
+    //    0.8 = Crest default (~1.25 s, snappy).
+    //  foam_strength: per-frame add multiplier. 1.0 = Crest default; raise
+    //    to make firing pixels saturate faster, lower for thinner foam.
+    //  foam_advection_scale: fraction of wind speed used as foam drift.
+    //    0.04 ≈ Stokes drift for wind-driven seas; 0 = pinned, 0.1 = visibly
+    //    chases wind.
+    'foam_coverage': {type: 'number', default: 0.85},
+    'foam_fade_rate': {type: 'number', default: 0.25},
+    'foam_strength': {type: 'number', default: 4.0},
+    'foam_advection_scale': {type: 'number', default: 0.04},
     //Jerlov water type preset selector. 0 = custom (use the explicit
     //water_absorption/water_scattering vec3 attributes below). 1..7 picks a
     //preset from AWater.AOcean.JERLOV_PRESETS in ocean-grid.js — open-ocean
@@ -52,7 +68,17 @@ AFRAME.registerComponent('ocean-state', {
     //1 = isotropic. Crest default 0.145 — enough cross-wind chop to avoid the
     //parallel-streak look without losing wind direction.
     'directional_turbulence': {type: 'number', default: 0.145},
-    'chop': {type: 'number', default: 1.0}
+    'chop': {type: 'number', default: 1.0},
+    //Additive offset applied on top of the scene DirectionalLight's
+    //shadow.bias when the water shader samples the sun shadow map.
+    //Negative pushes water-receiver refZ TOWARD the light (less shadow);
+    //positive pushes it AWAY (more shadow, helps surface ledges of small
+    //caster). The default -0.0012 cancels a depth-fight stripe seen at
+    //grazing sun where submerged terrain just below the water surface
+    //was shadowing the water itself (world-Y deltas of ~1 m collapse to
+    //sub-bias deltas in shadow space at near-horizon sun). Tune via the
+    //live setSunShadowBias() console hook.
+    'sun_shadow_bias': {type: 'number', default: -0.0012}
   },
   init: function(){
     //Get our renderer to pass in
@@ -79,6 +105,13 @@ AFRAME.registerComponent('ocean-state', {
         oldData.wind_velocity.y !== this.data.wind_velocity.y)){
       this.oceanGrid.oceanHeightBandLibrary.regenerateH0(this.data.wind_velocity);
     }
+    //Broadband foam knobs — A-Frame attribute changes propagate into the
+    //live JS fields on the grid, which the per-frame tick pushes onto the
+    //broadband pack material's uniforms.
+    if(oldData.foam_coverage !== this.data.foam_coverage) this.oceanGrid.foamCoverage = this.data.foam_coverage;
+    if(oldData.foam_fade_rate !== this.data.foam_fade_rate) this.oceanGrid.foamFadeRate = this.data.foam_fade_rate;
+    if(oldData.foam_strength !== this.data.foam_strength) this.oceanGrid.foamStrength = this.data.foam_strength;
+    if(oldData.foam_advection_scale !== this.data.foam_advection_scale) this.oceanGrid.foamAdvectionScale = this.data.foam_advection_scale;
   },
   tick: function(time, timeDelta){
     //Do nothing to start :D

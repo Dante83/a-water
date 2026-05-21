@@ -75,6 +75,14 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.surfaceRoughness = 0.08;
   this.foamEnabled = data.foam_enabled;
   this.foamStart = data.foam_start;
+  //Live-tunable broadband foam parameters. Plain JS fields per the
+  //feedback_aframe_live_uniforms convention — pushed to the broadband pack
+  //material every frame so DevTools / external scripts can hot-tune them
+  //(setFoamCoverage etc. console hooks are valid follow-ups).
+  this.foamCoverage = data.foam_coverage;
+  this.foamFadeRate = data.foam_fade_rate;
+  this.foamStrength = data.foam_strength;
+  this.foamAdvectionScale = data.foam_advection_scale;
   this.data = data;
   this.time = 0.0;
   this.causticMap;
@@ -617,14 +625,31 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //CSM on/off across every water tile so we can isolate which one is
   //producing a given visible shadow. Call as setSunShadowEnabled(0) etc.
   //from the browser console.
+  //Override flags so the per-frame tick can't trample the console toggle.
+  //null = follow the normal per-frame logic (sun-below-horizon etc).
+  //true/false = force the uniform to that state every frame.
+  this._sunShadowOverride = null;
+  this._oceanShadowOverride = null;
+  //Additive offset on top of mainLight.shadow.bias when pushed to the water
+  //shader. Sourced from the HTML attribute `sun_shadow_bias` (default
+  //-0.0012, see ocean-state.js for full rationale). Positive → more
+  //shadowed; negative → less shadowed. Use setSunShadowBias(x) from the
+  //console for live tuning.
+  this._sunShadowBiasOffset = (data && typeof data.sun_shadow_bias === 'number')
+    ? data.sun_shadow_bias : -0.0012;
+  this.setSunShadowBias = function(offset){
+    self._sunShadowBiasOffset = +offset || 0.0;
+  };
   this.setSunShadowEnabled = function(enabled){
-    const v = enabled ? 1 : 0;
+    self._sunShadowOverride = enabled === null || enabled === undefined ? null : !!enabled;
+    const v = self._sunShadowOverride === false ? 0 : 1;
     for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
       oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.sunShadowEnabled.value = v;
     }
   };
   this.setOceanShadowEnabled = function(enabled){
-    const v = enabled ? 1 : 0;
+    self._oceanShadowOverride = enabled === null || enabled === undefined ? null : !!enabled;
+    const v = self._oceanShadowOverride === false ? 0 : 1;
     for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
       oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.oceanShadowEnabled.value = v;
     }
@@ -696,7 +721,111 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.wireframe = flag;
     }
   };
+  //Toggle THREE.CameraHelper wireframes for every shadow camera in play so
+  //you can SEE the frustums in 3D — way more useful than reading dimensions
+  //out of a dump. White = scene sun shadow (Three.js DirectionalLight), and
+  //C0..C3 (ocean CSM) get red/orange/yellow/green for fine→coarse. Helpers
+  //are added directly to the scene; update() is called per-frame from tick.
+  //Call as setShadowHelpers(1) / setShadowHelpers(0).
+  this._shadowHelpers = null;
+  this.setShadowHelpers = function(enabled){
+    const on = !!enabled;
+    if(!on){
+      if(self._shadowHelpers){
+        for(let i = 0; i < self._shadowHelpers.length; i++){
+          self.scene.remove(self._shadowHelpers[i]);
+          self._shadowHelpers[i].dispose && self._shadowHelpers[i].dispose();
+        }
+        self._shadowHelpers = null;
+      }
+      return;
+    }
+    if(self._shadowHelpers) return;
+    self._shadowHelpers = [];
+    const colors = [0xff4040, 0xff9020, 0xffe040, 0x40e060]; //C0..C3 fine→coarse
+    //THREE.CameraHelper uses vertex colours, so setting .material.color does
+    //nothing visible — the default rainbow palette (yellow/magenta/red/green)
+    //comes from the BufferGeometry's color attribute. Use setColors() to
+    //override all five segments to a single solid colour so each helper is
+    //distinguishable by its own colour rather than all wearing the rainbow.
+    const tintHelper = function(helper, hex){
+      const c = new THREE.Color(hex);
+      if(typeof helper.setColors === 'function'){
+        helper.setColors(c, c, c, c, c);
+      } else {
+        //Fallback for older Three.js without setColors: paint the color
+        //attribute directly. Three colours per line segment vertex.
+        const attr = helper.geometry && helper.geometry.attributes.color;
+        if(attr){
+          for(let i = 0; i < attr.count; i++){
+            attr.setXYZ(i, c.r, c.g, c.b);
+          }
+          attr.needsUpdate = true;
+        }
+      }
+      helper.material.depthTest = false;
+      helper.material.toneMapped = false;
+      helper.renderOrder = 999;
+    };
+    //Scene sun shadow camera (the one that gates lighthouse/terrain shadows).
+    const light = self.brightestDirectionalLight;
+    if(light && light.shadow && light.shadow.camera){
+      const h = new THREE.CameraHelper(light.shadow.camera);
+      tintHelper(h, 0xffffff);
+      self.scene.add(h);
+      self._shadowHelpers.push(h);
+    }
+    //Ocean CSM cascades.
+    if(self.oceanShadowCSM && self.oceanShadowCSM.cascades){
+      const cs = self.oceanShadowCSM.cascades;
+      for(let i = 0; i < cs.length; i++){
+        const h = new THREE.CameraHelper(cs[i].lightCamera);
+        tintHelper(h, colors[i] || 0xffffff);
+        self.scene.add(h);
+        self._shadowHelpers.push(h);
+      }
+    }
+  };
+
+  //Dump the scene-wide directional-light shadow camera + the ocean CSM
+  //cascades. Use this when terrain-on-water shadows clip at a moving line:
+  //the scene shadow's ortho frustum is what gates non-ocean casters
+  //(lighthouse, trees, rocks). Increase `sky-shadow-camera-size` in the
+  //host scene if the printed footprint is smaller than the visible water.
+  this.dumpShadowRanges = function(){
+    const light = self.brightestDirectionalLight;
+    if(light && light.shadow && light.shadow.camera){
+      const sc = light.shadow.camera;
+      const w = (sc.right - sc.left);
+      const h = (sc.top - sc.bottom);
+      const target = light.target ? light.target.position : null;
+      console.log('[scene sun shadow]',
+        'extent', w.toFixed(1), 'x', h.toFixed(1), 'm',
+        'near/far', sc.near.toFixed(1), '/', sc.far.toFixed(1),
+        'light pos', light.position.toArray().map(function(v){return v.toFixed(1);}).join(', '),
+        'target', target ? target.toArray().map(function(v){return v.toFixed(1);}).join(', ') : 'none',
+        'map', light.shadow.mapSize.x + 'x' + light.shadow.mapSize.y,
+        '→ texel', (w / light.shadow.mapSize.x * 100).toFixed(1) + ' cm');
+    } else {
+      console.log('[scene sun shadow] no light/shadow camera registered');
+    }
+    if(self.oceanShadowCSM && self.oceanShadowCSM.cascades){
+      const cs = self.oceanShadowCSM.cascades;
+      for(let i = 0; i < cs.length; i++){
+        const cfg = cs[i].cfg;
+        console.log('[ocean CSM C' + i + ']',
+          'extent', cfg.extent.toFixed(1), 'm',
+          'depthRange', cs[i].depthRange.toFixed(1), 'm',
+          'map', cfg.mapSize + 'x' + cfg.mapSize,
+          '→ texel', (cfg.extent / cfg.mapSize * 100).toFixed(1) + ' cm',
+          'layer', cfg.layer, 'maxRing', cfg.maxRing);
+      }
+    }
+  };
   if(typeof window !== 'undefined'){
+    window.dumpShadowRanges = this.dumpShadowRanges;
+    window.setShadowHelpers = this.setShadowHelpers;
+    window.setSunShadowBias = this.setSunShadowBias;
     window.setOceanShadowDebug = this.setOceanShadowDebug;
     window.setSunShadowEnabled = this.setSunShadowEnabled;
     window.setOceanShadowEnabled = this.setOceanShadowEnabled;
@@ -872,6 +1001,17 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
     //Update each of our ocean grid height maps
     self.oceanHeightBandLibrary.tick(time);
+    //Push wind velocity + the four live-tunable broadband foam knobs to
+    //the composer BEFORE its tick so this frame's foam accumulator uses
+    //the current settings. windVelocity is the same wind vector that
+    //drives the spectrum (data.wind_velocity).
+    const bbU = self.oceanHeightComposer._broadbandPackMaterial.uniforms;
+    bbU.windVelocity.value.set(self.windVelocity.x, self.windVelocity.y);
+    bbU.foamCoverage.value      = self.foamCoverage;
+    bbU.foamFadeRate.value      = self.foamFadeRate;
+    bbU.foamStrength.value      = self.foamStrength;
+    bbU.advectionScale.value    = self.foamAdvectionScale;
+
     self.oceanHeightComposer.tick();
 
     //Update all of our uniforms
@@ -879,11 +1019,16 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     if(self.brightestDirectionalLight){
       brightestDirectionalLight = self.brightestDirectionalLight;
     }
+
     for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
       const uniformsRef = oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms;
       for(let c = 0; c < 6; c++){
         uniformsRef.cascadeDisplacementTextures.value[c] = self.oceanHeightComposer.cascadeDisplacementTextures[c];
       }
+      //Broadband foam RT + its tile size (water shader samples at
+      //worldXZ / broadbandFoamTileSize with REPEAT wrap).
+      uniformsRef.broadbandFoamTexture.value = self.oceanHeightComposer.broadbandFoamTexture;
+      uniformsRef.broadbandFoamTileSize.value = self.oceanHeightComposer.broadbandFoamTileSize;
       uniformsRef.cascadePatchSizes.value = self.oceanHeightComposer._cascadePatchSizes;
       //Per-cascade slope variance σ² — sourced from the height-band library.
       //Re-pushed every frame because regenerateH0() (called when wind changes
@@ -950,12 +1095,25 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         //casts and its shadow map has been rendered at least once (shadow.map
         //is null until the renderer runs the shadow pass).
         if(mainLight.castShadow && mainLight.shadow && mainLight.shadow.map){
-          uniformsRef.sunShadowEnabled.value = 1;
+          //Console override (set via setSunShadowEnabled) wins over the
+          //auto-detect, so toggling from devtools actually disables the
+          //sampler instead of being clobbered next frame.
+          uniformsRef.sunShadowEnabled.value = self._sunShadowOverride === false ? 0 : 1;
           uniformsRef.sunShadowMap.value = mainLight.shadow.map.texture;
           uniformsRef.sunShadowMatrix.value.copy(mainLight.shadow.matrix);
           uniformsRef.sunShadowMapSize.value.set(mainLight.shadow.mapSize.x, mainLight.shadow.mapSize.y);
           uniformsRef.sunShadowRadius.value = mainLight.shadow.radius;
-          uniformsRef.sunShadowBias.value = mainLight.shadow.bias - 0.003;
+          //Was `mainLight.shadow.bias - 0.003` — that extra -0.003 push pulled
+          //water-surface refZ enough toward the light that real occluders
+          //(lighthouse) could fail the depth comparison, so the lighthouse
+          //shadow on the stone wall rendered correctly (Three.js's standard
+          //path, no extra bias) but the SAME shadow on adjacent water did
+          //not (our shader, with the -0.003 push). Now using a-starry-sky's
+          //bias plus a live-tunable offset (setSunShadowBias from console).
+          //Positive offset = more shadowed (refZ pushed away from light,
+          //comparison fails more often). Negative = less shadowed. Range
+          //typical: -0.005 to +0.005.
+          uniformsRef.sunShadowBias.value = mainLight.shadow.bias + self._sunShadowBiasOffset;
         } else {
           uniformsRef.sunShadowEnabled.value = 0;
         }
@@ -1066,11 +1224,12 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       const numCascades = self.oceanShadowCSM.numCascades;
       for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
         const u = oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms;
-        if(sunBelowHorizon){
+        if(sunBelowHorizon || self._oceanShadowOverride === false){
           u.oceanShadowEnabled.value = 0;
-          continue;
+          if(sunBelowHorizon) continue;
+        } else {
+          u.oceanShadowEnabled.value = 1;
         }
-        u.oceanShadowEnabled.value = 1;
         //Push every cascade's moment texture (RGBA32F, post-blur), shadow
         //matrix, and map size. Matrices live as separate uniform names
         //(oceanShadowMatrix0..3) and must be projected per-vertex;
@@ -1083,6 +1242,15 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         u.oceanShadowMatrix1.value.copy(cascades[1].shadowMatrix);
         u.oceanShadowMatrix2.value.copy(cascades[2].shadowMatrix);
         u.oceanShadowMatrix3.value.copy(cascades[3].shadowMatrix);
+      }
+    }
+
+    //Refresh shadow-frustum visualisers if active. Both the scene sun shadow
+    //camera and each CSM lightCamera move every frame; helpers need .update()
+    //to redraw their wireframes against the current matrices.
+    if(self._shadowHelpers){
+      for(let i = 0; i < self._shadowHelpers.length; i++){
+        self._shadowHelpers[i].update();
       }
     }
   };

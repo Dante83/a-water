@@ -17,6 +17,8 @@ uniform int ringIndex;
 uniform float chop;
 uniform float baseHeightOffset;
 uniform sampler2D cascadeDisplacementTextures[6];
+uniform sampler2D broadbandFoamTexture;
+uniform float broadbandFoamTileSize;
 uniform float cascadePatchSizes[6];
 uniform vec2 cascadeSpatialOffsets[6];
 //Per-cascade slope variance σ² (in slope² units). Precomputed from JONSWAP +
@@ -259,9 +261,16 @@ float linearizeDepth(float depthSample){
 float getSunShadow(vec4 shadowCoord){
   if(sunShadowEnabled == 0) return 1.0;
   vec3 sc = shadowCoord.xyz / shadowCoord.w;
-  if(sc.x < 0.0 || sc.x > 1.0 || sc.y < 0.0 || sc.y > 1.0 || sc.z > 1.0){
-    return 1.0;
-  }
+  //Depth clips stay hard — sc.z outside [0,1] genuinely means no info.
+  if(sc.z > 1.0 || sc.z < 0.0) return 1.0;
+  //Hard-reject only OUTSIDE the lateral frustum. Fragments just inside the
+  //edge still sample the map; the fade band below blends them toward "lit"
+  //so the boundary doesn't read as a hard line on the water. Without this,
+  //a tall caster's long shadow gets sliced by the frustum edge as a sharp
+  //diagonal — see modes 25/26 (added 2026-05-20) to visualise.
+  vec2 edgeDist = min(sc.xy, vec2(1.0) - sc.xy);
+  float edge = min(edgeDist.x, edgeDist.y);
+  if(edge < 0.0) return 1.0;
   //Receiver-plane slope bias: dFdx/dFdy of sc.z give the rate at which shadow-space
   //depth changes per screen pixel. Steeply tilted surfaces need more bias to stay
   //above the depth-map quantisation noise, otherwise they self-shadow as acne.
@@ -277,7 +286,13 @@ float getSunShadow(vec4 shadowCoord){
       shadow += refZ < d ? 1.0 : 0.0;
     }
   }
-  return shadow * (1.0 / 9.0);
+  shadow *= (1.0 / 9.0);
+  //Soft edge fade: lerp from shadow value toward fully lit over the outer
+  //5% of UV space. At a 200m frustum that's a 10m fade band; at 800m it's
+  //40m. Wide enough to hide the cutoff, narrow enough to keep the shadow's
+  //real silhouette inside the frustum sharp.
+  float fade = smoothstep(0.0, 0.05, edge);
+  return mix(1.0, shadow, fade);
 }
 
 //EVSM evaluation. Each cascade's texture stores 4 warped depth moments
@@ -488,15 +503,20 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 reflectDir){
     return skyColor;
   }
 
-  //Exponential step: starts at 0.5m, grows 1.3x each step.
-  float stepLen = 0.5;
+  //Exponential step: starts at 0.25m, grows 1.2x each step. Was 0.5m / 1.3x;
+  //the slower growth pulls the step size at mid-distance hits down by ~3x
+  //(at iter ~15 the old curve was ~30 m/step, the new one is ~9 m/step), so
+  //binary refinement starts from a tighter bracket and converges to ~cm-
+  //level residual on reflections out to ~100 m instead of the metres of
+  //residual the old curve gave at that range.
+  float stepLen = 0.25;
   vec3 curPos = viewPos;
   vec3 prevPos = viewPos;
 
   for(int i = 0; i < 48; i++){
     prevPos = curPos;
     curPos  += viewReflect * stepLen;
-    stepLen *= 1.3;
+    stepLen *= 1.2;
 
     vec4 clip = ssrProjectionMatrix * vec4(curPos, 1.0);
     if(clip.w <= 0.0) break;
@@ -526,8 +546,11 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 reflectDir){
        sceneDepth > 2.0 && sceneDepth < farThreshold){
 
       //Binary-search refinement: the actual crossing lies between prevPos and
-      //curPos. 5 iterations narrows it to ~1/32 of the last step length, so
-      //real hits converge to |hitDelta| < a few cm regardless of step size.
+      //curPos. 8 iterations narrows it to ~1/256 of the last step length, so
+      //real hits converge to sub-cm residual even when the outer step has
+      //grown to tens of metres at the horizon. Was 5 iterations (1/32);
+      //3 extra iterations cost 3 depth taps per accepted hit and visibly
+      //sharpen where the reflection of an object meets the waterline.
       //Thickness-bug rays (ray passes behind thin geometry whose back face is
       //not in the depth buffer) still converge, but only to the thin object's
       //front face — which the silhouette check below then rejects.
@@ -536,7 +559,7 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 reflectDir){
       vec2  hitUV         = uv;
       float hitSceneDepth = sceneDepth;
       float hitDelta      = depthDelta;
-      for(int j = 0; j < 5; j++){
+      for(int j = 0; j < 8; j++){
         vec3 mid = 0.5 * (lo + hi);
         vec4 midClip = ssrProjectionMatrix * vec4(mid, 1.0);
         vec2 midUV   = midClip.xy / midClip.w * 0.5 + 0.5;
@@ -931,25 +954,20 @@ void main(){
   float jacobian = (1.0 + foamDdx.x) * (1.0 + foamDdz.y) - foamDdx.y * foamDdz.x;
   float turbulence = max(0.0, 1.0 - jacobian);
 
-  //Persistent foam: read from displacement texture alpha (accumulated by the composer
-  //via Jacobian-based ping-pong each frame). Sum active cascades with LOD fade.
-  //Whitecap foam is a big-breaker phenomenon — Crest excludes the smaller
-  //cascades from foam via _CrestMinimumWavesSlice for exactly this reason.
-  //Including C2/C3 here turned every fine-chop Jacobian event into sparkle
-  //noise that aliased at distance (the close-up "salt grain" pattern). Only
-  //C0 + C1 (256–2048 m wavelengths) carry the kind of crest steepness that
-  //actually breaks into whitecaps. C0 and C1 are sampled unconditionally —
-  //they don't need a fade since they're the largest scales.
-  float fftFoamAmount = 0.0;
-  {
-    vec2 uv0 = (vWorldXZ + cascadeSpatialOffsets[0]) / cascadePatchSizes[0];
-    fftFoamAmount += texture2D(cascadeDisplacementTextures[0], uv0).a;
-  }
-  {
-    vec2 uv1 = (vWorldXZ + cascadeSpatialOffsets[1]) / cascadePatchSizes[1];
-    fftFoamAmount += texture2D(cascadeDisplacementTextures[1], uv1).a;
-  }
-  fftFoamAmount = clamp(fftFoamAmount, 0.0, 1.0);
+  //Broadband foam: sample the composer's dedicated foam RT, which accumulates
+  //Jacobian-based foam from the SUMMED C2+C3+C4 displacement (not per-cascade)
+  //with wind advection + frame-rate-independent decay. Mirrors Crest's
+  //UpdateFoam.compute architecture.
+  //
+  //Why this replaced the per-cascade alpha read: each cascade is band-limited
+  //by maxCoord ∈ [2, 8) after the 2026-05-17 Crest port, so per-cascade
+  //Jacobians only see slope within their narrow octave. The visible wave
+  //crests are the SUM of all cascades, so per-cascade foam fired at sparse
+  //texels uncorrelated with visible crests → "random flashes" + "blop into
+  //existence". The broadband RT sees the actual surface fold, advects with
+  //wind, and rides the wave like real foam.
+  vec2 foamUV = vWorldXZ / broadbandFoamTileSize;
+  float fftFoamAmount = texture2D(broadbandFoamTexture, foamUV).r;
 
   //Crest-style surface normal from cross product of displaced tangent vectors.
   //Surface parameterization: P(u,v) = (u - chop*Dx, Dy, v - chop*Dz)
@@ -1011,6 +1029,10 @@ void main(){
   vec2 foamTextureUV2 = (vec2(-worldPosition.z, worldPosition.x) + t * foamScrollVelocity) / 3.0;
 
   #if($foam_enabled)
+    //fftFoamAmount is now the broadband foam RT sample — it already includes
+    //Crest-style accumulation + wind advection + dt-scaled decay, so no live
+    //turbulence boost is needed. The shore branch still adds its turbulence-
+    //driven boost on top for the breaker-line near terrain.
     float foamAmount = fftFoamAmount;
     vec2 foamPosition = 0.5 * (((worldPosition.xz - foamCameraXZ) / vec2(2048.0)) + 1.0);
     foamPosition = vec2(foamPosition.x, 1.0 - foamPosition.y);
@@ -1627,7 +1649,16 @@ void main(){
     //_WaveFoamFeather = 0.4 in Crest's defaults.
     float foamBlackPoint = clamp(1.0 - foamAmount, 0.0, 1.0);
     float foamBlend = smoothstep(foamBlackPoint, foamBlackPoint + 0.4, foamMask);
+    vec3 dbgFoamColor = foamDiffuse + foamAmbient;
+    float dbgFoamMask  = foamMask;
+    float dbgFoamBlend = foamBlend;
+    float dbgFoamAmount = foamAmount;
     totalLight = mix(totalLight, foamDiffuse + foamAmbient, foamBlend);
+  #else
+    vec3 dbgFoamColor = vec3(0.0);
+    float dbgFoamMask = 0.0;
+    float dbgFoamBlend = 0.0;
+    float dbgFoamAmount = 0.0;
   #endif
 
   #if($atmospheric_perspective_enabled)
@@ -1886,6 +1917,147 @@ void main(){
   else if(oceanShadowDebugMode == 24){
     float v = ctF * ctG * ctD / 5.0;
     gl_FragColor = vec4(vec3(clamp(v, 0.0, 1.0)), 1.0);
+  }
+  //Mode 25: scene sun shadow value at the WATER SURFACE position, raw.
+  //White = fully lit, black = fully shadowed. Use to see the exact shape of
+  //the lighthouse/terrain shadow on the water and where its hard cutoff sits.
+  else if(oceanShadowDebugMode == 25){
+    float v = getSunShadow(vSunShadowCoord);
+    gl_FragColor = vec4(vec3(v), 1.0);
+  }
+  //Mode 26: which axis of sunShadowCoord is gating this fragment. Tells us
+  //precisely which clip is producing the cutoff line — colour says why a
+  //fragment reads as "lit" outside the frustum.
+  //  WHITE  = inside the shadow camera frustum, real shadow value applies
+  //  RED    = sc.x outside [0,1]  (lateral, sun azimuth axis)
+  //  GREEN  = sc.y outside [0,1]  (lateral, perpendicular axis)
+  //  BLUE   = sc.z > 1.0          (past the shadow camera's FAR plane)
+  //  BLACK  = sc.z < 0.0          (between light and near plane)
+  else if(oceanShadowDebugMode == 26){
+    vec3 sc = vSunShadowCoord.xyz / vSunShadowCoord.w;
+    vec3 tint = vec3(1.0); //inside the frustum
+    if(sc.z < 0.0)                          tint = vec3(0.0);
+    else if(sc.z > 1.0)                     tint = vec3(0.2, 0.2, 1.0);
+    else if(sc.x < 0.0 || sc.x > 1.0)       tint = vec3(1.0, 0.2, 0.2);
+    else if(sc.y < 0.0 || sc.y > 1.0)       tint = vec3(0.2, 1.0, 0.2);
+    gl_FragColor = vec4(tint, 1.0);
+  }
+  //Mode 27: raw cascade-2 alpha (foam accumulator) shown directly. White =
+  //full foam, black = no foam. If this is black everywhere, the composer's
+  //Jacobian pack isn't firing for C2 (per-cascade slope never crosses
+  //foamBias). If it's white-ish but no visible foam in mode 0, the issue
+  //is downstream (foamMask threshold, blend, etc).
+  else if(oceanShadowDebugMode == 27){
+    vec2 uv2 = (vWorldXZ + cascadeSpatialOffsets[2]) / cascadePatchSizes[2];
+    float a = texture2D(cascadeDisplacementTextures[2], uv2).a;
+    gl_FragColor = vec4(vec3(a), 1.0);
+  }
+  //Mode 28: raw cascade-3 alpha (foam accumulator) shown directly.
+  else if(oceanShadowDebugMode == 28){
+    vec2 uv3 = (vWorldXZ + cascadeSpatialOffsets[3]) / cascadePatchSizes[3];
+    float a = texture2D(cascadeDisplacementTextures[3], uv3).a;
+    gl_FragColor = vec4(vec3(a), 1.0);
+  }
+  //Mode 29: side-by-side every cascade's alpha as a vertical strip — left
+  //sixth = C0, right sixth = C5. Each strip uses that cascade's own UV
+  //mapping (so the world pattern stays continuous within a strip). Quickest
+  //answer to "is the composer accumulating foam in ANY cascade".
+  else if(oceanShadowDebugMode == 29){
+    float strip = gl_FragCoord.x / screenResolution.x;
+    int idx = int(min(strip * 6.0, 5.0));
+    float a = 0.0;
+    if(idx == 0){ vec2 uv = (vWorldXZ + cascadeSpatialOffsets[0]) / cascadePatchSizes[0]; a = texture2D(cascadeDisplacementTextures[0], uv).a; }
+    else if(idx == 1){ vec2 uv = (vWorldXZ + cascadeSpatialOffsets[1]) / cascadePatchSizes[1]; a = texture2D(cascadeDisplacementTextures[1], uv).a; }
+    else if(idx == 2){ vec2 uv = (vWorldXZ + cascadeSpatialOffsets[2]) / cascadePatchSizes[2]; a = texture2D(cascadeDisplacementTextures[2], uv).a; }
+    else if(idx == 3){ vec2 uv = (vWorldXZ + cascadeSpatialOffsets[3]) / cascadePatchSizes[3]; a = texture2D(cascadeDisplacementTextures[3], uv).a; }
+    else if(idx == 4){ vec2 uv = (vWorldXZ + cascadeSpatialOffsets[4]) / cascadePatchSizes[4]; a = texture2D(cascadeDisplacementTextures[4], uv).a; }
+    else             { vec2 uv = (vWorldXZ + cascadeSpatialOffsets[5]) / cascadePatchSizes[5]; a = texture2D(cascadeDisplacementTextures[5], uv).a; }
+    gl_FragColor = vec4(vec3(a), 1.0);
+  }
+  //Mode 34: raw broadband foam RT — the SUMMED-displacement Jacobian foam
+  //accumulator that replaced the per-cascade C2+C3 alpha read. White = full
+  //foam, black = no foam. This is the actual source the water shader now
+  //samples via `fftFoamAmount`, so seeing the texture directly here makes
+  //the open-water foam pattern legible without the texture-mask occlusion.
+  else if(oceanShadowDebugMode == 34){
+    vec2 uv = vWorldXZ / broadbandFoamTileSize;
+    float a = texture2D(broadbandFoamTexture, uv).r;
+    gl_FragColor = vec4(vec3(a), 1.0);
+  }
+  //Mode 31: raw foamOpacityMap value (foamMask) as grayscale. If the brightest
+  //patches don't reach white (~0.6+), the texture peak is the limiting factor
+  //and even with full foamAmount the smoothstep edge eats the blend. Fix at
+  //texture-load or by lowering Crest's 0.4 feather constant.
+  else if(oceanShadowDebugMode == 31){
+    gl_FragColor = vec4(vec3(dbgFoamMask), 1.0);
+  }
+  //Mode 32: foamBlend (the smoothstep output, what actually drives the mix
+  //toward foam color). White = 100% foam-tinted, black = pure water. If this
+  //is uniformly dim/black on visible wave crests, the smoothstep math is the
+  //blocker even though both foamAmount and foamMask are non-zero.
+  else if(oceanShadowDebugMode == 32){
+    gl_FragColor = vec4(vec3(dbgFoamBlend), 1.0);
+  }
+  //Mode 33: foam color (foamDiffuse + foamAmbient) pre-tonemap, tonemapped
+  //the same way the final surface is. Compare against the water at the same
+  //pixel — if foam color barely beats water radiance, the INV_PI scale is
+  //too aggressive and the mix has no headroom to read as "white".
+  else if(oceanShadowDebugMode == 33){
+    gl_FragColor = linearTosRGB(vec4(MyAESFilmicToneMapping(dbgFoamColor), 1.0));
+  }
+  //Mode 30: per-cascade Jacobian computed in-shader using the SAME formula
+  //the composer uses (per-cascade only, no summing). Six vertical strips:
+  //C0 left → C5 right. grey=1=flat, black=0=folded, white=2=stretched. If
+  //C2/C3 strips never go below grey, the composer can't fire there either
+  //and the foamBias threshold needs to go higher (or the per-cascade
+  //accumulator architecture has to be replaced with summed-displacement).
+  else if(oceanShadowDebugMode == 30){
+    float strip = gl_FragCoord.x / screenResolution.x;
+    int idx = int(min(strip * 6.0, 5.0));
+    float j = 1.0;
+    float eps = 1.0 / patchDataSize;
+    if(idx >= 0 && idx <= 5){
+      float patchL = cascadePatchSizes[idx];
+      float worldStep = patchL / patchDataSize;
+      vec2 uv = (vWorldXZ + cascadeSpatialOffsets[idx]) / patchL;
+      vec2 dL, dR, dB, dT;
+      if(idx == 0){
+        dL = texture2D(cascadeDisplacementTextures[0], uv + vec2(-eps, 0.0)).xz;
+        dR = texture2D(cascadeDisplacementTextures[0], uv + vec2( eps, 0.0)).xz;
+        dB = texture2D(cascadeDisplacementTextures[0], uv + vec2(0.0,-eps)).xz;
+        dT = texture2D(cascadeDisplacementTextures[0], uv + vec2(0.0, eps)).xz;
+      } else if(idx == 1){
+        dL = texture2D(cascadeDisplacementTextures[1], uv + vec2(-eps, 0.0)).xz;
+        dR = texture2D(cascadeDisplacementTextures[1], uv + vec2( eps, 0.0)).xz;
+        dB = texture2D(cascadeDisplacementTextures[1], uv + vec2(0.0,-eps)).xz;
+        dT = texture2D(cascadeDisplacementTextures[1], uv + vec2(0.0, eps)).xz;
+      } else if(idx == 2){
+        dL = texture2D(cascadeDisplacementTextures[2], uv + vec2(-eps, 0.0)).xz;
+        dR = texture2D(cascadeDisplacementTextures[2], uv + vec2( eps, 0.0)).xz;
+        dB = texture2D(cascadeDisplacementTextures[2], uv + vec2(0.0,-eps)).xz;
+        dT = texture2D(cascadeDisplacementTextures[2], uv + vec2(0.0, eps)).xz;
+      } else if(idx == 3){
+        dL = texture2D(cascadeDisplacementTextures[3], uv + vec2(-eps, 0.0)).xz;
+        dR = texture2D(cascadeDisplacementTextures[3], uv + vec2( eps, 0.0)).xz;
+        dB = texture2D(cascadeDisplacementTextures[3], uv + vec2(0.0,-eps)).xz;
+        dT = texture2D(cascadeDisplacementTextures[3], uv + vec2(0.0, eps)).xz;
+      } else if(idx == 4){
+        dL = texture2D(cascadeDisplacementTextures[4], uv + vec2(-eps, 0.0)).xz;
+        dR = texture2D(cascadeDisplacementTextures[4], uv + vec2( eps, 0.0)).xz;
+        dB = texture2D(cascadeDisplacementTextures[4], uv + vec2(0.0,-eps)).xz;
+        dT = texture2D(cascadeDisplacementTextures[4], uv + vec2(0.0, eps)).xz;
+      } else {
+        dL = texture2D(cascadeDisplacementTextures[5], uv + vec2(-eps, 0.0)).xz;
+        dR = texture2D(cascadeDisplacementTextures[5], uv + vec2( eps, 0.0)).xz;
+        dB = texture2D(cascadeDisplacementTextures[5], uv + vec2(0.0,-eps)).xz;
+        dT = texture2D(cascadeDisplacementTextures[5], uv + vec2(0.0, eps)).xz;
+      }
+      float dDxdx = (dR.x - dL.x) / (2.0 * worldStep);
+      float dDzdz = (dT.y - dB.y) / (2.0 * worldStep);
+      float dDxdz = (dT.x - dB.x) / (2.0 * worldStep);
+      j = (1.0 - chop * dDxdx) * (1.0 - chop * dDzdz) - chop * chop * dDxdz * dDxdz;
+    }
+    gl_FragColor = vec4(vec3(clamp(j * 0.5, 0.0, 1.0)), 1.0);
   }
 
   //Debug overlays — only drawn when oceanShadowDebugMode is non-zero. Bottom-
