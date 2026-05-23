@@ -224,6 +224,139 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   );
   this.refractionGBufferTarget.depthTexture.format = THREE.DepthFormat;
 
+  //── Underwater planar reflection ─────────────────────────────────────────
+  //The TIR "mirror" the underwater ceiling samples outside Snell's window —
+  //the underwater scene rendered each submerged frame from a virtual camera
+  //mirrored across the rest water plane. Half-resolution: the sample is
+  //wave-distorted and fogged so it needs no crispness, and the whole pass is
+  //skipped entirely above water. HalfFloat so un-tone-mapped (linear) scene
+  //radiance is not clamped at 1.
+  this.reflectionResolutionScale = 0.5;
+  this._reflectionTarget = new THREE.WebGLRenderTarget(
+    Math.max(1, (rendererSize.x * this.reflectionResolutionScale) | 0),
+    Math.max(1, (rendererSize.y * this.reflectionResolutionScale) | 0),
+    {
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      format: THREE.RGBAFormat,
+      type: THREE.HalfFloatType
+    }
+  );
+  this._reflectionCamera = new THREE.PerspectiveCamera();
+  this._reflectionTextureMatrix = new THREE.Matrix4();
+
+  //── Underwater caustic projection ────────────────────────────────────────
+  //The water shader paints caustics onto the refracted seabed when the camera
+  //is ABOVE water; submerged, the seabed is seen directly and never passes
+  //through the water shader. To put caustics on it without touching the (often
+  //imported, unknown) seabed materials, project them with a SpotLight cookie —
+  //the one THREE light type whose `.map` is cast onto whatever it lights, on
+  //any material, no shader surgery. SpotLight.map projects a single "slide"
+  //across the cone and ignores texture repeat/offset, so the tiling AND the
+  //animation are baked into the slide here: a small RT re-rendered each
+  //submerged frame. The slide is periodic across [0,1] (integer tiling), and
+  //the projector XZ is snapped to one tile, so the cast pattern is world-
+  //stable as the camera swims (the foam-camera texel-snap trick).
+  this.causticProjectionResolution = 2048;
+  this.causticProjectionTiling = 48;      //caustic-map repeats across the slide (integer!)
+  this.causticLightHeight = 400.0;        //metres the projector sits above the surface
+  this.causticLightConeRadius = 115.0;    //ground radius the cone covers
+  this.causticLightIntensity = 6.0;       //MAIN KNOB — caustic brightness on the seabed
+  this._causticProjectionTarget = new THREE.WebGLRenderTarget(
+    this.causticProjectionResolution, this.causticProjectionResolution,
+    {
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      format: THREE.RGBAFormat,
+      type: THREE.UnsignedByteType,
+      depthBuffer: false,
+      stencilBuffer: false
+    }
+  );
+  this._causticProjectionScene = new THREE.Scene();
+  this._causticProjectionCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  this._causticProjectionMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+      causticMap: {value: null},
+      uTime: {value: 0.0},
+      uTiling: {value: this.causticProjectionTiling}
+    },
+    vertexShader: [
+      'varying vec2 vUv;',
+      'void main(){',
+      '  vUv = uv;',
+      '  gl_Position = vec4(position.xy, 0.0, 1.0);',
+      '}'
+    ].join('\n'),
+    //Mirrors causticShader() in water-shader.glsl: two non-parallel scrolling
+    //samples min'd together, then a smoothstep contrast curve. Integer uTiling
+    //keeps the slide seamless across [0,1] so it tiles on the snap grid. The
+    //three chromatically-offset taps give caustic light its R/B dispersion —
+    //the foci of different wavelengths land slightly apart (matches the
+    //+/-0.005 caustic-UV offset the water shader's causticShader uses).
+    fragmentShader: [
+      'uniform sampler2D causticMap;',
+      'uniform float uTime;',
+      'uniform float uTiling;',
+      'varying vec2 vUv;',
+      'float caustic(vec2 uv, float t){',
+      '  vec2 uv1 = uv + vec2(0.8, 0.1) * t;',
+      '  vec2 uv2 = uv - vec2(0.2, 0.7) * t;',
+      '  float a = texture2D(causticMap, uv1).r;',
+      '  float b = texture2D(causticMap, uv2).g;',
+      '  return smoothstep(0.15, 0.85, min(a, b));',
+      '}',
+      'void main(){',
+      '  vec2 uv = vUv * uTiling;',
+      '  float t = uTime / 8.0;',
+      '  float r = caustic(uv + vec2(0.005), t);',
+      '  float g = caustic(uv,               t);',
+      '  float b = caustic(uv - vec2(0.005), t);',
+      '  gl_FragColor = vec4(r, g, b, 1.0);',
+      '}'
+    ].join('\n'),
+    depthTest: false,
+    depthWrite: false,
+    toneMapped: false
+  });
+  this._causticProjectionScene.add(new THREE.Mesh(
+    new THREE.PlaneGeometry(2.0, 2.0), this._causticProjectionMaterial
+  ));
+
+  //The projector. decay 0 + distance 0 → an even, slide-projector cast (not a
+  //physical inverse-square point light). castShadow stays off — the scene sun
+  //already shadows the seabed, and SpotLight.map updates its projection matrix
+  //on its own (WebGLLights calls shadow.updateMatrices when a map is present).
+  //Kept permanently in the scene with intensity driven to 0 above water:
+  //toggling light.visible would change the visible-light count and recompile
+  //every lit material on each waterline crossing.
+  this.causticSpotLight = new THREE.SpotLight(0xffffff, 0.0);
+  this.causticSpotLight.decay = 0.0;
+  this.causticSpotLight.distance = 0.0;
+  this.causticSpotLight.penumbra = 0.8;
+  this.causticSpotLight.angle = Math.atan(this.causticLightConeRadius / this.causticLightHeight);
+  this.causticSpotLight.castShadow = false;
+  this.causticSpotLight.map = this._causticProjectionTarget.texture;
+  this._causticLightAdded = false;
+
+  //── Underwater fog (via A-Starry-Sky's fog reservation hook) ──────────────
+  //Geometry seen DIRECTLY underwater (the seabed) is drawn by its own
+  //materials and never touches the water shader. A-Starry-Sky's `advanced`
+  //atmospheric perspective globally patches THREE.ShaderChunk.fog_* and leaves
+  //an empty reserved branch keyed on `fogNear < 0.0`; _injectUnderwaterFogChunk()
+  //below fills that slot with a per-channel Beer-Lambert absorption fog. At
+  //runtime scene.fog is swapped between A-Starry-Sky's atmospheric fog (above
+  //water) and our own THREE.Fog (underwater), which smuggles the water params:
+  //  fog.color = per-channel extinction, fog.near = -waterSurfaceY (negative
+  //  selects the ocean branch AND carries the waterline for the world-Y gate),
+  //  fog.far = murk brightness.
+  this.underwaterFogColor = new THREE.Color(0.12, 0.24, 0.27);   //sky-dome bg swap colour
+  this.underwaterFogExtinction = new THREE.Vector3(0.305, 0.062, 0.015); //absorption+scattering, 1/m
+  this.underwaterFogBrightness = 0.18;         //inscatter murk brightness (deep-water dark)
+  this._oceanFog = new THREE.Fog(0x1a2d33, -1.0, 1.0);  //near<0 + far>0 => ocean branch
+  this._capturedSkyFog = undefined;            //A-Starry-Sky's fog, tracked while above water
+  this._fogChunkInjected = false;
+
   //G-buffer override material — one per source material, built on demand.
   //Writes linear albedo (baseColor × decoded albedoMap) + geometric world-
   //space normal + linear view-space depth. Per-mesh material swap in tick()
@@ -848,6 +981,222 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   const ringSnapX = new Float64Array(1);
   const ringSnapZ = new Float64Array(1);
   const directionalLightDirection = new THREE.Vector3();
+
+  //── Underwater state ───────────────────────────────────────────────────
+  //Tracks whether the camera was submerged last frame so the ocean side-flip
+  //only fires on the actual transition.
+  this._wasUnderwater = false;
+
+  //Flip the ocean + horizon skirt to render their underside (the "ceiling")
+  //when the camera is below the surface. water-shader.glsl switches to its
+  //computeUnderwaterCeiling appearance under the same underwaterFactor > 0.5
+  //gate, so the geometry that draws and the shading model stay in lockstep.
+  //
+  //The sky/fog swaps this once owned (global FogExp2, background, dome hiding)
+  //now live in tick(): a scene.fog mode-swap into A-Starry-Sky's reserved
+  //underwater-fog branch, plus the sky-dome hide + murk background. This
+  //function only owns the discrete per-transition material.side flip.
+  this._applyUnderwaterSceneState = function(under){
+    for(let i = 0, n = oceanGridInstanceKeys.length; i < n; ++i){
+      const oceanMesh = oceanPatchGeometryInstances[oceanGridInstanceKeys[i]];
+      if(oceanMesh && oceanMesh.material){
+        //DoubleSide while submerged so the ceiling renders regardless of the
+        //tile geometry's winding direction (PlaneGeometry's rotateX flips the
+        //winding; the previous BackSide guess turned the ceiling invisible
+        //from below). FrontSide above water keeps the cheap default.
+        oceanMesh.material.side = under ? THREE.DoubleSide : THREE.FrontSide;
+      }
+    }
+  };
+
+  //Render the underwater scene from a camera mirrored across the rest water
+  //plane (y = heightOffset) into the planar-reflection target — the TIR
+  //mirror the ceiling samples outside Snell's window. Reflecting the camera's
+  //position, forward and up across the plane and then doing a normal lookAt
+  //keeps the virtual camera right-handed (no winding flip) — the
+  //THREE.Reflector trick. Caller renders this while the ocean grid is hidden.
+  this._renderUnderwaterReflection = function(scene, mainCamera){
+    const h = self.heightOffset;
+    const reflCam = self._reflectionCamera;
+    if(!self._reflScratch){
+      self._reflScratch = {
+        pos: new THREE.Vector3(), fwd: new THREE.Vector3(),
+        up: new THREE.Vector3(), quat: new THREE.Quaternion(),
+        target: new THREE.Vector3(), clearColor: new THREE.Color()
+      };
+    }
+    const s = self._reflScratch;
+    mainCamera.getWorldPosition(s.pos);
+    mainCamera.getWorldDirection(s.fwd);
+    mainCamera.getWorldQuaternion(s.quat);
+    s.up.set(0.0, 1.0, 0.0).applyQuaternion(s.quat);
+
+    //Mirror the camera across the rest water plane: y → 2h - y, and flip the
+    //y of both the forward and up vectors.
+    reflCam.position.set(s.pos.x, 2.0 * h - s.pos.y, s.pos.z);
+    reflCam.up.set(s.up.x, -s.up.y, s.up.z);
+    s.target.set(s.pos.x + s.fwd.x,
+                 (2.0 * h - s.pos.y) - s.fwd.y,
+                 s.pos.z + s.fwd.z);
+    reflCam.lookAt(s.target);
+    reflCam.projectionMatrix.copy(mainCamera.projectionMatrix);
+    reflCam.updateMatrixWorld();
+
+    //world position → reflection UV: bias(clip→[0,1]) · proj · view.
+    self._reflectionTextureMatrix.set(
+      0.5, 0.0, 0.0, 0.5,
+      0.0, 0.5, 0.0, 0.5,
+      0.0, 0.0, 0.5, 0.5,
+      0.0, 0.0, 0.0, 1.0
+    );
+    self._reflectionTextureMatrix.multiply(reflCam.projectionMatrix);
+    self._reflectionTextureMatrix.multiply(reflCam.matrixWorldInverse);
+
+    //Hide the sky dome — only the underwater scene belongs in the mirror;
+    //empty directions then read as the dark clear colour (the ceiling shader
+    //fogs them toward the murk). The ocean grid is already hidden by the
+    //caller, so the water never appears in its own reflection.
+    const atmRenderer = self.skyDirector && self.skyDirector.renderers && self.skyDirector.renderers.atmosphereRenderer;
+    const skyMesh = atmRenderer && atmRenderer.skyMesh;
+    const skyWasVisible = skyMesh ? skyMesh.visible : false;
+    if(skyMesh){ skyMesh.visible = false; }
+
+    const prevRT = self.renderer.getRenderTarget();
+    const prevToneMapping = self.renderer.toneMapping;
+    self.renderer.getClearColor(s.clearColor);
+    const prevClearAlpha = self.renderer.getClearAlpha();
+
+    //Render the mirror with NO scene.fog. The water shader's computeUnderwaterCeiling
+    //already fogs the whole ceiling (reflection included) via applyUnderwaterFog;
+    //letting scene.fog also fog this pass would double-fog the TIR mirror.
+    const prevFog = scene.fog;
+    scene.fog = null;
+
+    //Linear output (NoToneMapping) so the colour feeds straight into the
+    //ceiling's linear composite without a tone-map / encode round-trip.
+    self.renderer.toneMapping = THREE.NoToneMapping;
+    self.renderer.setRenderTarget(self._reflectionTarget);
+    self.renderer.setClearColor(0x000000, 1.0);
+    self.renderer.clear();
+    self.renderer.render(scene, reflCam);
+
+    scene.fog = prevFog;
+    self.renderer.setClearColor(s.clearColor, prevClearAlpha);
+    self.renderer.toneMapping = prevToneMapping;
+    self.renderer.setRenderTarget(prevRT);
+    if(skyMesh){ skyMesh.visible = skyWasVisible; }
+  };
+
+  //Refresh the underwater caustic projector. Re-renders the animated caustic
+  //slide, parks the SpotLight high above the camera aimed straight down (a
+  //near-parallel cast so caustic cell size barely changes with seabed depth),
+  //and crossfades its intensity through the waterline via underwaterFactor.
+  //The projector XZ snaps to one slide-tile so the world-projected caustic
+  //pattern stays put as the camera swims. Skipped entirely above water.
+  this._updateCausticProjection = function(time, waterSurfaceY, underwaterFactor){
+    const light = self.causticSpotLight;
+    //Scene isn't available at construction — add the projector + its target
+    //once, on the first tick that has a scene.
+    if(!self._causticLightAdded && self.scene){
+      self.scene.add(light);
+      self.scene.add(light.target);
+      self._causticLightAdded = true;
+    }
+    //Above water, or the caustic texture hasn't loaded yet: drive intensity to
+    //zero (not light.visible — see the constructor note) and skip the RT cost.
+    if(!self.causticMap || underwaterFactor <= 0.001){
+      light.intensity = 0.0;
+      return;
+    }
+
+    //Re-render the animated caustic slide.
+    const mat = self._causticProjectionMaterial;
+    mat.uniforms.causticMap.value = self.causticMap;
+    mat.uniforms.uTime.value = time * 0.001;
+    mat.uniforms.uTiling.value = self.causticProjectionTiling;
+    const prevRT = self.renderer.getRenderTarget();
+    self.renderer.setRenderTarget(self._causticProjectionTarget);
+    self.renderer.render(self._causticProjectionScene, self._causticProjectionCamera);
+    self.renderer.setRenderTarget(prevRT);
+
+    //Park the projector above the camera, aimed straight down. Snapping XZ to
+    //one caustic tile (footprint / tiling) means each move is a whole pattern
+    //period — invisible — so the cast caustics read as world-anchored.
+    const metersPerTile = (2.0 * self.causticLightConeRadius) / self.causticProjectionTiling;
+    const snapX = Math.floor(self.globalCameraPosition.x / metersPerTile) * metersPerTile;
+    const snapZ = Math.floor(self.globalCameraPosition.z / metersPerTile) * metersPerTile;
+    light.position.set(snapX, waterSurfaceY + self.causticLightHeight, snapZ);
+    light.target.position.set(snapX, waterSurfaceY - 100.0, snapZ);
+    light.target.updateMatrixWorld();
+    light.angle = Math.atan(self.causticLightConeRadius / self.causticLightHeight);
+    light.intensity = self.causticLightIntensity * self.causticsStrength * underwaterFactor;
+  };
+
+  //Fill A-Starry-Sky's reserved underwater-fog slot. Its `advanced` atmospheric
+  //perspective globally patches THREE.ShaderChunk.fog_fragment / fog_vertex and
+  //leaves an empty `else if(fogNear < 0.0)` branch marked with a //$$...$$
+  //token. String-replace that token with a per-channel Beer-Lambert absorption
+  //fog. Polled from tick() — the token only exists once A-Starry-Sky's
+  //FogRenderer has run, and only in `advanced` mode; a harmless no-op
+  //otherwise. Runs once, then forces a one-time recompile so already-built
+  //materials pick up the new chunk.
+  this._injectUnderwaterFogChunk = function(){
+    if(self._fogChunkInjected) return;
+    const fragToken = '//$$OCEAN_SHADER_SHADER_FRAGMENT_RESERVATION$$';
+    const vertToken = '//$$OCEAN_SHADER_SHADER_VERTEX_RESERVATION$$';
+    const fragChunk = THREE.ShaderChunk.fog_fragment;
+    const vertChunk = THREE.ShaderChunk.fog_vertex;
+    if(!fragChunk || fragChunk.indexOf(fragToken) === -1) return;  //not patched yet
+
+    //Smuggle convention for the ocean branch (fogFar > 0 && fogNear < 0):
+    //  fogColor.rgb = per-channel extinction (absorption+scattering), 1/m
+    //  fogFar       = inscatter murk brightness
+    //  -fogNear     = water surface Y (the waterline)
+    //WORLD-Y GATE: only fragments BELOW the waterline are fogged. Above-water
+    //geometry (the lighthouse etc.) seen from a submerged camera must NOT be
+    //fogged as if the whole camera->fragment path were water — that over-fogged
+    //it into a flat silhouette. vFogWorldPosition is A-Starry-Sky's existing
+    //advanced-fog varying; the vertex slot below fills it for the ocean branch.
+    //uwMurk: the inscatter equilibrium — the colour distant water fades TO. It
+    //is white light's survival through a 14 m reference column of THIS water,
+    //so the deep-water hue tracks the extinction (red fully absorbed -> a dark
+    //deep blue). Kept dim so the lit near seabed reads bright against a dark
+    //far field, i.e. distance fades toward darkness rather than a bright haze.
+    const fragGLSL = [
+      'float uwSurfaceY = -fogNear;',
+      'if(vFogWorldPosition.y < uwSurfaceY){',
+      '  vec3 uwExtinction = max(fogColor, vec3(1e-5));',
+      '  vec3 uwTransmittance = exp(-uwExtinction * vFogDepth);',
+      '  vec3 uwMurk = exp(-uwExtinction * 14.0) * fogFar;',
+      '  vec3 uwLinear = fogsRGBToLinear(vec4(gl_FragColor.rgb, 1.0)).rgb;',
+      '  uwLinear = uwLinear * uwTransmittance + uwMurk * (vec3(1.0) - uwTransmittance);',
+      '  gl_FragColor.rgb = fogLinearTosRGB(vec4(uwLinear, 1.0)).rgb;',
+      '}'
+    ].join('\n');
+    const vertGLSL = [
+      'vFogDepth = - mvPosition.z;',
+      'vFogWorldPosition = (modelMatrix * vec4(transformed, 1.0)).xyz;'
+    ].join('\n');
+
+    THREE.ShaderChunk.fog_fragment = fragChunk.replace(fragToken, fragGLSL);
+    if(vertChunk && vertChunk.indexOf(vertToken) !== -1){
+      THREE.ShaderChunk.fog_vertex = vertChunk.replace(vertToken, vertGLSL);
+    }
+    self._fogChunkInjected = true;
+
+    //Rebuild fog-enabled materials already compiled against the old chunk
+    //(one-time startup hitch).
+    if(self.scene){
+      self.scene.traverse(function(obj){
+        if(!obj.isMesh || !obj.material) return;
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        for(let i = 0; i < mats.length; ++i){
+          if(mats[i] && mats[i].fog){ mats[i].needsUpdate = true; }
+        }
+      });
+    }
+  };
+
   this.tick = function(time){
     //Update directional lights list (collect all in scene)
     if(self.directionalLights.length === 0){
@@ -880,6 +1229,10 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         rendererSize.x, rendererSize.y, THREE.UnsignedIntType
       );
       self.refractionGBufferTarget.depthTexture.format = THREE.DepthFormat;
+      self._reflectionTarget.setSize(
+        Math.max(1, (rendererSize.x * self.reflectionResolutionScale) | 0),
+        Math.max(1, (rendererSize.y * self.reflectionResolutionScale) | 0)
+      );
     }
 
     //Update the state of our ocean grid
@@ -947,6 +1300,15 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     }
     self._swappedMeshes.length = 0;
 
+    //Underwater planar reflection — rendered from the mirror camera while the
+    //ocean grid is still hidden (so water is never in its own reflection) and
+    //materials are restored to their lit originals. Gated on last frame's
+    //submersion state — the probe runs later in tick, and one frame of lag on
+    //the in/out transition is invisible. Pure overhead above water, so skip.
+    if(self._wasUnderwater){
+      self._renderUnderwaterReflection(scene, sceneCamera);
+    }
+
     //Update our sea foam camera - use position pass material to output world-space height data
     self.scene.overrideMaterial = self.positionPassMaterial;
     self.renderer.setClearAlpha(0.0);
@@ -1013,6 +1375,98 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     bbU.advectionScale.value    = self.foamAdvectionScale;
 
     self.oceanHeightComposer.tick();
+
+    //── Underwater submersion probe ────────────────────────────────────────
+    //Read back a single FFT-displacement texel directly above/below the
+    //camera so the CPU knows the wave-displaced water level — the only way
+    //to drive the air/water swap without it popping under passing crests.
+    //Cascades 0 (4096 m) + 1 (1024 m) carry the dominant swell; the small
+    //cascades add at most decimetre chop and are skipped so this stays at
+    //two 1-px readbacks. Each readback is a GPU sync — acceptable for 1 px,
+    //and a candidate for async PBO readback if it ever shows on a profile.
+    const composer = self.oceanHeightComposer;
+    let waterSurfaceY = self.heightOffset;
+    if(composer && composer.cascadeDisplacementTextures && composer.cascadeDisplacementTextures[1]){
+      self._surfaceProbeBuffer = self._surfaceProbeBuffer || new Float32Array(4);
+      const buf = self._surfaceProbeBuffer;
+      const res = composer.baseTextureWidth;
+      const offsets = self.oceanMaterial.uniforms.cascadeSpatialOffsets.value;
+      const whm = composer.waveHeightMultiplier;
+      for(let c = 0; c < 2; ++c){
+        const patch = composer._cascadePatchSizes[c];
+        let u = (self.globalCameraPosition.x + offsets[c].x) / patch;
+        let v = (self.globalCameraPosition.z + offsets[c].y) / patch;
+        u -= Math.floor(u);
+        v -= Math.floor(v);
+        const px = Math.min(res - 1, Math.max(0, Math.floor(u * res)));
+        const py = Math.min(res - 1, Math.max(0, Math.floor(v * res)));
+        const tex = composer.cascadeDisplacementTextures[c];
+        const rt = (composer.cascadeDisplacementTargetsA[c].texture === tex)
+                 ? composer.cascadeDisplacementTargetsA[c]
+                 : composer.cascadeDisplacementTargetsB[c];
+        self.renderer.readRenderTargetPixels(rt, px, py, 1, 1, buf);
+        waterSurfaceY += buf[1] * whm;   //.y (green) channel = vertical displacement
+      }
+    }
+    const cameraSubmersion = self.globalCameraPosition.y - waterSurfaceY;
+    //Smooth 0→1 underwater blend over a 1 m band centred on the surface so
+    //bobbing through the waterline crossfades the fog instead of snapping.
+    const uwHalfBand = 0.5;
+    let uwT = (uwHalfBand - cameraSubmersion) / (2.0 * uwHalfBand);
+    uwT = uwT < 0.0 ? 0.0 : (uwT > 1.0 ? 1.0 : uwT);
+    const underwaterFactor = uwT * uwT * (3.0 - 2.0 * uwT);
+    const isUnderwater = underwaterFactor >= 0.5;
+    if(isUnderwater !== self._wasUnderwater){
+      self._wasUnderwater = isUnderwater;
+      self._applyUnderwaterSceneState(isUnderwater);
+    }
+
+    //Underwater caustic projector — caustics on the directly-viewed seabed.
+    self._updateCausticProjection(time, waterSurfaceY, underwaterFactor);
+
+    //Underwater fog. Fill A-Starry-Sky's reserved fog-shader slot once it is
+    //available, then swap scene.fog between A-Starry-Sky's atmospheric fog
+    //(above water) and our ocean fog (underwater). Both are THREE.Fog, so the
+    //swap never recompiles; A-Starry-Sky's FogRenderer keeps updating its own
+    //(now-detached) Fog harmlessly while we own scene.fog underwater. Negative
+    //fogNear selects the injected ocean branch.
+    self._injectUnderwaterFogChunk();
+    if(self.scene){
+      if(isUnderwater && self._fogChunkInjected){
+        self._oceanFog.color.setRGB(self.underwaterFogExtinction.x,
+                                    self.underwaterFogExtinction.y,
+                                    self.underwaterFogExtinction.z);
+        self._oceanFog.near = -Math.max(waterSurfaceY, 0.001);   //< 0 selects ocean branch; |near| = waterline
+        self._oceanFog.far = self.underwaterFogBrightness;       //> 0
+        self.scene.fog = self._oceanFog;
+      } else if(self.scene.fog === self._oceanFog){
+        //Surfaced (or chunk not injected): hand scene.fog back to A-Starry-Sky.
+        self.scene.fog = (self._capturedSkyFog !== undefined) ? self._capturedSkyFog : null;
+      } else {
+        //Above water: track whatever fog A-Starry-Sky currently wants mounted.
+        self._capturedSkyFog = self.scene.fog;
+      }
+    }
+
+    //Sky-dome swap. a-starry-sky's Preetham atmosphere dome is drawn with
+    //depthWrite off; above water the horizon skirt overdraws its lower
+    //hemisphere, but submerged the skirt sits ABOVE the camera and can no
+    //longer cover it — the dome's bright horizon band leaks into the view as
+    //a white strip. Hide the dome and clear to the murk while underwater so
+    //the horizon reads as water. The Snell window still sources its sky from
+    //the atmosphere LUTs (computeSkyRadiance), not this mesh, so nothing seen
+    //through the surface is lost. Done per frame so it survives any restate.
+    if(self.scene){
+      const atmR = self.skyDirector && self.skyDirector.renderers && self.skyDirector.renderers.atmosphereRenderer;
+      const domeMesh = atmR && atmR.skyMesh;
+      if(domeMesh){
+        if(self._aboveWaterBackground === undefined){
+          self._aboveWaterBackground = self.scene.background;
+        }
+        domeMesh.visible = !isUnderwater;
+        self.scene.background = isUnderwater ? self.underwaterFogColor : self._aboveWaterBackground;
+      }
+    }
 
     //Update all of our uniforms
     let brightestDirectionalLight;
@@ -1124,6 +1578,16 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       }
       uniformsRef.t.value = time * 0.001;
 
+      //Underwater state — guarded so the horizon-skirt material (separate
+      //template, no underwater uniforms) is skipped without throwing.
+      if(uniformsRef.underwaterFactor){
+        uniformsRef.underwaterFactor.value = underwaterFactor;
+        uniformsRef.cameraSubmersion.value = cameraSubmersion;
+        uniformsRef.waterSurfaceY.value = waterSurfaceY;
+        uniformsRef.underwaterReflectionTexture.value = self._reflectionTarget.texture;
+        uniformsRef.underwaterReflectionMatrix.value.copy(self._reflectionTextureMatrix);
+      }
+
       //Sky ambient color from a-starry-sky's y-axis hemisphere light (pointing straight up).
       //This is view-independent and color-correct at all times of day.
       if(self.skyDirector && self.skyDirector.lightingManager){
@@ -1198,12 +1662,16 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       uniformsRef.blueNoiseTime.value = performance.now();
     }
 
-    //Horizon skirt follows the camera in XZ; it stays at y=0 (water plane).
-    //All uniform updates happen via the per-instance loop above — the skirt
-    //is registered in oceanGridInstanceKeys so it gets the same FFT cascade
-    //textures, light state, atm LUTs, etc. that real ocean tiles get.
+    //Horizon skirt follows the camera in XZ and sits at the FFT ocean's rest
+    //plane (heightOffset) so it is coplanar with the clipmap. Pinning it at
+    //y=0 left a flat water sheet heightOffset metres below the real surface —
+    //invisible from a normal above-water eye height but starkly visible as an
+    //"odd second water mesh" once the camera drops underwater. All uniform
+    //updates happen via the per-instance loop above — the skirt is registered
+    //in oceanGridInstanceKeys so it gets the same FFT cascade textures, light
+    //state, atm LUTs, etc. that real ocean tiles get.
     if(self.horizonSkirtMesh){
-      self.horizonSkirtMesh.position.set(sceneCamera.position.x, 0.0, sceneCamera.position.z);
+      self.horizonSkirtMesh.position.set(sceneCamera.position.x, self.heightOffset, sceneCamera.position.z);
     }
 
     //Ocean-only CSM pass. Runs after every ocean material has had its cascade

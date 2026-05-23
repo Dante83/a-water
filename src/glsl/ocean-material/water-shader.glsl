@@ -157,6 +157,22 @@ uniform float surfaceRoughness;
 uniform float t;
 uniform float patchDataSize;
 
+//── Underwater state ─────────────────────────────────────────────────────
+//Signed metres of camera submersion: + above the water surface, − below.
+//Sourced CPU-side (ocean-grid.js) from a single-texel readback of the FFT
+//displacement at the camera XZ — cascades 0+1, the dominant swell.
+uniform float cameraSubmersion;
+//Smooth 0→1 underwater blend (1 = fully submerged). Crossfades the fog
+//model so bobbing through the waterline doesn't pop.
+uniform float underwaterFactor;
+//World-space Y of the wave-displaced water surface near the camera — the
+//air/water split threshold for per-fragment fog (Phase 1+ design).
+uniform float waterSurfaceY;
+//Underwater planar-reflection RT (the TIR mirror) + the world→UV texture
+//matrix that projects a ceiling fragment into that mirrored render.
+uniform sampler2D underwaterReflectionTexture;
+uniform mat4 underwaterReflectionMatrix;
+
 //Fog variables
 #if(!$atmospheric_perspective_enabled)
   #include <fog_pars_fragment>
@@ -208,6 +224,24 @@ const float r0 = 0.02;
 //displaced FFT normal. Higher = more refractive shimmer but more visible
 //tile-edge bleed near opaque geometry.
 const float REFRACTION_DISTORTION = 0.03;
+
+//Wave-normal distortion applied to the underwater reflection sample — this
+//is what makes the planar (flat-plane) mirror ripple with the FFT waves.
+const float UNDERWATER_REFLECTION_DISTORTION = 0.06;
+
+//Artistic widening of the Snell-window edge, in units of cos(incidence). The
+//true water->air Fresnel curve spikes from ~15% to 100% within ~3 degrees of
+//the critical angle, so the window reads as a hard ring. This eases the
+//approach to total internal reflection over a wider angular band. Higher =
+//softer, blurrier window edge. Set to 0.0 for the strict physical curve.
+const float UNDERWATER_TIR_SOFTNESS = 0.13;
+
+//Depth darkening of the underwater fog. The fog's inscatter equilibrium is
+//lit by downwelling light, which is itself Beer-Lambert extinguished on the
+//way down — so the deeper the camera sits, the dimmer (and more blue-green,
+//as red dies first) the murk becomes. 1.0 = the physically correct vertical
+//attenuation; raise it for a murkier, faster-darkening dive, 0.0 to disable.
+const float UNDERWATER_DEPTH_MURK = 1.0;
 
 //Effective-depth proxy: meters of underwater path per meter of horizontal
 //camera-to-fragment distance. Lets transmittance decay toward the horizon
@@ -646,6 +680,56 @@ float fresnelAirToWater(float cosTheta){
   return r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
 }
 
+//Underwater volumetric fog — the Mie+absorption counterpart to atmospheric
+//perspective's Mie+Rayleigh. Per-channel Beer-Lambert extinction of the
+//incoming colour toward the water body's backscatter equilibrium. `inscatter`
+//is the same inscatterEquilibrium the surface body-colour blend uses
+//(waterAlbedo · Edown / π), passed in so this global fog and the local
+//refraction term agree. `dist` is the straight camera→fragment path length —
+//all of it water once the camera is submerged.
+//The equilibrium colour is additionally darkened by the camera's depth below
+//the surface: downwelling light is extinguished vertically before it can be
+//scattered into view, so a deep dive reads dimmer and more blue-green than a
+//shallow one (see UNDERWATER_DEPTH_MURK).
+vec3 applyUnderwaterFog(vec3 color, float dist, vec3 inscatter){
+  vec3 transmittance = exp(-(waterAbsorption + waterScattering) * dist);
+  float cameraDepth = max(0.0, -cameraSubmersion);
+  vec3 depthDarken = exp(-(waterAbsorption + waterScattering) * cameraDepth * UNDERWATER_DEPTH_MURK);
+  inscatter *= depthDarken;
+  return color * transmittance + inscatter * (vec3(1.0) - transmittance);
+}
+
+//Fresnel reflectance for a ray INSIDE the water striking the underside of the
+//surface (water n≈1.333 → air n=1.0). Unlike the air→water case this has a
+//critical angle (~48.6°): once the incidence angle exceeds it the ray is
+//totally internally reflected and reflectance is 1.0 — the underside becomes
+//a perfect mirror. cosI is the cosine of the incidence angle at the interface.
+float fresnelWaterToAir(float cosI){
+  cosI = clamp(cosI, 0.0, 1.0);
+  float etaWA = 1.333;                          //n_water / n_air
+  float sinT2 = etaWA * etaWA * (1.0 - cosI * cosI);
+
+  //Strict physical reflectance where the ray still transmits.
+  float physical;
+  if(sinT2 >= 1.0){
+    physical = 1.0;                             //total internal reflection
+  } else {
+    float cosT = sqrt(1.0 - sinT2);
+    float rs = (etaWA * cosI - cosT) / (etaWA * cosI + cosT);
+    float rp = (etaWA * cosT - cosI) / (etaWA * cosT + cosI);
+    physical = clamp(0.5 * (rs * rs + rp * rp), 0.0, 1.0);
+  }
+
+  //Artistic softening (deliberate fudge — see UNDERWATER_TIR_SOFTNESS). The
+  //physical curve still reaches 1.0 exactly at the true critical angle, but a
+  //smoothstep ramp climbs to 1.0 starting UNDERWATER_TIR_SOFTNESS earlier in
+  //cos(incidence). max() keeps the window interior at its low physical
+  //reflectance and only widens the otherwise-abrupt edge ring.
+  float cosCrit = sqrt(max(0.0, 1.0 - 1.0 / (etaWA * etaWA)));
+  float softEdge = smoothstep(cosCrit + UNDERWATER_TIR_SOFTNESS, cosCrit, cosI);
+  return max(physical, softEdge);
+}
+
 //Smith masking-shadowing function for a Beckmann microfacet distribution.
 //Rational-fit Lambda approximation: cheap, accurate to ~1%, branch-friendly.
 //Ported verbatim from the Water sibling (Acerola FFTWater.shader) which in
@@ -785,6 +869,58 @@ SOFTWARE.
 
     return color + fogSun + fogMoon;
   }
+
+  //Appearance of the water surface seen from below — the "ceiling". The view
+  //ray travels up through the water column and strikes the underside of the
+  //surface; the water→air Fresnel term splits it between:
+  //  - reflection  — total internal reflection past the ~48.6° critical angle
+  //                  (and partial before it): the underside mirrors the
+  //                  underwater scene via the planar reflection pass.
+  //  - transmission— the ray refracts out into the air. refract() bends it
+  //                  away from the normal, so as the incidence sweeps
+  //                  0°→48.6° the air-side ray sweeps 0°→90° — the whole 180°
+  //                  above-water hemisphere folds into the ~97° Snell-window
+  //                  cone (zenith straight up, horizon at the cone edge).
+  //Foam sits on top, then the camera→ceiling water column is fogged.
+  vec3 computeUnderwaterCeiling(vec3 worldPos, vec3 surfaceNormal, vec3 foamColor,
+                                float foamBlend, vec3 inscatter, vec2 screenUV,
+                                float camToFragDist){
+    //Underside normal faces down toward the submerged camera.
+    vec3 n = -normalize(surfaceNormal);
+    vec3 viewDir = normalize(worldPos - cameraPosition);   //camera → ceiling (up)
+    float cosI = max(dot(-viewDir, n), 0.0);               //incidence at the interface
+
+    float reflectance = fresnelWaterToAir(cosI);
+
+    //TRANSMISSION — screen-space refraction. The refraction G-buffer was
+    //rendered from this same submerged camera with the water mesh hidden, so
+    //sampling at the fragment's own screen UV gives whatever sits behind the
+    //surface (the air-world directly through it). The wave-normal jitter is
+    //the rippled-glass look. Doesn't model Snell-cone angular compression —
+    //the previous attempt at that depended on a w!=0 projection that
+    //degenerated when the camera looked horizontally; this simpler form
+    //handles every camera orientation.
+    vec2 refrUV = clamp(screenUV + n.xz * REFRACTION_DISTORTION,
+                        vec2(0.001), vec2(0.999));
+    vec3 transmitted = texture2D(refractionColorTexture, refrUV).rgb;
+
+    //REFLECTION (total internal reflection — Fresnel reflectance climbs to
+    //1.0 past the critical angle). Planar mirror: underwater scene rendered
+    //from a camera mirrored across the rest water plane (ocean-grid.js
+    //_renderUnderwaterReflection). Wave-normal offset ripples the flat-plane
+    //mirror with the FFT surface.
+    vec4 reflProj = underwaterReflectionMatrix * vec4(worldPos, 1.0);
+    vec2 reflUV = reflProj.xy / max(reflProj.w, 0.0001);
+    reflUV += n.xz * UNDERWATER_REFLECTION_DISTORTION;
+    vec3 reflected = texture2D(underwaterReflectionTexture,
+                               clamp(reflUV, vec2(0.001), vec2(0.999))).rgb;
+
+    vec3 ceiling = mix(transmitted, reflected, reflectance);
+    //Foam is a near-opaque scattering layer — bright mottling on the ceiling.
+    ceiling = mix(ceiling, foamColor, foamBlend);
+    //Fog the water column between the camera and the ceiling.
+    return applyUnderwaterFog(ceiling, camToFragDist, inscatter);
+  }
 #endif
 
 void main(){
@@ -804,7 +940,16 @@ void main(){
   //interior hulls etc.), not the broad terrain — that's foamRenderMap.
   vec2 exclusionPosition = 0.5 * (((worldPosition.xz - exclusionCameraXZ) / vec2(250.0)) + 1.0);
   exclusionPosition = vec2(exclusionPosition.x, 1.0 - exclusionPosition.y);
-  if(exclusionPosition.x < 1.0 && exclusionPosition.x > 0.0 && exclusionPosition.y < 1.0 && exclusionPosition.y > 0.0){
+  //Exclusion-map discard. The exclusion render captures layer-30 meshes
+  //(boat hulls, etc.) from above — discardHeight is the topmost layer-30
+  //Y at this XZ, and we discard water fragments above that height so the
+  //water surface doesn't poke through a boat's interior. Only fires above
+  //water: when the camera is submerged the same discard would kill the
+  //ceiling fragments above the camera (no boat present to hide), so we
+  //gate it on `underwaterFactor < 0.5`.
+  if(underwaterFactor < 0.5 &&
+     exclusionPosition.x < 1.0 && exclusionPosition.x > 0.0 &&
+     exclusionPosition.y < 1.0 && exclusionPosition.y > 0.0){
     vec2 discardHeightData = texture2D(exclusionMap, exclusionPosition).ga;
     float discardHeight = discardHeightData.x;
     if((discardHeightData.y > 0.5) && worldPosition.y > discardHeight){
@@ -1666,7 +1811,21 @@ void main(){
     //3D LUT samples). Any non-zero debug mode clobbers gl_FragColor below, so
     //skip it then — keeps debug captures snappy on dense ocean scenes.
     if(oceanShadowDebugMode == 0){
-      totalLight = applyAtmosphericPerspective(totalLight, worldPosition.xyz);
+      if(underwaterFactor > 0.5){
+        //Camera is below the surface: this fragment is the underside of the
+        //water (the "ceiling"). Replace the above-water lighting wholesale
+        //with the water→air ceiling model — screen-space refraction
+        //(rippled transmission) + Fresnel/TIR planar reflection + foam,
+        //fogged by the water column. ocean-grid.js flips the mesh to
+        //BackSide on the same gate, so only ceiling fragments land here.
+        totalLight = computeUnderwaterCeiling(worldPosition.xyz, displacedNormal,
+                                              dbgFoamColor, dbgFoamBlend,
+                                              inscatterEquilibrium, screenUV,
+                                              distanceToWorldPosition);
+      } else {
+        //Above water: Mie+Rayleigh atmospheric perspective.
+        totalLight = applyAtmosphericPerspective(totalLight, worldPosition.xyz);
+      }
     }
   #endif
 
@@ -2059,6 +2218,33 @@ void main(){
     }
     gl_FragColor = vec4(vec3(clamp(j * 0.5, 0.0, 1.0)), 1.0);
   }
+  //Mode 35: Snell's-window diagnostic for the underwater ceiling. Tells you at
+  //a glance whether the camera is detected as submerged and which part of the
+  //ceiling you are looking at — recomputes the same terms computeUnderwaterCeiling
+  //uses, so it tracks the real path exactly.
+  //  DARK BLUE    = underwaterFactor <= 0.5 — camera NOT detected as submerged,
+  //                 so the ceiling model never runs (a detection issue, not optics).
+  //  RED          = total internal reflection — the TIR mirror, OUTSIDE the
+  //                 window (looking too grazing; tilt back toward straight up).
+  //  GREEN→YELLOW  = inside the transmitting window; green near the centre,
+  //                 yellowing toward the cone edge as Fresnel reflectance climbs.
+  //If the whole ceiling is one flat colour, you are seeing only that zone —
+  //sweep the camera from straight-up to grazing and it should run green→red.
+  else if(oceanShadowDebugMode == 35){
+    if(underwaterFactor <= 0.5){
+      gl_FragColor = vec4(0.0, 0.0, 0.35, 1.0);
+    } else {
+      vec3 ceilN = -normalize(displacedNormal);
+      vec3 ceilV = normalize(worldPosition.xyz - cameraPosition);
+      float ceilCosI = max(dot(-ceilV, ceilN), 0.0);
+      float ceilRefl = fresnelWaterToAir(ceilCosI);
+      vec3 ceilRefr = refract(ceilV, ceilN, 1.333);
+      bool ceilTIR = dot(ceilRefr, ceilRefr) < 0.25;
+      vec3 tint = ceilTIR ? vec3(1.0, 0.0, 0.0)
+                          : mix(vec3(0.0, 1.0, 0.0), vec3(1.0, 1.0, 0.0), ceilRefl);
+      gl_FragColor = vec4(tint, 1.0);
+    }
+  }
 
   //Debug overlays — only drawn when oceanShadowDebugMode is non-zero. Bottom-
   //left: raw jacobian mapped [0,2] → [0,1] (grey=1.0=flat, black=0=folded,
@@ -2116,4 +2302,5 @@ void main(){
   #if(!$atmospheric_perspective_enabled)
     #include <fog_fragment>
   #endif
+
 }

@@ -145,6 +145,16 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     fresnelDistanceRoughness: {type: 'f', value: 0.7},
     surfaceRoughness: {type: 'f', value: 0.15},
     patchDataSize: {type: 'f', value: 1024.0},
+    //Underwater state — see water-shader.glsl. Pushed every frame from
+    //ocean-grid.js's submersion probe. cameraSubmersion defaults well above
+    //the surface so a freshly-built material reads "above water" pre-probe.
+    cameraSubmersion: {type: 'f', value: 1000.0},
+    underwaterFactor: {type: 'f', value: 0.0},
+    waterSurfaceY: {type: 'f', value: 0.0},
+    //Underwater planar-reflection target + its world→UV texture matrix,
+    //rendered + computed each submerged frame by ocean-grid.js.
+    underwaterReflectionTexture: {type: 't', value: null},
+    underwaterReflectionMatrix: {type: 'mat4', value: new THREE.Matrix4()},
     atmosphereTransmittance: {type: 't', value: null},
     atmosphereMieInscattering: {type: 't', value: null},
     atmosphereRayleighInscattering: {type: 't', value: null},
