@@ -245,6 +245,28 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this._reflectionCamera = new THREE.PerspectiveCamera();
   this._reflectionTextureMatrix = new THREE.Matrix4();
 
+  //── Above-water transmission target ──────────────────────────────────────
+  //Sampled by the underwater ceiling's Snell-window transmitted ray. The
+  //refraction G-buffer is wrong for that lookup — it strips materials to
+  //raw albedo, hides the sky dome, and skips above-water atmospheric fog,
+  //so above-water content reads as flat unshaded ghost shapes through the
+  //surface. This RT is a separate submerged-frame render of the FULLY-LIT
+  //scene: sky dome restored, real materials, atmospheric perspective from
+  //a-starry-sky reinstated, ocean grid + curtain hidden. Half-res HalfFloat
+  //matching the reflection target — the sample is wave-distorted so it
+  //needs no crispness, and HalfFloat keeps un-tone-mapped sky radiance
+  //unclamped. Skipped entirely above water (the sample is never read then).
+  this._aboveWaterTransmissionTarget = new THREE.WebGLRenderTarget(
+    Math.max(1, (rendererSize.x * this.reflectionResolutionScale) | 0),
+    Math.max(1, (rendererSize.y * this.reflectionResolutionScale) | 0),
+    {
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      format: THREE.RGBAFormat,
+      type: THREE.HalfFloatType
+    }
+  );
+
   //── Underwater caustic projection ────────────────────────────────────────
   //The water shader paints caustics onto the refracted seabed when the camera
   //is ABOVE water; submerged, the seabed is seen directly and never passes
@@ -344,18 +366,30 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //materials and never touches the water shader. A-Starry-Sky's `advanced`
   //atmospheric perspective globally patches THREE.ShaderChunk.fog_* and leaves
   //an empty reserved branch keyed on `fogNear < 0.0`; _injectUnderwaterFogChunk()
-  //below fills that slot with a per-channel Beer-Lambert absorption fog. At
-  //runtime scene.fog is swapped between A-Starry-Sky's atmospheric fog (above
-  //water) and our own THREE.Fog (underwater), which smuggles the water params:
-  //  fog.color = per-channel extinction, fog.near = -waterSurfaceY (negative
-  //  selects the ocean branch AND carries the waterline for the world-Y gate),
-  //  fog.far = murk brightness.
-  this.underwaterFogColor = new THREE.Color(0.12, 0.24, 0.27);   //sky-dome bg swap colour
-  this.underwaterFogExtinction = new THREE.Vector3(0.305, 0.062, 0.015); //absorption+scattering, 1/m
-  this.underwaterFogBrightness = 0.18;         //inscatter murk brightness (deep-water dark)
+  //below fills that slot with a Beer-Lambert absorption fog whose colour is
+  //derived from the SAME waterAlbedo/downwelling/depthDarken stack the water
+  //shader uses for its ceiling fog — so the seabed murk and the ceiling murk
+  //read as the same medium. THREE.Fog only carries one Color + two floats, so
+  //the smuggle puts the murk colour itself in fog.color (rather than
+  //extinction, which the pre-2026-05-23 chunk did and which produced a navy
+  //seabed against a teal ceiling). Monochrome distance falloff in exchange.
+  //  fog.color = inscatter murk colour (linear) — matches water shader
+  //  fog.near  = -waterSurfaceY (selects ocean branch + world-Y gate)
+  //  fog.far   = scalar transmittance density (1/m), avg of extinction
+  this.underwaterFogColor = new THREE.Color(0.12, 0.24, 0.27);   //sky-dome bg swap colour fallback
+  //Multiplier on the computed murk colour. Our inscatter formula
+  //(albedo · (sun + ambient) / π) assumes ISOTROPIC phase, but real water
+  //is strongly forward-scattering — the back-scattered radiance reaching the
+  //eye is a fraction of what the isotropic formula predicts. 0.35 is the
+  //empirical compensation that makes shallow water read as "subtle absorption"
+  //rather than "saturated cyan." Live-tunable; will likely become a data
+  //attribute once we expose a user-facing parameter.
+  this.underwaterFogBrightness = 0.35;
   this._oceanFog = new THREE.Fog(0x1a2d33, -1.0, 1.0);  //near<0 + far>0 => ocean branch
   this._capturedSkyFog = undefined;            //A-Starry-Sky's fog, tracked while above water
   this._fogChunkInjected = false;
+  this._uwMurkScratch = new THREE.Vector3();   //per-frame murk scratch (avoid alloc)
+  this._uwSunDirScratch = new THREE.Vector3();
 
   //G-buffer override material — one per source material, built on demand.
   //Writes linear albedo (baseColor × decoded albedoMap) + geometric world-
@@ -612,6 +646,46 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //the foam ortho camera does not capture it. See OCEAN_LAYER comment.
     this.horizonSkirtMesh.layers.set(AWater.AOcean.OCEAN_LAYER);
     scene.add(this.horizonSkirtMesh);
+  }
+
+  //── Underwater curtain hemisphere ────────────────────────────────────────
+  //A hidden BackSide hemisphere centered on the camera, drawn only while
+  //submerged. Closes the gap where the sky dome (hidden underwater) used to
+  //occupy pixels — the seabed silhouette + island silhouette no longer have
+  //sky leaking past them in the distance; the curtain backstops every empty
+  //below-horizon direction with the inscatter murk. The cap extends only
+  //~10° above the horizon so the upward Snell-window view through the
+  //ceiling never has the curtain in front of it. Radius chosen so
+  //far-distance ceiling ripples still read against it; the per-fragment
+  //underwater fog integrates the camera→curtain path and converges to murk.
+  this.underwaterCurtainMesh = null;
+  {
+    const curtainOverhangDeg = 10.0;
+    const curtainThetaStart = Math.PI * 0.5 - curtainOverhangDeg * Math.PI / 180.0;
+    const curtainThetaLength = Math.PI - curtainThetaStart;
+    const curtainGeom = new THREE.SphereGeometry(
+      300.0, 24, 12,
+      0, Math.PI * 2.0,
+      curtainThetaStart, curtainThetaLength
+    );
+    const curtainMat = new THREE.MeshBasicMaterial({
+      color: 0x000000,
+      side: THREE.BackSide,
+      fog: true,
+      depthWrite: false,
+      depthTest: true
+    });
+    this.underwaterCurtainMesh = new THREE.Mesh(curtainGeom, curtainMat);
+    this.underwaterCurtainMesh.frustumCulled = false;
+    this.underwaterCurtainMesh.castShadow = false;
+    this.underwaterCurtainMesh.receiveShadow = false;
+    //Draw early so any real scene geometry (seabed, island, lighthouse base)
+    //overdraws it — curtain only fills directions with nothing in front.
+    this.underwaterCurtainMesh.renderOrder = -10;
+    this.underwaterCurtainMesh.visible = false;
+    //Off the foam-capture layer so the ortho foam camera ignores it.
+    this.underwaterCurtainMesh.layers.set(AWater.AOcean.OCEAN_LAYER);
+    scene.add(this.underwaterCurtainMesh);
   }
 
   //── Clipmap grid construction ────────────────────────────────────────────
@@ -1060,17 +1134,30 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     const skyMesh = atmRenderer && atmRenderer.skyMesh;
     const skyWasVisible = skyMesh ? skyMesh.visible : false;
     if(skyMesh){ skyMesh.visible = false; }
+    //Also hide the curtain — it's a flat backdrop, would just paint the
+    //mirror with murk and steal contrast from real underwater geometry.
+    const curtain = self.underwaterCurtainMesh;
+    const curtainWasVisible = curtain ? curtain.visible : false;
+    if(curtain){ curtain.visible = false; }
 
     const prevRT = self.renderer.getRenderTarget();
     const prevToneMapping = self.renderer.toneMapping;
     self.renderer.getClearColor(s.clearColor);
     const prevClearAlpha = self.renderer.getClearAlpha();
 
-    //Render the mirror with NO scene.fog. The water shader's computeUnderwaterCeiling
-    //already fogs the whole ceiling (reflection included) via applyUnderwaterFog;
-    //letting scene.fog also fog this pass would double-fog the TIR mirror.
+    //Render the mirror WITH scene.fog = ocean fog. The chunk's path-length is
+    //`length(cameraPosition - vFogWorldPosition)`, evaluated against the
+    //MIRROR camera here — and by the standard reflection-trick equivalence
+    //that distance equals the real underwater bounce path (camera → surface
+    //bounce point → reflected scene point). So the chunk fogs the reflected
+    //scene by its true light-path length through water. The water shader's
+    //applyUnderwaterFog on the final ceiling colour then handles the tiny
+    //camera→bounce-point segment — the two are complementary path segments,
+    //NOT a double-fog (a previous comment claimed otherwise; that misread
+    //the geometry and left the mirror un-fogged so distant seabed
+    //reflections read crisp through water).
     const prevFog = scene.fog;
-    scene.fog = null;
+    scene.fog = self._oceanFog;
 
     //Linear output (NoToneMapping) so the colour feeds straight into the
     //ceiling's linear composite without a tone-map / encode round-trip.
@@ -1085,6 +1172,73 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     self.renderer.toneMapping = prevToneMapping;
     self.renderer.setRenderTarget(prevRT);
     if(skyMesh){ skyMesh.visible = skyWasVisible; }
+    if(curtain){ curtain.visible = curtainWasVisible; }
+  };
+
+  //Render the fully-lit above-water scene from the submerged camera into the
+  //above-water transmission target — the source the underwater ceiling's
+  //Snell-window transmitted ray samples. The refraction G-buffer can't serve
+  //this role (raw albedo, sky dome hidden, no atmospheric fog), so this
+  //replays the same camera with: sky dome restored, materials un-swapped,
+  //scene.fog handed back to a-starry-sky's atmospheric-perspective version
+  //(so above-water terrain hazes naturally), ocean grid + curtain hidden
+  //(they'd occlude the upward view). Linear output so the colour drops
+  //straight into the ceiling composite. Caller hides the ocean grid; we
+  //handle the rest.
+  this._renderAboveWaterTransmission = function(scene, mainCamera){
+    if(!self._uwTxScratch){
+      self._uwTxScratch = { clearColor: new THREE.Color() };
+    }
+    const s = self._uwTxScratch;
+
+    const atmRenderer = self.skyDirector && self.skyDirector.renderers && self.skyDirector.renderers.atmosphereRenderer;
+    const skyMesh = atmRenderer && atmRenderer.skyMesh;
+    const skyWasVisible = skyMesh ? skyMesh.visible : false;
+    if(skyMesh){ skyMesh.visible = true; }
+
+    const curtain = self.underwaterCurtainMesh;
+    const curtainWasVisible = curtain ? curtain.visible : false;
+    if(curtain){ curtain.visible = false; }
+
+    //Swap the ocean underwater fog for the captured above-water fog (the
+    //a-starry-sky atmospheric perspective version, captured in tick on every
+    //above-water frame). Above-water fragments would otherwise get NO fog
+    //at all here — the ocean chunk's world-Y gate excludes them, and the
+    //atmospheric perspective branch isn't entered when scene.fog is the
+    //ocean fog. Fall back to whatever's mounted if no capture exists yet.
+    const prevFog = scene.fog;
+    if(self._capturedSkyFog !== undefined){
+      scene.fog = self._capturedSkyFog;
+    }
+
+    //Background swap — while submerged scene.background was set to the
+    //murk colour; for this pass we want the captured above-water bg (the
+    //sky colour) so cleared/sky-dome pixels read correctly.
+    const prevBackground = scene.background;
+    if(self._aboveWaterBackground !== undefined){
+      scene.background = self._aboveWaterBackground;
+    }
+
+    const prevRT = self.renderer.getRenderTarget();
+    const prevToneMapping = self.renderer.toneMapping;
+    self.renderer.getClearColor(s.clearColor);
+    const prevClearAlpha = self.renderer.getClearAlpha();
+
+    //Linear output — feeds straight into the ceiling's linear composite
+    //without a tone-map / encode round-trip.
+    self.renderer.toneMapping = THREE.NoToneMapping;
+    self.renderer.setRenderTarget(self._aboveWaterTransmissionTarget);
+    self.renderer.setClearColor(0x000000, 1.0);
+    self.renderer.clear();
+    self.renderer.render(scene, mainCamera);
+
+    scene.fog = prevFog;
+    scene.background = prevBackground;
+    self.renderer.setClearColor(s.clearColor, prevClearAlpha);
+    self.renderer.toneMapping = prevToneMapping;
+    self.renderer.setRenderTarget(prevRT);
+    if(skyMesh){ skyMesh.visible = skyWasVisible; }
+    if(curtain){ curtain.visible = curtainWasVisible; }
   };
 
   //Refresh the underwater caustic projector. Re-renders the animated caustic
@@ -1148,28 +1302,81 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     const vertChunk = THREE.ShaderChunk.fog_vertex;
     if(!fragChunk || fragChunk.indexOf(fragToken) === -1) return;  //not patched yet
 
+    //Per-channel extinction (1/m) baked into the chunk as a const vec3 —
+    //THREE.Fog only smuggles one Color + two floats, so for per-channel
+    //chromatic falloff (red dies faster than blue, the cue that distant
+    //underwater geometry reads cyan/blue) we inject extinction directly. It
+    //is read once at the current water_type / explicit RGB; a live water-type
+    //swap would need a chunk re-injection + needsUpdate sweep (rare, paid as
+    //a one-time recompile when it happens).
+    const presetJ = AWater.AOcean.JERLOV_PRESETS[self.data.water_type | 0];
+    const absV = presetJ ? presetJ.absorption : self.data.water_absorption;
+    const sctV = presetJ ? presetJ.scattering : self.data.water_scattering;
+    const ex = Math.max(absV.x + sctV.x, 1e-4);
+    const ey = Math.max(absV.y + sctV.y, 1e-4);
+    const ez = Math.max(absV.z + sctV.z, 1e-4);
+    const extLit = 'vec3(' + ex.toFixed(6) + ',' + ey.toFixed(6) + ',' + ez.toFixed(6) + ')';
+
     //Smuggle convention for the ocean branch (fogFar > 0 && fogNear < 0):
-    //  fogColor.rgb = per-channel extinction (absorption+scattering), 1/m
-    //  fogFar       = inscatter murk brightness
-    //  -fogNear     = water surface Y (the waterline)
+    //  fogColor.rgb = inscatter murk colour (linear) — the colour distant
+    //                 underwater fragments fade TO. Computed CPU-side per frame
+    //                 from `waterAlbedo · downwelling · depthDarken`, the same
+    //                 stack the water shader's applyUnderwaterFog uses for the
+    //                 ceiling, so seabed murk and ceiling murk agree.
+    //  -fogNear     = water surface Y (the waterline) — selects ocean branch
+    //                 AND drives the world-Y gate.
+    //  fogFar       = unused by this chunk (any value > 0 picks the ocean
+    //                 branch in concert with negative fogNear).
+    //Per-channel extinction is the const `uwExt` baked in above.
     //WORLD-Y GATE: only fragments BELOW the waterline are fogged. Above-water
     //geometry (the lighthouse etc.) seen from a submerged camera must NOT be
     //fogged as if the whole camera->fragment path were water — that over-fogged
     //it into a flat silhouette. vFogWorldPosition is A-Starry-Sky's existing
     //advanced-fog varying; the vertex slot below fills it for the ocean branch.
-    //uwMurk: the inscatter equilibrium — the colour distant water fades TO. It
-    //is white light's survival through a 14 m reference column of THIS water,
-    //so the deep-water hue tracks the extinction (red fully absorbed -> a dark
-    //deep blue). Kept dim so the lit near seabed reads bright against a dark
-    //far field, i.e. distance fades toward darkness rather than a bright haze.
     const fragGLSL = [
+      'const vec3 uwExt = ' + extLit + ';',
       'float uwSurfaceY = -fogNear;',
       'if(vFogWorldPosition.y < uwSurfaceY){',
-      '  vec3 uwExtinction = max(fogColor, vec3(1e-5));',
-      '  vec3 uwTransmittance = exp(-uwExtinction * vFogDepth);',
-      '  vec3 uwMurk = exp(-uwExtinction * 14.0) * fogFar;',
+      //fogColor is the UN-darkened surface inscatter equilibrium (the murk
+      //colour you'd see at infinite distance through water at depth 0). The
+      //per-fragment depthDarken below makes deep fragments fade toward a
+      //dimmer murk than shallow ones — the "abyss darkens" effect that a
+      //single CPU-computed camera-depth murk can't produce.
+      '  vec3 uwMurkSurface = fogColor;',
+      //Path-length depends on which render we are in:
+      //  * MAIN render (real camera below water): the whole camera→frag ray
+      //    is in water → uwDist = full length.
+      //  * MIRROR render (mirror camera above water, by the standard
+      //    reflection-trick the mirror straight-line equals the real bounce
+      //    path): the camera→bounce segment is ALREADY fogged by the water
+      //    shader's applyUnderwaterFog (it uses cam→ceiling-fragment = real
+      //    cam→bounce distance). Fogging the full mirror straight-line here
+      //    would double-count that segment. Use ONLY the post-bounce length
+      //    = (1 - t)·totalLen where t is the water-plane crossing parameter.
+      //    For an object TOUCHING the surface (lighthouse base at y = waterY)
+      //    the crossing is at the frag itself → second leg = 0 → chunk adds
+      //    no fog → the reflection of that touching point fogs identically
+      //    to the surrounding water surface, which is the correct optics at
+      //    the water-meets-land boundary.
+      '  vec3 dir = vFogWorldPosition - cameraPosition;',
+      '  float totalLen = length(dir);',
+      '  float uwDist;',
+      '  if(cameraPosition.y < uwSurfaceY){',
+      '    uwDist = totalLen;',
+      '  } else {',
+      '    float t = (uwSurfaceY - cameraPosition.y) / dir.y;',
+      '    t = clamp(t, 0.0, 1.0);',
+      '    uwDist = (1.0 - t) * totalLen;',
+      '  }',
+      '  vec3 uwT = exp(-uwExt * uwDist);',
+      //Per-fragment depthDarken: downwelling at the fragment's depth has been
+      //attenuated by `exp(-uwExt * fragDepth)` from the surface. The murk at
+      //THAT depth is therefore dimmer. Without this, all fragments fog
+      //toward the same global murk and looking-down-the-abyss never darkens.
+      '  float fragDepth = max(0.0, uwSurfaceY - vFogWorldPosition.y);',
+      '  vec3 uwMurk = uwMurkSurface * exp(-uwExt * fragDepth);',
       '  vec3 uwLinear = fogsRGBToLinear(vec4(gl_FragColor.rgb, 1.0)).rgb;',
-      '  uwLinear = uwLinear * uwTransmittance + uwMurk * (vec3(1.0) - uwTransmittance);',
+      '  uwLinear = uwLinear * uwT + uwMurk * (vec3(1.0) - uwT);',
       '  gl_FragColor.rgb = fogLinearTosRGB(vec4(uwLinear, 1.0)).rgb;',
       '}'
     ].join('\n');
@@ -1233,6 +1440,10 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         Math.max(1, (rendererSize.x * self.reflectionResolutionScale) | 0),
         Math.max(1, (rendererSize.y * self.reflectionResolutionScale) | 0)
       );
+      self._aboveWaterTransmissionTarget.setSize(
+        Math.max(1, (rendererSize.x * self.reflectionResolutionScale) | 0),
+        Math.max(1, (rendererSize.y * self.reflectionResolutionScale) | 0)
+      );
     }
 
     //Update the state of our ocean grid
@@ -1277,12 +1488,17 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //variant that reads that source material's own .color / .map. Restored
     //immediately after render.
     self._swappedMeshes.length = 0;
+    const curtainSkip = self.underwaterCurtainMesh;
     scene.traverse(function(obj){
       if(!obj.isMesh || !obj.visible || !obj.material) return;
       //Skip ShaderMaterial sources — they're custom shaders (ocean, etc.)
       //whose attribute usage we can't safely replace with our G-buffer shader.
       if(obj.material.isShaderMaterial) return;
       if(Array.isArray(obj.material) && obj.material.some(function(m){ return m.isShaderMaterial; })) return;
+      //Skip the underwater curtain: a 300 m BackSide sphere would write a
+      //spherical shell into refraction depth and the water shader's Snell-
+      //window seabed lookup would sample curtain colour instead of seabed.
+      if(obj === curtainSkip) return;
       const gBuf = self._resolveGBufferMaterial(obj.material);
       self._swappedMeshes.push({ mesh: obj, original: obj.material });
       obj.material = gBuf;
@@ -1307,6 +1523,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //the in/out transition is invisible. Pure overhead above water, so skip.
     if(self._wasUnderwater){
       self._renderUnderwaterReflection(scene, sceneCamera);
+      self._renderAboveWaterTransmission(scene, sceneCamera);
     }
 
     //Update our sea foam camera - use position pass material to output world-space height data
@@ -1433,11 +1650,74 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     self._injectUnderwaterFogChunk();
     if(self.scene){
       if(isUnderwater && self._fogChunkInjected){
-        self._oceanFog.color.setRGB(self.underwaterFogExtinction.x,
-                                    self.underwaterFogExtinction.y,
-                                    self.underwaterFogExtinction.z);
+        //Murk colour derived from the SAME stack the water shader uses for its
+        //own ceiling fog (water-shader.glsl :1344) so the seabed and the
+        //ceiling read as the same medium:
+        //  waterAlbedo = scattering / (absorption + scattering)
+        //  direct      = sunColor * intensity * (1 - fresnelAirToWater) * cosZenith
+        //  ambient     = skyAmbientColor (a-starry-sky y-hemispherical)
+        //  inscatter   = waterAlbedo * (direct + ambient) / π
+        //  depthDarken = exp(-extinction * cameraDepth)   (UNDERWATER_DEPTH_MURK=1)
+        //  murk        = inscatter * depthDarken * userBrightness
+        const presetJ = AWater.AOcean.JERLOV_PRESETS[self.data.water_type | 0];
+        const absV = presetJ ? presetJ.absorption : self.data.water_absorption;
+        const sctV = presetJ ? presetJ.scattering : self.data.water_scattering;
+        const extX = Math.max(absV.x + sctV.x, 1e-4);
+        const extY = Math.max(absV.y + sctV.y, 1e-4);
+        const extZ = Math.max(absV.z + sctV.z, 1e-4);
+        const albX = sctV.x / extX, albY = sctV.y / extY, albZ = sctV.z / extZ;
+        let dirX = 0.0, dirY = 0.0, dirZ = 0.0;
+        if(self.brightestDirectionalLight){
+          const ml = self.brightestDirectionalLight;
+          const i = ml.intensity;
+          self._uwSunDirScratch.set(ml.position.x, ml.position.y, ml.position.z)
+            .sub(ml.target.position).negate().normalize();
+          //cosZenith = max(dot(-sunDir, up), 0); sunDir points sun->target, so -sunDir.y is the lift.
+          const cosZ = Math.max(-self._uwSunDirScratch.y, 0.0);
+          //Schlick air→water reflectance, r0 = ((1-1.333)/(1+1.333))^2 ≈ 0.02037
+          const oneMinusCos = 1.0 - cosZ;
+          const fres = 0.02037 + (1.0 - 0.02037) * (oneMinusCos*oneMinusCos*oneMinusCos*oneMinusCos*oneMinusCos);
+          const trans = 1.0 - fres;
+          const k = i * trans * cosZ;
+          dirX = ml.color.r * k; dirY = ml.color.g * k; dirZ = ml.color.b * k;
+        }
+        //skyAmbient from a-starry-sky y-hemispherical (matches water-shader.glsl :1596)
+        let ambX = 0.0, ambY = 0.0, ambZ = 0.0;
+        if(self.skyDirector && self.skyDirector.lightingManager){
+          const yL = self.skyDirector.lightingManager.yAxisHemisphericalLight;
+          const yI = yL.intensity;
+          ambX = yL.color.r * yI; ambY = yL.color.g * yI; ambZ = yL.color.b * yI;
+        }
+        const invPi = 0.31830988618;
+        const camDepth = Math.max(0.0, -cameraSubmersion);
+        const dDarkenX = Math.exp(-extX * camDepth);
+        const dDarkenY = Math.exp(-extY * camDepth);
+        const dDarkenZ = Math.exp(-extZ * camDepth);
+        const b = self.underwaterFogBrightness;
+        //_uwMurkScratch is the UN-darkened SURFACE inscatter equilibrium
+        //(murk at depth 0). The chunk darkens it per-fragment by fragDepth
+        //so the seabed fades to dimmer murk the deeper it sits — the
+        //"abyss darkens" effect. CameraDepth darkening is applied at the
+        //downstream consumers (curtain.color / underwaterFogColor) that
+        //need a fully-darkened visible colour, not the chunk.
+        self._uwMurkScratch.set(
+          albX * (dirX + ambX) * invPi * b,
+          albY * (dirY + ambY) * invPi * b,
+          albZ * (dirZ + ambZ) * invPi * b
+        );
+        self._oceanFog.color.setRGB(self._uwMurkScratch.x, self._uwMurkScratch.y, self._uwMurkScratch.z);
+        //Cache the camera-depth-darkened murk for curtain/background — those
+        //consumers sample a single colour, can't run per-fragment darkening.
+        if(!self._uwMurkCamDepthScratch){
+          self._uwMurkCamDepthScratch = new THREE.Vector3();
+        }
+        self._uwMurkCamDepthScratch.set(
+          self._uwMurkScratch.x * dDarkenX,
+          self._uwMurkScratch.y * dDarkenY,
+          self._uwMurkScratch.z * dDarkenZ
+        );
         self._oceanFog.near = -Math.max(waterSurfaceY, 0.001);   //< 0 selects ocean branch; |near| = waterline
-        self._oceanFog.far = self.underwaterFogBrightness;       //> 0
+        self._oceanFog.far = 1.0;                                //> 0 to pick ocean branch; chunk reads const uwExt
         self.scene.fog = self._oceanFog;
       } else if(self.scene.fog === self._oceanFog){
         //Surfaced (or chunk not injected): hand scene.fog back to A-Starry-Sky.
@@ -1464,7 +1744,31 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           self._aboveWaterBackground = self.scene.background;
         }
         domeMesh.visible = !isUnderwater;
-        self.scene.background = isUnderwater ? self.underwaterFogColor : self._aboveWaterBackground;
+        if(isUnderwater){
+          //Camera-depth-darkened murk so the bg matches what the eye would
+          //see at infinity in this water column. Mostly hidden behind the
+          //curtain sphere, but still the right colour in the edge-case
+          //where the curtain fails to cover a pixel (sky-leak fallback).
+          const cdm = self._uwMurkCamDepthScratch;
+          self.underwaterFogColor.setRGB(cdm.x, cdm.y, cdm.z);
+          self.scene.background = self.underwaterFogColor;
+        } else {
+          self.scene.background = self._aboveWaterBackground;
+        }
+      }
+    }
+
+    //Curtain hemisphere — follow the camera, pick up the camera-depth-
+    //darkened murk as a base. The chunk further darkens per-fragment by
+    //the curtain fragment's actual depth (the bottom of the 300m
+    //hemisphere is way deeper than the camera, so it reads near-black —
+    //the "abyss" you see by looking down past the seabed).
+    if(self.underwaterCurtainMesh){
+      self.underwaterCurtainMesh.visible = isUnderwater;
+      if(isUnderwater){
+        self.underwaterCurtainMesh.position.copy(self.globalCameraPosition);
+        const cdm = self._uwMurkCamDepthScratch;
+        self.underwaterCurtainMesh.material.color.setRGB(cdm.x, cdm.y, cdm.z);
       }
     }
 
@@ -1586,6 +1890,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         uniformsRef.waterSurfaceY.value = waterSurfaceY;
         uniformsRef.underwaterReflectionTexture.value = self._reflectionTarget.texture;
         uniformsRef.underwaterReflectionMatrix.value.copy(self._reflectionTextureMatrix);
+        uniformsRef.aboveWaterTransmissionTexture.value = self._aboveWaterTransmissionTarget.texture;
       }
 
       //Sky ambient color from a-starry-sky's y-axis hemisphere light (pointing straight up).

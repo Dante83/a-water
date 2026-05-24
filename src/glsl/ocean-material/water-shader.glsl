@@ -172,6 +172,14 @@ uniform float waterSurfaceY;
 //matrix that projects a ceiling fragment into that mirrored render.
 uniform sampler2D underwaterReflectionTexture;
 uniform mat4 underwaterReflectionMatrix;
+//Above-water transmission RT — a separate submerged-frame render of the
+//FULLY-LIT scene (sky dome restored, real materials, atmospheric perspective,
+//ocean grid hidden, underwater curtain hidden, scene.fog swapped back to the
+//a-starry-sky version). Sampled by the Snell-window transmitted-ray branch
+//of computeUnderwaterCeiling. The refraction G-buffer is unshaded raw
+//albedo with above-water content unfogged, useless for the upward view
+//through the surface; this target is the proper above-the-surface capture.
+uniform sampler2D aboveWaterTransmissionTexture;
 
 //Fog variables
 #if(!$atmospheric_perspective_enabled)
@@ -892,17 +900,43 @@ SOFTWARE.
 
     float reflectance = fresnelWaterToAir(cosI);
 
-    //TRANSMISSION — screen-space refraction. The refraction G-buffer was
-    //rendered from this same submerged camera with the water mesh hidden, so
-    //sampling at the fragment's own screen UV gives whatever sits behind the
-    //surface (the air-world directly through it). The wave-normal jitter is
-    //the rippled-glass look. Doesn't model Snell-cone angular compression —
-    //the previous attempt at that depended on a w!=0 projection that
-    //degenerated when the camera looked horizontally; this simpler form
-    //handles every camera orientation.
-    vec2 refrUV = clamp(screenUV + n.xz * REFRACTION_DISTORTION,
-                        vec2(0.001), vec2(0.999));
-    vec3 transmitted = texture2D(refractionColorTexture, refrUV).rgb;
+    //TRANSMISSION — true Snell refraction water→air (n_water=1.333 → n_air=1.0).
+    //refract() with the per-fragment wave normal does double duty: cone
+    //compression (whole 180° air hemisphere folds into the ~97° Snell cone,
+    //half-angle 48.6°) AND ripple-glass jitter, in one step. The refracted
+    //direction is then projected via the transmission camera's matrices
+    //(= main scene camera) onto its screen UV to sample the air-side capture.
+    //Convention: n points DOWN (toward submerged camera = INTO water from
+    //air side), viewDir points UP (camera→ceiling = INTO the surface from
+    //water side). refract(I, N, eta) with eta = n_in / n_out = 1.333 then
+    //returns the air-side ray bending away from the normal.
+    vec3 refracted = refract(viewDir, n, 1.333);
+    vec2 refrUV;
+    if(dot(refracted, refracted) < 0.0001){
+      //TIR — refract() returned zero. Reflectance is 1.0 here so the mix
+      //below is pure reflection; the transmitted sample is invisible. Sane
+      //fallback for edge-precision pixels just below critical.
+      refrUV = screenUV;
+    } else {
+      //Project a far point along the refracted ray onto the transmission
+      //camera's screen. 1km is past the curtain hemisphere; for any
+      //refracted direction with a forward component (clip.w > 0) the
+      //screen UV samples the right pixel of the air-world capture. Behind-
+      //camera tangents fall back to the non-refracted UV.
+      vec3 virtualPoint = worldPos + refracted * 1000.0;
+      //ssrViewMatrix/ssrProjectionMatrix mirror the scene camera matrices —
+      //projectionMatrix/viewMatrix are auto-declared only in vertex shaders,
+      //but these uniforms (already used by the SSR path) carry the same data
+      //into the fragment shader.
+      vec4 clip = ssrProjectionMatrix * ssrViewMatrix * vec4(virtualPoint, 1.0);
+      if(clip.w > 0.001){
+        refrUV = (clip.xy / clip.w) * 0.5 + 0.5;
+      } else {
+        refrUV = screenUV;
+      }
+    }
+    refrUV = clamp(refrUV, vec2(0.001), vec2(0.999));
+    vec3 transmitted = texture2D(aboveWaterTransmissionTexture, refrUV).rgb;
 
     //REFLECTION (total internal reflection — Fresnel reflectance climbs to
     //1.0 past the critical angle). Planar mirror: underwater scene rendered

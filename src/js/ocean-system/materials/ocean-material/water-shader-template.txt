@@ -154,6 +154,14 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     //Underwater planar-reflection target + its world→UV texture matrix,
     //rendered + computed each submerged frame by ocean-grid.js.
     underwaterReflectionTexture: {type: 't', value: null},
+    //Above-water transmission RT — separate submerged-frame render of the
+    //fully-lit scene (sky dome restored, real materials, atmospheric
+    //perspective, ocean grid + curtain hidden) from the submerged camera.
+    //Sampled by the Snell-window transmitted-ray branch of
+    //computeUnderwaterCeiling. Distinct from refractionColorTexture (raw
+    //G-buffer albedo, useful only for the above-water seabed-through-water
+    //lookup, not for upward Snell-window views).
+    aboveWaterTransmissionTexture: {type: 't', value: null},
     underwaterReflectionMatrix: {type: 'mat4', value: new THREE.Matrix4()},
     atmosphereTransmittance: {type: 't', value: null},
     atmosphereMieInscattering: {type: 't', value: null},
