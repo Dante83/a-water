@@ -1186,6 +1186,25 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     const sunFracForRT = (self._uwSunFrac !== undefined) ? self._uwSunFrac : 0.5;
     self._oceanFog.far = sunFracForRT;
 
+    //Clip everything above the waterline out of the mirror cam's render.
+    //Without this, cave walls, the above-water portion of the lighthouse, and
+    //any other stationary world geometry sitting above the surface lands in
+    //the RT and gets sampled by the underwater ceiling shader's TIR lookup —
+    //producing the "dark band of cave stone where the underwater rock should
+    //be reflected" artifact at the waterline. The water grid itself is hidden
+    //by the caller, so the wavy ocean surface never collides with this plane.
+    //Plane convention: distance(p) = normal·p + constant; fragments with
+    //distance < 0 are clipped. normal=(0,-1,0), constant=waterSurfaceY clips
+    //fragments where y > waterSurfaceY (above water).
+    if(!self._reflClipPlane){
+      self._reflClipPlane = new THREE.Plane(new THREE.Vector3(0.0, -1.0, 0.0), 0.0);
+    }
+    self._reflClipPlane.constant = h;
+    const prevClippingPlanes = self.renderer.clippingPlanes;
+    const prevLocalClipping = self.renderer.localClippingEnabled;
+    self.renderer.clippingPlanes = [self._reflClipPlane];
+    self.renderer.localClippingEnabled = true;
+
     //Linear output (NoToneMapping) so the colour feeds straight into the
     //ceiling's linear composite without a tone-map / encode round-trip.
     self.renderer.toneMapping = THREE.NoToneMapping;
@@ -1194,6 +1213,8 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     self.renderer.clear();
     self.renderer.render(scene, reflCam);
 
+    self.renderer.clippingPlanes = prevClippingPlanes;
+    self.renderer.localClippingEnabled = prevLocalClipping;
     self._oceanFog.far = prevFogFar;
     scene.fog = prevFog;
     self.renderer.setClearColor(s.clearColor, prevClearAlpha);
@@ -1402,9 +1423,14 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     const fragGLSL = [
       'const vec3 uwExt = ' + extLit + ';',
       //Phase-function constants. g=0.85 is the canonical clean-ocean
-      //Henyey-Greenstein asymmetry parameter (Mobley 1994). The 1/(4π) is
-      //the steradian-normalisation baked into HG.
-      'const float UW_HG_G = 0.85;',
+      //Henyey-Greenstein asymmetry parameter (Mobley 1994), but a phase
+      //that peaked makes perpendicular-to-sun scatter ~100× weaker than
+      //the forward halo — the horizon under a noon sun reads nearly black.
+      //0.5 (turbid coastal range) lifts the perpendicular contribution so
+      //the horizon picks up real sun light and asymptotes to teal. Match
+      //the same value in water-shader.glsl's underwaterInscatterSurface.
+      //The 1/(4π) is the steradian-normalisation baked into HG.
+      'const float UW_HG_G = 0.5;',
       'const float UW_INV_4PI = 0.07957747154;',
       //Isotropic discount on the underwater path length: effective water metres
       //per metre of geometric path. A direction-symmetric stand-in for the
