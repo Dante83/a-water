@@ -244,13 +244,6 @@ const float UNDERWATER_REFLECTION_DISTORTION = 0.06;
 //softer, blurrier window edge. Set to 0.0 for the strict physical curve.
 const float UNDERWATER_TIR_SOFTNESS = 0.13;
 
-//Depth darkening of the underwater fog. The fog's inscatter equilibrium is
-//lit by downwelling light, which is itself Beer-Lambert extinguished on the
-//way down — so the deeper the camera sits, the dimmer (and more blue-green,
-//as red dies first) the murk becomes. 1.0 = the physically correct vertical
-//attenuation; raise it for a murkier, faster-darkening dive, 0.0 to disable.
-const float UNDERWATER_DEPTH_MURK = 1.0;
-
 //Effective-depth proxy: meters of underwater path per meter of horizontal
 //camera-to-fragment distance. Lets transmittance decay toward the horizon
 //even when no underwater geometry was hit by the refraction ray.
@@ -688,22 +681,79 @@ float fresnelAirToWater(float cosTheta){
   return r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
 }
 
-//Underwater volumetric fog — the Mie+absorption counterpart to atmospheric
-//perspective's Mie+Rayleigh. Per-channel Beer-Lambert extinction of the
-//incoming colour toward the water body's backscatter equilibrium. `inscatter`
-//is the same inscatterEquilibrium the surface body-colour blend uses
-//(waterAlbedo · Edown / π), passed in so this global fog and the local
-//refraction term agree. `dist` is the straight camera→fragment path length —
-//all of it water once the camera is submerged.
-//The equilibrium colour is additionally darkened by the camera's depth below
-//the surface: downwelling light is extinguished vertically before it can be
-//scattered into view, so a deep dive reads dimmer and more blue-green than a
-//shallow one (see UNDERWATER_DEPTH_MURK).
-vec3 applyUnderwaterFog(vec3 color, float dist, vec3 inscatter){
-  vec3 transmittance = exp(-(waterAbsorption + waterScattering) * dist);
-  float cameraDepth = max(0.0, -cameraSubmersion);
-  vec3 depthDarken = exp(-(waterAbsorption + waterScattering) * cameraDepth * UNDERWATER_DEPTH_MURK);
-  inscatter *= depthDarken;
+//Henyey–Greenstein single-parameter phase function. Properly normalised
+//(integrates to 1 over the sphere), so the 1/(4π) is baked in. g>0 means
+//forward-scattering; g≈0.85 is the canonical ocean-water value (Mobley 1994).
+const float UW_PI = 3.14159265359;
+const float UW_HG_G = 0.85;
+const float UW_INV_4PI = 0.07957747154;
+//Underwater path-length discount. Same value as UW_DIST_SCALE in the chunk
+//(ocean-grid.js _injectUnderwaterFogChunk) so the ceiling fog from below
+//and the chunk fog applied to direct-view seabed asymptote to the same
+//effective extinction at any given world distance. Without this, the
+//ceiling's applyUnderwaterFog runs at full extinction (~3.3× the chunk),
+//and TIR-mirror bands crush to the murk asymptote while direct-view seabed
+//at the same range still reads as visibly attenuated rock — producing the
+//inverted "more fog close, less fog far" look at the waterline.
+const float UW_DIST_SCALE = 0.3;
+float henyeyGreenstein(float cosTheta, float g){
+  float g2 = g * g;
+  return (1.0 - g2) * UW_INV_4PI
+         / pow(max(1.0 + g2 - 2.0 * g * cosTheta, 1e-4), 1.5);
+}
+
+//Single-scatter inscatter equilibrium of the water medium, evaluated at the
+//surface (depth 0) for a given view direction. Two contributions:
+//  • Sun  — collimated downwelling, Henyey-Greenstein phase along the view ray.
+//           Strongly view-direction-dependent: bright halo when you look toward
+//           the sun, dim when you look away.
+//  • Sky  — diffuse hemispherical downwelling, treated as isotropic phase
+//           (1/4π). View-direction-independent.
+//Both are scaled by waterAlbedo = scattering / extinction — the medium's
+//single-scatter albedo, the fraction of an absorbed photon that re-emerges
+//as scattered radiance. Result is per-channel pre-tonemap LDR or HDR.
+//
+//Convention (matches water-shader.glsl :1640-1648): `brightestDirectionalLightDirection`
+//points FROM the sun TO the scene — i.e., the direction sunlight travels.
+//HG cos θ = dot(incident, scattered) = dot(lightDir, -viewDir) = -dot(lightDir, viewDir).
+//cos θ = +1 when the camera looks TOWARD the sun (viewDir = -lightDir) — HG peaks
+//there (forward scattering, the halo-around-the-sun look).
+vec3 underwaterInscatterSurface(vec3 viewDirWorld){
+  vec3 extinction = waterAbsorption + waterScattering;
+  vec3 albedo = waterScattering / max(extinction, vec3(1e-4));
+  //Same directDownwelling / ambientDownwelling components the body-colour blend
+  //uses (water-shader.glsl :1373) so all three fog paths reference one source.
+  //Computed inline because applyUnderwaterFog is called BEFORE the main()
+  //block that builds those variables — we redo the small calc here.
+  float sunCosZenith = max(dot(-brightestDirectionalLightDirection, vec3(0.0, 1.0, 0.0)), 0.0);
+  float sunTransmission = 1.0 - fresnelAirToWater(sunCosZenith);
+  vec3 directDownwelling = brightestDirectionalLight * sunTransmission * sunCosZenith;
+  vec3 ambientDownwelling = skyAmbientColor;
+  //Sun: HG-phased single scatter into the view ray.
+  float cosTheta = -dot(viewDirWorld, brightestDirectionalLightDirection);
+  float pSun = henyeyGreenstein(cosTheta, UW_HG_G);
+  //Sky: hemispherical isotropic approximation. 1/(2π) is the contribution of
+  //a uniform upper hemisphere to a single-scattering point with isotropic
+  //phase (∫ p_iso L_sky dω over the hemisphere = E_sky/(2π)).
+  float pSky = 1.0 / (2.0 * UW_PI);
+  return albedo * (directDownwelling * pSun + ambientDownwelling * pSky);
+}
+
+//Apply underwater volumetric fog along a path through water. `color` is the
+//radiance of the fragment being fogged (post-shading, pre-tonemap). `dist`
+//is the straight path length through water for this fog segment; `fragDepth`
+//is the depth of the fragment below `waterSurfaceY` (drives downwelling
+//attenuation at the inscatter equilibrium — deeper fragment → dimmer murk).
+//`viewDirWorld` is the world-space camera→fragment direction; drives HG
+//forward-scatter — looking toward the sun lights the murk brighter than
+//looking away. This is the volumetric counterpart to the body-colour blend,
+//and shares the same `underwaterInscatterSurface()` source so all three
+//paths agree on the medium's equilibrium colour.
+vec3 applyUnderwaterFog(vec3 color, float dist, vec3 viewDirWorld, float fragDepth){
+  vec3 extinction = waterAbsorption + waterScattering;
+  vec3 transmittance = exp(-extinction * dist);
+  vec3 depthDarken = exp(-extinction * fragDepth);
+  vec3 inscatter = underwaterInscatterSurface(viewDirWorld) * depthDarken;
   return color * transmittance + inscatter * (vec3(1.0) - transmittance);
 }
 
@@ -891,7 +941,7 @@ SOFTWARE.
   //                  cone (zenith straight up, horizon at the cone edge).
   //Foam sits on top, then the camera→ceiling water column is fogged.
   vec3 computeUnderwaterCeiling(vec3 worldPos, vec3 surfaceNormal, vec3 foamColor,
-                                float foamBlend, vec3 inscatter, vec2 screenUV,
+                                float foamBlend, vec2 screenUV,
                                 float camToFragDist){
     //Underside normal faces down toward the submerged camera.
     vec3 n = -normalize(surfaceNormal);
@@ -952,8 +1002,20 @@ SOFTWARE.
     vec3 ceiling = mix(transmitted, reflected, reflectance);
     //Foam is a near-opaque scattering layer — bright mottling on the ceiling.
     ceiling = mix(ceiling, foamColor, foamBlend);
-    //Fog the water column between the camera and the ceiling.
-    return applyUnderwaterFog(ceiling, camToFragDist, inscatter);
+    //Two-stage fog compose for the reflected bounce path:
+    //  Stage 1 — chunk on the reflection RT fogs the post-bounce leg
+    //            (surface→reflected-fragment) into `reflected` already.
+    //  Stage 2 — applyUnderwaterFog here fogs the pre-bounce leg
+    //            (cam→ceiling-fragment, all underwater).
+    //Total = pre + post = full underwater bounce path. Without this stage
+    //the equator of the reflected curtain reads too bright because the
+    //chunk's (1-t)·totalLen mirror-branch only counts the post-bounce half,
+    //and the gradient between deep-dark and shallow-bright pixels flattens.
+    //The Snell-window `transmitted` content is above-water (chunk skipped
+    //it) so this is its only underwater fog — also correct.
+    vec3 viewDirCeiling = normalize(worldPos - cameraPosition);
+    float ceilingFragDepth = max(0.0, waterSurfaceY - worldPos.y);
+    return applyUnderwaterFog(ceiling, camToFragDist * UW_DIST_SCALE, viewDirCeiling, ceilingFragDepth);
   }
 #endif
 
@@ -1367,23 +1429,12 @@ void main(){
   float inscatterShadow = mix(0.65, 1.0, sunShadowFactor);
   vec3 directDownwelling = brightestDirectionalLight * sunTransmission * sunCosZenith * inscatterShadow;
   vec3 ambientDownwelling = skyAmbientColor;
-  //Lambertian flux→radiance conversion. Bruneton 2010 (CGF 29(2)):
-  //  Lsea = SeaColor * Esky / pi
-  //Esky here is irradiance (sun+sky downwelling at the surface, integrated
-  //over solid angle). Treating it as radiance directly — the pre-2026-05-16
-  //form — over-drives the body by ~π, which against AES-Filmic's shoulder
-  //read as a glowing surface at midday once Jerlov 1C lifted the G/B
-  //channels above ~2.0 pre-tonemap. The 1/π puts inscatter back onto the
-  //same scale as the SSR reflection term it's blended against.
-  vec3 inscatterEquilibrium = waterAlbedo * (directDownwelling + ambientDownwelling) * (1.0 / 3.14159265);
-  //Unified body color is computed in the transmittance-weighted blend below:
-  //  bodyColor = refractedLight * T + inscatterEquilibrium * (1 - T)
-  //which is the UE-SLW / Bruneton form `waterAlbedo * (1 - T) * Edown` plus
-  //the attenuated seabed sample. The phenomenological k1..k4 scatter stack and
-  //the Crest-style crest-translucency block were deleted in the 2026-05-14
-  //water-review Step 4. See SUMMARY Q8 for the crest-translucency follow-up
-  //(currently no thin-slab term — sunset backlit crests will read less golden
-  //until that lobe is re-introduced).
+  //Body-colour inscatter equilibrium is now produced by
+  //`underwaterInscatterSurface(viewDir)` at the blend site below — the same
+  //HG-phased single-scatter model that the chunk fog and the underwater
+  //ceiling fog use. The old `waterAlbedo · Edown / π` Lambertian form lived
+  //here; it was a surface-reflectance approximation that disagreed with the
+  //volumetric inscatter the chunk fades to. One source now, three callers.
 
   //Fresnel with a distance-driven roughness clamp on the grazing peak.
   //
@@ -1580,7 +1631,6 @@ void main(){
   bool dbgIsFarPlane = isFarPlane;
   float dbgVerticalDepth = verticalDepth;
   float dbgEffectiveDepth = effectiveDepth;
-  vec3 dbgInscatterEquilibrium = inscatterEquilibrium;
   vec3 dbgReflectedLight = reflectedLight;
   float dbgFresnelFactor = fresnelFactor;
   //Crest sun back-scatter (Q8). Forward-scatter lobe peaks when the camera
@@ -1624,12 +1674,22 @@ void main(){
 
   //Blend refracted sample with backscatter equilibrium by transmittance.
   //Near-field, shallow: transmittance ≈ 1, refractedLight ≈ sampled scene.
-  //Far-horizon / deep: transmittance → 0, refractedLight → inscatterEquilibrium.
+  //Far-horizon / deep: transmittance → 0, refractedLight → the medium's
+  //single-scatter equilibrium for the camera→surface view ray.
   //Continuous across the whole range — no branching, no far-plane cliff.
+  //
+  //Inscatter uses the same `underwaterInscatterSurface()` function the chunk
+  //fog and the underwater-ceiling `applyUnderwaterFog` call — one HG-phased
+  //volumetric model, three callers. View-direction dependence (HG sun phase)
+  //means deep water reads brighter looking down-sun than perpendicular to it
+  //— the same forward-scatter halo that paints god rays under water.
+  //
   //Crest translucency adds to the body channel — it's transmitted light, so
   //it picks up the same (1 - fresnelFactor) weight as the rest of the body
   //at the final composition step.
-  refractedLight = refractedLight * transmittance + inscatterEquilibrium * (vec3(1.0) - transmittance) + crestTranslucency;
+  vec3 bodyInscatter = underwaterInscatterSurface(normalizedViewVector);
+  vec3 dbgInscatterEquilibrium = bodyInscatter;
+  refractedLight = refractedLight * transmittance + bodyInscatter * (vec3(1.0) - transmittance) + crestTranslucency;
   vec3 dbgBody = refractedLight;
 
   //Calculate specular lighting and surface lighting
@@ -1854,7 +1914,7 @@ void main(){
         //BackSide on the same gate, so only ceiling fragments land here.
         totalLight = computeUnderwaterCeiling(worldPosition.xyz, displacedNormal,
                                               dbgFoamColor, dbgFoamBlend,
-                                              inscatterEquilibrium, screenUV,
+                                              screenUV,
                                               distanceToWorldPosition);
       } else {
         //Above water: Mie+Rayleigh atmospheric perspective.

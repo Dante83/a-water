@@ -279,10 +279,10 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //submerged frame. The slide is periodic across [0,1] (integer tiling), and
   //the projector XZ is snapped to one tile, so the cast pattern is world-
   //stable as the camera swims (the foam-camera texel-snap trick).
-  this.causticProjectionResolution = 2048;
+  this.causticProjectionResolution = 4096;
   this.causticProjectionTiling = 48;      //caustic-map repeats across the slide (integer!)
   this.causticLightHeight = 400.0;        //metres the projector sits above the surface
-  this.causticLightConeRadius = 115.0;    //ground radius the cone covers
+  this.causticLightConeRadius = 60.0;     //ground radius the cone covers
   this.causticLightIntensity = 6.0;       //MAIN KNOB — caustic brightness on the seabed
   this._causticProjectionTarget = new THREE.WebGLRenderTarget(
     this.causticProjectionResolution, this.causticProjectionResolution,
@@ -345,15 +345,21 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     new THREE.PlaneGeometry(2.0, 2.0), this._causticProjectionMaterial
   ));
 
-  //The projector. decay 0 + distance 0 → an even, slide-projector cast (not a
-  //physical inverse-square point light). castShadow stays off — the scene sun
-  //already shadows the seabed, and SpotLight.map updates its projection matrix
-  //on its own (WebGLLights calls shadow.updateMatrices when a map is present).
-  //Kept permanently in the scene with intensity driven to 0 above water:
-  //toggling light.visible would change the visible-light count and recompile
-  //every lit material on each waterline crossing.
+  //The projector. distance 0 → no hard cutoff. decay 2 (inverse-square) gives
+  //a soft depth falloff: fragments farther from the projector (= deeper, since
+  //the projector sits above the surface and tracks the camera XZ) receive
+  //less light, approximating the Beer-Lambert attenuation of sunlight on its
+  //way down to the seabed. The runtime compensates intensity by
+  //pow(causticLightHeight, decay) so surface-level brightness matches what
+  //the old decay-0 cast produced — only the depth gradient is new.
+  //castShadow stays off — the scene sun already shadows the seabed, and
+  //SpotLight.map updates its projection matrix on its own (WebGLLights calls
+  //shadow.updateMatrices when a map is present). Kept permanently in the
+  //scene with intensity driven to 0 above water: toggling light.visible would
+  //change the visible-light count and recompile every lit material on each
+  //waterline crossing.
   this.causticSpotLight = new THREE.SpotLight(0xffffff, 0.0);
-  this.causticSpotLight.decay = 0.0;
+  this.causticSpotLight.decay = 2.0;
   this.causticSpotLight.distance = 0.0;
   this.causticSpotLight.penumbra = 0.8;
   this.causticSpotLight.angle = Math.atan(this.causticLightConeRadius / this.causticLightHeight);
@@ -1078,7 +1084,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         //tile geometry's winding direction (PlaneGeometry's rotateX flips the
         //winding; the previous BackSide guess turned the ceiling invisible
         //from below). FrontSide above water keeps the cheap default.
-        oceanMesh.material.side = under ? THREE.DoubleSide : THREE.FrontSide;
+        oceanMesh.material.side = under ? THREE.BackSide : THREE.FrontSide;
       }
     }
   };
@@ -1090,7 +1096,19 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //keeps the virtual camera right-handed (no winding flip) — the
   //THREE.Reflector trick. Caller renders this while the ocean grid is hidden.
   this._renderUnderwaterReflection = function(scene, mainCamera){
-    const h = self.heightOffset;
+    //Mirror across the DISPLACED surface at the camera's XZ (last frame's
+    //CPU probe), not the flat rest plane. The chunk's `uwSurfaceY` is also
+    //the displaced height (set from `-_oceanFog.near`), so this keeps the
+    //mirror's reference plane and the chunk's fog-crossing plane in sync —
+    //the complementary segment compose (chunk fogs |SP|, applyUnderwaterFog
+    //fogs |CS|) only sums to the true bounce-path length when both planes
+    //agree. Falls back to heightOffset before the first probe runs. Wave
+    //amplitude away from the camera's XZ is still an unmodelled error, but
+    //bringing the camera-XZ height into the mirror plane removes the bulk
+    //of the mismatch under any swell.
+    const h = (self._lastWaterSurfaceY !== undefined)
+      ? self._lastWaterSurfaceY
+      : self.heightOffset;
     const reflCam = self._reflectionCamera;
     if(!self._reflScratch){
       self._reflScratch = {
@@ -1134,30 +1152,39 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     const skyMesh = atmRenderer && atmRenderer.skyMesh;
     const skyWasVisible = skyMesh ? skyMesh.visible : false;
     if(skyMesh){ skyMesh.visible = false; }
-    //Also hide the curtain — it's a flat backdrop, would just paint the
-    //mirror with murk and steal contrast from real underwater geometry.
-    const curtain = self.underwaterCurtainMesh;
-    const curtainWasVisible = curtain ? curtain.visible : false;
-    if(curtain){ curtain.visible = false; }
+    //Keep the underwater curtain visible in the mirror. Hiding it left
+    //empty-direction pixels falling back to the dark clear colour, while
+    //the direct view fills the same directions with the murk-coloured,
+    //AO-darkened curtain — so the reflection read slightly brighter at
+    //the bottom than the matching direct view. Leaving the curtain in
+    //the mirror gives direct and reflected paths the same backdrop.
 
     const prevRT = self.renderer.getRenderTarget();
     const prevToneMapping = self.renderer.toneMapping;
     self.renderer.getClearColor(s.clearColor);
     const prevClearAlpha = self.renderer.getClearAlpha();
 
-    //Render the mirror WITH scene.fog = ocean fog. The chunk's path-length is
-    //`length(cameraPosition - vFogWorldPosition)`, evaluated against the
-    //MIRROR camera here — and by the standard reflection-trick equivalence
-    //that distance equals the real underwater bounce path (camera → surface
-    //bounce point → reflected scene point). So the chunk fogs the reflected
-    //scene by its true light-path length through water. The water shader's
-    //applyUnderwaterFog on the final ceiling colour then handles the tiny
-    //camera→bounce-point segment — the two are complementary path segments,
-    //NOT a double-fog (a previous comment claimed otherwise; that misread
-    //the geometry and left the mirror un-fogged so distant seabed
-    //reflections read crisp through water).
+    //Leave scene.fog set to the ocean fog so the chunk runs on the mirror RT.
+    //By the standard reflection-trick equivalence, the mirror camera's
+    //straight-line distance to a fragment equals the real underwater bounce
+    //path (cam → surface bounce point → reflected scene point), so the chunk
+    //fogs the whole reflected ray as a single segment. The ceiling shader
+    //returns the bare composite (no second applyUnderwaterFog at sample-time)
+    //— that earlier double-layer added inscatter twice and visibly dimmed TIR
+    //reflections below direct-view brightness of the same geometry.
     const prevFog = scene.fog;
-    scene.fog = self._oceanFog;
+    //Both the main pass and this RT pass write fogFar with the SAME sign so
+    //the chunk hits identical code (sRGB roundtrip on both, HG/isotropic
+    //split keyed off |fogFar|). When the two signs disagreed, the RT skipped
+    //the roundtrip while the main canvas did it, and the same world fragment
+    //fogged to different brightness depending on whether it was viewed
+    //directly or via TIR — the dim-reflection bug. The RT is a linear target
+    //so this is gamma-asymmetric in the absolute, but symmetric across the
+    //two passes, which is what the direct-vs-mirror match needs. Falls back
+    //to 0.5 if the probe hasn't populated _uwSunFrac yet.
+    const prevFogFar = self._oceanFog.far;
+    const sunFracForRT = (self._uwSunFrac !== undefined) ? self._uwSunFrac : 0.5;
+    self._oceanFog.far = sunFracForRT;
 
     //Linear output (NoToneMapping) so the colour feeds straight into the
     //ceiling's linear composite without a tone-map / encode round-trip.
@@ -1167,12 +1194,12 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     self.renderer.clear();
     self.renderer.render(scene, reflCam);
 
+    self._oceanFog.far = prevFogFar;
     scene.fog = prevFog;
     self.renderer.setClearColor(s.clearColor, prevClearAlpha);
     self.renderer.toneMapping = prevToneMapping;
     self.renderer.setRenderTarget(prevRT);
     if(skyMesh){ skyMesh.visible = skyWasVisible; }
-    if(curtain){ curtain.visible = curtainWasVisible; }
   };
 
   //Render the fully-lit above-water scene from the submerged camera into the
@@ -1283,7 +1310,31 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     light.target.position.set(snapX, waterSurfaceY - 100.0, snapZ);
     light.target.updateMatrixWorld();
     light.angle = Math.atan(self.causticLightConeRadius / self.causticLightHeight);
-    light.intensity = self.causticLightIntensity * self.causticsStrength * underwaterFactor;
+    //Drive both the colour and the brightness from the scene directional light
+    //so caustics warm and dim through golden hour and fade to nothing once the
+    //sun is below the horizon. cosZenith is the same geometric "how much sun
+    //overhead" factor the underwater inscatter uses (water-shader.glsl :1391),
+    //so caustic falloff at low sun matches the rest of the underwater
+    //lighting stack. Without cosZenith, a sun at intensity 1 at 1° above the
+    //horizon would still cast full-strength caustics.
+    let sunMult = 1.0;
+    if(self.brightestDirectionalLight){
+      const ml = self.brightestDirectionalLight;
+      light.color.copy(ml.color);
+      self._uwSunDirScratch.set(ml.position.x, ml.position.y, ml.position.z)
+        .sub(ml.target.position).negate().normalize();
+      const cosZ = Math.max(-self._uwSunDirScratch.y, 0.0);
+      sunMult = ml.intensity * cosZ;
+    }
+    //Compensate for the projector's inverse-square decay so the surface-level
+    //caustic brightness is invariant to `causticLightHeight`. A fragment at
+    //y = surfaceY sits `causticLightHeight` metres from the projector; that
+    //gives a `1 / height^decay` attenuation we cancel here. Fragments deeper
+    //than the surface still attenuate (their distance to the projector is
+    //larger), producing the depth falloff this decay was added for.
+    const decayCompensation = Math.pow(self.causticLightHeight, light.decay);
+    light.intensity = self.causticLightIntensity * self.causticsStrength
+                    * underwaterFactor * sunMult * decayCompensation;
   };
 
   //Fill A-Starry-Sky's reserved underwater-fog slot. Its `advanced` atmospheric
@@ -1300,7 +1351,16 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     const vertToken = '//$$OCEAN_SHADER_SHADER_VERTEX_RESERVATION$$';
     const fragChunk = THREE.ShaderChunk.fog_fragment;
     const vertChunk = THREE.ShaderChunk.fog_vertex;
+    const parsFragChunk = THREE.ShaderChunk.fog_pars_fragment;
     if(!fragChunk || fragChunk.indexOf(fragToken) === -1) return;  //not patched yet
+
+    //fog_pars_fragment runs at file scope (uniform declarations). Append our
+    //sun-direction uniform there — fog_fragment runs inside main() so uniform
+    //declarations don't work in our reservation slot. Idempotent guard so
+    //repeated calls don't accumulate copies.
+    if(parsFragChunk && parsFragChunk.indexOf('uniform vec3 uwSunDir;') === -1){
+      THREE.ShaderChunk.fog_pars_fragment = parsFragChunk + '\nuniform vec3 uwSunDir;\n';
+    }
 
     //Per-channel extinction (1/m) baked into the chunk as a const vec3 —
     //THREE.Fog only smuggles one Color + two floats, so for per-channel
@@ -1318,15 +1378,21 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     const extLit = 'vec3(' + ex.toFixed(6) + ',' + ey.toFixed(6) + ',' + ez.toFixed(6) + ')';
 
     //Smuggle convention for the ocean branch (fogFar > 0 && fogNear < 0):
-    //  fogColor.rgb = inscatter murk colour (linear) — the colour distant
-    //                 underwater fragments fade TO. Computed CPU-side per frame
-    //                 from `waterAlbedo · downwelling · depthDarken`, the same
-    //                 stack the water shader's applyUnderwaterFog uses for the
-    //                 ceiling, so seabed murk and ceiling murk agree.
+    //  fogColor.rgb = isotropic-baseline inscatter at depth 0, per channel.
+    //                 `waterAlbedo · (E_sun + E_sky) / (4π)` — i.e., the
+    //                 surface equilibrium AS IF both sun and sky had isotropic
+    //                 phase. The chunk re-weights below to push sun through
+    //                 Henyey-Greenstein while keeping sky isotropic.
     //  -fogNear     = water surface Y (the waterline) — selects ocean branch
     //                 AND drives the world-Y gate.
-    //  fogFar       = unused by this chunk (any value > 0 picks the ocean
-    //                 branch in concert with negative fogNear).
+    //  fogFar       = signed sun-fraction smuggle:
+    //                   sign(fogFar)  → linear-vs-sRGB target encoding
+    //                                   (+ = sRGB canvas, − = linear RT).
+    //                   |fogFar|      → fraction of E_sun in (E_sun + E_sky),
+    //                                   used to split HG-vs-isotropic terms.
+    //  uwSunDir     = world-space direction sunlight TRAVELS (away from sun),
+    //                 matching water-shader.glsl's brightestDirectionalLightDirection.
+    //                 Declared in fog_pars_fragment via the append above.
     //Per-channel extinction is the const `uwExt` baked in above.
     //WORLD-Y GATE: only fragments BELOW the waterline are fogged. Above-water
     //geometry (the lighthouse etc.) seen from a submerged camera must NOT be
@@ -1335,49 +1401,90 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //advanced-fog varying; the vertex slot below fills it for the ocean branch.
     const fragGLSL = [
       'const vec3 uwExt = ' + extLit + ';',
+      //Phase-function constants. g=0.85 is the canonical clean-ocean
+      //Henyey-Greenstein asymmetry parameter (Mobley 1994). The 1/(4π) is
+      //the steradian-normalisation baked into HG.
+      'const float UW_HG_G = 0.85;',
+      'const float UW_INV_4PI = 0.07957747154;',
+      //Isotropic discount on the underwater path length: effective water metres
+      //per metre of geometric path. A direction-symmetric stand-in for the
+      //water-shader refraction path's vertical+horizontal heuristic (water-
+      //shader.glsl :1383), which can't be ported verbatim — that formula was
+      //tuned for an above-water camera where verticalDepth IS the water column
+      //above the seabed. Underwater the camera is in the medium and all
+      //directions traverse water equally, so the asymmetric form left horizontal
+      //sightlines unfogged at the camera's own depth band. Tune 0.3 between
+      //~0.2 (airy) and ~0.6 (closer to physical) to taste.
+      'const float UW_DIST_SCALE = 0.3;',
       'float uwSurfaceY = -fogNear;',
       'if(vFogWorldPosition.y < uwSurfaceY){',
-      //fogColor is the UN-darkened surface inscatter equilibrium (the murk
-      //colour you'd see at infinite distance through water at depth 0). The
-      //per-fragment depthDarken below makes deep fragments fade toward a
-      //dimmer murk than shallow ones — the "abyss darkens" effect that a
-      //single CPU-computed camera-depth murk can't produce.
-      '  vec3 uwMurkSurface = fogColor;',
-      //Path-length depends on which render we are in:
+      //Path length is the geometric distance through water, uniformly
+      //discounted by UW_DIST_SCALE so visibility carries into the moderate
+      //range instead of crushing to a teal asymptote at every direction.
+      //Full geometric distance is physically correct but visually too
+      //aggressive against the surface-level inscatter; the discount
+      //preserves "more fog with more water" while letting rocks read at the
+      //distances the player actually looks at. Direction-isotropic so a
+      //surface at the camera's own depth fogs the same as one above or
+      //below it at the same range.
       //  * MAIN render (real camera below water): the whole camera→frag ray
-      //    is in water → uwDist = full length.
-      //  * MIRROR render (mirror camera above water, by the standard
-      //    reflection-trick the mirror straight-line equals the real bounce
-      //    path): the camera→bounce segment is ALREADY fogged by the water
-      //    shader's applyUnderwaterFog (it uses cam→ceiling-fragment = real
-      //    cam→bounce distance). Fogging the full mirror straight-line here
-      //    would double-count that segment. Use ONLY the post-bounce length
-      //    = (1 - t)·totalLen where t is the water-plane crossing parameter.
-      //    For an object TOUCHING the surface (lighthouse base at y = waterY)
-      //    the crossing is at the frag itself → second leg = 0 → chunk adds
-      //    no fog → the reflection of that touching point fogs identically
-      //    to the surrounding water surface, which is the correct optics at
-      //    the water-meets-land boundary.
+      //    is in water → discount the full geometric length.
+      //  * MIRROR render (mirror camera above water, by the reflection-trick
+      //    equivalence the mirror straight-line = the real bounce path): the
+      //    camera→bounce segment is ALREADY fogged by the water shader's
+      //    applyUnderwaterFog at the ceiling, so this branch only fogs the
+      //    post-bounce leg = (1 - t)·totalLen, then applies the same discount.
+      //    For an object TOUCHING the surface t collapses to the frag →
+      //    second leg = 0 → no extra fog, so the reflection of that touching
+      //    point matches the surrounding water surface.
       '  vec3 dir = vFogWorldPosition - cameraPosition;',
       '  float totalLen = length(dir);',
       '  float uwDist;',
       '  if(cameraPosition.y < uwSurfaceY){',
-      '    uwDist = totalLen;',
+      '    uwDist = totalLen * UW_DIST_SCALE;',
       '  } else {',
       '    float t = (uwSurfaceY - cameraPosition.y) / dir.y;',
       '    t = clamp(t, 0.0, 1.0);',
-      '    uwDist = (1.0 - t) * totalLen;',
+      '    uwDist = (1.0 - t) * totalLen * UW_DIST_SCALE;',
       '  }',
       '  vec3 uwT = exp(-uwExt * uwDist);',
+      //HG sun phase. cosθ = dot(incident, scattered) = dot(uwSunDir, -viewDir)
+      //= -dot(uwSunDir, viewDir). cosθ ≈ +1 when the camera looks TOWARD the
+      //sun (forward scatter, peaked HG); ≈ -1 looking down-sun.
+      '  vec3 uwViewDir = (totalLen > 1e-4) ? (dir / totalLen) : vec3(0.0, -1.0, 0.0);',
+      '  float uwCosTheta = -dot(uwViewDir, uwSunDir);',
+      '  float uwG2 = UW_HG_G * UW_HG_G;',
+      '  float uwHG = (1.0 - uwG2) * UW_INV_4PI',
+      '             / pow(max(1.0 + uwG2 - 2.0 * UW_HG_G * uwCosTheta, 1e-4), 1.5);',
+      //Angular factor that turns the isotropic-baseline fogColor into the
+      //actual physical inscatter. Derivation: real = α·(E_sun·p_HG + E_sky·p_sky),
+      //baseline (full iso) = α·(E_sun + E_sky)·(1/4π). With sunFrac = E_sun/(E_sun+E_sky):
+      //  real / baseline = 4π · sunFrac · p_HG + 2 · (1 - sunFrac)
+      //  (sky uses p_sky = 1/(2π) for a uniform upper-hemisphere with isotropic
+      //   phase; 4π·1/(2π) = 2). |fogFar| carries sunFrac, sign carries
+      //   linear/sRGB.
+      '  float uwSunFrac = abs(fogFar);',
+      '  bool uwInputIsSRGB = fogFar > 0.0;',
+      '  float uwAngFactor = 4.0 * 3.14159265359 * uwSunFrac * uwHG',
+      '                    + 2.0 * (1.0 - uwSunFrac);',
+      '  vec3 uwMurkSurface = fogColor * uwAngFactor;',
       //Per-fragment depthDarken: downwelling at the fragment's depth has been
       //attenuated by `exp(-uwExt * fragDepth)` from the surface. The murk at
       //THAT depth is therefore dimmer. Without this, all fragments fog
       //toward the same global murk and looking-down-the-abyss never darkens.
       '  float fragDepth = max(0.0, uwSurfaceY - vFogWorldPosition.y);',
       '  vec3 uwMurk = uwMurkSurface * exp(-uwExt * fragDepth);',
-      '  vec3 uwLinear = fogsRGBToLinear(vec4(gl_FragColor.rgb, 1.0)).rgb;',
+      //fog_fragment runs AFTER colorspace_fragment, so gl_FragColor here is
+      //already in the target encoding — the sRGB roundtrip is needed ONLY
+      //for the sRGB-encoded path. Doing it unconditionally pushed the
+      //reflection RT's linear data through a spurious pow(·, 2.4) cycle.
+      '  vec3 uwLinear = uwInputIsSRGB',
+      '    ? fogsRGBToLinear(vec4(gl_FragColor.rgb, 1.0)).rgb',
+      '    : gl_FragColor.rgb;',
       '  uwLinear = uwLinear * uwT + uwMurk * (vec3(1.0) - uwT);',
-      '  gl_FragColor.rgb = fogLinearTosRGB(vec4(uwLinear, 1.0)).rgb;',
+      '  gl_FragColor.rgb = uwInputIsSRGB',
+      '    ? fogLinearTosRGB(vec4(uwLinear, 1.0)).rgb',
+      '    : uwLinear;',
       '}'
     ].join('\n');
     const vertGLSL = [
@@ -1391,17 +1498,74 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     }
     self._fogChunkInjected = true;
 
+    //Sun-direction broadcast for the chunk's HG sun phase. The chunk's GLSL
+    //references `uwSunDir` (world-space, points FROM sun TO scene = the
+    //direction sunlight travels — same convention as water-shader.glsl's
+    //brightestDirectionalLightDirection). Three's UniformsUtils.clone deep-
+    //clones Vector3, so we can't share a single reference via UniformsLib;
+    //instead we patch the per-shader-lib uniforms map so NEWLY-built fog
+    //materials get the slot, then per-frame traverse the scene and write
+    //the current sun direction into each material's local Vector3 clone.
+    //_sharedUwSunDir is the source-of-truth that the tick updates; the
+    //traversal copies it onto every fog material.
+    if(!self._sharedUwSunDir){
+      self._sharedUwSunDir = new THREE.Vector3(0.0, -1.0, 0.0);
+    }
+    const shaderLibNames = ['basic', 'lambert', 'phong', 'standard', 'physical', 'toon'];
+    for(let i = 0; i < shaderLibNames.length; ++i){
+      const lib = THREE.ShaderLib && THREE.ShaderLib[shaderLibNames[i]];
+      if(lib && lib.uniforms && !lib.uniforms.uwSunDir){
+        lib.uniforms.uwSunDir = { value: new THREE.Vector3(0.0, -1.0, 0.0) };
+      }
+    }
+    if(THREE.UniformsLib && THREE.UniformsLib.fog && !THREE.UniformsLib.fog.uwSunDir){
+      THREE.UniformsLib.fog.uwSunDir = { value: new THREE.Vector3(0.0, -1.0, 0.0) };
+    }
+
     //Rebuild fog-enabled materials already compiled against the old chunk
-    //(one-time startup hitch).
+    //(one-time startup hitch). At the same time, attach the uwSunDir uniform
+    //to any material that lacks it — covers existing scenes that were built
+    //before the ShaderLib patch above could take effect.
     if(self.scene){
       self.scene.traverse(function(obj){
         if(!obj.isMesh || !obj.material) return;
         const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
         for(let i = 0; i < mats.length; ++i){
-          if(mats[i] && mats[i].fog){ mats[i].needsUpdate = true; }
+          const m = mats[i];
+          if(!m || !m.fog) continue;
+          if(m.uniforms && !m.uniforms.uwSunDir){
+            m.uniforms.uwSunDir = { value: new THREE.Vector3(0.0, -1.0, 0.0) };
+          }
+          m.needsUpdate = true;
         }
       });
     }
+  };
+
+  //Per-frame broadcast of the current sun direction to every fog-receiving
+  //material's `uwSunDir` uniform. Source is `self._sharedUwSunDir`, which the
+  //tick updates once after probing the directional-light list. Cost is one
+  //scene traversal per frame; the per-material write is a Vector3.copy().
+  this._broadcastUwSunDir = function(){
+    if(!self.scene || !self._sharedUwSunDir) return;
+    const src = self._sharedUwSunDir;
+    self.scene.traverse(function(obj){
+      if(!obj.isMesh || !obj.material) return;
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      for(let i = 0; i < mats.length; ++i){
+        const m = mats[i];
+        if(!m || !m.fog || !m.uniforms) continue;
+        //Self-heal: a material added to the scene AFTER the chunk-injection
+        //traversal won't have the slot yet. Attach it on first sight and
+        //flag needsUpdate so the next render rebuilds the program with the
+        //appended fog_pars_fragment uniform declaration in scope.
+        if(!m.uniforms.uwSunDir){
+          m.uniforms.uwSunDir = { value: new THREE.Vector3() };
+          m.needsUpdate = true;
+        }
+        m.uniforms.uwSunDir.value.copy(src);
+      }
+    });
   };
 
   this.tick = function(time){
@@ -1625,6 +1789,10 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         waterSurfaceY += buf[1] * whm;   //.y (green) channel = vertical displacement
       }
     }
+    //Stash this frame's displaced surface height for next frame's reflection
+    //mirror plane (the RT renders BEFORE this probe runs, so there's a
+    //one-frame lag — same pattern as `_wasUnderwater`).
+    self._lastWaterSurfaceY = waterSurfaceY;
     const cameraSubmersion = self.globalCameraPosition.y - waterSurfaceY;
     //Smooth 0→1 underwater blend over a 1 m band centred on the surface so
     //bobbing through the waterline crossfades the fog instead of snapping.
@@ -1688,24 +1856,39 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           const yI = yL.intensity;
           ambX = yL.color.r * yI; ambY = yL.color.g * yI; ambZ = yL.color.b * yI;
         }
-        const invPi = 0.31830988618;
+        const inv4Pi = 0.07957747154;
         const camDepth = Math.max(0.0, -cameraSubmersion);
         const dDarkenX = Math.exp(-extX * camDepth);
         const dDarkenY = Math.exp(-extY * camDepth);
         const dDarkenZ = Math.exp(-extZ * camDepth);
-        const b = self.underwaterFogBrightness;
-        //_uwMurkScratch is the UN-darkened SURFACE inscatter equilibrium
-        //(murk at depth 0). The chunk darkens it per-fragment by fragDepth
-        //so the seabed fades to dimmer murk the deeper it sits — the
-        //"abyss darkens" effect. CameraDepth darkening is applied at the
-        //downstream consumers (curtain.color / underwaterFogColor) that
-        //need a fully-darkened visible colour, not the chunk.
+        //_uwMurkScratch is the COMBINED isotropic inscatter baseline at depth 0:
+        //`waterAlbedo · (E_sun + E_sky) / (4π)` — the "if both sun and sky had
+        //isotropic phase" version of the medium's single-scatter equilibrium.
+        //The chunk then re-weights this on the GPU per fragment by an angular
+        //factor that pushes E_sun's contribution through Henyey-Greenstein
+        //(forward-scatter halo around the sun) and keeps E_sky isotropic. The
+        //fraction-of-inscatter-from-sun (`sunFrac`) is smuggled via |fogFar|
+        //so the chunk can do the split without a separate sky uniform. See
+        //water-shader.glsl's `underwaterInscatterSurface` for the analogue
+        //the body-colour blend uses.
+        const sumX = dirX + ambX, sumY = dirY + ambY, sumZ = dirZ + ambZ;
         self._uwMurkScratch.set(
-          albX * (dirX + ambX) * invPi * b,
-          albY * (dirY + ambY) * invPi * b,
-          albZ * (dirZ + ambZ) * invPi * b
+          albX * sumX * inv4Pi,
+          albY * sumY * inv4Pi,
+          albZ * sumZ * inv4Pi
         );
         self._oceanFog.color.setRGB(self._uwMurkScratch.x, self._uwMurkScratch.y, self._uwMurkScratch.z);
+        //Sun fraction (scalar). Computed on luminance-weighted total so it
+        //collapses sensibly when E_sky dominates at night and E_sun at noon.
+        //Clamped to (0, 1) and to a [0.01, 0.99] band so |fogFar| is always
+        //a positive non-zero number — the chunk uses sign(fogFar) as the
+        //linear/sRGB flag and abs(fogFar) as the fraction.
+        const sumLuminance = sumX + sumY + sumZ;
+        const sunLuminance = dirX + dirY + dirZ;
+        let sunFrac = sumLuminance > 1e-6 ? (sunLuminance / sumLuminance) : 0.0;
+        if(sunFrac < 0.01) sunFrac = 0.01;
+        if(sunFrac > 0.99) sunFrac = 0.99;
+        self._uwSunFrac = sunFrac;  //also stashed for _renderUnderwaterReflection
         //Cache the camera-depth-darkened murk for curtain/background — those
         //consumers sample a single colour, can't run per-fragment darkening.
         if(!self._uwMurkCamDepthScratch){
@@ -1717,7 +1900,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           self._uwMurkScratch.z * dDarkenZ
         );
         self._oceanFog.near = -Math.max(waterSurfaceY, 0.001);   //< 0 selects ocean branch; |near| = waterline
-        self._oceanFog.far = 1.0;                                //> 0 to pick ocean branch; chunk reads const uwExt
+        self._oceanFog.far = sunFrac;                            //> 0: sRGB-encoded output + |fogFar| = sunFrac
         self.scene.fog = self._oceanFog;
       } else if(self.scene.fog === self._oceanFog){
         //Surfaced (or chunk not injected): hand scene.fog back to A-Starry-Sky.
@@ -1848,6 +2031,14 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         directionalLightDirection.set(mainLight.position.x, mainLight.position.y, mainLight.position.z);
         directionalLightDirection.sub(mainLight.target.position).negate().normalize();
         uniformsRef.brightestDirectionalLightDirection.value.set(directionalLightDirection.x, directionalLightDirection.y, directionalLightDirection.z);
+        //Stash the same direction for the chunk's HG sun phase. Convention
+        //matches water-shader.glsl's `brightestDirectionalLightDirection`:
+        //points FROM the sun TO the scene (the direction sunlight travels).
+        //directionalLightDirection above is `(target - position).normalize()`
+        //= same convention, so copy directly.
+        if(self._sharedUwSunDir){
+          self._sharedUwSunDir.copy(directionalLightDirection);
+        }
 
         //Wire sun shadow-map receive. Enabled only when the main light actually
         //casts and its shadow map has been rendered at least once (shadow.map
@@ -2026,5 +2217,10 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         self._shadowHelpers[i].update();
       }
     }
+
+    //Broadcast the current sun direction to every fog-receiving material so
+    //the underwater chunk's HG sun phase reads the right vector. Cheap scene
+    //traversal; the per-material write is a Vector3.copy().
+    self._broadcastUwSunDir();
   };
 }
