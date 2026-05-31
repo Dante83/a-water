@@ -71,6 +71,10 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.causticsStrength = data.caustics_strength;
   this.reflectionScale = data.reflection_scale;
   this.reflectionDistanceFalloff = data.reflection_distance_falloff;
+  //SSR march step cap (live-tunable via window.setSsrMaxSteps). 48 = original
+  //full reach. The SSR ray-march is the dominant per-pixel water cost; lower
+  //trades reflection reach for fill rate, 0 = sky-only (bottleneck A/B test).
+  this.ssrMaxSteps = 48;
   this.fresnelDistanceRoughness = data.fresnel_distance_roughness;
   this.surfaceRoughness = 0.08;
   this.foamEnabled = data.foam_enabled;
@@ -395,7 +399,121 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this._capturedSkyFog = undefined;            //A-Starry-Sky's fog, tracked while above water
   this._fogChunkInjected = false;
   this._uwMurkScratch = new THREE.Vector3();   //per-frame murk scratch (avoid alloc)
+  //Camera-depth-darkened murk for the curtain/background. Normally recomputed
+  //each frame in the underwater inscatter block — but that block is gated on
+  //`_fogChunkInjected`, which is false when a-starry-sky (whose reserved fog
+  //slot we hook) is absent. Seed a default dark-teal so the curtain/background
+  //consumers never dereference undefined and underwater degrades gracefully
+  //instead of crashing when running without a-starry-sky.
+  this._uwMurkCamDepthScratch = new THREE.Vector3(0.02, 0.06, 0.08);
   this._uwSunDirScratch = new THREE.Vector3();
+  //Ambient (downwelling) hemisphere light discovered standalone — fills the
+  //inscatter ambient term that normally comes from a-starry-sky's y-axis
+  //hemispherical. Found in the per-frame light scan; null until then.
+  this._fallbackHemiLight = null;
+
+  //── Sky provider resolution + standalone underwater-fog scaffold ──────────
+  //The underwater seabed/curtain murk (see _injectUnderwaterFogChunk) hooks a
+  //reservation slot in THREE.ShaderChunk.fog_* that a-starry-sky installs as
+  //part of its atmospheric-perspective fog. Without a-starry-sky that slot
+  //never exists, so the seabed renders un-fogged (flat). Detection by sniffing
+  //for the token can't tell "a-starry-sky not initialised yet" from "no
+  //a-starry-sky at all" (both look token-absent at frame 1), so we resolve the
+  //provider up front off the DOM/markup instead.
+  this._resolveSkyProvider = function(){
+    const declared = (self.data && typeof self.data.sky_provider === 'string')
+      ? self.data.sky_provider.toLowerCase() : 'auto';
+    if(declared === 'standalone' || declared === 'a-starry-sky'){
+      return declared;
+    }
+    //auto: the element's PRESENCE in the page is a deterministic signal
+    //available before a-starry-sky has initialised — unlike its patched
+    //ShaderChunk, which only appears a tick or two later.
+    const hasGlobal = (typeof StarrySky !== 'undefined');
+    const hasElement = (typeof document !== 'undefined') &&
+      !!document.querySelector('a-starry-sky');
+    return (hasGlobal || hasElement) ? 'a-starry-sky' : 'standalone';
+  };
+
+  //Install a minimal, self-contained fog scaffold into THREE.ShaderChunk.fog_*
+  //carrying the SAME reservation tokens a-starry-sky leaves, so the existing
+  //_injectUnderwaterFogChunk() can fill them unchanged. We deliberately do NOT
+  //replicate a-starry-sky's atmosphere here — only the plumbing the ocean
+  //branch needs: the vFogWorldPosition varying, the sRGB helpers the chunk
+  //calls, and a stock linear-fog else-branch for fogNear >= 0. Idempotent and
+  //skipped entirely when a-starry-sky owns the slot.
+  this._installStandaloneFogScaffold = function(){
+    if(self._standaloneFogScaffoldInstalled) return;
+    const fragToken = '//$$OCEAN_SHADER_SHADER_FRAGMENT_RESERVATION$$';
+    const vertToken = '//$$OCEAN_SHADER_SHADER_VERTEX_RESERVATION$$';
+    //If something already provided the token (a-starry-sky raced us), don't
+    //clobber it — let _injectUnderwaterFogChunk fill whatever is there.
+    if(THREE.ShaderChunk.fog_fragment &&
+       THREE.ShaderChunk.fog_fragment.indexOf(fragToken) !== -1){
+      self._standaloneFogScaffoldInstalled = true;
+      return;
+    }
+    THREE.ShaderChunk.fog_pars_vertex = [
+      '#ifdef USE_FOG',
+      '  varying float vFogDepth;',
+      '  varying vec3 vFogWorldPosition;',
+      '#endif'
+    ].join('\n');
+    THREE.ShaderChunk.fog_vertex = [
+      '#ifdef USE_FOG',
+      '  ' + vertToken,
+      '#endif'
+    ].join('\n');
+    THREE.ShaderChunk.fog_pars_fragment = [
+      '#ifdef USE_FOG',
+      '  uniform vec3 fogColor;',
+      '  varying float vFogDepth;',
+      '  varying vec3 vFogWorldPosition;',
+      '  #ifdef FOG_EXP2',
+      '    uniform float fogDensity;',
+      '  #else',
+      '    uniform float fogNear;',
+      '    uniform float fogFar;',
+      '  #endif',
+      //sRGB <-> linear helpers the injected ocean branch calls by name. Match
+      //a-starry-sky's signatures (vec4 in / vec4 out) so the chunk GLSL is
+      //identical on both paths.
+      '  vec4 fogsRGBToLinear(vec4 c){',
+      '    return vec4(mix(c.rgb / 12.92, pow((c.rgb + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c.rgb)), c.a);',
+      '  }',
+      '  vec4 fogLinearTosRGB(vec4 c){',
+      '    return vec4(mix(c.rgb * 12.92, 1.055 * pow(c.rgb, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c.rgb)), c.a);',
+      '  }',
+      '#endif'
+    ].join('\n');
+    THREE.ShaderChunk.fog_fragment = [
+      '#ifdef USE_FOG',
+      '  #ifdef FOG_EXP2',
+      '    float fogFactor = 1.0 - exp(-fogDensity * fogDensity * vFogDepth * vFogDepth);',
+      '    gl_FragColor.rgb = mix(gl_FragColor.rgb, fogColor, fogFactor);',
+      '  #else',
+      //fogNear < 0 selects the ocean branch (same convention as the a-starry-sky
+      //path). The reservation token is filled by _injectUnderwaterFogChunk; the
+      //else is plain linear fog so any above-water fog still works standalone.
+      '    if(fogNear < 0.0){',
+      '      ' + fragToken,
+      '    } else {',
+      '      float fogFactor = smoothstep(fogNear, fogFar, vFogDepth);',
+      '      gl_FragColor.rgb = mix(gl_FragColor.rgb, fogColor, fogFactor);',
+      '    }',
+      '  #endif',
+      '#endif'
+    ].join('\n');
+    self._standaloneFogScaffoldInstalled = true;
+  };
+
+  //Resolve now (constructor time, before any material compiles) and, if we own
+  //the sky, lay down the scaffold so the curtain/seabed fog materials built
+  //below pick it up on first compile.
+  this._skyProvider = this._resolveSkyProvider();
+  if(this._skyProvider === 'standalone'){
+    this._installStandaloneFogScaffold();
+  }
 
   //G-buffer override material — one per source material, built on demand.
   //Writes linear albedo (baseColor × decoded albedoMap) + geometric world-
@@ -487,7 +605,11 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   };
 
   //Set up depth camera pointing down for edge foam
-  this.foamRenderTarget = new THREE.WebGLRenderTarget(4096, 4096, {
+  //1024² RGBA FloatType = ~16 MB (was 4096² ≈ 268 MB). The ortho still covers
+  //4096 m, so texel size is 4 m/texel (was 1 m). Shore-foam band is 0.5–4 m
+  //(water-shader: shoreFade), so the breaker line quantises to ~4 m steps —
+  //bump back to 2048² (2 m/texel, ~67 MB) if the shoreline reads stair-stepped.
+  this.foamRenderTarget = new THREE.WebGLRenderTarget(1024, 1024, {
     type: THREE.FloatType
   });
   this.foamCameraHeight = data.foam_camera_height;
@@ -908,6 +1030,11 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.setReflectionScale = function(v){
     self.reflectionScale = +v;
   };
+  //SSR march step cap. 48 = full reach (default); try 32/16/8 to find the
+  //fps/quality knee; 0 skips the march entirely (sky-only) as a bottleneck A/B.
+  this.setSsrMaxSteps = function(v){
+    self.ssrMaxSteps = +v;
+  };
   this.setReflectionDistanceFalloff = function(v){
     self.reflectionDistanceFalloff = +v;
   };
@@ -1047,6 +1174,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     window.setOceanEvsmMinVariance = this.setOceanEvsmMinVariance;
     window.setOceanEvsmLightBleedReduction = this.setOceanEvsmLightBleedReduction;
     window.setReflectionScale = this.setReflectionScale;
+    window.setSsrMaxSteps = this.setSsrMaxSteps;
     window.setReflectionDistanceFalloff = this.setReflectionDistanceFalloff;
     window.setFresnelDistanceRoughness = this.setFresnelDistanceRoughness;
     window.setSurfaceRoughness = this.setSurfaceRoughness;
@@ -1595,12 +1723,90 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   };
 
   this.tick = function(time){
+    const _tickT0 = performance.now();   //CPU wall-clock at tick entry (perf probe)
+    //── TEMP GPU TIMER ─────────────────────────────────────────────────────
+    //Per-pass GPU milliseconds via EXT_disjoint_timer_query_webgl2 to locate
+    //the fragment/fill bottleneck (window-shrink→60 fps proved we're GPU-bound,
+    //and the wireframe test was contaminated by line-rasterisation cost). Each
+    //label keeps one in-flight TIME_ELAPSED query; results land a few frames
+    //later (async) so a label is re-sampled only once its prior query resolves.
+    //TIME_ELAPSED queries cannot nest/overlap — every pass below is sequential,
+    //so that holds. Remove alongside the TEMP PERF PROBE once diagnosed.
+    if(self._gpuTimer === undefined){
+      const gl = self.renderer.getContext();
+      const ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+      //'query' = real GPU timings (Chrome). 'off' = no per-pass GPU timing
+      //(Firefox): we deliberately do NOT use gl.finish() — it serialises CPU↔GPU
+      //and tanks fps, masking the very bottleneck we're hunting. In 'off' mode we
+      //fall back to a pure-CPU tick timer (see read-out) to test CPU-bound vs not.
+      const mode = ext ? 'query' : 'off';
+      if(!ext){
+        console.warn('[perf] timer-query unavailable (Firefox) — GPU per-pass timing off. ' +
+          'Measuring CPU tick time instead. Use the Firefox Profiler for a full CPU flame graph.');
+      }
+      self._gpuTimer = { gl: gl, ext: ext, mode: mode, passes: {}, lastLog: time, lastTick: time, frameMs: 0 };
+      //CPU sub-timers (EMA-smoothed ms) to break down where our ~5.5 ms tick goes.
+      self._cpuSub = {};
+      self._cpuAdd = function(key, ms){
+        self._cpuSub[key] = (self._cpuSub[key] === undefined) ? ms : (self._cpuSub[key] * 0.9 + ms * 0.1);
+      };
+      self._gpuBegin = function(label){
+        const t = self._gpuTimer;
+        if(t.mode === 'off') return null;   //no finish, no query — pure no-op
+        let p = t.passes[label]; if(!p){ p = t.passes[label] = { pending:null, lastMs:0, start:0 }; }
+        if(p.pending) return null;          //prior query still resolving — skip
+        const q = t.gl.createQuery();
+        t.gl.beginQuery(t.ext.TIME_ELAPSED_EXT, q);
+        return { p:p, q:q, cpu:false };
+      };
+      self._gpuEnd = function(h){
+        if(!h) return;
+        const t = self._gpuTimer;
+        if(h.cpu){
+          t.gl.finish();
+          h.p.lastMs = performance.now() - h.p.start;
+          return;
+        }
+        t.gl.endQuery(t.ext.TIME_ELAPSED_EXT);
+        h.p.pending = h.q;
+      };
+      self._gpuPoll = function(){
+        const t = self._gpuTimer; if(!t.ext) return;   //finish mode resolves inline
+        const disjoint = t.gl.getParameter(t.ext.GPU_DISJOINT_EXT);
+        for(const label in t.passes){
+          const p = t.passes[label];
+          if(!p.pending) continue;
+          if(t.gl.getQueryParameter(p.pending, t.gl.QUERY_RESULT_AVAILABLE)){
+            if(!disjoint){ p.lastMs = t.gl.getQueryParameter(p.pending, t.gl.QUERY_RESULT) / 1e6; }
+            t.gl.deleteQuery(p.pending);
+            p.pending = null;
+          }
+        }
+      };
+    }
+    //Frame period from the inter-tick wall clock (A-Frame's frame timestamp).
+    self._gpuTimer.frameMs = time - self._gpuTimer.lastTick;
+    self._gpuTimer.lastTick = time;
+    //Close the "mainRender" span opened at the END of the previous tick — it
+    //brackets A-Frame's main scene render (water ubershader + CSM shadow maps +
+    //compositor). Query-mode only; in finish mode a finish across the rAF idle
+    //gap would absorb vsync wait, so "main" is estimated from frame − offscreen.
+    self._gpuEnd(self._mainRenderSpan);
+    self._mainRenderSpan = null;
+    //── END TEMP GPU TIMER ─────────────────────────────────────────────────
+
     //Update directional lights list (collect all in scene)
     if(self.directionalLights.length === 0){
       for(let i = 0, numItems = self.scene.children.length; i < numItems; ++i){
         let child = self.scene.children[i];
         if(child.type === 'DirectionalLight'){
           self.directionalLights.push(child);
+        }
+        //Standalone ambient source for the underwater inscatter term — used
+        //only when there's no a-starry-sky skyDirector to supply the y-axis
+        //hemispherical. First HemisphereLight found wins.
+        else if(!self._fallbackHemiLight && child.type === 'HemisphereLight'){
+          self._fallbackHemiLight = child;
         }
       }
     }
@@ -1677,6 +1883,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //we swap each visible non-ocean mesh's material to a cached G-buffer
     //variant that reads that source material's own .color / .map. Restored
     //immediately after render.
+    const _tRefr0 = performance.now();
     self._swappedMeshes.length = 0;
     const curtainSkip = self.underwaterCurtainMesh;
     scene.traverse(function(obj){
@@ -1694,11 +1901,33 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       obj.material = gBuf;
     });
 
+    self._cpuAdd('refrSwap', performance.now() - _tRefr0);   //material-swap traverse
+
+    const _tRefrRender = performance.now();
+    const _hRefr = self._gpuBegin('refraction');
     const currentRefractionRT = self.renderer.getRenderTarget();
+    //Suppress the scene backdrop for this pass. A-Frame's `background` component
+    //drives BOTH scene.background AND the renderer clear color/alpha, and THREE
+    //clears a render target to those — filling the G-buffer's open-water texels
+    //with the sky colour at alpha 1 ("geometry present"), so the water samples
+    //the backdrop as its refraction and blends invisibly into it. We force the
+    //clear to alpha 0 ("no seabed → fall back to body colour") AND null the
+    //background so no background quad re-opaques it. Both restored right after,
+    //so the MAIN render still shows the sky. (Mirrors the transmission pass.)
+    const _savedBackground = scene.background;
+    scene.background = null;
+    self._refrClearColor = self._refrClearColor || new THREE.Color();
+    self.renderer.getClearColor(self._refrClearColor);
+    const _savedClearAlpha = self.renderer.getClearAlpha();
+    self.renderer.setClearColor(0x000000, 0.0);
     self.renderer.setRenderTarget(self.refractionGBufferTarget);
     self.renderer.clear();
     self.renderer.render(scene, sceneCamera);
     self.renderer.setRenderTarget(currentRefractionRT);
+    self.renderer.setClearColor(self._refrClearColor, _savedClearAlpha);
+    scene.background = _savedBackground;
+    self._gpuEnd(_hRefr);
+    self._cpuAdd('refrRender', performance.now() - _tRefrRender);  //CPU draw-call submission
 
     for(let i = 0, n = self._swappedMeshes.length; i < n; ++i){
       const entry = self._swappedMeshes[i];
@@ -1712,14 +1941,17 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //submersion state — the probe runs later in tick, and one frame of lag on
     //the in/out transition is invisible. Pure overhead above water, so skip.
     if(self._wasUnderwater){
+      const _hRefl = self._gpuBegin('reflection');
       self._renderUnderwaterReflection(scene, sceneCamera);
+      self._gpuEnd(_hRefl);
+      const _hTrans = self._gpuBegin('transmission');
       self._renderAboveWaterTransmission(scene, sceneCamera);
+      self._gpuEnd(_hTrans);
     }
 
     //Update our sea foam camera - use position pass material to output world-space height data
-    self.scene.overrideMaterial = self.positionPassMaterial;
-    self.renderer.setClearAlpha(0.0);
     const currentRenderTarget = self.renderer.getRenderTarget();
+    const prevClearAlpha = renderer.getClearAlpha();
     //Snap foam/exclusion camera XZ to texel-sized increments so the orthos
     //sample the same world-space points across frames — otherwise the foam
     //and exclusion atlases shift by a fractional pixel each frame as the
@@ -1727,7 +1959,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //shader must then sample using these SNAPPED positions (uploaded as
     //foamCameraXZ / exclusionCameraXZ uniforms), not raw cameraPosition.
     //Same pattern as the per-cell clipmap snap at the top of this tick.
-    const foamTexel = (2.0 * 2048.0) / self.foamRenderTarget.width; // 4096m / 4096px = 1m
+    const foamTexel = (2.0 * 2048.0) / self.foamRenderTarget.width; // 4096m / 1024px = 4m
     const exclTexel = (2.0 *  250.0) / self.exclusionRenderTarget.width; // 500m / 1024px ≈ 0.488m
     const foamSnapX = Math.round(self.globalCameraPosition.x / foamTexel) * foamTexel;
     const foamSnapZ = Math.round(self.globalCameraPosition.z / foamTexel) * foamTexel;
@@ -1738,30 +1970,72 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     self._foamCameraXZ.set(foamSnapX, foamSnapZ);
     self._exclusionCameraXZ.set(exclSnapX, exclSnapZ);
 
-    self.foamCamera.position.set(foamSnapX, this.heightOffset + self.foamCameraHeight, foamSnapZ);
-    self.foamCamera.lookAt(foamSnapX, this.heightOffset - 1.0, foamSnapZ);
-    self.foamCamera.updateProjectionMatrix();
-    self.renderer.setRenderTarget(self.foamRenderTarget);
-    const clearAlpha = renderer.getClearAlpha();
-    self.renderer.clear();
-    self.renderer.render(scene, self.foamCamera);
-    this.foamRenderMap = self.foamRenderTarget.texture;
-    self.renderer.setRenderTarget(null);
-    //Update our exclusion camera - also needs position pass material for height data
-    self.exclusionCamera.position.set(exclSnapX, this.heightOffset + self.foamCameraHeight, exclSnapZ);
-    self.exclusionCamera.lookAt(exclSnapX, this.heightOffset - 1.0, exclSnapZ);
-    self.exclusionCamera.updateProjectionMatrix();
-    self.renderer.setRenderTarget(self.exclusionRenderTarget);
-    self.renderer.clear();
-    self.scene.overrideMaterial = self.positionPassMaterial;
-    self.renderer.render(scene, self.exclusionCamera);
-    this.exclusionMap = self.exclusionRenderTarget.texture;
-    self.renderer.setRenderTarget(null);
+    //── Snap-gated re-render ───────────────────────────────────────────────
+    //The foam/exclusion orthos capture STATIC terrain height from a fixed
+    //top-down view, so their output is INVARIANT to camera yaw — it only
+    //changes when the snapped origin translates. Re-rendering identical
+    //FloatType atlases every frame during pure rotation was the bulk of the
+    //per-frame GPU cost behind the "freezes when I rotate" symptom. We now
+    //re-render only on a snap delta, with a periodic forced refresh so slow-
+    //moving dynamic occluders (a drifting boat etc.) still imprint their
+    //height within FOAM_MAX_STALE_FRAMES.
+    const FOAM_MAX_STALE_FRAMES = 30;   // ~0.5 s @60 fps safety refresh
+    self._foamStaleFrames = (self._foamStaleFrames || 0) + 1;
+    const forceFoamRefresh = !self._foamEverRendered || self._foamStaleFrames >= FOAM_MAX_STALE_FRAMES;
+    const renderFoam = forceFoamRefresh || self._lastFoamSnapX !== foamSnapX || self._lastFoamSnapZ !== foamSnapZ;
+    const renderExcl = forceFoamRefresh || self._lastExclSnapX !== exclSnapX || self._lastExclSnapZ !== exclSnapZ;
 
-    //Restore our original materials
-    self.scene.overrideMaterial = null;
-    self.renderer.setRenderTarget(currentRenderTarget);
-    self.renderer.setClearAlpha(clearAlpha);
+    if(renderFoam || renderExcl){
+      self.scene.overrideMaterial = self.positionPassMaterial;
+      self.renderer.setClearAlpha(0.0);
+      //Null the backdrop for these top-down position passes too. With a
+      //scene.background set, THREE's background quad stamps alpha 1 into the
+      //foam/exclusion atlases over open water — and the exclusion .a channel is
+      //the water shader's discard gate (worldPosition.y > discardHeight). That
+      //made every open-water fragment within exclusion range discard (near water
+      //gone, horizon — outside range — survived). Restored at the block's end.
+      var _foamSavedBackground = scene.background;
+      scene.background = null;
+      if(renderFoam){
+        self.foamCamera.position.set(foamSnapX, this.heightOffset + self.foamCameraHeight, foamSnapZ);
+        self.foamCamera.lookAt(foamSnapX, this.heightOffset - 1.0, foamSnapZ);
+        self.foamCamera.updateProjectionMatrix();
+        const _hFoam = self._gpuBegin('foamPass');
+        self.renderer.setRenderTarget(self.foamRenderTarget);
+        self.renderer.clear();
+        self.renderer.render(scene, self.foamCamera);
+        self.renderer.setRenderTarget(null);
+        self._gpuEnd(_hFoam);
+        self._lastFoamSnapX = foamSnapX;
+        self._lastFoamSnapZ = foamSnapZ;
+      }
+      if(renderExcl){
+        self.exclusionCamera.position.set(exclSnapX, this.heightOffset + self.foamCameraHeight, exclSnapZ);
+        self.exclusionCamera.lookAt(exclSnapX, this.heightOffset - 1.0, exclSnapZ);
+        self.exclusionCamera.updateProjectionMatrix();
+        const _hExcl = self._gpuBegin('exclusion');
+        self.renderer.setRenderTarget(self.exclusionRenderTarget);
+        self.renderer.clear();
+        self.renderer.render(scene, self.exclusionCamera);
+        self.renderer.setRenderTarget(null);
+        self._gpuEnd(_hExcl);
+        self._lastExclSnapX = exclSnapX;
+        self._lastExclSnapZ = exclSnapZ;
+      }
+      //Restore our original materials + clear state (captured BEFORE zeroing —
+      //the old code captured alpha AFTER setClearAlpha(0) and so "restored" 0,
+      //leaking a 0 clear alpha into the rest of the frame).
+      self.scene.overrideMaterial = null;
+      self.renderer.setRenderTarget(currentRenderTarget);
+      self.renderer.setClearAlpha(prevClearAlpha);
+      scene.background = _foamSavedBackground;
+      self._foamStaleFrames = 0;
+      self._foamEverRendered = true;
+    }
+    //foamRenderMap / exclusionMap always point at their (persistent) textures,
+    //whether or not we re-rendered this frame.
+    this.foamRenderMap = self.foamRenderTarget.texture;
+    this.exclusionMap = self.exclusionRenderTarget.texture;
 
     //Show all of our ocean grid elements again
     for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
@@ -1769,7 +2043,11 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     }
 
     //Update each of our ocean grid height maps
+    const _tFft = performance.now();
+    const _hFft = self._gpuBegin('fft');
     self.oceanHeightBandLibrary.tick(time);
+    self._gpuEnd(_hFft);
+    self._cpuAdd('fft', performance.now() - _tFft);   //~324 renderer.render calls = CPU submit cost
     //Push wind velocity + the four live-tunable broadband foam knobs to
     //the composer BEFORE its tick so this frame's foam accumulator uses
     //the current settings. windVelocity is the same wind vector that
@@ -1781,24 +2059,74 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     bbU.foamStrength.value      = self.foamStrength;
     bbU.advectionScale.value    = self.foamAdvectionScale;
 
+    const _tFoamC = performance.now();
+    const _hFoamC = self._gpuBegin('foamComposer');
     self.oceanHeightComposer.tick();
+    self._gpuEnd(_hFoamC);
+    self._cpuAdd('foamComposer', performance.now() - _tFoamC);
 
     //── Underwater submersion probe ────────────────────────────────────────
-    //Read back a single FFT-displacement texel directly above/below the
-    //camera so the CPU knows the wave-displaced water level — the only way
-    //to drive the air/water swap without it popping under passing crests.
-    //Cascades 0 (4096 m) + 1 (1024 m) carry the dominant swell; the small
-    //cascades add at most decimetre chop and are skipped so this stays at
-    //two 1-px readbacks. Each readback is a GPU sync — acceptable for 1 px,
-    //and a candidate for async PBO readback if it ever shows on a profile.
+    //Read two 1-px FFT-displacement texels above/below the camera so the CPU
+    //knows the wave-displaced water level — the only way to drive the air/water
+    //swap without it popping under passing crests. Cascades 0 (4096 m) + 1
+    //(1024 m) carry the dominant swell; the small cascades add at most
+    //decimetre chop and are skipped.
+    //
+    //The read is ASYNC (PBO fence) when the renderer supports it. A synchronous
+    //readRenderTargetPixels drains the ENTIRE GPU command queue before it
+    //returns, and that stall grows with GPU load — which is exactly why
+    //rotating (more geometry in flight) made the frame freeze. The async result
+    //lands a few frames later; the surface moves at swell speed and the swap is
+    //smoothed over a 1 m band, so the lag is invisible (we already accept a
+    //one-frame lag for the reflection mirror plane below). A fresh pair of reads
+    //is issued only once the previous pair resolves (_probePending), and the
+    //last resolved height is reused every frame in between. Falls back to the
+    //blocking read on renderers without readRenderTargetPixelsAsync.
     const composer = self.oceanHeightComposer;
-    let waterSurfaceY = self.heightOffset;
-    if(composer && composer.cascadeDisplacementTextures && composer.cascadeDisplacementTextures[1]){
+    const probeReady = composer && composer.cascadeDisplacementTextures && composer.cascadeDisplacementTextures[1];
+    const canAsyncProbe = typeof self.renderer.readRenderTargetPixelsAsync === 'function';
+    if(self._probeWaterSurfaceY === undefined){ self._probeWaterSurfaceY = self.heightOffset; }
+    let waterSurfaceY = self._probeWaterSurfaceY;
+
+    if(probeReady && canAsyncProbe){
+      if(!self._probePending){
+        self._probePending = true;
+        self._probeBuf0 = self._probeBuf0 || new Float32Array(4);
+        self._probeBuf1 = self._probeBuf1 || new Float32Array(4);
+        const bufs = [self._probeBuf0, self._probeBuf1];
+        const res = composer.baseTextureWidth;
+        const offsets = self.oceanMaterial.uniforms.cascadeSpatialOffsets.value;
+        const whm = composer.waveHeightMultiplier;
+        const promises = [];
+        for(let c = 0; c < 2; ++c){
+          const patch = composer._cascadePatchSizes[c];
+          let u = (self.globalCameraPosition.x + offsets[c].x) / patch;
+          let v = (self.globalCameraPosition.z + offsets[c].y) / patch;
+          u -= Math.floor(u);
+          v -= Math.floor(v);
+          const px = Math.min(res - 1, Math.max(0, Math.floor(u * res)));
+          const py = Math.min(res - 1, Math.max(0, Math.floor(v * res)));
+          const tex = composer.cascadeDisplacementTextures[c];
+          const rt = (composer.cascadeDisplacementTargetsA[c].texture === tex)
+                   ? composer.cascadeDisplacementTargetsA[c]
+                   : composer.cascadeDisplacementTargetsB[c];
+          promises.push(self.renderer.readRenderTargetPixelsAsync(rt, px, py, 1, 1, bufs[c]));
+        }
+        Promise.all(promises).then(function(){
+          //.y (green) channel = vertical displacement, summed over both cascades.
+          self._probeWaterSurfaceY = self.heightOffset + (self._probeBuf0[1] + self._probeBuf1[1]) * whm;
+          self._probePending = false;
+        }).catch(function(){ self._probePending = false; });
+      }
+      //waterSurfaceY already holds the last resolved value (set above).
+    } else if(probeReady){
+      //Blocking fallback (original behaviour) — renderers without async readback.
       self._surfaceProbeBuffer = self._surfaceProbeBuffer || new Float32Array(4);
       const buf = self._surfaceProbeBuffer;
       const res = composer.baseTextureWidth;
       const offsets = self.oceanMaterial.uniforms.cascadeSpatialOffsets.value;
       const whm = composer.waveHeightMultiplier;
+      waterSurfaceY = self.heightOffset;
       for(let c = 0; c < 2; ++c){
         const patch = composer._cascadePatchSizes[c];
         let u = (self.globalCameraPosition.x + offsets[c].x) / patch;
@@ -1814,6 +2142,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         self.renderer.readRenderTargetPixels(rt, px, py, 1, 1, buf);
         waterSurfaceY += buf[1] * whm;   //.y (green) channel = vertical displacement
       }
+      self._probeWaterSurfaceY = waterSurfaceY;
     }
     //Stash this frame's displaced surface height for next frame's reflection
     //mirror plane (the RT renders BEFORE this probe runs, so there's a
@@ -1833,7 +2162,9 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     }
 
     //Underwater caustic projector — caustics on the directly-viewed seabed.
+    const _tCaustic = performance.now();
     self._updateCausticProjection(time, waterSurfaceY, underwaterFactor);
+    self._cpuAdd('caustic', performance.now() - _tCaustic);
 
     //Underwater fog. Fill A-Starry-Sky's reserved fog-shader slot once it is
     //available, then swap scene.fog between A-Starry-Sky's atmospheric fog
@@ -1875,12 +2206,19 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           const k = i * trans * cosZ;
           dirX = ml.color.r * k; dirY = ml.color.g * k; dirZ = ml.color.b * k;
         }
-        //skyAmbient from a-starry-sky y-hemispherical (matches water-shader.glsl :1596)
+        //skyAmbient from a-starry-sky y-hemispherical (matches water-shader.glsl :1596).
+        //Standalone (no skyDirector): fall back to a scene HemisphereLight's sky
+        //colour as the downwelling ambient so the murk still lifts off the
+        //direct-light-only sun term.
         let ambX = 0.0, ambY = 0.0, ambZ = 0.0;
         if(self.skyDirector && self.skyDirector.lightingManager){
           const yL = self.skyDirector.lightingManager.yAxisHemisphericalLight;
           const yI = yL.intensity;
           ambX = yL.color.r * yI; ambY = yL.color.g * yI; ambZ = yL.color.b * yI;
+        } else if(self._fallbackHemiLight){
+          const hL = self._fallbackHemiLight;
+          const hI = hL.intensity;
+          ambX = hL.color.r * hI; ambY = hL.color.g * hI; ambZ = hL.color.b * hI;
         }
         const inv4Pi = 0.07957747154;
         const camDepth = Math.max(0.0, -cameraSubmersion);
@@ -2037,6 +2375,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       uniformsRef.causticIntensityMultiplier.value = self.causticsStrength;
       uniformsRef.reflectionScale.value = self.reflectionScale;
       uniformsRef.reflectionDistanceFalloff.value = self.reflectionDistanceFalloff;
+      uniformsRef.ssrMaxSteps.value = self.ssrMaxSteps;
       uniformsRef.fresnelDistanceRoughness.value = self.fresnelDistanceRoughness;
       uniformsRef.surfaceRoughness.value = self.surfaceRoughness;
       uniformsRef.foamStartLevel.value = self.foamStart;
@@ -2205,7 +2544,9 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       directionalLightDirection.set(mainLight.position.x, mainLight.position.y, mainLight.position.z);
       directionalLightDirection.sub(mainLight.target.position).negate().normalize();
       const firstMeshUniforms = oceanPatchGeometryInstances[oceanGridInstanceKeys[0]].material.uniforms;
+      const _tCsm = performance.now();
       self.oceanShadowCSM.render(self.renderer, sceneCamera, directionalLightDirection, firstMeshUniforms);
+      self._cpuAdd('csm', performance.now() - _tCsm);
 
       //Sun below horizon → CSM.render() early-exits; disable the sampler so
       //the water shader doesn't read stale maps.
@@ -2247,6 +2588,91 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //Broadcast the current sun direction to every fog-receiving material so
     //the underwater chunk's HG sun phase reads the right vector. Cheap scene
     //traversal; the per-material write is a Vector3.copy().
+    const _tUwSun = performance.now();
     self._broadcastUwSunDir();
+    self._cpuAdd('uwSunTraverse', performance.now() - _tUwSun);
+
+    //── TEMP PERF PROBE ────────────────────────────────────────────────────
+    //Diagnostic for the "world gets sluggish over time / freezes on yaw" bug.
+    //Logs renderer.info resource counts, the G-buffer material cache size,
+    //scene mesh count, and JS heap once a minute, with a delta vs. the first
+    //sample so monotonic growth (a leak) is obvious. Remove once diagnosed.
+    if(self._probeLastLog === undefined){
+      self._probeLastLog = time;        //ms clock from A-Frame tick
+      self._probeBase = null;
+      self._probeN = 0;
+    }
+    if(time - self._probeLastLog >= 60000){
+      self._probeLastLog = time;
+      const info = self.renderer.info;
+      let meshCount = 0;
+      let nodeCount = 0;   //ALL Object3D nodes — grows even when isMesh count is flat
+      self.scene.traverse(function(o){ nodeCount++; if(o.isMesh){ meshCount++; } });
+      const snap = {
+        geometries:  info.memory.geometries,
+        textures:    info.memory.textures,
+        programs:    info.programs ? info.programs.length : -1,
+        drawCalls:   info.render.calls,
+        gBufCache:   self._gBufferMaterialCache ? self._gBufferMaterialCache.size : -1,
+        sceneNodes:  nodeCount,
+        sceneMeshes: meshCount,
+        heapMB:      (performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : -1)
+      };
+      if(!self._probeBase){ self._probeBase = JSON.parse(JSON.stringify(snap)); }
+      const delta = {};
+      for(const k in snap){ delta[k] = snap[k] - self._probeBase[k]; }
+      console.log('[waterProbe ' + (self._probeN++) + 'min]', snap, 'delta=', delta);
+    }
+    //── END TEMP PERF PROBE ────────────────────────────────────────────────
+
+    //── TEMP GPU TIMER read-out ────────────────────────────────────────────
+    //Resolve any finished queries, log every 2 s, then open the mainRender
+    //span that brackets A-Frame's upcoming scene render (closed at the top of
+    //the next tick). Remove with the TEMP PERF PROBE once diagnosed.
+    self._gpuPoll();
+    //CPU time spent INSIDE this component's tick (pure JS wall-clock, no
+    //gl.finish). EMA-smoothed. The decisive CPU-bound signal:
+    //  tickCPU ≈ frame   → our per-frame JS work is the bottleneck (look in here)
+    //  tickCPU ≪ frame   → cost is in A-Frame's render submission, other systems,
+    //                       or the GPU — record a Firefox Profiler trace next.
+    const _tickCpu = performance.now() - _tickT0;
+    self._tickCpuEMA = (self._tickCpuEMA === undefined) ? _tickCpu
+                                                        : (self._tickCpuEMA * 0.9 + _tickCpu * 0.1);
+    if(time - self._gpuTimer.lastLog >= 2000){
+      self._gpuTimer.lastLog = time;
+      if(self._gpuTimer.mode === 'query'){
+        const P = self._gpuTimer.passes;
+        const ms = function(k){ return P[k] ? P[k].lastMs.toFixed(2) : 'n/a'; };
+        const offscreen = ['refraction','reflection','transmission','foamPass','exclusion','fft','foamComposer']
+          .reduce(function(s,k){ return s + (P[k] ? P[k].lastMs : 0); }, 0);
+        console.log('[gpuMs] main=' + ms('mainRender') + '  refraction=' + ms('refraction') +
+          '  fft=' + ms('fft') + '  foamComposer=' + ms('foamComposer') +
+          '  reflection=' + ms('reflection') + '  transmission=' + ms('transmission') +
+          '  foamPass=' + ms('foamPass') + '  exclusion=' + ms('exclusion') +
+          '  | offscreen-sum=' + offscreen.toFixed(2) +
+          '  tickCPU=' + self._tickCpuEMA.toFixed(2) +
+          '  frame=' + self._gpuTimer.frameMs.toFixed(2) + ' ms');
+      } else {
+        const fps = (1000 / Math.max(1, self._gpuTimer.frameMs)).toFixed(0);
+        const S = self._cpuSub;
+        const val = function(k){ return S[k] !== undefined ? S[k] : 0; };
+        const sub = function(k){ return val(k).toFixed(2); };
+        //"other" = everything in tick we have NOT bracketed (shadow CSM, caustic
+        //projection, clipmap reposition, underwater fog, reflection, etc.). If
+        //THIS is what grows over time, the leak lives in an uninstrumented section.
+        const other = self._tickCpuEMA - (val('fft') + val('refrSwap') + val('refrRender') +
+          val('foamComposer') + val('uwSunTraverse') + val('caustic') + val('csm'));
+        console.log('[perf] tickCPU=' + self._tickCpuEMA.toFixed(2) + ' ms' +
+          '   frame=' + self._gpuTimer.frameMs.toFixed(2) + ' ms (' + fps + ' fps)' +
+          '\n        breakdown: fft=' + sub('fft') + '  refrRender=' + sub('refrRender') +
+          '  csm=' + sub('csm') + '  caustic=' + sub('caustic') +
+          '  foamComposer=' + sub('foamComposer') +
+          '  refrSwap=' + sub('refrSwap') + '  uwSunTraverse=' + sub('uwSunTraverse') +
+          '  other=' + other.toFixed(2) + ' ms');
+      }
+    }
+    //Open the mainRender span across A-Frame's upcoming scene render (query mode only).
+    self._mainRenderSpan = self._gpuTimer.mode === 'query' ? self._gpuBegin('mainRender') : null;
+    //── END TEMP GPU TIMER read-out ────────────────────────────────────────
   };
 }

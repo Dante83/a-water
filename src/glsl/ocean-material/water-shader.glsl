@@ -46,6 +46,11 @@ uniform mat4 inverseProjectionMatrix;
 uniform mat4 inverseViewMatrix;
 uniform mat4 ssrViewMatrix;
 uniform mat4 ssrProjectionMatrix;
+//Live-tunable cap on the SSR march step count. The 48-step ray-march (plus its
+//8-step binary refine and 4 silhouette taps) is the dominant per-pixel water
+//cost; this lets us trade reflection reach for fill rate, or set 0 to skip the
+//march entirely (sky-only) as an A/B bottleneck check.
+uniform float ssrMaxSteps;
 uniform sampler2D meteringSurveyTexture;
 
 #if($caustics_enabled)
@@ -548,7 +553,11 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 reflectDir){
   vec3 curPos = viewPos;
   vec3 prevPos = viewPos;
 
+  //48 is the hard loop ceiling (GLSL ES requires a constant bound); ssrMaxSteps
+  //caps the live count below it. Hitting the cap with no crossing falls through
+  //to the sky return below — identical to running out of steps naturally.
   for(int i = 0; i < 48; i++){
+    if(float(i) >= ssrMaxSteps){ break; }
     prevPos = curPos;
     curPos  += viewReflect * stepLen;
     stepLen *= 1.2;

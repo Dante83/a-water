@@ -62,6 +62,18 @@ AFRAME.registerComponent('ocean-state', {
     'fresnel_distance_roughness': {type: 'number', default: 0.85},
     'atmospheric_perspective_enabled': {type: 'bool', default: true},
     'atmospheric_perspective_distance_scale': {type: 'number', default: 1.0},
+    //Who provides the sky/atmosphere this ocean integrates with.
+    //  'auto'         — detect at runtime: if an <a-starry-sky> element is in
+    //                   the page (or the StarrySky global is registered) use it,
+    //                   otherwise run standalone. The default; "drop it in and
+    //                   it figures itself out."
+    //  'a-starry-sky' — force the a-starry-sky path (wait for its reserved fog
+    //                   slot; never install our own).
+    //  'standalone'   — force standalone even if a-starry-sky is on the page:
+    //                   install our own minimal underwater-fog scaffold so the
+    //                   seabed murk works off a plain DirectionalLight +
+    //                   HemisphereLight, no atmosphere dependency.
+    'sky_provider': {type: 'string', default: 'auto'},
     'jonswap_gamma': {type: 'number', default: 3.3},
     'jonswap_fetch': {type: 'number', default: 100000.0},
     //Directional spreading turbulence: 0 = pure cos²(θ) (waves aligned to wind),
