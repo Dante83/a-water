@@ -110,7 +110,7 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
       //only samples C2+C3 alpha so their over-firing is harmless. The earlier "constant
       //sparkle at 0.9" note pre-dates the C0+C1 → C2+C3 alpha-read swap; sparkle came
       //from chop content in those alpha reads, not from the bias level itself.
-      foamBias: {type: 'f', value: 0.85},
+      foamBias: {type: 'f', value: 0.6},   //2026-05-31: 0.85→0.6. Now read directly per-cascade by the water shader (Acerola/Crest design). At 0.85 foam fired wherever J<0.85 (gentle compression = most of a choppy surface) and the saturating slow-decay accumulator pinned the whole ocean white. 0.6 ≈ Crest's _WaveFoamCoverage 0.55 — fires only on genuine folds. Lower further (→0.5) if still too much; raise if too sparse.
       //Pre-multiplied by Math.exp(-decay_rate). At 60 fps, decay_rate r gives
       //half-life ≈ ln(2)/r frames ≈ ln(2)/(60·r) seconds. Common values:
       //   r=0.015 → ~0.8 s half-life (Crest default, looked too snappy here)
@@ -118,7 +118,7 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
       //   r=0.002 → ~5.8 s half-life (long-lived foam, risks saturation)
       //Mutate at runtime via _packMaterial.uniforms.foamDecayMultiplier.value
       //= Math.exp(-rate).
-      foamDecayMultiplier: {type: 'f', value: Math.exp(-0.005)},
+      foamDecayMultiplier: {type: 'f', value: Math.exp(-0.015)},   //2026-05-31: -0.005→-0.015 (~2.3s→~0.8s half-life, Crest-like). Foam lingered/accumulated once read per-cascade; faster decay = shorter FADING trail behind the crest. Push to -0.03 (~0.4s) if still too persistent; relax toward -0.008 if trails vanish too fast.
       //Per-frame foam contribution at a firing pixel. With foamBias 0.85 and a
       //moderate per-cascade fold (biasedJacobian ~0.1-0.2), 0.08 left the alpha
       //plateauing around 0.4-0.6 on open-water crests — not enough to bring
@@ -234,6 +234,7 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
     'uniform float deltaTime;',
     'uniform float foamFadeRate;',
     'uniform float foamCoverage;',
+    'uniform float foamSharpness;',
     'uniform float foamStrength;',
     'uniform float chop;',
     'uniform float waveHeightMultiplier;',
@@ -243,11 +244,14 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
     //world-aligned with REPEAT wrap so worldXZ % foamTileSize maps to
     //the same texel from any matching world position.
     '  vec2 worldXZ = uv * foamTileSize;',
-    //1 m offset for forward-difference broadband derivatives. Larger than
-    //a single cascade texel (smallest C4 texel = 16/512 = 0.03 m) so the
-    //difference is robust against single-texel noise but still small
-    //enough to resolve crest-scale slope variation.
-    '  const float worldEps = 1.0;',
+    //Forward-difference step for the broadband derivatives. 0.4 m: still ~13×
+    //the smallest cascade texel (C4 = 16/512 = 0.03 m) so it's well clear of
+    //single-texel noise, but small enough to RESOLVE the sharp small-wave
+    //(C4, 2-8 m) folds that produce real whitecaps. At 1.0 m a 2-4 m wave's
+    //fold got smeared flat, so the Jacobian barely dipped off 1.0 even on
+    //genuine crests — that crushed foam's dynamic range and forced an absurd
+    //coverage (>1, saturating everywhere = uniform haze) to make foam show.
+    '  const float worldEps = 0.4;',
     '  vec2 worldXZ_dx = worldXZ + vec2(worldEps, 0.0);',
     '  vec2 worldXZ_dz = worldXZ + vec2(0.0, worldEps);',
     //Summed displacement at center + +X + +Z. .xz is the horizontal
@@ -277,16 +281,20 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
     //Flat water → J = 1, compressed crest → J < 1, fold → J < 0.
     '  float jacobian = (1.0 - chop * dDxz_dx.x) * (1.0 - chop * dDxz_dz.y)',
     '                 - chop * chop * dDxz_dz.x * dDxz_dx.y;',
-    //Crest's saturate(_WaveFoamCoverage - det) but using our Jacobian
-    //convention where flat water is J=1. foamCoverage is the threshold
-    //below which foam fires. Squared so mild folds (flanks of a crest)
-    //contribute geometrically less than steep folds (the peak itself) —
-    //e.g. a 0.05 fold → 0.0025, a 0.30 fold → 0.09 (36× harder firing).
-    //This narrows the fire zone to the crest peak instead of painting
-    //foam across the whole "almost-folded" flank region. Tried cubed once
-    //(216× sharpness) — read as too sparse, the squared shape is the keeper.
-    '  float rawGen  = clamp(foamCoverage - jacobian, 0.0, 1.0);',
-    '  float foamGen = rawGen * rawGen;',
+    //Crest's saturate(_WaveFoamCoverage - det), 1:1 with UpdateFoam.compute:102
+    //except our Jacobian convention is flat-water J=1 (Crest's det is ~0). Purely
+    //LINEAR like Crest — no power-curve sharpener. Crest stays smudge-free on a
+    //linear gen via its fast fade rate (0.8); the earlier squared/cubed curves
+    //here were compensating for our 3.2×-too-slow fade (0.25). Fixed at the fade
+    //rate, so the curve no longer needs to do that job.
+    //foamSharpness is a GAIN on the fold band. In gentle seas J barely dips
+    //below 1.0 (fold signal lives in a tiny band like [0.95,1.0]), so plain
+    //clamp(coverage-J) is all-or-nothing: no coverage value is selective.
+    //The gain stretches that narrow band across the full [0,1] foam range, so
+    //coverage = where foam starts on a crest (just under 1.0) and sharpness =
+    //how fast it ramps. Lets foam track crest steepness instead of firing on
+    //rare phase-aligned folds ("foam on one crest for no reason").
+    '  float foamGen = clamp((foamCoverage - jacobian) * foamSharpness, 0.0, 1.0);',
     //Wind-advected previous foam read. Surface drift is a small fraction
     //of wind speed (~3-5% for wind-driven seas, Stokes drift + air-water
     //coupling). advectionScale is exposed so the user can tune.
@@ -331,24 +339,24 @@ AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
       //chase the wave crests downwind.
       advectionScale: {type: 'f', value: 0.04},
       deltaTime: {type: 'f', value: 1.0 / 60.0},
-      //Per-second decay. Lower than Crest's 0.8 (~1.25 s e-fold) because
-      //our broadband Jacobian fires less frequently than Crest's per-LOD
-      //(we sum only C2+C3+C4 vs Crest's accumulated-below-LOD tex). At 0.3
-      //e-folding time is ~3.3 s so each foam patch has time to register
-      //visually before dissipating, even with sparse firing events.
-      foamFadeRate: {type: 'f', value: 0.3},
+      //Per-second decay. Crest's _foamFadeRate default (0.8, ~1.25 s e-fold).
+      //This is THE knob that keeps a linear gen smudge-free: a fast fade stops
+      //weak broad folds from accumulating into lingering "dirty smear" blobs.
+      //Our old 0.25-0.3 was 3.2× too slow, which is why the field needed a
+      //power-curve sharpener to fake crispness — no longer needed at 0.8.
+      foamFadeRate: {type: 'f', value: 0.8},
       //Crest _WaveFoamCoverage equivalent. Foam fires when broadband
-      //Jacobian < foamCoverage. Crest defaults to 0.55. 0.85 was too
-      //generous (lit up most of the surface), 0.72 caught only the
-      //hardest breakers. 0.80 catches more mid-strength crests — every
-      //visible peak gets at least a foam streak — without the over-foam
-      //blanket that 0.85 produced.
-      foamCoverage: {type: 'f', value: 0.80},
-      //Crest _WaveFoamStrength equivalent. Multiplier on per-frame add.
-      //Back to Crest's 1.0 — pushing both coverage and strength at once
-      //was double-counting brightness. With foamFadeRate=0.3 and the
-      //widened coverage, this gives steady-state foam ~0.5-1.0 at firing
-      //pixels which is the right working range for the smoothstep mix.
+      //Jacobian < foamCoverage. Crest's 0.55 is in its det convention (flat
+      //water det≈0); ours is the full surface Jacobian (flat water J=1), so
+      //the literal value differs. With foamSharpness as the gain, set this just
+      //UNDER 1.0 (~0.97) = where foam starts as J dips off flat water. Onset
+      //knob; pair with foamSharpness below.
+      foamCoverage: {type: 'f', value: 0.97},
+      //Gain on the fold band (see foamGen). Higher = foam ramps up faster as a
+      //crest steepens. ~8 maps a J∈[0.85,0.97] fold band onto full foam; raise
+      //if foam stays too sparse, lower if it floods. Main selectivity knob now.
+      foamSharpness: {type: 'f', value: 8.0},
+      //Crest _WaveFoamStrength default (1.0). Multiplier on the per-frame add.
       foamStrength: {type: 'f', value: 1.0},
       chop: {type: 'f', value: data.chop || 1.0},
       waveHeightMultiplier: {type: 'f', value: data.wave_scale_multiple || 1.5}

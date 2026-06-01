@@ -84,6 +84,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //material every frame so DevTools / external scripts can hot-tune them
   //(setFoamCoverage etc. console hooks are valid follow-ups).
   this.foamCoverage = data.foam_coverage;
+  this.foamSharpness = data.foam_sharpness;
   this.foamFadeRate = data.foam_fade_rate;
   this.foamStrength = data.foam_strength;
   this.foamAdvectionScale = data.foam_advection_scale;
@@ -1723,77 +1724,6 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   };
 
   this.tick = function(time){
-    const _tickT0 = performance.now();   //CPU wall-clock at tick entry (perf probe)
-    //── TEMP GPU TIMER ─────────────────────────────────────────────────────
-    //Per-pass GPU milliseconds via EXT_disjoint_timer_query_webgl2 to locate
-    //the fragment/fill bottleneck (window-shrink→60 fps proved we're GPU-bound,
-    //and the wireframe test was contaminated by line-rasterisation cost). Each
-    //label keeps one in-flight TIME_ELAPSED query; results land a few frames
-    //later (async) so a label is re-sampled only once its prior query resolves.
-    //TIME_ELAPSED queries cannot nest/overlap — every pass below is sequential,
-    //so that holds. Remove alongside the TEMP PERF PROBE once diagnosed.
-    if(self._gpuTimer === undefined){
-      const gl = self.renderer.getContext();
-      const ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
-      //'query' = real GPU timings (Chrome). 'off' = no per-pass GPU timing
-      //(Firefox): we deliberately do NOT use gl.finish() — it serialises CPU↔GPU
-      //and tanks fps, masking the very bottleneck we're hunting. In 'off' mode we
-      //fall back to a pure-CPU tick timer (see read-out) to test CPU-bound vs not.
-      const mode = ext ? 'query' : 'off';
-      if(!ext){
-        console.warn('[perf] timer-query unavailable (Firefox) — GPU per-pass timing off. ' +
-          'Measuring CPU tick time instead. Use the Firefox Profiler for a full CPU flame graph.');
-      }
-      self._gpuTimer = { gl: gl, ext: ext, mode: mode, passes: {}, lastLog: time, lastTick: time, frameMs: 0 };
-      //CPU sub-timers (EMA-smoothed ms) to break down where our ~5.5 ms tick goes.
-      self._cpuSub = {};
-      self._cpuAdd = function(key, ms){
-        self._cpuSub[key] = (self._cpuSub[key] === undefined) ? ms : (self._cpuSub[key] * 0.9 + ms * 0.1);
-      };
-      self._gpuBegin = function(label){
-        const t = self._gpuTimer;
-        if(t.mode === 'off') return null;   //no finish, no query — pure no-op
-        let p = t.passes[label]; if(!p){ p = t.passes[label] = { pending:null, lastMs:0, start:0 }; }
-        if(p.pending) return null;          //prior query still resolving — skip
-        const q = t.gl.createQuery();
-        t.gl.beginQuery(t.ext.TIME_ELAPSED_EXT, q);
-        return { p:p, q:q, cpu:false };
-      };
-      self._gpuEnd = function(h){
-        if(!h) return;
-        const t = self._gpuTimer;
-        if(h.cpu){
-          t.gl.finish();
-          h.p.lastMs = performance.now() - h.p.start;
-          return;
-        }
-        t.gl.endQuery(t.ext.TIME_ELAPSED_EXT);
-        h.p.pending = h.q;
-      };
-      self._gpuPoll = function(){
-        const t = self._gpuTimer; if(!t.ext) return;   //finish mode resolves inline
-        const disjoint = t.gl.getParameter(t.ext.GPU_DISJOINT_EXT);
-        for(const label in t.passes){
-          const p = t.passes[label];
-          if(!p.pending) continue;
-          if(t.gl.getQueryParameter(p.pending, t.gl.QUERY_RESULT_AVAILABLE)){
-            if(!disjoint){ p.lastMs = t.gl.getQueryParameter(p.pending, t.gl.QUERY_RESULT) / 1e6; }
-            t.gl.deleteQuery(p.pending);
-            p.pending = null;
-          }
-        }
-      };
-    }
-    //Frame period from the inter-tick wall clock (A-Frame's frame timestamp).
-    self._gpuTimer.frameMs = time - self._gpuTimer.lastTick;
-    self._gpuTimer.lastTick = time;
-    //Close the "mainRender" span opened at the END of the previous tick — it
-    //brackets A-Frame's main scene render (water ubershader + CSM shadow maps +
-    //compositor). Query-mode only; in finish mode a finish across the rAF idle
-    //gap would absorb vsync wait, so "main" is estimated from frame − offscreen.
-    self._gpuEnd(self._mainRenderSpan);
-    self._mainRenderSpan = null;
-    //── END TEMP GPU TIMER ─────────────────────────────────────────────────
 
     //Update directional lights list (collect all in scene)
     if(self.directionalLights.length === 0){
@@ -1883,7 +1813,6 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //we swap each visible non-ocean mesh's material to a cached G-buffer
     //variant that reads that source material's own .color / .map. Restored
     //immediately after render.
-    const _tRefr0 = performance.now();
     self._swappedMeshes.length = 0;
     const curtainSkip = self.underwaterCurtainMesh;
     scene.traverse(function(obj){
@@ -1901,10 +1830,6 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       obj.material = gBuf;
     });
 
-    self._cpuAdd('refrSwap', performance.now() - _tRefr0);   //material-swap traverse
-
-    const _tRefrRender = performance.now();
-    const _hRefr = self._gpuBegin('refraction');
     const currentRefractionRT = self.renderer.getRenderTarget();
     //Suppress the scene backdrop for this pass. A-Frame's `background` component
     //drives BOTH scene.background AND the renderer clear color/alpha, and THREE
@@ -1926,8 +1851,6 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     self.renderer.setRenderTarget(currentRefractionRT);
     self.renderer.setClearColor(self._refrClearColor, _savedClearAlpha);
     scene.background = _savedBackground;
-    self._gpuEnd(_hRefr);
-    self._cpuAdd('refrRender', performance.now() - _tRefrRender);  //CPU draw-call submission
 
     for(let i = 0, n = self._swappedMeshes.length; i < n; ++i){
       const entry = self._swappedMeshes[i];
@@ -1941,12 +1864,8 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //submersion state — the probe runs later in tick, and one frame of lag on
     //the in/out transition is invisible. Pure overhead above water, so skip.
     if(self._wasUnderwater){
-      const _hRefl = self._gpuBegin('reflection');
       self._renderUnderwaterReflection(scene, sceneCamera);
-      self._gpuEnd(_hRefl);
-      const _hTrans = self._gpuBegin('transmission');
       self._renderAboveWaterTransmission(scene, sceneCamera);
-      self._gpuEnd(_hTrans);
     }
 
     //Update our sea foam camera - use position pass material to output world-space height data
@@ -2000,12 +1919,10 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         self.foamCamera.position.set(foamSnapX, this.heightOffset + self.foamCameraHeight, foamSnapZ);
         self.foamCamera.lookAt(foamSnapX, this.heightOffset - 1.0, foamSnapZ);
         self.foamCamera.updateProjectionMatrix();
-        const _hFoam = self._gpuBegin('foamPass');
         self.renderer.setRenderTarget(self.foamRenderTarget);
         self.renderer.clear();
         self.renderer.render(scene, self.foamCamera);
         self.renderer.setRenderTarget(null);
-        self._gpuEnd(_hFoam);
         self._lastFoamSnapX = foamSnapX;
         self._lastFoamSnapZ = foamSnapZ;
       }
@@ -2013,12 +1930,10 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         self.exclusionCamera.position.set(exclSnapX, this.heightOffset + self.foamCameraHeight, exclSnapZ);
         self.exclusionCamera.lookAt(exclSnapX, this.heightOffset - 1.0, exclSnapZ);
         self.exclusionCamera.updateProjectionMatrix();
-        const _hExcl = self._gpuBegin('exclusion');
         self.renderer.setRenderTarget(self.exclusionRenderTarget);
         self.renderer.clear();
         self.renderer.render(scene, self.exclusionCamera);
         self.renderer.setRenderTarget(null);
-        self._gpuEnd(_hExcl);
         self._lastExclSnapX = exclSnapX;
         self._lastExclSnapZ = exclSnapZ;
       }
@@ -2043,11 +1958,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     }
 
     //Update each of our ocean grid height maps
-    const _tFft = performance.now();
-    const _hFft = self._gpuBegin('fft');
     self.oceanHeightBandLibrary.tick(time);
-    self._gpuEnd(_hFft);
-    self._cpuAdd('fft', performance.now() - _tFft);   //~324 renderer.render calls = CPU submit cost
     //Push wind velocity + the four live-tunable broadband foam knobs to
     //the composer BEFORE its tick so this frame's foam accumulator uses
     //the current settings. windVelocity is the same wind vector that
@@ -2055,15 +1966,12 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     const bbU = self.oceanHeightComposer._broadbandPackMaterial.uniforms;
     bbU.windVelocity.value.set(self.windVelocity.x, self.windVelocity.y);
     bbU.foamCoverage.value      = self.foamCoverage;
+    bbU.foamSharpness.value     = self.foamSharpness;
     bbU.foamFadeRate.value      = self.foamFadeRate;
     bbU.foamStrength.value      = self.foamStrength;
     bbU.advectionScale.value    = self.foamAdvectionScale;
 
-    const _tFoamC = performance.now();
-    const _hFoamC = self._gpuBegin('foamComposer');
     self.oceanHeightComposer.tick();
-    self._gpuEnd(_hFoamC);
-    self._cpuAdd('foamComposer', performance.now() - _tFoamC);
 
     //── Underwater submersion probe ────────────────────────────────────────
     //Read two 1-px FFT-displacement texels above/below the camera so the CPU
@@ -2162,9 +2070,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     }
 
     //Underwater caustic projector — caustics on the directly-viewed seabed.
-    const _tCaustic = performance.now();
     self._updateCausticProjection(time, waterSurfaceY, underwaterFactor);
-    self._cpuAdd('caustic', performance.now() - _tCaustic);
 
     //Underwater fog. Fill A-Starry-Sky's reserved fog-shader slot once it is
     //available, then swap scene.fog between A-Starry-Sky's atmospheric fog
@@ -2544,9 +2450,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       directionalLightDirection.set(mainLight.position.x, mainLight.position.y, mainLight.position.z);
       directionalLightDirection.sub(mainLight.target.position).negate().normalize();
       const firstMeshUniforms = oceanPatchGeometryInstances[oceanGridInstanceKeys[0]].material.uniforms;
-      const _tCsm = performance.now();
       self.oceanShadowCSM.render(self.renderer, sceneCamera, directionalLightDirection, firstMeshUniforms);
-      self._cpuAdd('csm', performance.now() - _tCsm);
 
       //Sun below horizon → CSM.render() early-exits; disable the sampler so
       //the water shader doesn't read stale maps.
@@ -2588,91 +2492,6 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //Broadcast the current sun direction to every fog-receiving material so
     //the underwater chunk's HG sun phase reads the right vector. Cheap scene
     //traversal; the per-material write is a Vector3.copy().
-    const _tUwSun = performance.now();
     self._broadcastUwSunDir();
-    self._cpuAdd('uwSunTraverse', performance.now() - _tUwSun);
-
-    //── TEMP PERF PROBE ────────────────────────────────────────────────────
-    //Diagnostic for the "world gets sluggish over time / freezes on yaw" bug.
-    //Logs renderer.info resource counts, the G-buffer material cache size,
-    //scene mesh count, and JS heap once a minute, with a delta vs. the first
-    //sample so monotonic growth (a leak) is obvious. Remove once diagnosed.
-    if(self._probeLastLog === undefined){
-      self._probeLastLog = time;        //ms clock from A-Frame tick
-      self._probeBase = null;
-      self._probeN = 0;
-    }
-    if(time - self._probeLastLog >= 60000){
-      self._probeLastLog = time;
-      const info = self.renderer.info;
-      let meshCount = 0;
-      let nodeCount = 0;   //ALL Object3D nodes — grows even when isMesh count is flat
-      self.scene.traverse(function(o){ nodeCount++; if(o.isMesh){ meshCount++; } });
-      const snap = {
-        geometries:  info.memory.geometries,
-        textures:    info.memory.textures,
-        programs:    info.programs ? info.programs.length : -1,
-        drawCalls:   info.render.calls,
-        gBufCache:   self._gBufferMaterialCache ? self._gBufferMaterialCache.size : -1,
-        sceneNodes:  nodeCount,
-        sceneMeshes: meshCount,
-        heapMB:      (performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : -1)
-      };
-      if(!self._probeBase){ self._probeBase = JSON.parse(JSON.stringify(snap)); }
-      const delta = {};
-      for(const k in snap){ delta[k] = snap[k] - self._probeBase[k]; }
-      console.log('[waterProbe ' + (self._probeN++) + 'min]', snap, 'delta=', delta);
-    }
-    //── END TEMP PERF PROBE ────────────────────────────────────────────────
-
-    //── TEMP GPU TIMER read-out ────────────────────────────────────────────
-    //Resolve any finished queries, log every 2 s, then open the mainRender
-    //span that brackets A-Frame's upcoming scene render (closed at the top of
-    //the next tick). Remove with the TEMP PERF PROBE once diagnosed.
-    self._gpuPoll();
-    //CPU time spent INSIDE this component's tick (pure JS wall-clock, no
-    //gl.finish). EMA-smoothed. The decisive CPU-bound signal:
-    //  tickCPU ≈ frame   → our per-frame JS work is the bottleneck (look in here)
-    //  tickCPU ≪ frame   → cost is in A-Frame's render submission, other systems,
-    //                       or the GPU — record a Firefox Profiler trace next.
-    const _tickCpu = performance.now() - _tickT0;
-    self._tickCpuEMA = (self._tickCpuEMA === undefined) ? _tickCpu
-                                                        : (self._tickCpuEMA * 0.9 + _tickCpu * 0.1);
-    if(time - self._gpuTimer.lastLog >= 2000){
-      self._gpuTimer.lastLog = time;
-      if(self._gpuTimer.mode === 'query'){
-        const P = self._gpuTimer.passes;
-        const ms = function(k){ return P[k] ? P[k].lastMs.toFixed(2) : 'n/a'; };
-        const offscreen = ['refraction','reflection','transmission','foamPass','exclusion','fft','foamComposer']
-          .reduce(function(s,k){ return s + (P[k] ? P[k].lastMs : 0); }, 0);
-        console.log('[gpuMs] main=' + ms('mainRender') + '  refraction=' + ms('refraction') +
-          '  fft=' + ms('fft') + '  foamComposer=' + ms('foamComposer') +
-          '  reflection=' + ms('reflection') + '  transmission=' + ms('transmission') +
-          '  foamPass=' + ms('foamPass') + '  exclusion=' + ms('exclusion') +
-          '  | offscreen-sum=' + offscreen.toFixed(2) +
-          '  tickCPU=' + self._tickCpuEMA.toFixed(2) +
-          '  frame=' + self._gpuTimer.frameMs.toFixed(2) + ' ms');
-      } else {
-        const fps = (1000 / Math.max(1, self._gpuTimer.frameMs)).toFixed(0);
-        const S = self._cpuSub;
-        const val = function(k){ return S[k] !== undefined ? S[k] : 0; };
-        const sub = function(k){ return val(k).toFixed(2); };
-        //"other" = everything in tick we have NOT bracketed (shadow CSM, caustic
-        //projection, clipmap reposition, underwater fog, reflection, etc.). If
-        //THIS is what grows over time, the leak lives in an uninstrumented section.
-        const other = self._tickCpuEMA - (val('fft') + val('refrSwap') + val('refrRender') +
-          val('foamComposer') + val('uwSunTraverse') + val('caustic') + val('csm'));
-        console.log('[perf] tickCPU=' + self._tickCpuEMA.toFixed(2) + ' ms' +
-          '   frame=' + self._gpuTimer.frameMs.toFixed(2) + ' ms (' + fps + ' fps)' +
-          '\n        breakdown: fft=' + sub('fft') + '  refrRender=' + sub('refrRender') +
-          '  csm=' + sub('csm') + '  caustic=' + sub('caustic') +
-          '  foamComposer=' + sub('foamComposer') +
-          '  refrSwap=' + sub('refrSwap') + '  uwSunTraverse=' + sub('uwSunTraverse') +
-          '  other=' + other.toFixed(2) + ' ms');
-      }
-    }
-    //Open the mainRender span across A-Frame's upcoming scene render (query mode only).
-    self._mainRenderSpan = self._gpuTimer.mode === 'query' ? self._gpuBegin('mainRender') : null;
-    //── END TEMP GPU TIMER read-out ────────────────────────────────────────
   };
 }

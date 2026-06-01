@@ -1211,20 +1211,38 @@ void main(){
   float jacobian = (1.0 + foamDdx.x) * (1.0 + foamDdz.y) - foamDdx.y * foamDdz.x;
   float turbulence = max(0.0, 1.0 - jacobian);
 
-  //Broadband foam: sample the composer's dedicated foam RT, which accumulates
-  //Jacobian-based foam from the SUMMED C2+C3+C4 displacement (not per-cascade)
-  //with wind advection + frame-rate-independent decay. Mirrors Crest's
-  //UpdateFoam.compute architecture.
-  //
-  //Why this replaced the per-cascade alpha read: each cascade is band-limited
-  //by maxCoord ∈ [2, 8) after the 2026-05-17 Crest port, so per-cascade
-  //Jacobians only see slope within their narrow octave. The visible wave
-  //crests are the SUM of all cascades, so per-cascade foam fired at sparse
-  //texels uncorrelated with visible crests → "random flashes" + "blop into
-  //existence". The broadband RT sees the actual surface fold, advects with
-  //wind, and rides the wave like real foam.
-  vec2 foamUV = vWorldXZ / broadbandFoamTileSize;
-  float fftFoamAmount = texture2D(broadbandFoamTexture, foamUV).r;
+  //── Per-cascade foam (revived 2026-05-31) ────────────────────────────────
+  //NOTE: this REPLACES the broadband-RT read (the single summed-tile foam that
+  //read as "rolling clouds"). The broadband material in ocean-height-composer.js
+  //is left in place but unused — rip it (and broadbandFoamTexture/-TileSize) once
+  //this per-cascade path is confirmed. Earlier the per-cascade read was abandoned
+  //for "random flashes", but that read the COARSE cascades (C2+C3, long swells)
+  //with no temporal smoothing; reading the FINE cascades' accumulated .a (which
+  //already has decay + spatial diffusion from _packMaterial) is the Acerola/Crest
+  //design and tracks the actual breaking crests.
+  //Sum the accumulated foam (.a) of the two FINEST cascades (C4, C5 — the
+  //breaking-wave band) in each cascade's own tiling UV, exactly as the vertex
+  //shader samples their displacement. This is the Acerola "Water" / Crest design:
+  //fold detection happens per-cascade at NATIVE texel width (C4 = 16/512 ≈
+  //0.03 m, C5 finer), so a real fold reads as a sharp line. The previous
+  //broadband sample summed all cascades onto one coarse 256 m / 512 = 0.5 m-per-
+  //texel tile, which spatially quantised the small-wave folds into ~1 m blobs
+  //(the "rolling cloud" look). The persistent .a accumulator (decay + diffusion
+  //in ocean-height-composer.js _packMaterial) gives the trailing wake as the
+  //crest moves on. Add C3 (index 3) here if foam reads too sparse.
+  //── Foam from the COMBINED fold (2026-05-31) ─────────────────────────────
+  //Mode 36 (visible-surface test) proved the per-cascade .a was the wrong source:
+  //a single band barely folds, and the summed `turbulence` (= max(0, 1 - jacobian)
+  //over ALL cascades, computed ~line 1212 at the real displaced surface) is the
+  //full-resolution fold signal that actually tracks steep / near-breaking water.
+  //Threshold it hard so only the steepest folds (genuine whitecaps) fire — RAISE
+  //FOAM_TURB_THRESHOLD for sparser foam, LOWER for more.
+  //NOTE: no persistence yet (this pops in/out with the waves) — a decaying
+  //history buffer for the trailing wake is the planned next step; this pass is to
+  //confirm placement + density of the right signal.
+  const float FOAM_TURB_THRESHOLD = 0.5;   //lower = MORE foam (fires on gentler folds); 0.4 = lots, 0.8 = only hard breaks
+  const float FOAM_TURB_GAIN      = 4.0;   //higher = foam ramps to full faster past the threshold
+  float fftFoamAmount = clamp((turbulence - FOAM_TURB_THRESHOLD) * FOAM_TURB_GAIN, 0.0, 1.0);
 
   //Crest-style surface normal from cross product of displaced tangent vectors.
   //Surface parameterization: P(u,v) = (u - chop*Dx, Dy, v - chop*Dz)
@@ -1897,13 +1915,23 @@ void main(){
     float foamSkyFactor = 0.5 + 0.5 * dot(foamSurfaceNormal, vec3(0.0, 1.0, 0.0));
     vec3 foamAmbient = skyAmbientColor * foamSkyFactor * foamAlbedo;
 
-    //Crest WhiteFoamTexture technique: foam amount sets a sliding black-point on the
-    //opacity texture. High foamAmount → black point near 0 → all texture values pass.
-    //Low foamAmount → black point near 1 → only the brightest foam patches show.
-    //This is fundamentally different from foamMask*foamAmount which suppresses both.
-    //_WaveFoamFeather = 0.4 in Crest's defaults.
-    float foamBlackPoint = clamp(1.0 - foamAmount, 0.0, 1.0);
-    float foamBlend = smoothstep(foamBlackPoint, foamBlackPoint + 0.4, foamMask);
+    //── Field-driven foam shape (2026-05-31) ──────────────────────────────────
+    //Previously this used Crest's sliding-black-point: foamAmount only moved a
+    //threshold on the bubble OPACITY texture, so the texture (foamMask) owned the
+    //silhouette. Because that texture is world-locked (foamTextureUV = worldXZ/2,
+    //~2 m tiles, line 1285), foam puffs sat at fixed world cells and just blinked
+    //on/off as crests pulsed over them — they never tracked the waves, and the
+    //brightest bubbles even leaked through where foamAmount was near zero.
+    //
+    //Now the wave-foam FIELD (foamAmount, crest-located out of the broadband RT)
+    //owns WHERE foam is, and the bubble texture only grains the interior. Foam now
+    //appears on — and moves with — the field instead of the static texture.
+    //foamShapeFeather is the soft edge of a field patch; foamGrainFloor stops a
+    //dark texel from fully eating thin/edge foam.
+    const float foamShapeFeather = 0.04;
+    const float foamGrainFloor   = 0.5;
+    float foamShape = smoothstep(foamShapeFeather, 0.5, foamAmount);
+    float foamBlend = foamShape * mix(foamGrainFloor, 1.0, foamMask);
     vec3 dbgFoamColor = foamDiffuse + foamAmbient;
     float dbgFoamMask  = foamMask;
     float dbgFoamBlend = foamBlend;
@@ -2354,6 +2382,31 @@ void main(){
                           : mix(vec3(0.0, 1.0, 0.0), vec3(1.0, 1.0, 0.0), ceilRefl);
       gl_FragColor = vec4(tint, 1.0);
     }
+  }
+  //Mode 36: foam/fold-vs-height alignment (the magenta test, Dante 2026-05-31).
+  //Isolates ONE cascade (C4) and asks: does the Jacobian FOLD land on that
+  //cascade CREST? RED = crest side of C4 (height Dy > 0). BLUE = live per-cascade
+  //fold strength (clamp(1 - J), positive where the surface pinches). Uses the
+  //EXACT same J formula the composer accumulates foam from.
+  //  MAGENTA            = fold on crest  -> foam-on-crest, the correct result.
+  //  PURE BLUE in the dark/trough areas = fold on trough -> the per-cascade
+  //                       Jacobian is anti-correlated with height (chop/sign
+  //                       mismatch between geometry pinch and the foam pass).
+  //  PURE RED           = crest with no fold.
+  //If it is mostly magenta, the foam IS on crests and the trough look is a
+  //consumption/lighting artefact, not a generation sign error.
+  else if(oceanShadowDebugMode == 36){
+    //VISIBLE-surface magenta test (2026-05-31): the previous per-cascade probe
+    //tested ONE band's height (Dy of C0/C4), which is NOT the visible wave top —
+    //the surface you see is the SUM of all cascades. Test against that instead.
+    //RED  = fragment above mean sea level (worldPosition.y > baseHeightOffset) =
+    //       a real visible crest. BLUE = summed-fold turbulence (max(0,1-J) from
+    //       the all-cascade Jacobian, line ~1212) ×4 gain. MAGENTA = fold on a
+    //       visible crest = correct whitecap placement. If RED is all-or-nothing,
+    //       baseHeightOffset isn't the mean and we pick a better reference.
+    float crest = step(baseHeightOffset, worldPosition.y);
+    float fold  = clamp(turbulence * 4.0, 0.0, 1.0);
+    gl_FragColor = vec4(crest, 0.0, fold, 1.0);
   }
 
   //Debug overlays — only drawn when oceanShadowDebugMode is non-zero. Bottom-
