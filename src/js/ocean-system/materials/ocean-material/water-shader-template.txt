@@ -40,13 +40,6 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     foamCameraXZ: {type: 'vec2', value: new THREE.Vector2()},
     exclusionCameraXZ: {type: 'vec2', value: new THREE.Vector2()},
     foamScrollVelocity: {type: 'vec2', value: new THREE.Vector2()},
-    //Broadband foam RT: single-channel persistent foam accumulator built
-    //by OceanHeightComposer's broadband pack pass from the SUMMED C2+C3+C4
-    //displacement Jacobian. Read in .r at uv = worldXZ / broadbandFoamTileSize
-    //(REPEAT wrap). Replaces the per-cascade C2/C3 alpha read which couldn't
-    //see broadband wave crests.
-    broadbandFoamTexture: {type: 't', value: null},
-    broadbandFoamTileSize: {type: 'f', value: 256.0},
     //Refraction G-buffer (3-attachment MRT, allocated in ocean-grid.js):
     //  refractionColorTexture = attachment 0, LINEAR albedo (decoded per-mesh
     //    in the G-buffer override shader); .a = 1 where geometry exists.

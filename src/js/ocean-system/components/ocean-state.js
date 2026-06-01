@@ -21,28 +21,6 @@ AFRAME.registerComponent('ocean-state', {
     'caustics_strength': {type: 'number', default: 1.0},
     'foam_enabled': {type: 'bool', default: true},
     'foam_start': {type: 'number', default: 0.10},
-    //Broadband foam (Crest UpdateFoam port). All four feed the broadband
-    //pack material in ocean-height-composer.js.
-    //  foam_coverage: ONSET — foam starts where broadband Jacobian dips below
-    //    this. In gentle seas J barely leaves 1.0, so set this just under 1.0
-    //    (~0.97) and use foam_sharpness for selectivity. (Pre-sharpness this was
-    //    all-or-haze because the fold band is tiny.)
-    //  foam_sharpness: GAIN on the fold band — stretches the tiny J∈[~0.85,0.97]
-    //    crest-fold range across full foam. Higher = foam ramps faster / more
-    //    crests catch; lower = only the steepest. This is the selectivity knob.
-    //  foam_fade_rate: per-second decay. Crest default 0.8 (~1.25 s e-fold).
-    //    THE knob that keeps the linear gen smudge-free — fast fade stops weak
-    //    broad folds from accumulating. Our broadband field may want it faster
-    //    than Crest's per-LOD field; raise toward ~2-10 if flanks still smear.
-    //  foam_strength: per-frame add multiplier. 1.0 = Crest default; raise
-    //    to make firing pixels saturate faster, lower for thinner foam.
-    //  foam_advection_scale: fraction of wind speed used as foam drift.
-    //    0.04 ≈ Stokes drift for wind-driven seas; 0 = pinned, 0.4 = chases wind.
-    'foam_coverage': {type: 'number', default: 1.0},
-    'foam_sharpness': {type: 'number', default: 1.0},
-    'foam_fade_rate': {type: 'number', default: 1.2},
-    'foam_strength': {type: 'number', default: 2.0},
-    'foam_advection_scale': {type: 'number', default: 0.4},
     //Jerlov water type preset selector. 0 = custom (use the explicit
     //water_absorption/water_scattering vec3 attributes below). 1..7 picks a
     //preset from AWater.AOcean.JERLOV_PRESETS in ocean-grid.js — open-ocean
@@ -123,14 +101,6 @@ AFRAME.registerComponent('ocean-state', {
         oldData.wind_velocity.y !== this.data.wind_velocity.y)){
       this.oceanGrid.oceanHeightBandLibrary.regenerateH0(this.data.wind_velocity);
     }
-    //Broadband foam knobs — A-Frame attribute changes propagate into the
-    //live JS fields on the grid, which the per-frame tick pushes onto the
-    //broadband pack material's uniforms.
-    if(oldData.foam_coverage !== this.data.foam_coverage) this.oceanGrid.foamCoverage = this.data.foam_coverage;
-    if(oldData.foam_sharpness !== this.data.foam_sharpness) this.oceanGrid.foamSharpness = this.data.foam_sharpness;
-    if(oldData.foam_fade_rate !== this.data.foam_fade_rate) this.oceanGrid.foamFadeRate = this.data.foam_fade_rate;
-    if(oldData.foam_strength !== this.data.foam_strength) this.oceanGrid.foamStrength = this.data.foam_strength;
-    if(oldData.foam_advection_scale !== this.data.foam_advection_scale) this.oceanGrid.foamAdvectionScale = this.data.foam_advection_scale;
   },
   tick: function(time, timeDelta){
     //Do nothing to start :D

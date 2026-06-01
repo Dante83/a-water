@@ -79,15 +79,6 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.surfaceRoughness = 0.08;
   this.foamEnabled = data.foam_enabled;
   this.foamStart = data.foam_start;
-  //Live-tunable broadband foam parameters. Plain JS fields per the
-  //feedback_aframe_live_uniforms convention — pushed to the broadband pack
-  //material every frame so DevTools / external scripts can hot-tune them
-  //(setFoamCoverage etc. console hooks are valid follow-ups).
-  this.foamCoverage = data.foam_coverage;
-  this.foamSharpness = data.foam_sharpness;
-  this.foamFadeRate = data.foam_fade_rate;
-  this.foamStrength = data.foam_strength;
-  this.foamAdvectionScale = data.foam_advection_scale;
   this.data = data;
   this.time = 0.0;
   this.causticMap;
@@ -1959,17 +1950,6 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
     //Update each of our ocean grid height maps
     self.oceanHeightBandLibrary.tick(time);
-    //Push wind velocity + the four live-tunable broadband foam knobs to
-    //the composer BEFORE its tick so this frame's foam accumulator uses
-    //the current settings. windVelocity is the same wind vector that
-    //drives the spectrum (data.wind_velocity).
-    const bbU = self.oceanHeightComposer._broadbandPackMaterial.uniforms;
-    bbU.windVelocity.value.set(self.windVelocity.x, self.windVelocity.y);
-    bbU.foamCoverage.value      = self.foamCoverage;
-    bbU.foamSharpness.value     = self.foamSharpness;
-    bbU.foamFadeRate.value      = self.foamFadeRate;
-    bbU.foamStrength.value      = self.foamStrength;
-    bbU.advectionScale.value    = self.foamAdvectionScale;
 
     self.oceanHeightComposer.tick();
 
@@ -2014,10 +1994,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           v -= Math.floor(v);
           const px = Math.min(res - 1, Math.max(0, Math.floor(u * res)));
           const py = Math.min(res - 1, Math.max(0, Math.floor(v * res)));
-          const tex = composer.cascadeDisplacementTextures[c];
-          const rt = (composer.cascadeDisplacementTargetsA[c].texture === tex)
-                   ? composer.cascadeDisplacementTargetsA[c]
-                   : composer.cascadeDisplacementTargetsB[c];
+          const rt = composer.cascadeDisplacementTargets[c];
           promises.push(self.renderer.readRenderTargetPixelsAsync(rt, px, py, 1, 1, bufs[c]));
         }
         Promise.all(promises).then(function(){
@@ -2043,10 +2020,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         v -= Math.floor(v);
         const px = Math.min(res - 1, Math.max(0, Math.floor(u * res)));
         const py = Math.min(res - 1, Math.max(0, Math.floor(v * res)));
-        const tex = composer.cascadeDisplacementTextures[c];
-        const rt = (composer.cascadeDisplacementTargetsA[c].texture === tex)
-                 ? composer.cascadeDisplacementTargetsA[c]
-                 : composer.cascadeDisplacementTargetsB[c];
+        const rt = composer.cascadeDisplacementTargets[c];
         self.renderer.readRenderTargetPixels(rt, px, py, 1, 1, buf);
         waterSurfaceY += buf[1] * whm;   //.y (green) channel = vertical displacement
       }
@@ -2236,10 +2210,6 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       for(let c = 0; c < 6; c++){
         uniformsRef.cascadeDisplacementTextures.value[c] = self.oceanHeightComposer.cascadeDisplacementTextures[c];
       }
-      //Broadband foam RT + its tile size (water shader samples at
-      //worldXZ / broadbandFoamTileSize with REPEAT wrap).
-      uniformsRef.broadbandFoamTexture.value = self.oceanHeightComposer.broadbandFoamTexture;
-      uniformsRef.broadbandFoamTileSize.value = self.oceanHeightComposer.broadbandFoamTileSize;
       uniformsRef.cascadePatchSizes.value = self.oceanHeightComposer._cascadePatchSizes;
       //Per-cascade slope variance σ² — sourced from the height-band library.
       //Re-pushed every frame because regenerateH0() (called when wind changes
