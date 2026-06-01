@@ -123,6 +123,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     //Cascade-depth thumbnails and the bottom-corner jacobian/foam panels
     //draw only when this is non-zero.
     oceanShadowDebugMode: {type: 'i', value: 0},
+    debugBlend: {type: 'f', value: 0.5},
     //skyAmbientColor is synthesized in ocean-grid.js from a-starry-sky's
     //y-axis hemispherical light (color * intensity). After the 2026-05-14
     //unit reconciliation it is consumed RAW in the water shader — same scale
@@ -142,6 +143,13 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
     reflectionDistanceFalloff: {type: 'f', value: 0.0},
     fresnelDistanceRoughness: {type: 'f', value: 0.7},
     surfaceRoughness: {type: 'f', value: 0.15},
+    //Crest-style sun-glint controls. Defaults reproduce the legacy ungated
+    //additive glint exactly: gate 0 = no Fresnel gate, far falloff == near
+    //(275) so the distance ramp is a no-op, boost 7.0 as before.
+    specFresnelGate: {type: 'f', value: 0.0},
+    specBoost: {type: 'f', value: 7.0},
+    specFalloffFar: {type: 'f', value: 275.0},
+    specFalloffFarDist: {type: 'f', value: 200.0},
     patchDataSize: {type: 'f', value: 1024.0},
     //Underwater state — see water-shader.glsl. Pushed every frame from
     //ocean-grid.js's submersion probe. cameraSubmersion defaults well above

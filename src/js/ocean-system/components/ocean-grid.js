@@ -77,6 +77,13 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.ssrMaxSteps = 48;
   this.fresnelDistanceRoughness = data.fresnel_distance_roughness;
   this.surfaceRoughness = 0.08;
+  //Crest-style sun-glint controls (see water-shader.glsl). Defaults reproduce
+  //the legacy ungated additive glint: gate 0, far falloff == near (275) so the
+  //distance ramp is a no-op, boost 7.0. Dial via the window.setSpec* helpers.
+  this.specFresnelGate = 0.0;
+  this.specBoost = 7.0;
+  this.specFalloffFar = 275.0;
+  this.specFalloffFarDist = 200.0;
   this.foamEnabled = data.foam_enabled;
   this.foamStart = data.foam_start;
   this.data = data;
@@ -948,6 +955,16 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.oceanShadowDebugMode.value = mode | 0;
     }
   };
+  //Opacity for the cascade-band overlay (debug mode 40). 0 = scene only,
+  //1 = overlay only, 0.5 = half-and-half. Call setOceanShadowDebug(40) first,
+  //then setDebugBlend(0.5) to dial how strongly the cascade colours show over
+  //the real waves.
+  this.setDebugBlend = function(v){
+    const blend = +v;
+    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
+      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.debugBlend.value = blend;
+    }
+  };
   //Diagnostic toggles — flip the scene-wide sun shadow or the ocean-only
   //CSM on/off across every water tile so we can isolate which one is
   //producing a given visible shadow. Call as setSunShadowEnabled(0) etc.
@@ -1035,6 +1052,22 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   };
   this.setSurfaceRoughness = function(v){
     self.surfaceRoughness = +v;
+  };
+  //Crest-style sun-glint live knobs. setSpecFresnelGate(0..1): 0 = legacy
+  //ungated additive glint, 1 = Crest Fresnel-gated. setSpecFalloffFar /
+  //setSpecFalloffFarDist drive the distance lobe-widening ramp (far defaults
+  //to 275 = near, a no-op until lowered). setSpecBoost is _DirectionalLightBoost.
+  this.setSpecFresnelGate = function(v){
+    self.specFresnelGate = +v;
+  };
+  this.setSpecBoost = function(v){
+    self.specBoost = +v;
+  };
+  this.setSpecFalloffFar = function(v){
+    self.specFalloffFar = +v;
+  };
+  this.setSpecFalloffFarDist = function(v){
+    self.specFalloffFarDist = +v;
   };
   //Live-tune atmospheric perspective strength. Default 1.0. Set to 0.0 to
   //fully bypass extinction + inscatter on the water surface (the per-frame
@@ -1159,6 +1192,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     window.setShadowHelpers = this.setShadowHelpers;
     window.setSunShadowBias = this.setSunShadowBias;
     window.setOceanShadowDebug = this.setOceanShadowDebug;
+    window.setDebugBlend = this.setDebugBlend;
     window.setSunShadowEnabled = this.setSunShadowEnabled;
     window.setOceanShadowEnabled = this.setOceanShadowEnabled;
     window.setOceanShadowNormalBias = this.setOceanShadowNormalBias;
@@ -1170,6 +1204,10 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     window.setReflectionDistanceFalloff = this.setReflectionDistanceFalloff;
     window.setFresnelDistanceRoughness = this.setFresnelDistanceRoughness;
     window.setSurfaceRoughness = this.setSurfaceRoughness;
+    window.setSpecFresnelGate = this.setSpecFresnelGate;
+    window.setSpecBoost = this.setSpecBoost;
+    window.setSpecFalloffFar = this.setSpecFalloffFar;
+    window.setSpecFalloffFarDist = this.setSpecFalloffFarDist;
     window.setOceanWireframe = this.setOceanWireframe;
     window.setAtmDistanceScale = this.setAtmDistanceScale;
   }
@@ -2254,6 +2292,10 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       uniformsRef.ssrMaxSteps.value = self.ssrMaxSteps;
       uniformsRef.fresnelDistanceRoughness.value = self.fresnelDistanceRoughness;
       uniformsRef.surfaceRoughness.value = self.surfaceRoughness;
+      uniformsRef.specFresnelGate.value = self.specFresnelGate;
+      uniformsRef.specBoost.value = self.specBoost;
+      uniformsRef.specFalloffFar.value = self.specFalloffFar;
+      uniformsRef.specFalloffFarDist.value = self.specFalloffFarDist;
       uniformsRef.foamStartLevel.value = self.foamStart;
       uniformsRef.foamDiffuseMap.value = self.foamColorMap;
       uniformsRef.foamOpacityMap.value = self.foamOpacityMap;

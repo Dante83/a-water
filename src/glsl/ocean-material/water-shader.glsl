@@ -129,6 +129,10 @@ uniform float evsmLightBleedReduction;
 //screen and the bottom-corner jacobian/foam panels are drawn only when
 //this is non-zero.
 uniform int oceanShadowDebugMode;
+//Opacity for the translucent cascade-band overlay (debug mode 40). 0 = scene
+//only, 1 = overlay only; in between blends the cascade colours over the real
+//render so fade boundaries can be read against the actual waves.
+uniform float debugBlend;
 uniform vec3 skyAmbientColor;
 uniform vec3 waterAbsorption;
 uniform vec3 waterScattering;
@@ -156,6 +160,22 @@ uniform float fresnelDistanceRoughness;
 //(~0.05) give tight pinpoint glints, higher (~0.15) widen into a soft glow.
 //Live-tunable from the console via setSurfaceRoughness().
 uniform float surfaceRoughness;
+
+//── Crest-style sun-glint controls (OceanReflection.hlsl:104-118) ────────────
+//specFresnelGate blends the Phong sun glint from our legacy ungated-additive
+//path (0.0 = byte-identical to before) to Crest's Fresnel-gated path (1.0),
+//where the glint rides INSIDE the reflection and shares its Schlick R_theta.
+//Near field (looking down, R_theta tiny) then cannot bloom however wide the
+//lobe; grazing mid/far (R_theta->1) brightens the glint with distance, curing
+//the mid-band dead zone. specBoost is Crest's _DirectionalLightBoost (the
+//compensation lever once the Fresnel gate dims the near field). The lobe
+//falloff varies from a near exponent to specFalloffFar over specFalloffFarDist
+//(Crest _DirectionalLightFallOffFar / _DirectionalLightFarDistance, sqrt ramp);
+//specFalloffFar defaults equal to the near exponent so the ramp is a no-op.
+uniform float specFresnelGate;
+uniform float specBoost;
+uniform float specFalloffFar;
+uniform float specFalloffFarDist;
 
 uniform float t;
 uniform float patchDataSize;
@@ -380,6 +400,21 @@ float sampleOceanCascadeEVSM(sampler2D momentMap, vec3 sc){
   //interpolation of moments equals the moments of the bilinear-
   //interpolated warped depth.
   vec4 moments = texture2D(momentMap, sc.xy);
+  //No-caster guard. A real occluder warps to M1 = E[exp(evsmExpC·z)] with
+  //z in [0,1], so M1 >= exp(0) = 1 always; the separable Gaussian blur is a
+  //convex average and preserves M1 >= 1. Therefore M1 < 1 is impossible for
+  //any real occluder — it can ONLY be the caster no-occluder clear
+  //baseline. That baseline is meant to be the far-plane moments (M1 = exp(c)
+  //≈ 148 = fully lit), but the renderer's premultiplied alpha multiplies the
+  //clear RGB by the clear alpha (= M4 = exp(-2c) ≈ 0), collapsing M1 to
+  //exp(-c) ≈ 0.0067. That fake near-plane occluder shadows every open-water
+  //texel beyond the caster footprint and kills the sun glint there (visible
+  //as the dead band; mode 4 shows these texels black). Real M1 ≥ 1, collapsed
+  //M1 ≈ exp(-c) < 1, so reading M1 < 1 as "no occluder → fully lit" cancels
+  //the artifact without touching genuine wave-on-wave self-shadow inside the
+  //footprint. (Fixing the clear at the source so mode 4 reads correctly is a
+  //separate follow-up — this makes the shadow itself correct.)
+  if(moments.x < 0.999) return 1.0;
   float dPos =  exp( evsmExpC * sc.z);
   float dNeg = -exp(-evsmExpC * sc.z);
   float pPos = chebyshevUpperBound(moments.xy, dPos);
@@ -1835,17 +1870,19 @@ void main(){
   vec3 specReflectDir = reflect(-ctViewDir, specNormal);
   specReflectDir.y = max(specReflectDir.y, 0.0);
   float specRdotL = max(0.0, dot(specReflectDir, ctLightDir));
-  //Constant falloff: tried Crest's 275→42 distance ramp and it bloomed
-  //the far half of the ocean into one giant sheen — their default
-  //config (sun elevation ~50°, view 1.5m above sea) puts the pillar in
-  //a different geometry than ours, and the wide-at-distance lobe over-
-  //triggers for us. Keep one tight value; the mid-distance "dead band"
-  //is a real geometric artifact (R(flat-normal) doesn't land on L
-  //except at very specific view angles for a given sun elevation),
-  //and live with it rather than smear the horizon.
-  const float SPEC_PHONG_FALLOFF = 275.0;
-  const float SPEC_PHONG_BOOST = 7.0;
-  vec3 specular = brightestDirectionalLight * pow(specRdotL, SPEC_PHONG_FALLOFF) * SPEC_PHONG_BOOST;
+  //Distance-varying falloff (Crest OceanReflection.hlsl:105-111): widen the
+  //Phong lobe with distance so the mip-flattened mid/far normal still catches
+  //the sun instead of going dark. sqrt ramp broadens early; boost stays
+  //constant — the Fresnel gate at compositing (not energy conservation) is
+  //what keeps the near field from blooming. We tried this ramp BEFORE the
+  //Fresnel gate existed and it smeared the horizon into one sheen, because
+  //the wide lobe was the only thing controlling visibility; with the gate the
+  //wide lobe just rides inside Fresnel. specFalloffFar defaults to the near
+  //exponent (275) so the ramp is a no-op until dialed.
+  const float SPEC_PHONG_FALLOFF_NEAR = 275.0;
+  float specFallOffAlpha = sqrt(clamp(distanceToWorldPosition / max(specFalloffFarDist, 1.0), 0.0, 1.0));
+  float specFallOff = mix(SPEC_PHONG_FALLOFF_NEAR, specFalloffFar, specFallOffAlpha);
+  vec3 specular = brightestDirectionalLight * pow(specRdotL, specFallOff) * specBoost;
   specular *= specularSunFade * sunShadowFactor;
 
   //Total light. Sun shadow is applied only to direct-sun terms (specular
@@ -1861,7 +1898,17 @@ void main(){
   float reflectionDistanceAttenuation = mix(1.0, 1.0 - reflectionDistanceFalloff,
                                             smoothstep(0.0, 1.0, distanceToWorldPosition / 160.0));
   vec3 attenuatedReflection = reflectedLight * reflectionScale * reflectionDistanceAttenuation;
-  vec3 totalLight = specular + (2.0 / 255.0) * directionalSurfaceLighting + (253.0 / 255.0) * (refractedLight * (1.0 - fresnelFactor) + attenuatedReflection * fresnelFactor);
+  //Sun-glint placement (Crest OceanReflection.hlsl:113-118). Crest adds the
+  //Phong glint INTO the reflection colour, so it shares the reflection's
+  //Fresnel gate (R_theta). specFresnelGate blends our two paths:
+  //  ungated portion  — added raw outside the Fresnel mix (legacy behavior).
+  //  gated portion    — folded into the reflection group, multiplied by
+  //                     fresnelFactor, so it can't bloom looking down (tiny F)
+  //                     and strengthens toward grazing mid/far (F->1).
+  //At specFresnelGate = 0.0 this is byte-identical to the old additive glint.
+  vec3 specularUngated = specular * (1.0 - specFresnelGate);
+  vec3 reflectionPlusGlint = (attenuatedReflection + specular * specFresnelGate) * fresnelFactor;
+  vec3 totalLight = specularUngated + (2.0 / 255.0) * directionalSurfaceLighting + (253.0 / 255.0) * (refractedLight * (1.0 - fresnelFactor) + reflectionPlusGlint);
   //2026-05-14 unit reconciliation, Step 2 finalizer: removed the additive
   //"hemisphere sky fill" term that used to live here. skyAmbientColor is
   //already consumed inside inscatterEquilibrium (= waterAlbedo * (direct +
@@ -1950,7 +1997,10 @@ void main(){
     }
   #endif
 
-  gl_FragColor = linearTosRGB(vec4(MyAESFilmicToneMapping(totalLight), 1.0));
+  //Keep the real shaded result around so translucent debug overlays (mode 40)
+  //can blend over it instead of replacing it (debugBlend opacity).
+  vec4 finalRenderedColor = linearTosRGB(vec4(MyAESFilmicToneMapping(totalLight), 1.0));
+  gl_FragColor = finalRenderedColor;
 
   //Ocean-shadow debug overrides. Full-screen modes — replace the lighting
   //output entirely so we can see what the shadow path is computing.
@@ -2347,6 +2397,34 @@ void main(){
     float crest = step(baseHeightOffset, worldPosition.y);
     float fold  = clamp(turbulence * 4.0, 0.0, 1.0);
     gl_FragColor = vec4(crest, 0.0, fold, 1.0);
+  }
+  //Mode 40: cascade-band colour field, blended translucently over the real
+  //render (opacity = debugBlend, set via window.setDebugBlend). Each FFT
+  //cascade gets a rainbow colour; per fragment we weight those colours by the
+  //SAME per-cascade distance fades the normal path uses (C0/C1 always full;
+  //C2 ×50, C3 ×100, C4 ×250, C5 ×500), then normalise to the surviving mix.
+  //So the hue at a fragment tells you which cascades are still alive there:
+  //near camera reads as the full rainbow average, and as the small cascades
+  //fade with distance the hue slides toward the C0/C1 (red/orange) + C5
+  //(violet) survivors. The hue-shift rings ARE the fade boundaries — line them
+  //up against where the sun glint dies to confirm the dead band sits on a
+  //cascade cutoff. Recomputes the fades locally (they're block-scoped above).
+  else if(oceanShadowDebugMode == 40){
+    float f0 = 1.0;
+    float f1 = 1.0;
+    float f2 = smoothstep(cascadePatchSizes[2] * 50.0,  0.0, distanceToWorldPosition);
+    float f3 = smoothstep(cascadePatchSizes[3] * 100.0, 0.0, distanceToWorldPosition);
+    float f4 = smoothstep(cascadePatchSizes[4] * 250.0, 0.0, distanceToWorldPosition);
+    float f5 = smoothstep(cascadePatchSizes[5] * 500.0, 0.0, distanceToWorldPosition);
+    vec3 cascadeField =
+        f0 * vec3(1.0, 0.0, 0.0)   //C0 red
+      + f1 * vec3(1.0, 0.5, 0.0)   //C1 orange
+      + f2 * vec3(1.0, 1.0, 0.0)   //C2 yellow
+      + f3 * vec3(0.0, 1.0, 0.0)   //C3 green
+      + f4 * vec3(0.0, 0.4, 1.0)   //C4 blue
+      + f5 * vec3(0.6, 0.0, 1.0);  //C5 violet
+    cascadeField /= max(f0 + f1 + f2 + f3 + f4 + f5, 0.001);
+    gl_FragColor = mix(finalRenderedColor, vec4(cascadeField, 1.0), debugBlend);
   }
 
   //Debug overlays — only drawn when oceanShadowDebugMode is non-zero. Bottom-

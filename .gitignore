@@ -4,3 +4,4 @@ package-lock0.json
 package.json
 *.tmp
 examples/personal-ocean
+src/glsl/ocean-material/DEBUG_MODES.md
