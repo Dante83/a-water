@@ -625,8 +625,31 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //
   //Keep the shader's exclusion-sample radius (water-shader.glsl, divide-by
   //in vec2(...)) in sync with this ortho extent's half-width.
+  //NEAREST filtering is mandatory here: the .g channel is a discard *threshold*
+  //(boat world-Y) and .a is a 0/1 mask, neither of which may be interpolated
+  //across the hard boat/no-boat boundary. The RT default (LinearFilter) blended
+  //the below-water interior-floor height with the rim and the cleared (G=0=sea
+  //level) texels, so along the hull rim discardHeight drifted below the water
+  //(over-discard → ring straight to the seabed) or above it (under-discard →
+  //water leaks into the hull). NEAREST gives each water fragment one clean texel.
+  //NEAREST filtering is mandatory here: the .g channel is a discard *threshold*
+  //(boat world-Y) and .a is a 0/1 mask, neither of which may be interpolated
+  //across the hard boat/no-boat boundary. The RT default (LinearFilter) blended
+  //the below-water interior-floor height with the rim and the cleared (G=0=sea
+  //level) texels, so along the hull rim discardHeight drifted below the water
+  //(over-discard → ring straight to the seabed) or above it (under-discard →
+  //water leaks into the hull). NEAREST gives each water fragment one clean texel.
+  //
+  //Residual keel-crease tris + a ~1px waterline edge remain: they're texel-
+  //resolution limited (~0.49 m/texel over this 500 m ortho). Confirmed via a
+  //2048² test (the tris shrank with texel size). The sharp fix is a tighter
+  //ortho extent (fit-to-boat, or a smaller fixed radius) for sub-decimetre
+  //texels at this same 16 MB size — deferred, as it needs the hardcoded 250 m
+  //half-width in water-shader.glsl uniform-ized (a create-shader.py regen).
   this.exclusionRenderTarget = new THREE.WebGLRenderTarget(1024, 1024, {
-    type: THREE.FloatType
+    type: THREE.FloatType,
+    minFilter: THREE.NearestFilter,
+    magFilter: THREE.NearestFilter
   });
   this.exclusionCamera = new THREE.OrthographicCamera(-250.0, 250.0, 250.0, -250.0, 0.1, this.foamCameraHeight + 500.0);
   this.exclusionCamera.layers.disableAll();
@@ -1961,7 +1984,18 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         self.exclusionCamera.updateProjectionMatrix();
         self.renderer.setRenderTarget(self.exclusionRenderTarget);
         self.renderer.clear();
+        //Capture the boat hull DOUBLE-SIDED for this pass only. The boat is a
+        //thin/mixed-winding shell, so FrontSide back-face-culls every floor or
+        //hull triangle whose normal points away from this top-down camera —
+        //those texels capture nothing, read mask 0, and the water is never
+        //discarded there, poking through one un-captured triangle at a time
+        //("little tris" inside the hull). DoubleSide makes the capture purely
+        //depth-based regardless of winding. Restored to FrontSide immediately
+        //so the shared foam terrain pass is unaffected. (.side is a cull-state
+        //toggle, not a #define — no shader recompile.)
+        self.positionPassMaterial.side = THREE.DoubleSide;
         self.renderer.render(scene, self.exclusionCamera);
+        self.positionPassMaterial.side = THREE.FrontSide;
         self.renderer.setRenderTarget(null);
         self._lastExclSnapX = exclSnapX;
         self._lastExclSnapZ = exclSnapZ;
