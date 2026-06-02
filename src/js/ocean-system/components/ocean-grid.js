@@ -956,6 +956,189 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.ringCount = ringCount;
   this.globalCameraPosition = new THREE.Vector3();
 
+  //═══════════════════════════════════════════════════════════════════════════
+  // FFT surface sampling on the CPU — the EXACT rendered water, for buoyancy.
+  //═══════════════════════════════════════════════════════════════════════════
+  //
+  // sampleFFTHeightAt (EXACT, synchronous) reads single texels straight off the
+  // GPU. Each call drains the GPU queue (a stall), so it's a DEBUG ground truth
+  // only — see AWater.AOcean.debugWaveAt.
+  //
+  // The scalable path is the LOCAL HEIGHT FIELD below: once every ~frame a tiny
+  // GPU pass composites the cascades' height into a small RT covering a region
+  // that follows the camera, and we async-read just THAT (a few hundred KB, not
+  // the 12 MB of full cascade textures). Every buoyancy query is then a cheap
+  // bilinear lookup of the cached field — exact (it IS the rendered surface, so
+  // floats ride the water you see) and O(1) per probe regardless of object
+  // count. Objects outside the region return null → caller falls back to
+  // analytic. Tunables: HEIGHT_FIELD_RES (grid resolution), HEIGHT_FIELD_SIZE
+  // (world metres covered → SIZE/RES = m/texel, caps the smallest wave it
+  // resolves), HEIGHT_FIELD_INTERVAL_MS (refresh throttle; waves move slowly so
+  // ~15 Hz is plenty, the cached field is reused every frame between refreshes).
+  const HEIGHT_FIELD_RES = 256;
+  const HEIGHT_FIELD_SIZE = 512.0;          //metres; 2 m/texel at res 256.
+  const HEIGHT_FIELD_INTERVAL_MS = 66;      //~15 Hz refresh.
+  this._hfSnap = null;            //resolved {data, originX, originZ, size, res}.
+  this._hfBufs = null;            //ping-pong readback buffers.
+  this._hfBackIdx = 0;
+  this._hfPending = false;
+  this._hfWantedUntil = 0;        //only run while a consumer asked recently.
+  this._hfLastIssue = 0;
+
+  //EXACT synchronous single-texel readback — DEBUG ground truth only (each call
+  //stalls the GPU queue). See AWater.AOcean.debugWaveAt.
+  this.sampleFFTHeightAt = function(x, z){
+    const composer = self.oceanHeightComposer;
+    if(!composer || !composer.cascadeDisplacementTargets || !composer.cascadeDisplacementTargets[0]) return null;
+    self._fftProbeBuf = self._fftProbeBuf || new Float32Array(4);
+    const buf = self._fftProbeBuf;
+    const res = composer.baseTextureWidth;
+    const offsets = self.oceanMaterial.uniforms.cascadeSpatialOffsets.value;
+    const whm = composer.waveHeightMultiplier;
+    let h = self.heightOffset;
+    for(let c = 0; c < composer.cascadeDisplacementTargets.length; c++){
+      const patch = composer._cascadePatchSizes[c];
+      let u = (x + offsets[c].x) / patch;
+      let v = (z + offsets[c].y) / patch;
+      u -= Math.floor(u); v -= Math.floor(v);
+      const px = Math.min(res - 1, Math.max(0, Math.floor(u * res)));
+      const py = Math.min(res - 1, Math.max(0, Math.floor(v * res)));
+      self.renderer.readRenderTargetPixels(composer.cascadeDisplacementTargets[c], px, py, 1, 1, buf);
+      h += buf[1] * whm; //.y (green) = vertical displacement.
+    }
+    return h;
+  };
+
+  //── Local height-field GPU pass (composite cascades → small RT) ─────────────
+  //Build the pass once. The fragment shader mirrors the water vertex shader's
+  //cascade composition (sum each cascade's .y at (worldXZ+offset)/patch), but
+  //over a region grid instead of mesh vertices, and bakes heightOffset + whm in.
+  const HF_N = self.oceanHeightComposer.numCascades;
+  let hfSumLines = '';
+  for(let c = 0; c < HF_N; c++){
+    hfSumLines += 'dy += texture2D(hfCascadeTex[' + c + '], (worldXZ + hfCascadeOffset[' + c + ']) / hfCascadePatch[' + c + ']).y;\n';
+  }
+  const hfVert = 'varying vec2 vHfUv;\nvoid main(){ vHfUv = uv; gl_Position = vec4(position, 1.0); }';
+  const hfFrag = [
+    'precision highp float;',
+    'varying vec2 vHfUv;',
+    'uniform sampler2D hfCascadeTex[' + HF_N + '];',
+    'uniform vec2 hfCascadeOffset[' + HF_N + '];',
+    'uniform float hfCascadePatch[' + HF_N + '];',
+    'uniform float hfWhm;',
+    'uniform float hfHeightOffset;',
+    'uniform vec2 hfRegionOrigin;',
+    'uniform float hfRegionSize;',
+    'void main(){',
+    '  vec2 worldXZ = hfRegionOrigin + vHfUv * hfRegionSize;',
+    '  float dy = 0.0;',
+    '  ' + hfSumLines,
+    '  gl_FragColor = vec4(hfHeightOffset + dy * hfWhm, 0.0, 0.0, 1.0);',
+    '}'
+  ].join('\n');
+  this._heightFieldMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+      hfCascadeTex: {value: new Array(HF_N).fill(null)},
+      hfCascadeOffset: {value: (function(){ const a = []; for(let i = 0; i < HF_N; i++) a.push(new THREE.Vector2()); return a; })()},
+      hfCascadePatch: {value: new Array(HF_N).fill(1.0)},
+      hfWhm: {value: 1.0},
+      hfHeightOffset: {value: 0.0},
+      hfRegionOrigin: {value: new THREE.Vector2()},
+      hfRegionSize: {value: HEIGHT_FIELD_SIZE}
+    },
+    vertexShader: hfVert,
+    fragmentShader: hfFrag,
+    depthTest: false,
+    depthWrite: false
+  });
+  this._heightFieldScene = new THREE.Scene();
+  this._heightFieldScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this._heightFieldMaterial));
+  this._heightFieldCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  this._heightFieldRT = new THREE.WebGLRenderTarget(HEIGHT_FIELD_RES, HEIGHT_FIELD_RES, {
+    minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
+    format: THREE.RGBAFormat, type: THREE.FloatType,
+    depthBuffer: false, stencilBuffer: false, generateMipmaps: false
+  });
+  this._hfN = HF_N;
+
+  //Render the field + issue the async readback. Region follows the camera,
+  //snapped to the texel grid so the sampled field doesn't shimmer as it pans.
+  this._updateHeightField = function(){
+    const now = (typeof performance !== 'undefined') ? performance.now() : Date.now();
+    if(now > self._hfWantedUntil) return;
+    if(self._hfPending) return;
+    if(now - self._hfLastIssue < HEIGHT_FIELD_INTERVAL_MS) return;
+    const composer = self.oceanHeightComposer;
+    if(!composer || !composer.cascadeDisplacementTextures || !composer.cascadeDisplacementTextures[0]) return;
+    if(typeof self.renderer.readRenderTargetPixelsAsync !== 'function') return;
+
+    const texel = HEIGHT_FIELD_SIZE / HEIGHT_FIELD_RES;
+    const originX = Math.floor((self.globalCameraPosition.x - HEIGHT_FIELD_SIZE * 0.5) / texel) * texel;
+    const originZ = Math.floor((self.globalCameraPosition.z - HEIGHT_FIELD_SIZE * 0.5) / texel) * texel;
+    const u = self._heightFieldMaterial.uniforms;
+    const offsets = self.oceanMaterial.uniforms.cascadeSpatialOffsets.value;
+    for(let c = 0; c < self._hfN; c++){
+      u.hfCascadeTex.value[c] = composer.cascadeDisplacementTextures[c];
+      u.hfCascadePatch.value[c] = composer._cascadePatchSizes[c];
+      u.hfCascadeOffset.value[c].copy(offsets[c]);
+    }
+    u.hfWhm.value = composer.waveHeightMultiplier;
+    u.hfHeightOffset.value = self.heightOffset;
+    u.hfRegionOrigin.value.set(originX, originZ);
+    u.hfRegionSize.value = HEIGHT_FIELD_SIZE;
+
+    const prevRT = self.renderer.getRenderTarget();
+    self.renderer.setRenderTarget(self._heightFieldRT);
+    self.renderer.render(self._heightFieldScene, self._heightFieldCamera);
+    self.renderer.setRenderTarget(prevRT);
+
+    if(!self._hfBufs){
+      const sz = HEIGHT_FIELD_RES * HEIGHT_FIELD_RES * 4;
+      self._hfBufs = [new Float32Array(sz), new Float32Array(sz)];
+    }
+    const buf = self._hfBufs[self._hfBackIdx];
+    self._hfPending = true;
+    self._hfLastIssue = now;
+    self.renderer.readRenderTargetPixelsAsync(self._heightFieldRT, 0, 0, HEIGHT_FIELD_RES, HEIGHT_FIELD_RES, buf).then(function(){
+      self._hfSnap = {data: buf, originX: originX, originZ: originZ, size: HEIGHT_FIELD_SIZE, res: HEIGHT_FIELD_RES};
+      self._hfBackIdx ^= 1; //next read fills the OTHER buffer (don't clobber the live one).
+      self._hfPending = false;
+    }).catch(function(){ self._hfPending = false; });
+  };
+
+  //Cheap bilinear lookup (height baked into .x). Returns null outside the region
+  //or before the first field resolves → caller falls back to analytic.
+  this.sampleWaterHeightFieldCached = function(x, z){
+    const s = self._hfSnap;
+    if(!s) return null;
+    const uu = (x - s.originX) / s.size;
+    const vv = (z - s.originZ) / s.size;
+    if(uu < 0.0 || uu > 1.0 || vv < 0.0 || vv > 1.0) return null;
+    const res = s.res, data = s.data;
+    const fx = uu * res - 0.5, fy = vv * res - 0.5;
+    let x0 = Math.floor(fx), y0 = Math.floor(fy);
+    const tx = fx - x0, ty = fy - y0;
+    let x1 = x0 + 1, y1 = y0 + 1;
+    x0 = x0 < 0 ? 0 : (x0 > res - 1 ? res - 1 : x0);
+    x1 = x1 < 0 ? 0 : (x1 > res - 1 ? res - 1 : x1);
+    y0 = y0 < 0 ? 0 : (y0 > res - 1 ? res - 1 : y0);
+    y1 = y1 < 0 ? 0 : (y1 > res - 1 ? res - 1 : y1);
+    const h00 = data[(y0 * res + x0) * 4], h10 = data[(y0 * res + x1) * 4];
+    const h01 = data[(y1 * res + x0) * 4], h11 = data[(y1 * res + x1) * 4];
+    const a = h00 + (h10 - h00) * tx;
+    const b = h01 + (h11 - h01) * tx;
+    return a + (b - a) * ty;
+  };
+
+  //Public surface. Consumers call requestFFTSnapshot() each frame they want the
+  //field kept warm (it's off when nothing floats). sampleWaterHeightFFT is the
+  //cheap cached path; *Exact is the synchronous debug stall path.
+  AWater.AOcean.requestFFTSnapshot = function(){
+    self._hfWantedUntil = ((typeof performance !== 'undefined') ? performance.now() : Date.now()) + 1000;
+  };
+  AWater.AOcean.sampleWaterHeightFFT = function(x, z){ return self.sampleWaterHeightFieldCached(x, z); };
+  AWater.AOcean.sampleWaterHeightFFTExact = function(x, z){ return self.sampleFFTHeightAt(x, z); };
+
   //Register the horizon skirt as another instance key so the per-frame uniform
   //loop pushes the same FFT-ocean updates into its (cloned) uniforms object.
   //ringIndex was set to 5 at construction and is NOT touched in the per-frame
@@ -2024,6 +2207,10 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     self.oceanHeightBandLibrary.tick(time);
 
     self.oceanHeightComposer.tick();
+
+    //Refresh the local CPU height field for scalable exact buoyancy queries
+    //(tiny GPU pass + async read; no-ops unless something asked for it).
+    self._updateHeightField();
 
     //── Underwater submersion probe ────────────────────────────────────────
     //Read two 1-px FFT-displacement texels above/below the camera so the CPU

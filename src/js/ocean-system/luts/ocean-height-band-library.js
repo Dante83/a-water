@@ -408,12 +408,21 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
       self.cascadePatchSizes, self.N, self.omega_p, self.jonswapGamma,
       (data.directional_turbulence !== undefined) ? data.directional_turbulence : 0.145
     );
+
+    //Rebuild the analytic buoyancy/query field from the new wind so physics and
+    //rendered surface stay locked together.
+    if(self.waveField){ self.waveField.rebuild(); }
   };
 
   // ========================================================================
   // TICK: Per-frame update
   // ========================================================================
   this.tick = function(time){
+    //Advance the analytic buoyancy/query field on the SAME /1000 seconds base
+    //as the h_k shader below, so gameplay water-height queries stay phase-locked
+    //to the rendered surface's motion.
+    if(self.waveField){ self.waveField.currentTimeSeconds = time / 1000.0; }
+
     //`time` is A-Frame's tick clock in MILLISECONDS. The h_k shader uses
     //uTime in cos(w * uTime) where w has units rad/s, so uTime must be in
     //seconds for physical dispersion to read correctly. /1000.0 = real time.
@@ -435,6 +444,15 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
       }
     }
   };
+
+  // ========================================================================
+  // ANALYTIC WAVE FIELD: CPU twin of this spectrum for buoyancy / queries.
+  // Built from the same omega_p / wind / gamma / turbulence / cascade rotation
+  // resolved above, so it cannot drift from the rendered surface. Exposed
+  // globally for gameplay (buoyant component, swimming, dock pilings, ...).
+  // ========================================================================
+  this.waveField = new AWater.AOcean.OceanWaveField(this, data);
+  AWater.AOcean.waveField = this.waveField;
 }
 
 //Per-cascade wind-direction rotation. Each cascade's h_0 spectrum is built

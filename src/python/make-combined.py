@@ -21,6 +21,7 @@ def main():
     'ocean-system/materials/fft-waves/butterfly-pass.js',\
     'ocean-system/materials/ocean-material/position-pass.js',\
     'ocean-system/luts/ocean-height-band-library.js',\
+    'ocean-system/luts/ocean-wave-field.js',\
     'ocean-system/luts/ocean-height-composer.js',\
     'ocean-system/materials/ocean-material/water-shader.js',\
     'ocean-system/materials/ocean-material/ocean-shadow.js',\
@@ -28,6 +29,7 @@ def main():
     'ocean-system/components/ocean-shadow-csm.js',\
     'ocean-system/components/ocean-grid.js',\
     'ocean-system/components/ocean-state.js',\
+    'ocean-system/components/buoyant.js',\
     'ocean-system/components/a-restless-ocean.js']
 
     #Grab the strings for each of these files, and pull out any branches of code related to if(typeof exports !== 'undefined') {..}
