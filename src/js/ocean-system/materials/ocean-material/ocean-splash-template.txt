@@ -1,0 +1,31 @@
+//This helps
+//--------------------------v
+//https://github.com/mrdoob/three.js/wiki/Uniforms-types
+AWater.AOcean.Materials.Ocean.splashMaterial = {
+  uniforms: {
+    //Vertex stage
+    uViewportHeight: {value: 1080.0},
+    uMaxPointSize: {value: 256.0},
+    uSizeScale: {value: 1.0},
+    sunColor: {value: new THREE.Color(1.0, 1.0, 1.0)},
+    skyAmbientColor: {value: new THREE.Color(0.3, 0.4, 0.5)},
+    uSunScale: {value: 0.8},
+    uAmbientScale: {value: 1.0},
+
+    //Fragment stage
+    splashSprite: {value: null},
+    uLinearDepth: {value: null},
+    uResolution: {value: new THREE.Vector2(1920.0, 1080.0)},
+    uSoftRange: {value: 1.5},
+    uOpacity: {value: 1.0},
+    uDebugMode: {value: 0},
+  },
+
+  fragmentShader: [
+    {fragment_glsl}
+  ].join('\n'),
+
+  vertexShader: [
+    {vertex_glsl}
+  ].join('\n'),
+};

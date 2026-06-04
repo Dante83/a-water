@@ -114,6 +114,17 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     foamScrollSpeed * Math.cos(windAngle + 0.34),
     foamScrollSpeed * Math.sin(windAngle + 0.34),
   ];
+  //Wind-driven foam bias ("dip the Jacobian", Sea-of-Thieves style): as the sea
+  //roughens we lift the fold signal in the water shader so progressively gentler
+  //folds, and eventually the open surface itself, turn to foam/streaks. Ramps
+  //linearly from foamWindStart (no extra bias, just real folds) to foamWindFull
+  //(saturated), scaled to foamWindBiasMax added to the shader's `turbulence`.
+  //With FOAM_TURB_THRESHOLD=0.5 the open surface starts foaming once the bias
+  //passes ~0.5 and is fully white by ~0.75. Plain-JS, live-tunable per frame.
+  this.foamWindStart = 10.0;    //m/s: whitecap-extra onset.
+  this.foamWindFull = 50.0;     //m/s: bias saturates here (storm).
+  this.foamWindBiasMax = 0.6;   //max value added to turbulence (FUDGE / art).
+  this._foamWindBias = 0.0;     //computed each frame from current wind.
   this.raycaster = new THREE.Raycaster(
     new THREE.Vector3(0.0,100.0,0.0),
     this.downVector
@@ -736,6 +747,34 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     this.oceanShadowCSM = null;
   }
 
+  //── Splash particles ────────────────────────────────────────────────────────
+  //Airborne spray for breaking crests and water-vs-solid impacts. OceanGrid owns
+  //the Points mesh and hides it during every offscreen pass below (it is only
+  //flipped visible at the very end of tick). Safe to skip if ocean-splash.js or
+  //its generated material isn't loaded.
+  if(AWater.AOcean.OceanSplash && AWater.AOcean.Materials.Ocean.splashMaterial){
+    //Declarative start-time overrides from the scene HTML (ocean-state schema
+    //`splash_config`, e.g. "impactMinLaunch=9, shoreJetScale=2, enabled=false").
+    //Any knob is settable; the same fields stay live-editable on the instance.
+    const splashCfg = AWater.AOcean.OceanSplash.parseConfig(data.splash_config);
+    this.oceanSplash = new AWater.AOcean.OceanSplash(this, scene, splashCfg);
+    //Hull impacts: the buoyancy component fires buoyancy-splash on water entry
+    //(bubbles up to the scene). Feed it straight into the shared impact emitter.
+    const splashSelf = this;
+    if(this.parentComponent && this.parentComponent.el && this.parentComponent.el.sceneEl){
+      this.parentComponent.el.sceneEl.addEventListener('buoyancy-splash', function(evt){
+        const s = splashSelf.oceanSplash;
+        if(!s) return;
+        const d = evt.detail || {};
+        const p = d.point;
+        if(!p) return;
+        s.emitImpact(p.x, p.y, p.z, 0.0, 1.0, 0.0, d.speed || 0.0);
+      });
+    }
+  } else {
+    this.oceanSplash = null;
+  }
+
   //── Horizon skirt ─────────────────────────────────────────────────────────
   //Flat ring at y=0 that fills the angular sliver where the FFT ocean's
   //farthest patches fail the depth test against a-starry-sky's icosahedron
@@ -978,8 +1017,9 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   const HEIGHT_FIELD_RES = 256;
   const HEIGHT_FIELD_SIZE = 512.0;          //metres; 2 m/texel at res 256.
   const HEIGHT_FIELD_INTERVAL_MS = 66;      //~15 Hz refresh.
-  this._hfSnap = null;            //resolved {data, originX, originZ, size, res}.
-  this._hfBufs = null;            //ping-pong readback buffers.
+  this._hfSnap = null;            //resolved {data, originX, originZ, size, res, time}.
+  this._hfSnapPrev = null;        //prior resolved snapshot, kept for dH/dt (rise).
+  this._hfBufs = null;            //triple-buffered readback (see _updateHeightField).
   this._hfBackIdx = 0;
   this._hfPending = false;
   this._hfWantedUntil = 0;        //only run while a consumer asked recently.
@@ -1094,22 +1134,27 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
     if(!self._hfBufs){
       const sz = HEIGHT_FIELD_RES * HEIGHT_FIELD_RES * 4;
-      self._hfBufs = [new Float32Array(sz), new Float32Array(sz)];
+      //Triple-buffered: only one read is ever in flight, so 3 buffers guarantee
+      //the in-flight write target is neither the current nor the previous
+      //snapshot. That lets us retain a stable PREVIOUS field to finite-difference
+      //for surface rise (dH/dt) without the next readback clobbering it mid-transfer.
+      self._hfBufs = [new Float32Array(sz), new Float32Array(sz), new Float32Array(sz)];
     }
     const buf = self._hfBufs[self._hfBackIdx];
     self._hfPending = true;
     self._hfLastIssue = now;
     self.renderer.readRenderTargetPixelsAsync(self._heightFieldRT, 0, 0, HEIGHT_FIELD_RES, HEIGHT_FIELD_RES, buf).then(function(){
-      self._hfSnap = {data: buf, originX: originX, originZ: originZ, size: HEIGHT_FIELD_SIZE, res: HEIGHT_FIELD_RES};
-      self._hfBackIdx ^= 1; //next read fills the OTHER buffer (don't clobber the live one).
+      self._hfSnapPrev = self._hfSnap; //keep the prior field so consumers can read dH/dt.
+      self._hfSnap = {data: buf, originX: originX, originZ: originZ, size: HEIGHT_FIELD_SIZE, res: HEIGHT_FIELD_RES, time: now};
+      self._hfBackIdx = (self._hfBackIdx + 1) % 3; //rotate; never reuse current/prev.
       self._hfPending = false;
     }).catch(function(){ self._hfPending = false; });
   };
 
-  //Cheap bilinear lookup (height baked into .x). Returns null outside the region
-  //or before the first field resolves → caller falls back to analytic.
-  this.sampleWaterHeightFieldCached = function(x, z){
-    const s = self._hfSnap;
+  //Bilinear lookup of a GIVEN resolved snapshot's baked height (.x) at world
+  //(x,z). Returns null outside that snapshot's region. Shared by the cached-height,
+  //rise and slope samplers below so they all read the same field consistently.
+  this._sampleSnapHeight = function(s, x, z){
     if(!s) return null;
     const uu = (x - s.originX) / s.size;
     const vv = (z - s.originZ) / s.size;
@@ -1130,6 +1175,12 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     return a + (b - a) * ty;
   };
 
+  //Cheap bilinear lookup of the CURRENT field. Returns null outside the region or
+  //before the first field resolves → caller falls back to analytic.
+  this.sampleWaterHeightFieldCached = function(x, z){
+    return self._sampleSnapHeight(self._hfSnap, x, z);
+  };
+
   //Public surface. Consumers call requestFFTSnapshot() each frame they want the
   //field kept warm (it's off when nothing floats). sampleWaterHeightFFT is the
   //cheap cached path; *Exact is the synchronous debug stall path.
@@ -1138,6 +1189,42 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   };
   AWater.AOcean.sampleWaterHeightFFT = function(x, z){ return self.sampleWaterHeightFieldCached(x, z); };
   AWater.AOcean.sampleWaterHeightFFTExact = function(x, z){ return self.sampleFFTHeightAt(x, z); };
+
+  //Phase-correct surface RISE (dH/dt, m/s) at world (x,z): finite difference of
+  //the two most recent rendered-FFT snapshots — the rendered water's OWN vertical
+  //velocity. The analytic twin shares the spectrum but not the GPU's phases, so
+  //its "rising here?" answer fired spray over visibly-flat/trough water (the
+  //bunched, mistimed shore bursts). Returns null until two snapshots exist or
+  //outside the region → caller falls back to the analytic rate.
+  AWater.AOcean.sampleWaterRiseFFT = function(x, z){
+    const cur = self._hfSnap, prev = self._hfSnapPrev;
+    if(!cur || !prev) return null;
+    const dt = (cur.time - prev.time) / 1000.0;
+    if(dt <= 1e-4) return null;
+    const hc = self._sampleSnapHeight(cur, x, z);
+    const hp = self._sampleSnapHeight(prev, x, z);
+    if(hc === null || hp === null) return null;
+    return (hc - hp) / dt;
+  };
+
+  //Phase-correct STEEPNESS (1 - normal.y) at world (x,z) from the rendered-FFT
+  //height field's OWN slope (central differences, one texel eps). Same motivation
+  //as the rise sampler: the analytic normal peaks on phantom crests, so mist tore
+  //off flat water. Returns null outside the region → caller falls back to analytic.
+  AWater.AOcean.sampleWaterSlopeFFT = function(x, z){
+    const s = self._hfSnap;
+    if(!s) return null;
+    const eps = s.size / s.res; //one texel (~2 m).
+    const hxp = self._sampleSnapHeight(s, x + eps, z);
+    const hxn = self._sampleSnapHeight(s, x - eps, z);
+    const hzp = self._sampleSnapHeight(s, x, z + eps);
+    const hzn = self._sampleSnapHeight(s, x, z - eps);
+    if(hxp === null || hxn === null || hzp === null || hzn === null) return null;
+    const dhdx = (hxp - hxn) / (2.0 * eps);
+    const dhdz = (hzp - hzn) / (2.0 * eps);
+    const ny = 1.0 / Math.sqrt(1.0 + dhdx * dhdx + dhdz * dhdz);
+    return 1.0 - ny;
+  };
 
   //Register the horizon skirt as another instance key so the per-frame uniform
   //loop pushes the same FFT-ocean updates into its (cloned) uniforms object.
@@ -1416,6 +1503,25 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     window.setSpecFalloffFarDist = this.setSpecFalloffFarDist;
     window.setOceanWireframe = this.setOceanWireframe;
     window.setAtmDistanceScale = this.setAtmDistanceScale;
+    //Splash particles: debug tint (0 normal, 1 tint-by-type), master toggle, and
+    //a direct handle on the OceanSplash instance for live-tuning its plain-JS
+    //knobs (e.g. oceanSplash.crestSpawnChance = 0.2).
+    window.setSplashDebug = function(n){ if(self.oceanSplash) self.oceanSplash.debugMode = n | 0; };
+    window.setSplashEnabled = function(e){ if(self.oceanSplash) self.oceanSplash.enabled = !!e; };
+    //Debug surface probe: a red ball parked on the sampled emission surface in
+    //front of the camera, to check whether spawn HEIGHT tracks the visible
+    //waterline. The probe is a child of the splash mesh, which only renders when
+    //the system is enabled, so turning the probe on also forces enabled = true.
+    window.setSplashMarker = function(e){
+      if(!self.oceanSplash) return;
+      self.oceanSplash.debugMarker = !!e;
+      if(e) self.oceanSplash.enabled = true;
+    };
+    window.oceanSplash = self.oceanSplash;
+    //Wind-driven foam ("dip the Jacobian"): tune the storm-whitening ramp live.
+    //setFoamWindBiasMax(0.6) sets the cap; setFoamWindRange(10,50) the m/s window.
+    window.setFoamWindBiasMax = function(v){ self.foamWindBiasMax = +v; };
+    window.setFoamWindRange = function(start, full){ self.foamWindStart = +start; self.foamWindFull = +full; };
   }
   const oceanPatchTranslationMatrices = [];
   for(let i = 0, numOceanPatches = self.oceanPatches.length; i < numOceanPatches; ++i){
@@ -1960,6 +2066,11 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
   this.tick = function(time){
 
+    //Hide splash particles for the whole offscreen-pass block below (refraction
+    //G-buffer, reflection, foam/exclusion orthos, CSM, caustics). They are
+    //re-shown at the very end of tick so they appear only in the main render.
+    if(self.oceanSplash) self.oceanSplash.mesh.visible = false;
+
     //Update directional lights list (collect all in scene)
     if(self.directionalLights.length === 0){
       for(let i = 0, numItems = self.scene.children.length; i < numItems; ++i){
@@ -2160,6 +2271,12 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         self.renderer.setRenderTarget(null);
         self._lastFoamSnapX = foamSnapX;
         self._lastFoamSnapZ = foamSnapZ;
+        //Copy the just-rendered terrain-height ortho to the CPU (async) so the
+        //splash system can detect the shoreline. Only fires on snap-change, so
+        //the transfer is rare. Half-width is 2048 m (see foamTexel above).
+        if(self.oceanSplash){
+          self.oceanSplash.requestTerrainReadback(self.foamRenderTarget, foamSnapX, foamSnapZ, 2048.0);
+        }
       }
       if(renderExcl){
         self.exclusionCamera.position.set(exclSnapX, this.heightOffset + self.foamCameraHeight, exclSnapZ);
@@ -2464,6 +2581,17 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       brightestDirectionalLight = self.brightestDirectionalLight;
     }
 
+    //Wind-driven foam bias, computed once per frame from the CURRENT wind (so a
+    //runtime storm ramp whitens the sea as it builds). windVelocity references the
+    //A-Frame data, so it tracks live wind changes that also drive regenerateH0.
+    {
+      const ws = Math.sqrt(self.windVelocity.x * self.windVelocity.x + self.windVelocity.y * self.windVelocity.y);
+      const span = self.foamWindFull - self.foamWindStart;
+      let f = span > 1e-3 ? (ws - self.foamWindStart) / span : (ws >= self.foamWindStart ? 1.0 : 0.0);
+      f = f < 0.0 ? 0.0 : (f > 1.0 ? 1.0 : f);
+      self._foamWindBias = f * self.foamWindBiasMax;
+    }
+
     for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
       const uniformsRef = oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms;
       for(let c = 0; c < 6; c++){
@@ -2476,6 +2604,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       //shader in sync without an extra change-detection path.
       uniformsRef.cascadeRMSSlope.value = self.oceanHeightBandLibrary.cascadeRMSSlope;
       uniformsRef.waveHeightMultiplier.value = self.oceanHeightComposer.waveHeightMultiplier;
+      uniformsRef.foamWindBias.value = self._foamWindBias;
       //G-buffer attachments — albedo (0), normal (1), linear-depth (2);
       //depthTexture is the MRT's own depth attachment, kept for unprojection.
       uniformsRef.refractionColorTexture.value = self.refractionGBufferTarget.textures[0];
@@ -2726,5 +2855,55 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //the underwater chunk's HG sun phase reads the right vector. Cheap scene
     //traversal; the per-material write is a Vector3.copy().
     self._broadcastUwSunDir();
+
+    //── Splash particles ──────────────────────────────────────────────────────
+    //Run emission + sim last (the offscreen passes are done), then re-show the
+    //mesh so it lands in this frame's main render only.
+    if(self.oceanSplash){
+      const sp = self.oceanSplash;
+      self._splashSunColor = self._splashSunColor || new THREE.Color();
+      self._splashAmbient = self._splashAmbient || new THREE.Color();
+      if(self.brightestDirectionalLight){
+        const ml = self.brightestDirectionalLight;
+        self._splashSunColor.copy(ml.color).multiplyScalar(ml.intensity);
+      } else {
+        self._splashSunColor.setRGB(1.0, 1.0, 1.0);
+      }
+      if(self.skyDirector && self.skyDirector.lightingManager){
+        const yl = self.skyDirector.lightingManager.yAxisHemisphericalLight;
+        self._splashAmbient.copy(yl.color).multiplyScalar(yl.intensity);
+      } else if(self._fallbackHemiLight){
+        self._splashAmbient.copy(self._fallbackHemiLight.color).multiplyScalar(self._fallbackHemiLight.intensity);
+      } else {
+        self._splashAmbient.setRGB(0.3, 0.4, 0.5);
+      }
+      //Camera forward, flattened to the XZ plane and normalised. The shore scan
+      //biases its detector density toward what the camera is actually looking at
+      //(dense in front, thinned behind) so the budget is spent on visible spray.
+      self._splashFwd = self._splashFwd || new THREE.Vector3();
+      self.camera.getWorldDirection(self._splashFwd);
+      let _fwdX = self._splashFwd.x, _fwdZ = self._splashFwd.z;
+      const _fwdL = Math.sqrt(_fwdX * _fwdX + _fwdZ * _fwdZ);
+      if(_fwdL > 1e-4){ _fwdX /= _fwdL; _fwdZ /= _fwdL; } else { _fwdX = 0.0; _fwdZ = 1.0; }
+      sp.tick({
+        time: time,
+        camX: self.globalCameraPosition.x,
+        camZ: self.globalCameraPosition.z,
+        camFwdX: _fwdX,
+        camFwdZ: _fwdZ,
+        //Real wind velocity (m/s, world X/Z), NOT foamScrollVelocityVec — that
+        //one is a deliberately-slowed foam-texture drift (windSpeed*0.04) and
+        //would barely budge the spray. windVelocity.x->world X, .y->world Z.
+        windX: self.windVelocity.x,
+        windZ: self.windVelocity.y,
+        sunColor: self._splashSunColor,
+        skyAmbient: self._splashAmbient,
+        viewportHeight: self.refractionGBufferTarget.height,
+        resW: self.refractionGBufferTarget.width,
+        resH: self.refractionGBufferTarget.height,
+        linearDepthTexture: self.refractionGBufferTarget.textures[2]
+      });
+      sp.mesh.visible = sp.enabled;
+    }
   };
 }

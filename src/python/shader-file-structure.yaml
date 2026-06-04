@@ -43,3 +43,8 @@ groups:
         vertex:   'horizon-skirt-vertex.glsl'
         template: 'horizon-skirt-template.txt'
         material: 'horizon-skirt.js'
+      -
+        fragment: 'ocean-splash.glsl'
+        vertex:   'ocean-splash-vertex.glsl'
+        template: 'ocean-splash-template.txt'
+        material: 'ocean-splash.js'

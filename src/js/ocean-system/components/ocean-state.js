@@ -74,7 +74,13 @@ AFRAME.registerComponent('ocean-state', {
     //was shadowing the water itself (world-Y deltas of ~1 m collapse to
     //sub-bias deltas in shadow space at near-horizon sun). Tune via the
     //live setSunShadowBias() console hook.
-    'sun_shadow_bias': {type: 'number', default: -0.0012}
+    'sun_shadow_bias': {type: 'number', default: -0.0012},
+    //Start-time overrides for the splash/spray system (AWater.AOcean.OceanSplash).
+    //A "key=value, key=value" list (uses = and , because A-Frame already owns :
+    //and ; as its own delimiters). Any OceanSplash knob is settable, e.g.
+    //  splash_config: enabled=true, impactMinLaunch=9, shoreJetScale=2, capacity=12000
+    //The same fields stay live-editable at runtime via window.oceanSplash.
+    'splash_config': {type: 'string', default: ''}
   },
   init: function(){
     //Get our renderer to pass in

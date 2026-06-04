@@ -441,7 +441,12 @@ AFRAME.registerComponent('buoyant', {
         this._vy *= Math.exp(-dt / Math.max(1e-3, tau));
       }
       if(this._wasInAir && !inAir && this._vy < -0.5){
-        this.el.emit('buoyancy-splash', {speed: -this._vy}, false);
+        //Bubble to the scene so OceanGrid's splash system can hear it, and carry
+        //the contact point (body XZ at the wave-plane height it just struck).
+        this.el.emit('buoyancy-splash', {
+          speed: -this._vy,
+          point: {x: obj.position.x, y: targetY, z: obj.position.z}
+        }, true);
       }
       this._wasInAir = inAir;
       obj.position.y += this._vy * dt;
