@@ -1518,6 +1518,15 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       if(e) self.oceanSplash.enabled = true;
     };
     window.oceanSplash = self.oceanSplash;
+    //Reflection-vector shore launch: setSplashReflect(reflect, runUp) tunes how the
+    //impact sheet leaves a cliff. reflect 0=cone up the surface normal (old look),
+    //1=mirror the incoming water off the face; runUp adds upward climb on a head-on
+    //slam. e.g. setSplashReflect(1, 1.2) (defaults) → tall directional cliff sheets.
+    window.setSplashReflect = function(reflect, runUp){
+      if(!self.oceanSplash) return;
+      if(reflect !== undefined) self.oceanSplash.impactReflect = +reflect;
+      if(runUp !== undefined) self.oceanSplash.impactRunUp = +runUp;
+    };
     //Wind-driven foam ("dip the Jacobian"): tune the storm-whitening ramp live.
     //setFoamWindBiasMax(0.6) sets the cap; setFoamWindRange(10,50) the m/s window.
     window.setFoamWindBiasMax = function(v){ self.foamWindBiasMax = +v; };
@@ -2863,9 +2872,14 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       const sp = self.oceanSplash;
       self._splashSunColor = self._splashSunColor || new THREE.Color();
       self._splashAmbient = self._splashAmbient || new THREE.Color();
+      self._splashSunDir = self._splashSunDir || new THREE.Vector3(0.0, 1.0, 0.0);
       if(self.brightestDirectionalLight){
         const ml = self.brightestDirectionalLight;
         self._splashSunColor.copy(ml.color).multiplyScalar(ml.intensity);
+        //Direction TO the sun (world): the light points position -> target, so the
+        //sun lies along (position - target). Feeds the splash forward-scatter phase.
+        self._splashSunDir.set(ml.position.x, ml.position.y, ml.position.z)
+          .sub(ml.target.position).normalize();
       } else {
         self._splashSunColor.setRGB(1.0, 1.0, 1.0);
       }
@@ -2885,6 +2899,20 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       let _fwdX = self._splashFwd.x, _fwdZ = self._splashFwd.z;
       const _fwdL = Math.sqrt(_fwdX * _fwdX + _fwdZ * _fwdZ);
       if(_fwdL > 1e-4){ _fwdX /= _fwdL; _fwdZ /= _fwdL; } else { _fwdX = 0.0; _fwdZ = 1.0; }
+      //Scene sun shadow: hand the splash the SAME directional-light shadow map + params
+      //the water surface receives (see the sunShadow* wiring above), so spray darkens
+      //under the rocks / lighthouse consistently. Auto-detect + console override match.
+      let _shEnabled = 0, _shMap = null, _shMatrix = null, _shW = 2048.0, _shH = 2048.0,
+          _shRadius = 1.0, _shBias = 0.0;
+      const _sLight = self.brightestDirectionalLight;
+      if(_sLight && _sLight.castShadow && _sLight.shadow && _sLight.shadow.map){
+        _shEnabled = (self._sunShadowOverride === false) ? 0 : 1;
+        _shMap = _sLight.shadow.map.texture;
+        _shMatrix = _sLight.shadow.matrix;
+        _shW = _sLight.shadow.mapSize.x; _shH = _sLight.shadow.mapSize.y;
+        _shRadius = _sLight.shadow.radius;
+        _shBias = _sLight.shadow.bias + (self._sunShadowBiasOffset || 0.0);
+      }
       sp.tick({
         time: time,
         camX: self.globalCameraPosition.x,
@@ -2898,6 +2926,14 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         windZ: self.windVelocity.y,
         sunColor: self._splashSunColor,
         skyAmbient: self._splashAmbient,
+        sunDir: self._splashSunDir,
+        sunShadowEnabled: _shEnabled,
+        sunShadowMap: _shMap,
+        sunShadowMatrix: _shMatrix,
+        sunShadowMapW: _shW,
+        sunShadowMapH: _shH,
+        sunShadowRadius: _shRadius,
+        sunShadowBias: _shBias,
         viewportHeight: self.refractionGBufferTarget.height,
         resW: self.refractionGBufferTarget.width,
         resH: self.refractionGBufferTarget.height,

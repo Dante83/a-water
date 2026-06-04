@@ -5,20 +5,33 @@ AWater.AOcean.Materials.Ocean.splashMaterial = {
   uniforms: {
     //Vertex stage
     uViewportHeight: {value: 1080.0},
-    uMaxPointSize: {value: 256.0},
-    uSizeScale: {value: 1.0},
+    uMaxPointSize: {value: 512.0},
+    uSizeScale: {value: 5.0},
     sunColor: {value: new THREE.Color(1.0, 1.0, 1.0)},
     skyAmbientColor: {value: new THREE.Color(0.3, 0.4, 0.5)},
     uSunScale: {value: 0.8},
     uAmbientScale: {value: 1.0},
+    sunDir: {value: new THREE.Vector3(0.0, 1.0, 0.0)},
+    uPhaseG: {value: 0.85},
+    uPhaseGain: {value: 0.6},
+    sunShadowMatrix: {value: new THREE.Matrix4()},
+    sunShadowMap: {value: null},
+    sunShadowMapSize: {value: new THREE.Vector2(2048.0, 2048.0)},
+    sunShadowRadius: {value: 1.0},
+    sunShadowBias: {value: 0.0},
+    sunShadowEnabled: {value: 0},
 
     //Fragment stage
     splashSprite: {value: null},
     uLinearDepth: {value: null},
     uResolution: {value: new THREE.Vector2(1920.0, 1080.0)},
     uSoftRange: {value: 1.5},
-    uOpacity: {value: 1.0},
+    uOpacity: {value: 0.55},
     uDebugMode: {value: 0},
+    uNoiseScale: {value: 2.5},
+    uErode: {value: 0.35},
+    uSoftEdge: {value: 0.25},
+    uNoiseEvolve: {value: 0.6},
   },
 
   fragmentShader: [

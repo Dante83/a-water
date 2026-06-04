@@ -96,6 +96,15 @@ AWater.AOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
   this.shoreGridStep = 2.0;      //m scan spacing within the readback ortho. Finer
                                  //than the old 4 m so the waterline resolves as a
                                  //continuous edge, not a handful of scattered cells.
+  this.shoreGradEps = 6.0;       //m baseline for the terrain-slope finite difference.
+                                 //CRITICAL: the foam-height ortho is ~4 m/texel, so the
+                                 //old 1 m eps sampled the SAME texel twice → gradient 0
+                                 //→ a flat (0,1,0) normal → the reflection launch had no
+                                 //surface to bounce off and every burst fired straight
+                                 //UP. The eps is clamped to >=1.5 texels at runtime so
+                                 //neighbouring samples land in DIFFERENT texels and the
+                                 //cliff slope (hence the reflected, forward spray) is
+                                 //actually resolved.
   this.shoreScanRadius = 90.0;   //m around camera to look for shoreline.
   this.shoreNearRadius = 45.0;   //m: inside this every shore cell fires (dense, a
                                  //solid sheet); beyond it cells are probabilistically
@@ -116,7 +125,14 @@ AWater.AOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
   this.impactBurstPerSpeed = 6.0;//particles per m/s of impact speed (FUDGE).
   this.impactMinBurst = 4;
   this.impactMaxBurst = 60;
-  this.impactSize = 0.3;         //m (FUDGE).
+  this.impactSize = 0.3;         //m (FUDGE) — droplet size at impactSizeRefSpeed.
+  this.impactSizeRefSpeed = 8.0; //m/s impact speed that yields the nominal impactSize.
+                                 //Droplet scale grows with impact energy so a big
+                                 //breaker throws fat sheets and a small lap a fine fizz.
+                                 //Without this every burst rendered the SAME droplet
+                                 //size regardless of wave, so all spray read alike.
+  this.impactSizeMaxScale = 2.5; //cap on the size multiplier (a freak surge speed must
+                                 //not spawn giant blobs).
   this.impactLifetime = 1.4;     //s (FUDGE).
   this.impactVelScale = 0.9;     //launch speed as fraction of impact speed (FUDGE).
   this.impactMinLaunch = 7.0;    //m/s FLOOR on burst launch speed (FUDGE). The shore
@@ -134,13 +150,31 @@ AWater.AOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
                                  //height, so the cap can sit high enough for a big wave
                                  //to genuinely leap up a cliff (~16 m/s ≈ 13 m of reach)
                                  //without re-admitting the runaway analytic spike.
-  this.impactSpread = 0.55;      //cone half-spread around the surface normal.
-  this.impactWindRampTime = 0.6; //s for impact spray to feel its FULL wind share.
+  this.impactSpread = 0.55;      //cone half-spread around the launch axis.
+  this.impactReflect = 1.0;      //0 = launch coned about the surface NORMAL (old
+                                 //behaviour); 1 = launch coned about the MIRROR of the
+                                 //incoming water velocity reflected off that surface, so
+                                 //water thrown at a cliff sprays BACK along its path
+                                 //(directional sheet) rather than always straight up the
+                                 //rock. Only engages when the caller supplies an incoming
+                                 //velocity (shore does; hull falls back to the normal cone).
+  this.impactRunUp = 1.2;        //wall run-up: inviscid mirror reflection alone leaves a
+                                 //vertical cliff spraying horizontally (no up). Real water
+                                 //climbs the face on a head-on slam, so we add upward lift
+                                 //proportional to how square-on the impact is (-incoming·n).
+                                 //Glancing flat-beach backwash gets little → low seaward
+                                 //wash; head-on cliff strikes get a tall sheet. (FUDGE: the
+                                 //run-up term is not in the inviscid bounce.)
+  this.impactWindRampTime = 1.1; //s for impact spray to feel its FULL wind share.
                                  //Impact droplets are knocked off a solid (shore/hull)
                                  //and should arc up ballistically first; the wind they
                                  //feel ramps 0->1 over this time so a strong wind does
                                  //not instantly blow the launch flat. Crest mist is
-                                 //exempt (torn off already moving with the air).
+                                 //exempt (torn off already moving with the air). Raised
+                                 //0.6->1.1 because the reflected forward launch was being
+                                 //bent downwind before it could carry — the longer ramp
+                                 //lets the ballistic arc read first. (Pairs with
+                                 //impactWindFactor for the eventual drift strength.)
   this.impactWindFactor = 0.35;  //fraction of wind speed impact spray ultimately
                                  //drifts at. Heavy thrown droplets do NOT reach wind
                                  //speed — only fine mist does. At 1.0 the sim pulled
@@ -150,11 +184,33 @@ AWater.AOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
                                  //comparable to the launch, so spray stays a local arc.
 
   //Render-side art knobs (pushed to uniforms each frame).
-  this.opacity = 1.0;
-  this.sizeScale = 1.0;
+  this.opacity = 0.55;           //PEAK puff opacity. Well below 1 so the noise-carved
+                                 //cloud stays translucent (a solid 1.0 reads as opaque
+                                 //"marshmallows", not mist).
+  this.sizeScale = 5.0;          //mist puffs are clumps of aerosol, not single droplets,
+                                 //so blow the world radius up ~5x over the spawn size.
   this.softRange = 1.5;          //m soft-particle fade depth.
-  this.maxPointSize = 256.0;
+  this.maxPointSize = 512.0;     //raised from 256 so the 5x-larger near puffs are not
+                                 //clamped flat (watch fill-rate: big translucent sprites
+                                 //+ 3-octave noise is the main cost here).
   this.debugMode = 0;            //0 normal, 1 tint-by-type.
+
+  //── Forward-scatter (Mie) phase knobs. The mist blooms when the view ray passes
+  //   near the sun direction — the dependable "sunlit spray" cue. Applied to the sun
+  //   term only (ambient stays smooth). ───────────────────────────────────────────
+  this.phaseG = 0.85;            //forward-lobe asymmetry; toward 1 = tighter sun halo.
+  this.phaseGain = 0.6;          //halo strength multiplier on the sun term (FUDGE).
+  this.receiveShadow = true;     //darken puffs that sit in the scene sun shadow
+                                 //(rocks / lighthouse). Spray does NOT cast — point
+                                 //sprites cannot write a usable shape into the shadow
+                                 //map; receive-only is the practical path.
+
+  //── Procedural mist-shape knobs. Each billboard is a soft sphere eroded by 3D noise
+  //   (no sprite texture). erode/softEdge are the spray-vs-fog dial. ────────────────
+  this.noiseScale = 2.5;         //3D noise frequency across the droplet.
+  this.erode = 0.35;             //silhouette erosion threshold (higher = grainier).
+  this.softEdge = 0.25;          //erosion smoothstep width (lower = sharper, sparklier).
+  this.noiseEvolve = 0.6;        //how fast the noise field dissolves over the life.
 
   //── Debug surface probe. A single bright ball parked ON the sampled emission
   //   surface (the same rendered-FFT _surfaceHeight the crest/shore emitters
@@ -304,12 +360,16 @@ AWater.AOcean.OceanSplash.prototype.spawn = function(px, py, pz, vx, vy, vz, siz
 };
 
 //Unified impact burst — shore and hull both call this. worldPos is the contact
-//point, (nx,ny,nz) the surface normal the spray leaves along, speed the closing
-//speed of water vs solid in m/s. (tanX,tanZ,span) are optional: when given, each
-//particle's spawn point is jittered up to ±span/2 ALONG the (tanX,tanZ) tangent,
+//point, (nx,ny,nz) the surface normal (the solid face the water strikes), speed the
+//closing speed of water vs solid in m/s. (tanX,tanZ,span) are optional: when given,
+//each particle's spawn point is jittered up to ±span/2 ALONG the (tanX,tanZ) tangent,
 //so a row of shore cells lays down one continuous SHEET instead of isolated point
 //geysers. Omit them (hull impacts) for a burst from a single point.
-AWater.AOcean.OceanSplash.prototype.emitImpact = function(px, py, pz, nx, ny, nz, speed, tanX, tanZ, span, countScale){
+//(inVx,inVy,inVz) are optional: the incoming WATER velocity. When supplied (shore),
+//the launch axis becomes the mirror of that velocity reflected off the surface (plus
+//run-up), so spray leaves DIRECTIONALLY along the bounce instead of coning straight
+//up the normal. Omit them (hull) to keep the old normal-cone launch.
+AWater.AOcean.OceanSplash.prototype.emitImpact = function(px, py, pz, nx, ny, nz, speed, tanX, tanZ, span, countScale, inVx, inVy, inVz){
   if(!this.enabled || !this.impactEnabled) return;
   if(speed <= 0.0) return;
   let count = Math.round(speed * this.impactBurstPerSpeed);
@@ -321,21 +381,55 @@ AWater.AOcean.OceanSplash.prototype.emitImpact = function(px, py, pz, nx, ny, nz
   if(countScale !== undefined){ count = Math.max(1, Math.round(count * countScale)); }
   const nl = Math.max(1e-4, Math.sqrt(nx * nx + ny * ny + nz * nz));
   nx /= nl; ny /= nl; nz /= nl;
+  //Launch axis. By default spray cones up the surface normal (old behaviour). When
+  //the caller hands us the incoming water velocity AND reflection is enabled, the
+  //axis becomes the MIRROR of that velocity bounced off the surface: water moving
+  //into the face (incoming·n < 0) is thrown back out along the reflection, so a wave
+  //hitting a cliff sprays seaward along its own path rather than dribbling up the
+  //rock. Inviscid reflection alone leaves a vertical wall spraying flat, so we add
+  //run-up — upward lift scaled by how square-on the slam is (-incoming·n) — which is
+  //what lifts a real sheet up the face. Glancing flat-beach backwash gets little of
+  //either and washes low; head-on cliff strikes throw a tall directional sheet.
+  let axisX = nx, axisY = ny, axisZ = nz;
+  if(this.impactReflect > 0.0 && inVx !== undefined){
+    const vl = Math.sqrt(inVx * inVx + inVy * inVy + inVz * inVz);
+    if(vl > 1e-4){
+      const ivx = inVx / vl, ivy = inVy / vl, ivz = inVz / vl;
+      const idotn = ivx * nx + ivy * ny + ivz * nz; //<0 => water moves INTO the face.
+      if(idotn < 0.0){
+        const rx = ivx - 2.0 * idotn * nx; //mirror reflection (unit in, unit out).
+        const ry = ivy - 2.0 * idotn * ny;
+        const rz = ivz - 2.0 * idotn * nz;
+        const runUp = this.impactRunUp * (-idotn);
+        const b = this.impactReflect;
+        let ax = rx * b + nx * (1.0 - b);
+        let ay = ry * b + ny * (1.0 - b) + runUp;
+        let az = rz * b + nz * (1.0 - b);
+        const al = Math.sqrt(ax * ax + ay * ay + az * az);
+        if(al > 1e-4){ axisX = ax / al; axisY = ay / al; axisZ = az / al; }
+      }
+    }
+  }
   //Cap the launch: shore "rise" can read 20+ m/s, which fires spray dozens of
   //metres up (the geyser). Torn shore spray actually leaves at a few m/s.
   let launch = speed * this.impactVelScale;
   if(launch < this.impactMinLaunch) launch = this.impactMinLaunch;
   if(launch > this.impactMaxLaunch) launch = this.impactMaxLaunch;
   const haveTan = (span && span > 0.0 && (tanX !== undefined));
+  //Per-burst size scale from impact energy. sqrt so droplet scale tracks momentum
+  //gently (spray scale grows slower than raw speed); 1.0 at the reference speed.
+  let sizeE = Math.sqrt(speed / Math.max(0.1, this.impactSizeRefSpeed));
+  if(sizeE > this.impactSizeMaxScale) sizeE = this.impactSizeMaxScale;
+  const burstSize = this.impactSize * sizeE;
   for(let k = 0; k < count; ++k){
-    //Random direction within a cone around the surface normal, biased upward so
-    //a burst sheets into the air rather than spraying sideways.
+    //Random direction within a cone around the launch axis, biased upward so a
+    //burst sheets into the air rather than spraying sideways.
     let rx = Math.random() * 2.0 - 1.0;
     let ry = Math.random() * 2.0 - 1.0;
     let rz = Math.random() * 2.0 - 1.0;
-    let dx = nx + rx * this.impactSpread;
-    let dy = ny + ry * this.impactSpread;
-    let dz = nz + rz * this.impactSpread;
+    let dx = axisX + rx * this.impactSpread;
+    let dy = axisY + ry * this.impactSpread;
+    let dz = axisZ + rz * this.impactSpread;
     if(dy < 0.2) dy = 0.2;
     const dl = Math.max(1e-4, Math.sqrt(dx * dx + dy * dy + dz * dz));
     const sp = launch * (0.5 + Math.random() * 0.7);
@@ -348,7 +442,7 @@ AWater.AOcean.OceanSplash.prototype.emitImpact = function(px, py, pz, nx, ny, nz
     this.spawn(
       sx, py, sz,
       (dx / dl) * sp, (dy / dl) * sp, (dz / dl) * sp,
-      this.impactSize * (0.7 + Math.random() * 0.7),
+      burstSize * (0.7 + Math.random() * 0.7),
       this.impactLifetime * (0.7 + Math.random() * 0.6),
       1.0
     );
@@ -496,7 +590,14 @@ AWater.AOcean.OceanSplash.prototype._emitShore = function(field, t, camX, camZ, 
   const maxD2 = this.maxEmitDistance * this.maxEmitDistance;
   const nearR2 = this.shoreNearRadius * this.shoreNearRadius;
   const dt = 0.05;
-  const eps = 1.0; //m for terrain gradient.
+  //Terrain-slope finite-difference step. Must straddle at least ~1.5 foam-ortho
+  //texels or both samples land in the same texel and the gradient reads zero (the
+  //"every burst poofs straight up" bug — a flat normal gives the reflection nothing
+  //to bounce off). Derive the texel size from the readback resolution so this holds
+  //if the ortho is ever resized.
+  const texel = (this._terrainW > 0 && this._terrainHalf > 0)
+    ? (2.0 * this._terrainHalf / this._terrainW) : 4.0;
+  const eps = Math.max(this.shoreGradEps, texel * 1.5);
   for(let gx = -r; gx <= r; gx += step){
     for(let gz = -r; gz <= r; gz += step){
       const d2 = gx * gx + gz * gz;
@@ -539,11 +640,21 @@ AWater.AOcean.OceanSplash.prototype._emitShore = function(field, t, camX, camZ, 
       //to the visible surface — never under the terrain / rendered water.
       const h0 = this._surfaceHeight(field, x, z, t);
       if(h0 < terrainY) continue;
-      //Terrain gradient: spray leaves up and away from rising ground.
-      const tgx = this.sampleTerrainHeight(x + eps, z);
-      const tgz = this.sampleTerrainHeight(x, z + eps);
-      let gradX = (tgx !== null) ? (tgx - terrainY) / eps : 0.0;
-      let gradZ = (tgz !== null) ? (tgz - terrainY) / eps : 0.0;
+      //Terrain gradient (uphill direction): central difference where both neighbours
+      //are on the terrain, one-sided where a neighbour falls into the sea/sky (null).
+      //This is the slope the spray reflects off, so a real (non-zero) value here is
+      //what gives the burst its forward, up-the-face momentum.
+      const xp = this.sampleTerrainHeight(x + eps, z);
+      const xm = this.sampleTerrainHeight(x - eps, z);
+      const zp = this.sampleTerrainHeight(x, z + eps);
+      const zm = this.sampleTerrainHeight(x, z - eps);
+      let gradX = 0.0, gradZ = 0.0;
+      if(xp !== null && xm !== null) gradX = (xp - xm) / (2.0 * eps);
+      else if(xp !== null) gradX = (xp - terrainY) / eps;
+      else if(xm !== null) gradX = (terrainY - xm) / eps;
+      if(zp !== null && zm !== null) gradZ = (zp - zm) / (2.0 * eps);
+      else if(zp !== null) gradZ = (zp - terrainY) / eps;
+      else if(zm !== null) gradZ = (terrainY - zm) / eps;
       //Waterline tangent = the horizontal direction ALONG the shore = perpendicular
       //to the (gradX,gradZ) uphill direction in the XZ plane. The burst is smeared
       //along this so neighbouring cells overlap into one continuous sheet.
@@ -559,10 +670,17 @@ AWater.AOcean.OceanSplash.prototype._emitShore = function(field, t, camX, camZ, 
       const surge = Math.max(0.0, h0 - field.heightOffset);
       const jet = this.shoreJetScale * Math.sqrt(2.0 * this.gravity * surge);
       const impactSpeed = Math.max(rise, jet);
-      //Mostly-vertical launch (ny large vs the gentle horizontal lean) so the sheet
-      //goes UP the cliff face, not horizontally off it. Few particles per cell —
-      //the sheet comes from cell DENSITY + the tangent smear, not big per-cell bursts.
-      this.emitImpact(x, h0 + 0.1, z, -gradX, 2.2, -gradZ, impactSpeed, tanX, tanZ, this.shoreSheetSpan, 0.25);
+      //Incoming water velocity for the reflection launch: the surge climbs the beach
+      //UPHILL (the +gradient horizontal direction) at roughly the jet speed and lifts
+      //at `rise`. We pass the TRUE geometric face normal (-gradX,1,-gradZ) — not an
+      //up-biased one — because the reflection needs the real surface; the upward throw
+      //now emerges from run-up inside emitImpact instead of a hand-tuned ny. (With
+      //impactReflect=0 the launch falls back to coning about this geometric normal.)
+      const gl = Math.sqrt(gradX * gradX + gradZ * gradZ);
+      let ux = 0.0, uz = 0.0;
+      if(gl > 1e-4){ ux = gradX / gl; uz = gradZ / gl; }
+      this.emitImpact(x, h0 + 0.1, z, -gradX, 1.0, -gradZ, impactSpeed,
+        tanX, tanZ, this.shoreSheetSpan, 0.25, ux * jet, rise, uz * jet);
     }
   }
 };
@@ -597,9 +715,30 @@ AWater.AOcean.OceanSplash.prototype.tick = function(ctx){
   u.uDebugMode.value = this.debugMode;
   u.uViewportHeight.value = ctx.viewportHeight;
   u.uResolution.value.set(ctx.resW, ctx.resH);
+  u.uPhaseG.value = this.phaseG;
+  u.uPhaseGain.value = this.phaseGain;
+  u.uNoiseScale.value = this.noiseScale;
+  u.uErode.value = this.erode;
+  u.uSoftEdge.value = this.softEdge;
+  u.uNoiseEvolve.value = this.noiseEvolve;
   if(ctx.linearDepthTexture) u.uLinearDepth.value = ctx.linearDepthTexture;
   if(ctx.sunColor) u.sunColor.value.copy(ctx.sunColor);
   if(ctx.skyAmbient) u.skyAmbientColor.value.copy(ctx.skyAmbient);
+  if(ctx.sunDir) u.sunDir.value.copy(ctx.sunDir);
+
+  //Scene sun shadow receive. ocean-grid hands us the same shadow map + params it
+  //wires into the water surface, so spray darkens consistently under the rocks /
+  //lighthouse. Gated by our own receiveShadow knob so it can be toggled alone.
+  if(this.receiveShadow && ctx.sunShadowEnabled && ctx.sunShadowMap){
+    u.sunShadowEnabled.value = 1;
+    u.sunShadowMap.value = ctx.sunShadowMap;
+    u.sunShadowMatrix.value.copy(ctx.sunShadowMatrix);
+    u.sunShadowMapSize.value.set(ctx.sunShadowMapW, ctx.sunShadowMapH);
+    u.sunShadowRadius.value = ctx.sunShadowRadius;
+    u.sunShadowBias.value = ctx.sunShadowBias;
+  } else {
+    u.sunShadowEnabled.value = 0;
+  }
 
   let dt = 0.0;
   if(this._prevTime >= 0.0) dt = (ctx.time - this._prevTime) / 1000.0;
