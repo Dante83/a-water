@@ -1894,11 +1894,24 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //                 matching water-shader.glsl's brightestDirectionalLightDirection.
     //                 Declared in fog_pars_fragment via the append above.
     //Per-channel extinction is the const `uwExt` baked in above.
-    //WORLD-Y GATE: only fragments BELOW the waterline are fogged. Above-water
-    //geometry (the lighthouse etc.) seen from a submerged camera must NOT be
-    //fogged as if the whole camera->fragment path were water — that over-fogged
-    //it into a flat silhouette. vFogWorldPosition is A-Starry-Sky's existing
-    //advanced-fog varying; the vertex slot below fills it for the ocean branch.
+    //NO WORLD-Y GATE: the ocean branch only runs when the camera is submerged
+    //(scene.fog is swapped to the ocean fog underwater; above water it's
+    //a-starry-sky's atmospheric fog and this branch is never entered). When
+    //submerged the whole view is underwater, so every fragment fogs uniformly.
+    //Above-water geometry (the lighthouse etc.) is never DIRECTLY visible from
+    //below — any sightline from a submerged camera to an air-side point crosses
+    //the surface, and the FFT surface mesh (clipmap + horizon skirt) is rendered
+    //along it and overdraws those pixels with the Snell-window transmission
+    //composite. So the over-fog on those hidden fragments is masked by the real
+    //wavy surface; the surface mesh IS the per-fragment medium boundary. This
+    //replaces the old flat `vFogWorldPosition.y < uwSurfaceY` plane gate, whose
+    //single-point/2-cascade probe height left a flat fog ceiling that bobbed at
+    //the wrong (long-swell-only) frequency and an un-fogged band under crests.
+    //The mirror RT independently clips y>waterline (see _renderUnderwater
+    //Reflection's _reflClipPlane), so its fragments are all below-surface too —
+    //removing the gate doesn't change that pass. vFogWorldPosition is
+    //A-Starry-Sky's existing advanced-fog varying; the vertex slot below fills
+    //it for the ocean branch (still used for the per-fragment depth darkening).
     const fragGLSL = [
       'const vec3 uwExt = ' + extLit + ';',
       //Phase-function constants. g=0.85 is the canonical clean-ocean
@@ -1922,7 +1935,6 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       //~0.2 (airy) and ~0.6 (closer to physical) to taste.
       'const float UW_DIST_SCALE = 0.3;',
       'float uwSurfaceY = -fogNear;',
-      'if(vFogWorldPosition.y < uwSurfaceY){',
       //Path length is the geometric distance through water, uniformly
       //discounted by UW_DIST_SCALE so visibility carries into the moderate
       //range instead of crushing to a teal asymptote at every direction.
@@ -1989,8 +2001,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       '  uwLinear = uwLinear * uwT + uwMurk * (vec3(1.0) - uwT);',
       '  gl_FragColor.rgb = uwInputIsSRGB',
       '    ? fogLinearTosRGB(vec4(uwLinear, 1.0)).rgb',
-      '    : uwLinear;',
-      '}'
+      '    : uwLinear;'
     ].join('\n');
     const vertGLSL = [
       'vFogDepth = - mvPosition.z;',
