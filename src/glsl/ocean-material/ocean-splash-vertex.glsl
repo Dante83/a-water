@@ -12,10 +12,12 @@ attribute float aSize;     //world-space radius of this droplet (metres)
 attribute float aAge01;    //age / lifetime, 0 at birth .. 1 at death
 attribute float aSeed;     //per-particle random in [0,1] for shader variety
 attribute float aType;     //0 = open-water crest mist, 1 = impact burst
+attribute float aCoarse;   //0 = fine hanging mist .. 1 = coherent falling droplet
 
 uniform float uViewportHeight; //renderer drawing-buffer height in pixels
 uniform float uMaxPointSize;   //hardware-safe clamp for gl_PointSize
-uniform float uSizeScale;      //global artistic size multiplier (FUDGE)
+uniform float uSizeScale;      //size multiplier for the mist puff + the small-drop cluster
+uniform vec2 uWind;            //world-space wind (x, z); projected into the billboard plane below
 
 //Lighting is per-particle (vertex) rather than per-fragment: spray is a bright
 //omnidirectional scatterer with no meaningful surface normal, so a single
@@ -41,12 +43,15 @@ uniform mat4 sunShadowMatrix;
 varying float vAge01;
 varying float vSeed;
 varying float vType;
+varying float vCoarse;         //fine-mist..droplet grade, drives the fragment look
 varying float vViewZ;          //positive view-space depth, matches G-buffer
 varying vec3 vAmbient;         //smooth sky-ambient term (unshadowed)
 varying vec3 vSunCol;          //sun colour * scale; the fragment wraps it over a normal
 varying float vGlow;           //forward-scatter additive (backlit through-glow)
 varying vec3 vSunDirView;      //view-space direction TO the sun, for the wrap normal
 varying vec4 vSunShadowCoord;  //world position in scene-sun shadow space
+varying vec3 vToCamW;          //world-space direction from the particle to the camera
+varying vec2 vWindDir;         //view-space (billboard-plane) wind direction for the noise scroll
 
 //Henyey-Greenstein single-lobe phase. g>0 biases scattering forward (toward sun).
 float hgPhase(float cosT, float g){
@@ -70,17 +75,21 @@ void main(){
   //the vertical focal length in clip units, so 0.5 * viewportHeight * that
   //converts a world radius at unit distance into pixels.
   float focalPx = 0.5 * uViewportHeight * projectionMatrix[1][1];
+  //The mist puff and the small-drop cluster share one billboard size; the cluster needs the
+  //room for its many tiny drops, so we keep the full uSizeScale multiplier for every particle.
   float pointPx = aSize * uSizeScale * focalPx / max(0.001, vViewZ);
   gl_PointSize = clamp(pointPx, 1.0, uMaxPointSize);
 
   vAge01 = aAge01;
   vSeed = aSeed;
   vType = aType;
+  vCoarse = aCoarse;
 
   //Forward-scatter cosine. position is world-space (identity model matrix), so the
   //camera ray travels camera -> particle, i.e. -toCam; it then continues toward the
   //sun (sunDir). cosT peaks at +1 when looking through the mist toward the sun.
   vec3 toCam = normalize(cameraPosition - position);
+  vToCamW = toCam;
   float cosT = dot(-toCam, sunDir);
   float phase = dualPhase(cosT, uPhaseG);
 
@@ -95,6 +104,11 @@ void main(){
   vGlow = uPhaseGain * phase;
   vSunDirView = normalize((viewMatrix * vec4(sunDir, 0.0)).xyz);
   vSunShadowCoord = sunShadowMatrix * vec4(position, 1.0);
+  //Wind direction in the billboard plane (view space), so the fragment can scroll the haze noise
+  //along it. World wind is horizontal (uWind.x, 0, uWind.y); y is negated to match gl_PointCoord
+  //y-down. Normalised to a pure direction — the scroll RATE is the fragment's uWindNoiseSpeed.
+  vec3 windView = (viewMatrix * vec4(uWind.x, 0.0, uWind.y, 0.0)).xyz;
+  vWindDir = (length(windView.xy) > 1e-4) ? normalize(vec2(windView.x, -windView.y)) : vec2(0.0, 0.0);
 
   gl_Position = projectionMatrix * mvPosition;
 }

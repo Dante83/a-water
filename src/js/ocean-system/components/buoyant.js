@@ -181,8 +181,19 @@ AFRAME.registerComponent('buoyant', {
     //Kinematic state.
     this._started = false;     //first valid sample snaps; afterwards we damp.
     this._settled = false;     //latched true once the entry phase comes to rest.
-    this._wasInAir = false;    //one-shot splash on first water contact.
     this._buoyStiffness = 0.0;
+
+    //Wave-impact splash state. Splashing is CONTINUOUS — a floating body throws spray whenever
+    //the water washes up over it fast, NOT only on a one-time air->water entry (a settled body
+    //tracks the surface and essentially never leaves it, so an entry-crossing test never fires).
+    this._prevErr = 0.0;       //last frame's submersion error, for the surface-vs-body closing speed.
+    this._splashCooldown = 0.0;//s remaining before this body may splash again (anti-spam).
+    this.splashMinSpeed = 0.6; //m/s closing speed (water rising onto the body) needed to throw spray.
+    this.splashCooldownTime = 0.18; //s minimum gap between this body's impact splashes.
+    this.splashSpeedCap = 12.0;//m/s cap so a freak frame cannot launch a geyser.
+    this.splashContactBand = 0.5;//m: body counts as "in contact" when err > -this (so a floating
+                                 //body sprays on wave-slaps, but a body still up in the air mid-fall
+                                 //does NOT spray until it actually reaches the water).
   },
   update: function(){
     //Re-capture the authored heading if the user re-set rotation.
@@ -430,9 +441,32 @@ AFRAME.registerComponent('buoyant', {
     const tau = this.data.damping;
     const k = tau > 1e-4 ? (1.0 - Math.exp(-dt / tau)) : 1.0;
 
+    const err = targetY - obj.position.y; //>0 submerged, <0 in air.
+
+    //── Wave-impact splash. Runs EVERY frame, settled or not — a floating body throws spray
+    //   whenever the water washes UP over it fast, and that keeps happening as long as the sea
+    //   moves it. `closing` = d(err)/dt = the surface-vs-body relative vertical speed (>0 means
+    //   the water is rising onto the body faster than the body follows = a wave slapping it, or
+    //   the body striking the surface on a fall). We do NOT require an air->water crossing: a
+    //   settled body tracks the surface and basically never leaves it, so a crossing test never
+    //   fired (the bug). Instead we gate on CONTACT (err > -contactBand) so a body still up in
+    //   the air mid-fall does not spray until it reaches the water. A cooldown limits the rate.
+    if(this._started && dt > 1e-4){
+      const closing = (err - this._prevErr) / dt;     //>0 = water rising onto the body
+      const inContact = err > -this.splashContactBand;
+      this._splashCooldown = Math.max(0.0, this._splashCooldown - dt);
+      if(inContact && closing > this.splashMinSpeed && this._splashCooldown <= 0.0){
+        this.el.emit('buoyancy-splash', {
+          speed: Math.min(closing, this.splashSpeedCap),
+          point: {x: obj.position.x, y: targetY, z: obj.position.z}
+        }, true);
+        this._splashCooldown = this.splashCooldownTime;
+      }
+    }
+    this._prevErr = err;
+
     //Vertical: gravity/spring ENTRY until settled, then plane FOLLOW.
     if(this.data.gravity > 1e-4 && !this._settled){
-      const err = targetY - obj.position.y; //>0 submerged, <0 in air.
       const inAir = err < -1e-3;
       if(inAir){
         this._vy -= this.data.gravity * dt;
@@ -440,15 +474,6 @@ AFRAME.registerComponent('buoyant', {
         this._vy += this._buoyStiffness * err * dt;
         this._vy *= Math.exp(-dt / Math.max(1e-3, tau));
       }
-      if(this._wasInAir && !inAir && this._vy < -0.5){
-        //Bubble to the scene so OceanGrid's splash system can hear it, and carry
-        //the contact point (body XZ at the wave-plane height it just struck).
-        this.el.emit('buoyancy-splash', {
-          speed: -this._vy,
-          point: {x: obj.position.x, y: targetY, z: obj.position.z}
-        }, true);
-      }
-      this._wasInAir = inAir;
       obj.position.y += this._vy * dt;
       if(Math.abs(err) < 0.06 && Math.abs(this._vy) < 0.08){
         this._settled = true; this._vy = 0.0;

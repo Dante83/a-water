@@ -28,10 +28,10 @@ AWater.AOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
   this.renderer = oceanGrid.renderer;
 
   const cfg = configOverrides || {};
-  //8000 (~0.4 MB of SoA backing) gives headroom so the denser crest clusters and
+  //12000 (~0.6 MB of SoA backing) gives headroom so the denser crest clusters and
   //the shore sheet can both be live without either starving the pool (spawn() drops
-  //silently when full). Was 4000 when crests emitted one particle per cell.
-  const capacity = cfg.capacity || 8000;
+  //silently when full). Bumped 8000->12000 for denser mist + the per-particle beads.
+  const capacity = cfg.capacity || 24000;
   this.capacity = capacity;
   this.liveCount = 0;
 
@@ -62,21 +62,24 @@ AWater.AOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
                                        //"elevated AND rising" (the upper front face of a
                                        //crest), which the smoothed field DOES resolve.
   this.crestRiseThreshold = 0.4;       //m/s upward surface velocity (rendered FFT dH/dt).
-  this.crestMinHeight = 0.45;          //m ABOVE MEAN sea level a candidate must sit.
+  this.crestMinHeight = 0.0;           //m ABOVE MEAN sea level a candidate must sit.
                                        //This is now the PRIMARY crest selector (with
                                        //rise): spray tears off elevated, rising water,
                                        //not flat sea or troughs. Raise toward Hs/2 to
                                        //pick only the biggest tops; lower for more mist.
-  this.crestSpawnChance = 0.5;         //per-candidate cell per-frame (FUDGE). Was 0.10,
+  this.crestSpawnChance = 0.75;        //per-candidate cell per-frame (FUDGE). Was 0.10,
                                        //which thinned 90% of cells so survivors were lone
                                        //specks; combined with the cluster emit below this
                                        //now lets crests read as PUFFS, like the shore sheet.
-  this.crestClusterCount = 5;          //particles per qualifying crest cell (FUDGE). The
+  this.crestClusterCount = 30;         //particles per qualifying crest cell (FUDGE). The
                                        //crest analogue of the shore sheet: a cluster reads
                                        //as a puff of mist congregating on the top, where a
                                        //single particle just zipped past unnoticed.
   this.crestClusterRadius = 1.3;       //m horizontal spread of a cluster around the crest.
-  this.crestSize = 0.22;               //m droplet radius (FUDGE).
+  this.crestSize = 0.26;               //m base droplet radius (FUDGE). Lifts the BASE size of the
+                                       //mist puff AND the cluster drops inside it (rendered size =
+                                       //crestSize * sizeScale), so the spray sits at a comfortable
+                                       //overall scale.
   this.crestLifetime = 0.6;            //s (FUDGE). Short on purpose: crest mist is a
                                        //near-field puff that dissipates within ~10 m,
                                        //not a streak that flies across the view. At
@@ -113,6 +116,10 @@ AWater.AOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
   this.shoreFarKeep = 0.25;      //prob a far (> shoreNearRadius) cell still fires.
   this.shoreFrontBias = -0.2;    //skip cells whose direction-from-camera dotted with
                                  //camera-forward is below this (~ behind the camera).
+  this.shoreCountScale = 0.65;   //particles-per-cell multiplier for the shore sheet (was a
+                                 //hardcoded 0.25). Many cells x few each = a sheet; this is the
+                                 //"few each" dial. Raised ~2.6x to fight shore-spray sparsity.
+                                 //Watch the pool: dense shore + crest can starve capacity.
   this.shoreSheetSpan = 2.5;     //m: spread each cell's burst ALONG the waterline
                                  //tangent so adjacent cells overlap into a sheet
                                  //rather than each firing as an isolated point geyser.
@@ -125,14 +132,21 @@ AWater.AOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
   this.impactBurstPerSpeed = 6.0;//particles per m/s of impact speed (FUDGE).
   this.impactMinBurst = 4;
   this.impactMaxBurst = 60;
-  this.impactSize = 0.3;         //m (FUDGE) — droplet size at impactSizeRefSpeed.
+  this.impactSize = 0.26;        //m (FUDGE) — base droplet size at impactSizeRefSpeed. Pulled
+                                 //0.36->0.26 to MATCH crestSize: impact spray was the source of the
+                                 //oversized lighthouse-base blobs (its energy-scaled aSize feeds the
+                                 //same cluster billboards crest does, but bigger), so matching the
+                                 //crest base puts impact and crest drops on the same size footing.
   this.impactSizeRefSpeed = 8.0; //m/s impact speed that yields the nominal impactSize.
                                  //Droplet scale grows with impact energy so a big
                                  //breaker throws fat sheets and a small lap a fine fizz.
                                  //Without this every burst rendered the SAME droplet
                                  //size regardless of wave, so all spray read alike.
-  this.impactSizeMaxScale = 2.5; //cap on the size multiplier (a freak surge speed must
-                                 //not spawn giant blobs).
+  this.impactSizeMaxScale = 1.4; //cap on the energy size multiplier (a freak surge speed must
+                                 //not spawn giant blobs). Pulled 2.5->1.4: at sizeScale 10 the old
+                                 //2.5x cap let a strong impact spawn ~1.3 m aSize -> multi-metre
+                                 //cluster billboards (the giant blobs). 1.4 keeps energy variation
+                                 //without the runaway.
   this.impactLifetime = 1.4;     //s (FUDGE).
   this.impactVelScale = 0.9;     //launch speed as fraction of impact speed (FUDGE).
   this.impactMinLaunch = 7.0;    //m/s FLOOR on burst launch speed (FUDGE). The shore
@@ -174,26 +188,37 @@ AWater.AOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
                                  //0.6->1.1 because the reflected forward launch was being
                                  //bent downwind before it could carry — the longer ramp
                                  //lets the ballistic arc read first. (Pairs with
-                                 //impactWindFactor for the eventual drift strength.)
-  this.impactWindFactor = 0.35;  //fraction of wind speed impact spray ultimately
-                                 //drifts at. Heavy thrown droplets do NOT reach wind
-                                 //speed — only fine mist does. At 1.0 the sim pulled
-                                 //every droplet to full wind, so they accelerated to
-                                 //~wind m/s and smeared into a flat downwind sheet
-                                 //(the "dominated by wind" look). 0.35 keeps the drift
-                                 //comparable to the launch, so spray stays a local arc.
+                                 //coarseWindCouple for the eventual drift strength.)
+  //── Coarseness-driven aerodynamics. Terminal velocity and wind pickup both scale with
+  //   coarseness: fine MIST has high drag (low terminal velocity — sheds its launch fast,
+  //   catches the breeze early, then hangs and drifts) and couples to the full wind; a
+  //   heavy BEAD has low drag (keeps momentum, flies out to build the crest, falls under
+  //   gravity) and only feels a fraction of the wind. ─────────────────────────────────
+  this.mistDrag = 1.8;           //drag-scale at coarse=0 (high: quick to terminal/wind).
+  this.beadDrag = 0.4;           //drag-scale at coarse=1 (low: momentum, builds the arc).
+  this.coarseWindCouple = 0.25;  //wind fraction a fully-coarse bead drifts at (fine = 1.0).
 
   //Render-side art knobs (pushed to uniforms each frame).
-  this.opacity = 0.55;           //PEAK puff opacity. Well below 1 so the noise-carved
+  this.opacity = 0.1;           //PEAK puff opacity. Well below 1 so the noise-carved
                                  //cloud stays translucent (a solid 1.0 reads as opaque
                                  //"marshmallows", not mist).
-  this.sizeScale = 5.0;          //mist puffs are clumps of aerosol, not single droplets,
-                                 //so blow the world radius up ~5x over the spawn size.
+  this.sizeScale = 10.0;         //mist puffs are clumps of aerosol, not single droplets, so blow
+                                 //the world radius up over the spawn size. Bumped 5->10 (~2x) so
+                                 //the haze reads bigger and softer.
   this.softRange = 1.5;          //m soft-particle fade depth.
   this.maxPointSize = 512.0;     //raised from 256 so the 5x-larger near puffs are not
                                  //clamped flat (watch fill-rate: big translucent sprites
                                  //+ 3-octave noise is the main cost here).
   this.debugMode = 0;            //0 normal, 1 tint-by-type.
+  this.ambientScale = 1.8;       //multiplier on the sky-hemisphere ambient that lights the mist
+                                 //(and anchors the drop sky-reflection). a-starry-sky's hemisphere
+                                 //ambient is DIM, so backlit mist read as dark grey smoke at 1.0;
+                                 //lifted so daylight spray reads as bright water vapour. Lower in
+                                 //overcast/night and it tracks down with the sky automatically.
+  this.skyBoost = 3.0;           //brightness lift on the DROP sky-reflection. The drops cannot
+                                 //reach the water's atmospheric-LUT sky, only the dim metering
+                                 //fisheye, so the Fresnel rim is synthesized from the (boosted)
+                                 //ambient as a bright sky gradient — this is the rim brightness.
 
   //── Forward-scatter (Mie) phase knobs. The mist blooms when the view ray passes
   //   near the sun direction — the dependable "sunlit spray" cue. Applied to the sun
@@ -211,6 +236,68 @@ AWater.AOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
   this.erode = 0.35;             //silhouette erosion threshold (higher = grainier).
   this.softEdge = 0.25;          //erosion smoothstep width (lower = sharper, sparklier).
   this.noiseEvolve = 0.6;        //how fast the noise field dissolves over the life.
+  this.windNoiseSpeed = 0.4;     //rate the haze noise SCROLLS along the wind direction, so the
+                                 //wisps appear to stream with the breeze (0 = static noise, just
+                                 //the per-particle age dissolve). Noise units per second.
+
+  //── Three-tier coarseness continuum. aCoarse in [0,1] grades each particle from a
+  //   fine hanging MIST (0) to a coherent falling DROPLET (1). One axis drives BOTH the
+  //   look (size/opacity/erosion/sparkle — vertex+fragment) and the motion (gravity,
+  //   below in tick). The two emitters draw from their own bands, so a single rock-slam
+  //   can throw a fine haze AND chunky droplets — the cue that sells mist, not fog.
+  //   Collapse to the pre-tier single look by setting each *Coarse render knob equal to
+  //   its base (sizeScale/opacity/erode) and the bands to 0. ─────────────────────────
+  this.wobbleFreq = 8.0;         //droplet surface-wobble rate (rad/s). The physical 2 mm raindrop
+                                 //mode (~268 rad/s) is a visual blur; this gentle value reads as a
+                                 //wobble. Volume is conserved (a*b^2 const) so a drop only breathes.
+  this.wobbleAmp = 0.28;         //droplet aspect-breathe amplitude (0 = rigid sphere). Up 0.18->0.28.
+  this.harmonic = 0.28;          //droplet spherical-harmonic SURFACE wobble (modes 2-4, animated):
+                                 //makes each cluster drop jiggle like a real airborne bead instead
+                                 //of a rigid sphere (smaller drops wobble less — surface tension).
+                                 //0 = smooth. The analytic stand-in for the old Blender per-vertex
+                                 //icosphere keyframe wobble (bubble_builder).
+  this.sizeFalloff = 5.0;        //cluster drop SIZE distribution exponent: member radius =
+                                 //mix(min, max, rand^sizeFalloff). Higher = large drops die off
+                                 //exponentially faster (most drops tiny, the big ones rare). The MAX
+                                 //size is unchanged — this only thins how often it is reached.
+  this.opacityCoarse = 0.95;     //peak opacity at coarse=1 (droplets are dense/bright).
+  this.erodeCoarse = 0.06;       //erosion threshold at coarse=1 (only shapes the haze end
+                                 //now; the droplet end is the SDF cluster).
+  this.sparkle = 1.2;            //sun-specular punch on the water drops (the wet glint).
+
+  //── Droplet-cluster render knobs. A coarse billboard hosts a gaussian cluster of small
+  //   SDF-sphere drops (each with sky-fresnel + sun glint + a little absorption so it
+  //   reads as water, not a hollow soap bubble). ─────────────────────────────────────
+  this.dropletCells = 6.0;       //grid cells across the billboard (6 -> up to ~36 drops,
+                                 //gaussian-culled to ~12-32). More = more, smaller drops.
+  this.dropletRadius = 0.7;      //individual cluster-drop size scale within its cell. Pulled
+                                 //1.0->0.7 so the larger cluster members (the "blue" drops) come
+                                 //down too — scales ONLY the cluster drops, not the haze or the
+                                 //billboard, so the mist stays the size you tuned.
+  this.dropletSpread = 3.0;      //gaussian tightness of the cluster (higher = tighter core).
+  this.absorb = 0.5;             //rim absorption (Beer-Lambert): tints the Fresnel rim toward
+                                 //water at grazing angles. Pulled 1.2->0.5 — at 1.2 it darkened
+                                 //the sky reflection back into a dark-rimmed bubble. 0 = no tint.
+  this.mistGravityFactor = 0.12; //gravity multiplier at coarse=0: fine mist barely falls
+                                 //(hangs and drifts on wind); coarse=1 feels full gravity.
+  this.dropLifeBoost = 4.0;      //lifetime multiplier added in proportion to coarseness: a
+                                 //coarse droplet lives (1 + dropLifeBoost*coarse) ~ up to 5x as
+                                 //long as a fine mist puff, so it has time to complete its fall
+                                 //arc and land in the water instead of fizzling out mid-air.
+  this.dropSinkDepth = 1.5;      //how far (in particle radii, scaled by coarseness) a falling
+                                 //droplet sinks BELOW the water surface before it is removed. A
+                                 //real drop does not pop the instant it grazes the surface — it
+                                 //punches in and splashes. Mist (coarse~0) still dies at the
+                                 //surface. The splash itself is handled elsewhere; this just
+                                 //stops the mid-fall droplets blinking out at the waterline.
+  this.crestCoarseMin = 0.0;     //crest mist draws coarseness r^3-biased across this band: a
+  this.crestCoarseMax = 1.0;     //wave top throws MOSTLY fine aerosol (r^3 keeps the median
+                                 //near coarse~0.12) with a sparse tail of coherent droplets and
+                                 //a few fat falling drops — so the open-sea spray (which is all
+                                 //crest mist) actually exercises the bead + big-drop tiers, not
+                                 //pure haze. Lower the max back toward 0.2 for aerosol-only crests.
+  this.impactCoarseMin = 0.0;    //impact bursts span fine->coarse, biased fine (r^3): a
+  this.impactCoarseMax = 0.85;   //rock slam is mostly haze with a tail of fat droplets.
 
   //── Debug surface probe. A single bright ball parked ON the sampled emission
   //   surface (the same rendered-FFT _surfaceHeight the crest/shore emitters
@@ -238,6 +325,7 @@ AWater.AOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
   this._age01 = new Float32Array(capacity);
   this._seeds = new Float32Array(capacity);
   this._types = new Float32Array(capacity);
+  this._coarse = new Float32Array(capacity);
   this._vel = new Float32Array(capacity * 3);
   this._age = new Float32Array(capacity);
   this._life = new Float32Array(capacity);
@@ -248,11 +336,13 @@ AWater.AOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
   this._ageAttr = new THREE.BufferAttribute(this._age01, 1).setUsage(THREE.DynamicDrawUsage);
   this._seedAttr = new THREE.BufferAttribute(this._seeds, 1).setUsage(THREE.DynamicDrawUsage);
   this._typeAttr = new THREE.BufferAttribute(this._types, 1).setUsage(THREE.DynamicDrawUsage);
+  this._coarseAttr = new THREE.BufferAttribute(this._coarse, 1).setUsage(THREE.DynamicDrawUsage);
   geometry.setAttribute('position', this._posAttr);
   geometry.setAttribute('aSize', this._sizeAttr);
   geometry.setAttribute('aAge01', this._ageAttr);
   geometry.setAttribute('aSeed', this._seedAttr);
   geometry.setAttribute('aType', this._typeAttr);
+  geometry.setAttribute('aCoarse', this._coarseAttr);
   geometry.setDrawRange(0, 0);
   this.geometry = geometry;
 
@@ -344,19 +434,23 @@ AWater.AOcean.OceanSplash.prototype.setSprite = function(texture){
   }
 };
 
-//Spawn one particle. type: 0 crest mist, 1 impact burst.
-AWater.AOcean.OceanSplash.prototype.spawn = function(px, py, pz, vx, vy, vz, size, life, type){
+//Spawn one particle. type: 0 crest mist, 1 impact burst. coarse: [0,1] mist->droplet
+//grade (optional; defaults to 0 = finest mist).
+AWater.AOcean.OceanSplash.prototype.spawn = function(px, py, pz, vx, vy, vz, size, life, type, coarse){
   if(this.liveCount >= this.capacity) return; //pool full: drop (cheap, bounded).
   const i = this.liveCount++;
   const p3 = i * 3;
   this._positions[p3] = px; this._positions[p3 + 1] = py; this._positions[p3 + 2] = pz;
   this._vel[p3] = vx; this._vel[p3 + 1] = vy; this._vel[p3 + 2] = vz;
   this._sizes[i] = size;
-  this._life[i] = life;
+  //Coarser (droplet) particles live proportionally longer so they complete a full fall arc
+  //rather than fizzling mid-air; fine mist keeps its short dissipation life.
+  this._life[i] = life * (1.0 + this.dropLifeBoost * (coarse || 0.0));
   this._age[i] = 0.0;
   this._age01[i] = 0.0;
   this._seeds[i] = Math.random();
   this._types[i] = type;
+  this._coarse[i] = coarse || 0.0;
 };
 
 //Unified impact burst — shore and hull both call this. worldPos is the contact
@@ -439,12 +533,15 @@ AWater.AOcean.OceanSplash.prototype.emitImpact = function(px, py, pz, nx, ny, nz
       const off = (Math.random() - 0.5) * span;
       sx += tanX * off; sz += tanZ * off;
     }
+    //Per-droplet coarseness, biased toward fine (r^3) so a burst is mostly haze with a
+    //sparse tail of fat droplets — the spread that reads as "mist plus droplets".
+    const cr = this.impactCoarseMin + (this.impactCoarseMax - this.impactCoarseMin) * Math.pow(Math.random(), 3.0);
     this.spawn(
       sx, py, sz,
       (dx / dl) * sp, (dy / dl) * sp, (dz / dl) * sp,
       burstSize * (0.7 + Math.random() * 0.7),
       this.impactLifetime * (0.7 + Math.random() * 0.6),
-      1.0
+      1.0, cr
     );
   }
 };
@@ -563,6 +660,7 @@ AWater.AOcean.OceanSplash.prototype._emitCrest = function(field, t, camX, camZ, 
         const sz = z + (Math.random() - 0.5) * this.crestClusterRadius;
         const sh = this._surfaceHeight(field, sx, sz, t);
         const up = rise * this.crestVelInherit * (0.7 + Math.random() * 0.5) + this.crestUpSpeed;
+        const cr = this.crestCoarseMin + (this.crestCoarseMax - this.crestCoarseMin) * Math.pow(Math.random(), 3.0);
         this.spawn(
           sx, sh + 0.1, sz,
           windX * this.crestWindFactor + (Math.random() - 0.5) * 0.6,
@@ -570,7 +668,7 @@ AWater.AOcean.OceanSplash.prototype._emitCrest = function(field, t, camX, camZ, 
           windZ * this.crestWindFactor + (Math.random() - 0.5) * 0.6,
           this.crestSize * (0.7 + Math.random() * 0.6),
           this.crestLifetime * (0.7 + Math.random() * 0.6),
-          0.0
+          0.0, cr
         );
       }
     }
@@ -680,7 +778,7 @@ AWater.AOcean.OceanSplash.prototype._emitShore = function(field, t, camX, camZ, 
       let ux = 0.0, uz = 0.0;
       if(gl > 1e-4){ ux = gradX / gl; uz = gradZ / gl; }
       this.emitImpact(x, h0 + 0.1, z, -gradX, 1.0, -gradZ, impactSpeed,
-        tanX, tanZ, this.shoreSheetSpan, 0.25, ux * jet, rise, uz * jet);
+        tanX, tanZ, this.shoreSheetSpan, this.shoreCountScale, ux * jet, rise, uz * jet);
     }
   }
 };
@@ -721,6 +819,33 @@ AWater.AOcean.OceanSplash.prototype.tick = function(ctx){
   u.uErode.value = this.erode;
   u.uSoftEdge.value = this.softEdge;
   u.uNoiseEvolve.value = this.noiseEvolve;
+  u.uWindNoiseSpeed.value = this.windNoiseSpeed;
+  //World wind (x, z) for the haze noise scroll; the vertex projects it into the billboard plane.
+  u.uWind.value.set(ctx.windX || 0.0, ctx.windZ || 0.0);
+  u.uOpacityCoarse.value = this.opacityCoarse;
+  u.uErodeCoarse.value = this.erodeCoarse;
+  u.uSparkle.value = this.sparkle;
+  u.uDropletCells.value = this.dropletCells;
+  u.uDropletRadius.value = this.dropletRadius;
+  u.uDropletSpread.value = this.dropletSpread;
+  u.uAbsorb.value = this.absorb;
+  //Mist ambient lift + drop sky-reflection brightness (the dim-sky / dark-rim fixes).
+  u.uAmbientScale.value = this.ambientScale;
+  u.uSkyBoost.value = this.skyBoost;
+  //Cluster drop wobble + size distribution. uTime animates the surface wobble.
+  u.uTime.value = ctx.time / 1000.0;
+  u.uWobbleFreq.value = this.wobbleFreq;
+  u.uWobbleAmp.value = this.wobbleAmp;
+  u.uHarmonic.value = this.harmonic;
+  u.uSizeFalloff.value = this.sizeFalloff;
+  //Sky reflection source for the bead rim: a-starry-sky metering fisheye. When absent
+  //(no sky system), the shader falls back to the flat sky-ambient colour.
+  if(ctx.skyReflectTex){
+    u.meteringSurveyTexture.value = ctx.skyReflectTex;
+    u.uHasSkyTex.value = 1;
+  } else {
+    u.uHasSkyTex.value = 0;
+  }
   if(ctx.linearDepthTexture) u.uLinearDepth.value = ctx.linearDepthTexture;
   if(ctx.sunColor) u.sunColor.value.copy(ctx.sunColor);
   if(ctx.skyAmbient) u.skyAmbientColor.value.copy(ctx.skyAmbient);
@@ -780,18 +905,22 @@ AWater.AOcean.OceanSplash.prototype.tick = function(ctx){
   //── Simulate + compact. Swap-remove dead slots with the last live slot. ─────
   const pos = this._positions, vel = this._vel, age = this._age, life = this._life;
   const sizes = this._sizes, age01 = this._age01, seeds = this._seeds, types = this._types;
-  const drag = Math.exp(-this.airDrag * dt);
-  const gdt = this.gravity * dt;
+  const coarseArr = this._coarse;
+  //Drag retention at the two coarseness ends; lerped per particle in the loop. Fine mist =
+  //high drag scale (low terminal velocity), heavy bead = low drag (keeps its momentum).
+  const dragMist = Math.exp(-this.airDrag * this.mistDrag * dt);
+  const dragBead = Math.exp(-this.airDrag * this.beadDrag * dt);
   //Air drag is a force on the velocity RELATIVE TO THE AIR, so it damps the
   //horizontal velocity toward the air velocity it FEELS — which is what carries
   //spray downwind. Vertical wind is ~0, so vy keeps damping toward 0 under gravity.
-  //Time constant 1/airDrag (~1.4s) < lifetime, so a droplet only partially
-  //converges: it drifts, it doesn't snap to the wind.
+  //The drag scale is per-particle (coarseness): fine mist converges to the wind in well
+  //under its lifetime (drifts and reaches terminal fast), a heavy bead barely converges
+  //(keeps its launch arc and momentum).
   //
-  //The air a droplet feels ramps from STILL (0) to full wind over a per-type time:
-  //impact spray is knocked off a solid and arcs ballistically before the wind grabs
-  //it (early couple~0 → drag damps its launch toward zero, so the up-arc reads),
-  //then the wind ramps in and carries the survivors. Crest mist couples instantly.
+  //The air a droplet feels also ramps from STILL (0) to full wind for IMPACT spray: it is
+  //knocked off a solid and arcs ballistically before the wind grabs it (early couple~0 →
+  //drag damps its launch toward zero, so the up-arc reads), then the wind ramps in and
+  //carries the survivors. Crest mist couples instantly.
   const windX = ctx.windX || 0.0;
   const windZ = ctx.windZ || 0.0;
   const impactRamp = this.impactWindRampTime;
@@ -808,24 +937,34 @@ AWater.AOcean.OceanSplash.prototype.tick = function(ctx){
         vel[di] = vel[dl]; vel[di + 1] = vel[dl + 1]; vel[di + 2] = vel[dl + 2];
         age[i] = age[last]; life[i] = life[last];
         sizes[i] = sizes[last]; seeds[i] = seeds[last]; types[i] = types[last];
+        coarseArr[i] = coarseArr[last];
       }
       n--;
       continue;
     }
     const p3 = i * 3;
-    //Ballistic integrate with light air drag toward the FELT air velocity. Impact
-    //spray (type 1) ramps its felt wind in over impactWindRampTime so it arcs up
-    //first, AND only ever drifts at impactWindFactor of the wind (heavy droplets do
-    //not reach wind speed). Crest mist (type 0) feels full wind immediately.
-    let couple = 1.0;
+    //Ballistic integrate with air drag toward the FELT air velocity. Everything below is
+    //per-particle by coarseness (cz): drag (terminal velocity), wind coupling, gravity.
+    const cz = coarseArr[i];
+    //Air drag sets terminal velocity: fine mist has HIGH drag (sheds its launch fast,
+    //reaches the wind/terminal quickly, then hangs and drifts); a heavy bead has LOW drag
+    //(keeps momentum, flies out to build the crest, then falls under gravity).
+    const drag = dragMist + (dragBead - dragMist) * cz;
+    //Wind coupling: fine mist catches the full breeze, a heavy bead only a fraction
+    //(coarseWindCouple). Impact spray (type 1) still ramps its felt wind in over
+    //impactWindRampTime so it arcs up ballistically first; crest mist feels wind at once.
+    let couple = 1.0 - (1.0 - this.coarseWindCouple) * cz;
     if(types[i] > 0.5){
       let ramp = impactRamp > 0.0 ? age[i] / impactRamp : 1.0;
       if(ramp > 1.0) ramp = 1.0;
-      couple = ramp * this.impactWindFactor;
+      couple *= ramp;
     }
     const fwX = windX * couple, fwZ = windZ * couple;
+    //Gravity scales with coarseness (fine mist hangs, a bead falls) AND a small seed-based
+    //jitter, so neighbouring drops fall at visibly different speeds.
+    const gFac = (this.mistGravityFactor + (1.0 - this.mistGravityFactor) * cz) * (0.75 + 0.5 * seeds[i]);
     vel[p3] = fwX + (vel[p3] - fwX) * drag;
-    vel[p3 + 1] = (vel[p3 + 1] - gdt) * drag;
+    vel[p3 + 1] = (vel[p3 + 1] - this.gravity * gFac * dt) * drag;
     vel[p3 + 2] = fwZ + (vel[p3 + 2] - fwZ) * drag;
     pos[p3] += vel[p3] * dt;
     pos[p3 + 1] += vel[p3 + 1] * dt;
@@ -840,7 +979,11 @@ AWater.AOcean.OceanSplash.prototype.tick = function(ctx){
         const tY = this.sampleTerrainHeight(pos[p3], pos[p3 + 2]);
         if(tY !== null && tY > killY) killY = tY;
       }
-      if(pos[p3 + 1] < killY && vel[p3 + 1] < 0.0){
+      //Droplets punch through the surface a little before dying (they splash, they do not blink
+      //out at the waterline); mist (coarse ~0) still dies right at the surface. Sink margin is a
+      //few particle radii scaled by coarseness.
+      const sink = this.dropSinkDepth * sizes[i] * coarseArr[i];
+      if(pos[p3 + 1] < killY - sink && vel[p3 + 1] < 0.0){
         const last = n - 1;
         if(i !== last){
           const di = i * 3, dl = last * 3;
@@ -848,6 +991,7 @@ AWater.AOcean.OceanSplash.prototype.tick = function(ctx){
           vel[di] = vel[dl]; vel[di + 1] = vel[dl + 1]; vel[di + 2] = vel[dl + 2];
           age[i] = age[last]; life[i] = life[last];
           sizes[i] = sizes[last]; seeds[i] = seeds[last]; types[i] = types[last];
+          coarseArr[i] = coarseArr[last];
         }
         n--;
         continue;
@@ -863,5 +1007,6 @@ AWater.AOcean.OceanSplash.prototype.tick = function(ctx){
   this._ageAttr.needsUpdate = true;
   this._seedAttr.needsUpdate = true;
   this._typeAttr.needsUpdate = true;
+  this._coarseAttr.needsUpdate = true;
   this.geometry.setDrawRange(0, n);
 };

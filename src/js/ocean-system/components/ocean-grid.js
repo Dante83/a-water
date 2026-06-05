@@ -2913,6 +2913,14 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         _shRadius = _sLight.shadow.radius;
         _shBias = _sLight.shadow.bias + (self._sunShadowBiasOffset || 0.0);
       }
+      //Sky reflection source for the bead rims: the same a-starry-sky metering fisheye the
+      //water SSR fallback samples (worldXZ -> UV). Null when no sky system is present, in
+      //which case the splash shader falls back to the flat sky-ambient colour.
+      let _meterTex = null;
+      if(self.skyDirector && self.skyDirector.renderers && self.skyDirector.renderers.meteringSurveyRenderer){
+        const _msr = self.skyDirector.renderers.meteringSurveyRenderer;
+        _meterTex = _msr.meteringSurveyRenderer.getCurrentRenderTarget(_msr.meteringSurveyVar).texture;
+      }
       sp.tick({
         time: time,
         camX: self.globalCameraPosition.x,
@@ -2934,6 +2942,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         sunShadowMapH: _shH,
         sunShadowRadius: _shRadius,
         sunShadowBias: _shBias,
+        skyReflectTex: _meterTex,
         viewportHeight: self.refractionGBufferTarget.height,
         resW: self.refractionGBufferTarget.width,
         resH: self.refractionGBufferTarget.height,
