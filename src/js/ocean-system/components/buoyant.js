@@ -187,6 +187,7 @@ AFRAME.registerComponent('buoyant', {
     //the water washes up over it fast, NOT only on a one-time air->water entry (a settled body
     //tracks the surface and essentially never leaves it, so an entry-crossing test never fires).
     this._prevErr = 0.0;       //last frame's submersion error, for the surface-vs-body closing speed.
+    this._splashPrimed = false;//false until the first _detectSplash call seeds _prevErr (no frame-1 spike).
     this._splashCooldown = 0.0;//s remaining before this body may splash again (anti-spam).
     this.splashMinSpeed = 0.6; //m/s closing speed (water rising onto the body) needed to throw spray.
     this.splashCooldownTime = 0.18; //s minimum gap between this body's impact splashes.
@@ -265,7 +266,7 @@ AFRAME.registerComponent('buoyant', {
 
     const com = obj.position; //world centre of mass (direct scene child).
     const v = this._scratchV;
-    let Fup = 0.0, Tx = 0.0, Tz = 0.0, submHSum = 0.0;
+    let Fup = 0.0, Tx = 0.0, Tz = 0.0, submHSum = 0.0, waterYSum = 0.0;
 
     //Sum buoyancy column-by-column. Each probe owns an equal share of the
     //footprint area; its submerged height × that area is the column's submerged
@@ -276,6 +277,7 @@ AFRAME.registerComponent('buoyant', {
       obj.localToWorld(v);
       let waterY = fftSampler ? fftSampler(v.x, v.z) : null;
       if(waterY == null){ waterY = field.sampleHeight(v.x, v.z, t); } //snapshot not ready / analytic.
+      waterYSum += waterY;
       //Submerged height of this column, clamped to the body's vertical extent.
       const submH = Math.min(2.0 * body.halfH, Math.max(0.0, waterY - (v.y - body.halfH)));
       submHSum += submH;
@@ -287,6 +289,13 @@ AFRAME.registerComponent('buoyant', {
       Tx += -rz * Fy;
       Tz +=  rx * Fy;
     }
+
+    //--- Wave-impact splash (before integration, so bodyY is this frame's pre-move
+    //    value matching the sampled surface). err = mean water surface across the
+    //    footprint minus the COM: closing>0 = the sea washing up onto the body, or
+    //    the body slamming down into it on a fall.
+    const avgWaterY = waterYSum / local.length;
+    this._detectSplash(obj, avgWaterY - com.y, avgWaterY, dt);
 
     //--- Integrate linear (vertical) + angular (pitch/roll) ------------------
     const weight = body.mass * this.data.gravity;
@@ -345,6 +354,32 @@ AFRAME.registerComponent('buoyant', {
       }
       this._qTarget.copy(this._qPhysTilt).multiply(this._baseQuat);
       obj.quaternion.copy(this._qTarget);
+    }
+  },
+
+  //Wave-impact splash detector shared by BOTH solvers. `err` = waterSurfaceY - bodyY
+  //(>0 submerged, <0 in air); `surfaceY` is where to spawn the spray. closing = d(err)/dt
+  //is the surface-vs-body relative vertical speed: >0 means the water is rising onto the
+  //body faster than the body follows (a wave slapping it) OR the body striking the surface
+  //on a fall. We gate on CONTACT (err > -contactBand) so an airborne body mid-fall does not
+  //spray until it reaches the water, and on a cooldown to limit the rate. NOT an air->water
+  //crossing test: a settled body tracks the surface and never re-crosses, so a crossing
+  //test never fired (the original bug). OceanGrid forwards 'buoyancy-splash' to the splash
+  //system's emitImpact, so this is the same channel the shore wall spray uses.
+  _detectSplash: function(obj, err, surfaceY, dt){
+    if(!this._splashPrimed || !(dt > 1e-4)){
+      this._splashPrimed = true; this._prevErr = err; return;
+    }
+    const closing = (err - this._prevErr) / dt;
+    this._prevErr = err;
+    this._splashCooldown = Math.max(0.0, this._splashCooldown - dt);
+    const inContact = err > -this.splashContactBand;
+    if(inContact && closing > this.splashMinSpeed && this._splashCooldown <= 0.0){
+      this.el.emit('buoyancy-splash', {
+        speed: Math.min(closing, this.splashSpeedCap),
+        point: {x: obj.position.x, y: surfaceY, z: obj.position.z}
+      }, true);
+      this._splashCooldown = this.splashCooldownTime;
     }
   },
 
@@ -443,27 +478,11 @@ AFRAME.registerComponent('buoyant', {
 
     const err = targetY - obj.position.y; //>0 submerged, <0 in air.
 
-    //── Wave-impact splash. Runs EVERY frame, settled or not — a floating body throws spray
-    //   whenever the water washes UP over it fast, and that keeps happening as long as the sea
-    //   moves it. `closing` = d(err)/dt = the surface-vs-body relative vertical speed (>0 means
-    //   the water is rising onto the body faster than the body follows = a wave slapping it, or
-    //   the body striking the surface on a fall). We do NOT require an air->water crossing: a
-    //   settled body tracks the surface and basically never leaves it, so a crossing test never
-    //   fired (the bug). Instead we gate on CONTACT (err > -contactBand) so a body still up in
-    //   the air mid-fall does not spray until it reaches the water. A cooldown limits the rate.
-    if(this._started && dt > 1e-4){
-      const closing = (err - this._prevErr) / dt;     //>0 = water rising onto the body
-      const inContact = err > -this.splashContactBand;
-      this._splashCooldown = Math.max(0.0, this._splashCooldown - dt);
-      if(inContact && closing > this.splashMinSpeed && this._splashCooldown <= 0.0){
-        this.el.emit('buoyancy-splash', {
-          speed: Math.min(closing, this.splashSpeedCap),
-          point: {x: obj.position.x, y: targetY, z: obj.position.z}
-        }, true);
-        this._splashCooldown = this.splashCooldownTime;
-      }
-    }
-    this._prevErr = err;
+    //── Wave-impact splash (shared with the rigid solver). Runs every frame once started:
+    //   a floating body throws spray whenever the water washes up over it fast. See
+    //   _detectSplash for the closing-speed / contact / cooldown logic.
+    if(this._started){ this._detectSplash(obj, err, targetY, dt); }
+    else { this._prevErr = err; }
 
     //Vertical: gravity/spring ENTRY until settled, then plane FOLLOW.
     if(this.data.gravity > 1e-4 && !this._settled){

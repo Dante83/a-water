@@ -90,11 +90,34 @@ AWater.AOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
                                        //spray is the crest continuing ballistically.
   this.crestUpSpeed = 1.6;             //m/s additive launch floor (FUDGE).
   this.crestWindFactor = 0.5;          //fraction of wind carried by mist (FUDGE).
+  this.spindriftStart = 16.0;          //m/s wind at which the air begins STRIPPING low mist off
+                                       //the whole surface (spindrift), not just the breaking crests.
+  this.spindriftFull = 34.0;           //m/s (~hurricane) at which spindrift is in full force.
+  this.spindriftBoost = 2.0;           //extra crest-emission coverage at full spindrift (more cells
+                                       //fire, gates drop so flatter/lower water mists, launched low
+                                       //+ finer so it streams as a torn surface haze, not arcs).
+  //SURFACE HAZE FLOOR — true spindrift at gale force is wind SHEAR stripping the whole surface, not
+  //crest-driven, so it does not come in bursts. This UNGATED uniform low mist fills the gaps between
+  //the crest emitter's moving patches (which track the wave groups). Ramps in on the same spin
+  //window; spawns fine mist over OPEN WATER only, launched low, then the wind-grab carries it.
+  this.hazeFloorChance = 0.2;          //per-cell spawn probability at FULL spin (0 = floor disabled).
+  this.hazeFloorCount = 2;             //fine-mist particles per firing cell (kept small — many cells).
+  this.hazeFloorCoarse = 0.22;         //coarseness of the haze (low = fine translucent mist, no foam).
+  this.hazeFloorUp = 1.0;              //m/s upward launch (low: it hugs the surface and streams).
 
   //Impact (shore + hull).
   this.impactEnabled = true;
   this.shoreEnabled = true;
   this.shoreBand = 0.6;          //m |waterY - terrainY| counted as "at shore".
+  this.cliffMinHeight = 2.0;     //m a neighbour must rise above sea level for THIS
+                                 //waterline cell to count as the foot of a vertical
+                                 //cliff/wall (lighthouse base, sea stack). Taller than
+                                 //a wave crest so a beach swell is never read as a wall.
+  this.cliffCountScale = 0.03;   //particles-per-cell for CLIFF cells (vs shoreCountScale for
+                                 //beaches). A wall packs a wave column into one cell, so the
+                                 //beach scale KABOOMs into a wall of foam; cliffs need far fewer
+                                 //per cell. 0.15->0.03 with the emitImpact floor removed (~1/10).
+                                 //Live dial: window.oceanSplash.cliffCountScale.
   this.shoreRiseThreshold = 0.5; //m/s rising water needed to break.
   this.shoreGridStep = 2.0;      //m scan spacing within the readback ortho. Finer
                                  //than the old 4 m so the waterline resolves as a
@@ -116,10 +139,11 @@ AWater.AOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
   this.shoreFarKeep = 0.25;      //prob a far (> shoreNearRadius) cell still fires.
   this.shoreFrontBias = -0.2;    //skip cells whose direction-from-camera dotted with
                                  //camera-forward is below this (~ behind the camera).
-  this.shoreCountScale = 0.65;   //particles-per-cell multiplier for the shore sheet (was a
+  this.shoreCountScale = 0.05;   //particles-per-cell multiplier for the shore sheet (was a
                                  //hardcoded 0.25). Many cells x few each = a sheet; this is the
-                                 //"few each" dial. Raised ~2.6x to fight shore-spray sparsity.
-                                 //Watch the pool: dense shore + crest can starve capacity.
+                                 //"few each" dial. 0.65->0.4->0.28->0.05: with the floor-of-1
+                                 //removed in emitImpact, low values now really bite (~1/10 the
+                                 //old blizzard). Live dial: window.oceanSplash.shoreCountScale.
   this.shoreSheetSpan = 2.5;     //m: spread each cell's burst ALONG the waterline
                                  //tangent so adjacent cells overlap into a sheet
                                  //rather than each firing as an isolated point geyser.
@@ -197,11 +221,17 @@ AWater.AOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
   this.mistDrag = 1.8;           //drag-scale at coarse=0 (high: quick to terminal/wind).
   this.beadDrag = 0.4;           //drag-scale at coarse=1 (low: momentum, builds the arc).
   this.coarseWindCouple = 0.25;  //wind fraction a fully-coarse bead drifts at (fine = 1.0).
+  this.windGrabStart = 14.0;     //m/s wind at which the air starts OVERPOWERING the spray's own
+                                 //ballistics — beyond this even heavy beads get dragged downwind.
+  this.windGrabFull = 32.0;      //m/s (~hurricane) at which spray is FULLY captured by the wind:
+                                 //coupling -> 1 and drag -> mist-fast for every particle, so the
+                                 //whole field streams with the gale instead of arcing.
 
   //Render-side art knobs (pushed to uniforms each frame).
-  this.opacity = 0.1;           //PEAK puff opacity. Well below 1 so the noise-carved
-                                 //cloud stays translucent (a solid 1.0 reads as opaque
-                                 //"marshmallows", not mist).
+  this.opacity = 0.1;          //MIST-END opacity (aer=0) in the unified opacity ramp
+                                 //mix(opacity, foamOpacity, aer). 0.1->0.28: pure mist stays
+                                 //wispy, but the FOAM/droplet elements (made from foam chunks)
+                                 //needed real depth — they read as ghostly blobs at 0.1.
   this.sizeScale = 10.0;         //mist puffs are clumps of aerosol, not single droplets, so blow
                                  //the world radius up over the spawn size. Bumped 5->10 (~2x) so
                                  //the haze reads bigger and softer.
@@ -251,15 +281,57 @@ AWater.AOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
                                  //mode (~268 rad/s) is a visual blur; this gentle value reads as a
                                  //wobble. Volume is conserved (a*b^2 const) so a drop only breathes.
   this.wobbleAmp = 0.28;         //droplet aspect-breathe amplitude (0 = rigid sphere). Up 0.18->0.28.
-  this.harmonic = 0.28;          //droplet spherical-harmonic SURFACE wobble (modes 2-4, animated):
+  this.harmonic = 0.5;           //droplet spherical-harmonic SURFACE wobble (modes 2-4, animated):
                                  //makes each cluster drop jiggle like a real airborne bead instead
                                  //of a rigid sphere (smaller drops wobble less — surface tension).
-                                 //0 = smooth. The analytic stand-in for the old Blender per-vertex
-                                 //icosphere keyframe wobble (bubble_builder).
-  this.sizeFalloff = 5.0;        //cluster drop SIZE distribution exponent: member radius =
+                                 //0 = smooth. 0.28->0.5: foam chunks are JAGGED/torn, not round
+                                 //beads, so the silhouette wobble is pushed up to break the blizzard
+                                 //of identical circles. The analytic stand-in for the old Blender
+                                 //per-vertex icosphere keyframe wobble (bubble_builder).
+  this.dropTopSize = 0.34;       //cell-local radius of the LARGEST cluster drop (was a hardcoded
+                                 //0.20). Bigger top + the small radMin = a WIDER size range, so the
+                                 //cluster reads as varied foam chunks not uniform grains. Live dial:
+                                 //window.oceanSplash.dropTopSize.
+  this.windBreakup = 1.5;        //how hard rising wind SHREDS big drops into fine spray: at high
+                                 //wind the size falloff steepens AND the top size shrinks, so a
+                                 //storm is nearly all fine grains (giant chunks were too common at
+                                 //high wind). 0 = size ignores wind. Live: window.oceanSplash.windBreakup.
+  this.sizeFalloff = 7.0;        //cluster drop SIZE distribution exponent: member radius =
                                  //mix(min, max, rand^sizeFalloff). Higher = large drops die off
-                                 //exponentially faster (most drops tiny, the big ones rare). The MAX
-                                 //size is unchanged — this only thins how often it is reached.
+                                 //exponentially faster (most drops tiny, the big ones rare). 3->7:
+                                 //real spray is a STRONG exponential — a far larger fraction of
+                                 //small drops, with the (now bigger) tops as rare chunks. Pair with
+                                 //dropTopSize for variety. Live dial: window.oceanSplash.sizeFalloff.
+  this.mistWindMin = 5.0;        //m/s wind below which spray stays coherent BEADS (no misty
+                                 //haze). Mist is wind-shredded spray, so in light air even a
+                                 //wall-breaker throws droplets, not fog.
+  this.mistWindMax = 15.0;       //m/s wind at/above which the haze (mist) look is fully present.
+                                 //Between min and max the haze fades in with wind speed.
+  this.foamMix = 0.85;           //GLOBAL FOAMINESS MASTER for the unified water shader. Scales the
+                                 //aeration `aer = vCoarse * windE * foamMix`: 0 = always thin
+                                 //translucent droplets (never foam), 1 = full mist<->foam continuum.
+                                 //Light waves stay translucent regardless (windE->0). Live: foamMix.
+  this.foamOpacity = 1.0;        //body alpha of a foam bead (aerated water is near-opaque, unlike
+                                 //the hollow clear bead whose centre transmits).
+  this.foamAlbedo = 1.2;         //brightness of the foam body (white aerated water lit by sky).
+  this.nightAmbient = 0.07;      //fraction the ambient (sky+water hemisphere fill) drops to at deep
+                                 //night. White foam glows over a black sea under any ambient, so this
+                                 //floors it dark once the sun is down (DIRECT moonlight is untouched).
+                                 //Live dial: window.oceanSplash.nightAmbient (1.0 = no night dimming).
+  this.waterBounce = 0.6;        //LIGHT-FROM-BELOW strength: the sunlit water bounces its teal colour
+                                 //up onto the spray underside (the OTHER half of the ambient, sky
+                                 //being the top half). Lifts the down/shadow side off charcoal. Day-
+                                 //gated in-shader. 0 = off. Live dial: window.oceanSplash.waterBounce.
+  this.foamSkyFill = 1.2;        //BRIGHTNESS of the explicit blue daytime sky-bounce added to the
+                                 //foam ambient (NOT a 0-1 mix any more). The dim a-starry-sky
+                                 //hemisphere term left shadow foam charcoal under a blue sky, so we
+                                 //add a real blue dome fill on top. Day-gated in-shader by sun
+                                 //ELEVATION so a bright low sun still lights it and night switches
+                                 //off (no glow). Live dial: window.oceanSplash.foamSkyFill.
+  this.foamCalmFade = 0.5;       //0..1 how much CALMER seas thin the foam (wind 2->10 m/s ramp in
+                                 //shader). 0 = same foam at any wind; 1 = no foam when dead calm.
+                                 //Tones the storm blizzard down to a fizz on gentle swell. Live
+                                 //dial: window.oceanSplash.foamCalmFade.
   this.opacityCoarse = 0.95;     //peak opacity at coarse=1 (droplets are dense/bright).
   this.erodeCoarse = 0.06;       //erosion threshold at coarse=1 (only shapes the haze end
                                  //now; the droplet end is the SDF cluster).
@@ -298,6 +370,12 @@ AWater.AOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
                                  //pure haze. Lower the max back toward 0.2 for aerosol-only crests.
   this.impactCoarseMin = 0.0;    //impact bursts span fine->coarse, biased fine (r^3): a
   this.impactCoarseMax = 0.85;   //rock slam is mostly haze with a tail of fat droplets.
+  this.chunkCoarseThresh = 0.5;  //coarseness above which a particle reads as a foam CHUNK (the
+                                 //bead/droplet cluster) rather than the mist haze behind it.
+  this.chunkKeepChance = 0.4;    //fraction of would-be CHUNK particles actually spawned. Thins the
+                                 //big foam droplets by COUNT without touching the fine mist (which
+                                 //always spawns), so the haze stays dense while the chunks sparsen.
+                                 //Live dial: window.oceanSplash.chunkKeepChance (1.0 = no thinning).
 
   //── Debug surface probe. A single bright ball parked ON the sampled emission
   //   surface (the same rendered-FFT _surfaceHeight the crest/shore emitters
@@ -471,8 +549,15 @@ AWater.AOcean.OceanSplash.prototype.emitImpact = function(px, py, pz, nx, ny, nz
   if(count > this.impactMaxBurst) count = this.impactMaxBurst;
   //countScale lets the dense shore-contour scan emit a FEW particles per cell
   //(many cells × few each = a sheet) without each cell dumping a full hull-sized
-  //burst and overflowing the pool. Floor of 1 so a firing cell always shows.
-  if(countScale !== undefined){ count = Math.max(1, Math.round(count * countScale)); }
+  //burst and overflowing the pool. The fractional remainder is emitted PROBABILISTICALLY
+  //(not floored to 1) so a low scale truly thins the sheet — a hard floor of 1 meant every
+  //firing cell showed a particle no matter how low countScale went, capping the reduction.
+  if(countScale !== undefined){
+    const scaled = count * countScale;
+    count = Math.floor(scaled);
+    if(Math.random() < (scaled - count)) count += 1;
+    if(count <= 0) return; //this cell sits out this frame; the sheet accumulates over frames.
+  }
   const nl = Math.max(1e-4, Math.sqrt(nx * nx + ny * ny + nz * nz));
   nx /= nl; ny /= nl; nz /= nl;
   //Launch axis. By default spray cones up the surface normal (old behaviour). When
@@ -536,6 +621,9 @@ AWater.AOcean.OceanSplash.prototype.emitImpact = function(px, py, pz, nx, ny, nz
     //Per-droplet coarseness, biased toward fine (r^3) so a burst is mostly haze with a
     //sparse tail of fat droplets — the spread that reads as "mist plus droplets".
     const cr = this.impactCoarseMin + (this.impactCoarseMax - this.impactCoarseMin) * Math.pow(Math.random(), 3.0);
+    //CHUNK thin: a would-be big foam droplet is dropped most of the time, so the coarse beads
+    //sparsen while the fine mist (cr below threshold) is always kept — fewer chunks, same haze.
+    if(cr > this.chunkCoarseThresh && Math.random() > this.chunkKeepChance) continue;
     this.spawn(
       sx, py, sz,
       (dx / dl) * sp, (dy / dl) * sp, (dz / dl) * sp,
@@ -618,11 +706,23 @@ AWater.AOcean.OceanSplash.prototype._emitCrest = function(field, t, camX, camZ, 
   //Jitter the grid origin per frame so spawn points are not a static lattice.
   const jx = (Math.random() - 0.5) * step;
   const jz = (Math.random() - 0.5) * step;
+  //SPINDRIFT: as the wind climbs toward a gale the air strips mist off the WHOLE surface, not just
+  //the breaking crests — so more cells fire, the elevation/rise gates relax (flatter, lower water
+  //mists too), and the spray is launched LOWER and FINER so it streams as a torn surface haze that
+  //the wind-grab then carries downwind. spin (0 below spindriftStart, 1 at full) ramps it all in.
+  const windSpeed = Math.sqrt(windX * windX + windZ * windZ);
+  let spin = (windSpeed - this.spindriftStart) / Math.max(0.001, this.spindriftFull - this.spindriftStart);
+  spin = spin < 0.0 ? 0.0 : (spin > 1.0 ? 1.0 : spin);
+  spin = spin * spin * (3.0 - 2.0 * spin); //smoothstep
+  const spawnChance = Math.min(1.0, this.crestSpawnChance * (1.0 + spin * this.spindriftBoost));
+  const minHeight = this.crestMinHeight * (1.0 - 0.85 * spin); //wind strips lower than the crests
+  const riseThresh = this.crestRiseThreshold * (1.0 - 0.6 * spin);
+  const cluster = Math.round(this.crestClusterCount * (1.0 + spin * 0.6));
   for(let gx = -r; gx <= r; gx += step){
     for(let gz = -r; gz <= r; gz += step){
       const d2 = gx * gx + gz * gz;
       if(d2 > maxD2) continue;
-      if(Math.random() > this.crestSpawnChance) continue;
+      if(Math.random() > spawnChance) continue;
       const x = camX + gx + jx;
       const z = camZ + gz + jz;
       //All gates read the RENDERED FFT field (phase-correct) wherever the snapshot
@@ -635,7 +735,7 @@ AWater.AOcean.OceanSplash.prototype._emitCrest = function(field, t, camX, camZ, 
       //is unreliable — it cuts short-wave slopes — so it is demoted to a near-flat
       //reject below, not the gate that decides where mist lives.)
       const h0 = this._surfaceHeight(field, x, z, t);
-      if((h0 - field.heightOffset) < this.crestMinHeight) continue;
+      if((h0 - field.heightOffset) < minHeight) continue;
       let rise = (this.useRenderedHeight && AWater.AOcean.sampleWaterRiseFFT)
         ? AWater.AOcean.sampleWaterRiseFFT(x, z) : null;
       if(rise === null){
@@ -643,7 +743,7 @@ AWater.AOcean.OceanSplash.prototype._emitCrest = function(field, t, camX, camZ, 
         const h1a = field.sampleHeight(x, z, t + dt);
         rise = (h1a - h0a) / dt;
       }
-      if(rise < this.crestRiseThreshold) continue;
+      if(rise < riseThresh) continue;
       let steepness = (this.useRenderedHeight && AWater.AOcean.sampleWaterSlopeFFT)
         ? AWater.AOcean.sampleWaterSlopeFFT(x, z) : null;
       if(steepness === null){ field.sampleNormal(x, z, t, nrm); steepness = 1.0 - nrm.y; }
@@ -654,13 +754,15 @@ AWater.AOcean.OceanSplash.prototype._emitCrest = function(field, t, camX, camZ, 
       //Launch inherits the surface's own upward speed (`rise`): torn spray is the
       //crest's water continuing ballistically once the wave form decelerates past its
       //peak. crestUpSpeed is a small additive floor so gentle seas still mist a little.
-      const cluster = this.crestClusterCount;
       for(let c = 0; c < cluster; ++c){
         const sx = x + (Math.random() - 0.5) * this.crestClusterRadius;
         const sz = z + (Math.random() - 0.5) * this.crestClusterRadius;
         const sh = this._surfaceHeight(field, sx, sz, t);
-        const up = rise * this.crestVelInherit * (0.7 + Math.random() * 0.5) + this.crestUpSpeed;
-        const cr = this.crestCoarseMin + (this.crestCoarseMax - this.crestCoarseMin) * Math.pow(Math.random(), 3.0);
+        //Spindrift launches LOWER (hugs the surface, wind carries it) and FINER (mistier).
+        const up = (rise * this.crestVelInherit * (0.7 + Math.random() * 0.5) + this.crestUpSpeed) * (1.0 - 0.45 * spin);
+        const cr = (this.crestCoarseMin + (this.crestCoarseMax - this.crestCoarseMin) * Math.pow(Math.random(), 3.0)) * (1.0 - 0.6 * spin);
+        //CHUNK thin (same as the impact path): sparsen the coarse beads, keep the fine crest mist.
+        if(cr > this.chunkCoarseThresh && Math.random() > this.chunkKeepChance) continue;
         this.spawn(
           sx, sh + 0.1, sz,
           windX * this.crestWindFactor + (Math.random() - 0.5) * 0.6,
@@ -668,6 +770,54 @@ AWater.AOcean.OceanSplash.prototype._emitCrest = function(field, t, camX, camZ, 
           windZ * this.crestWindFactor + (Math.random() - 0.5) * 0.6,
           this.crestSize * (0.7 + Math.random() * 0.6),
           this.crestLifetime * (0.7 + Math.random() * 0.6),
+          0.0, cr
+        );
+      }
+    }
+  }
+};
+
+//Surface haze FLOOR: at gale force the wind shears mist off the WHOLE surface continuously, not
+//just off breaking crests, so it spreads instead of bursting in patches. This emits a thin, UNGATED
+//(no rise/steepness condition) uniform fine mist over open water, scaled by the same spin ramp as
+//the crest spindrift, launched low so the wind-grab carries it downwind. Off below gale force.
+AWater.AOcean.OceanSplash.prototype._emitSurfaceHaze = function(field, t, camX, camZ, windX, windZ){
+  if(!this.crestEnabled || this.hazeFloorChance <= 0.0) return;
+  const windSpeed = Math.sqrt(windX * windX + windZ * windZ);
+  let spin = (windSpeed - this.spindriftStart) / Math.max(0.001, this.spindriftFull - this.spindriftStart);
+  spin = spin < 0.0 ? 0.0 : (spin > 1.0 ? 1.0 : spin);
+  spin = spin * spin * (3.0 - 2.0 * spin); //smoothstep
+  if(spin <= 0.001) return;                 //only near gale force
+  const step = this.crestGridStep;
+  const r = this.crestRadius;
+  const maxD2 = this.maxEmitDistance * this.maxEmitDistance;
+  const chance = this.hazeFloorChance * spin;
+  const count = this.hazeFloorCount;
+  const jx = (Math.random() - 0.5) * step;
+  const jz = (Math.random() - 0.5) * step;
+  for(let gx = -r; gx <= r; gx += step){
+    for(let gz = -r; gz <= r; gz += step){
+      if(gx * gx + gz * gz > maxD2) continue;
+      if(Math.random() > chance) continue;
+      const x = camX + gx + jx;
+      const z = camZ + gz + jz;
+      const h0 = this._surfaceHeight(field, x, z, t);
+      //Open water only: skip cells where terrain pokes above the water (shore spray owns those).
+      const terrainY = this._terrain ? this.sampleTerrainHeight(x, z) : null;
+      if(terrainY !== null && terrainY > h0) continue;
+      for(let c = 0; c < count; ++c){
+        const sx = x + (Math.random() - 0.5) * step;
+        const sz = z + (Math.random() - 0.5) * step;
+        const sh = this._surfaceHeight(field, sx, sz, t);
+        //Fine mist (low coarseness -> translucent, no foam), launched LOW so it streams not arcs.
+        const cr = this.hazeFloorCoarse * Math.random();
+        this.spawn(
+          sx, sh + 0.1, sz,
+          windX * this.crestWindFactor + (Math.random() - 0.5) * 0.6,
+          this.hazeFloorUp * (0.5 + Math.random()),
+          windZ * this.crestWindFactor + (Math.random() - 0.5) * 0.6,
+          this.crestSize * (0.7 + Math.random() * 0.6),
+          this.crestLifetime * (0.9 + Math.random() * 0.6),
           0.0, cr
         );
       }
@@ -712,18 +862,36 @@ AWater.AOcean.OceanSplash.prototype._emitShore = function(field, t, camX, camZ, 
       if(d2 > nearR2 && Math.random() > this.shoreFarKeep) continue;
       const x = camX + gx;
       const z = camZ + gz;
-      const terrainY = this.sampleTerrainHeight(x, z);
-      if(terrainY === null) continue;
-      //True shoreline = terrain that breaks the surface near the REST waterline.
-      //Gating terrain against MEAN sea level (not the swinging instantaneous wave)
-      //keeps the contact a fixed beach contour. The old |h0 - terrainY| test fired
-      //wherever a passing wave grazed the seabed height, so on any shallow
-      //submerged shelf it sprayed across a wide underwater area, not the shore.
-      if(Math.abs(terrainY - field.heightOffset) > this.shoreBand) continue;
-      //Rise = the RENDERED FFT water's own dH/dt (phase-correct) so a burst only
-      //fires when the water you SEE is actually surging up the beach — not when the
-      //analytic phantom wave happens to peak here (that mistimed, one-sided bunching).
-      //Analytic finite difference is the cold-start fallback only.
+      const seaLevel = field.heightOffset;
+      //Two kinds of shore throw spray: a GENTLE BEACH (terrain that breaks the surface
+      //near the rest waterline) and a VERTICAL CLIFF/WALL (a lighthouse base, harbour
+      //wall, sea stack — solid that plunges through the waterline). The foam ortho is a
+      //top-down HEIGHTFIELD, so a vertical face shows up not as terrain-at-sea-level but
+      //as a one-texel JUMP from open water (null) to a tall top. Classify each cell from
+      //its own height + its neighbours, treating null (no geometry) as sea level.
+      const rawT = this.sampleTerrainHeight(x, z);
+      const hereT = (rawT === null) ? seaLevel : rawT;
+      //Neighbour terrain (null -> sea level) — reused for BOTH classification and the
+      //uphill gradient, so a wall edge yields a strong gradient pointing into the wall.
+      const xpR = this.sampleTerrainHeight(x + eps, z), xpH = (xpR === null) ? seaLevel : xpR;
+      const xmR = this.sampleTerrainHeight(x - eps, z), xmH = (xmR === null) ? seaLevel : xmR;
+      const zpR = this.sampleTerrainHeight(x, z + eps), zpH = (zpR === null) ? seaLevel : zpR;
+      const zmR = this.sampleTerrainHeight(x, z - eps), zmH = (zmR === null) ? seaLevel : zmR;
+      const maxNbr = Math.max(xpH, xmH, zpH, zmH);
+      //BEACH: this cell's terrain sits within shoreBand of the rest waterline. Gating
+      //against MEAN sea level (not the swinging instantaneous wave) keeps the contact a
+      //fixed beach contour rather than firing wherever a passing wave grazes the seabed.
+      const isBeach = (rawT !== null) && Math.abs(rawT - seaLevel) <= this.shoreBand;
+      //CLIFF BASE: this cell is at/below the waterline (open water or submerged) but a
+      //neighbour rises a full wall-height above it — the foot of a vertical face the
+      //wave smashes into. cliffMinHeight is taller than a wave crest so passing swell on
+      //a beach is never mistaken for a wall.
+      const isCliff = !isBeach && (hereT <= seaLevel + this.shoreBand) &&
+                      (maxNbr >= seaLevel + this.cliffMinHeight);
+      if(!isBeach && !isCliff) continue;
+      //Rise = the RENDERED FFT water's own dH/dt (phase-correct) so a burst only fires
+      //when the water you SEE is actually surging — not when the analytic phantom wave
+      //happens to peak here. Analytic finite difference is the cold-start fallback only.
       let rise = (this.useRenderedHeight && AWater.AOcean.sampleWaterRiseFFT)
         ? AWater.AOcean.sampleWaterRiseFFT(x, z) : null;
       if(rise === null){
@@ -732,27 +900,20 @@ AWater.AOcean.OceanSplash.prototype._emitShore = function(field, t, camX, camZ, 
         rise = (h1a - h0a) / dt;
       }
       if(rise < this.shoreRiseThreshold) continue;
-      //"Has the VISIBLE water climbed onto this beach point?" reads the rendered FFT
-      //height, so a burst can't erupt where the analytic phase is high but the water
-      //you SEE is in a trough (the pink-burst-at-a-minimum). It also pins the spawn
-      //to the visible surface — never under the terrain / rendered water.
+      //Water must be present and elevated against the shore, read off the rendered FFT
+      //so a burst can't erupt where the analytic phase is high but the visible water is
+      //in a trough. For a BEACH the surface must have climbed onto the sand (h0 >= the
+      //terrain top); for a CLIFF the wall top is metres up, so instead require the wave
+      //to be crested above sea level (a surge actually slapping the face) — never
+      //"above the wall", which would never happen.
       const h0 = this._surfaceHeight(field, x, z, t);
-      if(h0 < terrainY) continue;
-      //Terrain gradient (uphill direction): central difference where both neighbours
-      //are on the terrain, one-sided where a neighbour falls into the sea/sky (null).
-      //This is the slope the spray reflects off, so a real (non-zero) value here is
-      //what gives the burst its forward, up-the-face momentum.
-      const xp = this.sampleTerrainHeight(x + eps, z);
-      const xm = this.sampleTerrainHeight(x - eps, z);
-      const zp = this.sampleTerrainHeight(x, z + eps);
-      const zm = this.sampleTerrainHeight(x, z - eps);
-      let gradX = 0.0, gradZ = 0.0;
-      if(xp !== null && xm !== null) gradX = (xp - xm) / (2.0 * eps);
-      else if(xp !== null) gradX = (xp - terrainY) / eps;
-      else if(xm !== null) gradX = (terrainY - xm) / eps;
-      if(zp !== null && zm !== null) gradZ = (zp - zm) / (2.0 * eps);
-      else if(zp !== null) gradZ = (zp - terrainY) / eps;
-      else if(zm !== null) gradZ = (terrainY - zm) / eps;
+      if(isBeach){ if(h0 < rawT) continue; }
+      else { if(h0 <= seaLevel) continue; }
+      //Uphill gradient from the (sea-level-filled) neighbours — central differences.
+      //At a wall edge this points strongly toward the wall, so -grad launches the spray
+      //back over the water and up; the Torricelli jet below supplies the vertical leap.
+      const gradX = (xpH - xmH) / (2.0 * eps);
+      const gradZ = (zpH - zmH) / (2.0 * eps);
       //Waterline tangent = the horizontal direction ALONG the shore = perpendicular
       //to the (gradX,gradZ) uphill direction in the XZ plane. The burst is smeared
       //along this so neighbouring cells overlap into one continuous sheet.
@@ -777,8 +938,12 @@ AWater.AOcean.OceanSplash.prototype._emitShore = function(field, t, camX, camZ, 
       const gl = Math.sqrt(gradX * gradX + gradZ * gradZ);
       let ux = 0.0, uz = 0.0;
       if(gl > 1e-4){ ux = gradX / gl; uz = gradZ / gl; }
+      //A vertical wall concentrates a whole wave column into one waterline cell, so the
+      //naive count (speed x burst) explodes into a KABOOM cloud. Cliffs get their own,
+      //much lower per-cell scale — the wall already reads dense from many cells firing.
+      const cellCount = isCliff ? this.cliffCountScale : this.shoreCountScale;
       this.emitImpact(x, h0 + 0.1, z, -gradX, 1.0, -gradZ, impactSpeed,
-        tanX, tanZ, this.shoreSheetSpan, this.shoreCountScale, ux * jet, rise, uz * jet);
+        tanX, tanZ, this.shoreSheetSpan, cellCount, ux * jet, rise, uz * jet);
     }
   }
 };
@@ -822,6 +987,20 @@ AWater.AOcean.OceanSplash.prototype.tick = function(ctx){
   u.uWindNoiseSpeed.value = this.windNoiseSpeed;
   //World wind (x, z) for the haze noise scroll; the vertex projects it into the billboard plane.
   u.uWind.value.set(ctx.windX || 0.0, ctx.windZ || 0.0);
+  u.uMistWindMin.value = this.mistWindMin;
+  u.uMistWindMax.value = this.mistWindMax;
+  u.uFoamMix.value = this.foamMix;
+  u.uFoamOpacity.value = this.foamOpacity;
+  u.uFoamAlbedo.value = this.foamAlbedo;
+  u.uWaterBounce.value = this.waterBounce;
+  u.uNightAmbient.value = this.nightAmbient;
+  u.uFoamSkyFill.value = this.foamSkyFill;
+  //True solar elevation (sin), NOT the brightest-light direction (that is the moon at night). Gates
+  //the daytime sky lifts in-shader so a high moon does not switch the blue day-fill back on.
+  if(ctx.sunElevation !== undefined) u.uSunElevation.value = ctx.sunElevation;
+  u.uFoamCalmFade.value = this.foamCalmFade;
+  u.uDropTopSize.value = this.dropTopSize;
+  u.uWindBreakup.value = this.windBreakup;
   u.uOpacityCoarse.value = this.opacityCoarse;
   u.uErodeCoarse.value = this.erodeCoarse;
   u.uSparkle.value = this.sparkle;
@@ -896,6 +1075,7 @@ AWater.AOcean.OceanSplash.prototype.tick = function(ctx){
 
   if(this.enabled && field && dt > 0.0){
     this._emitCrest(field, field.currentTimeSeconds, ctx.camX, ctx.camZ, ctx.windX, ctx.windZ);
+    this._emitSurfaceHaze(field, field.currentTimeSeconds, ctx.camX, ctx.camZ, ctx.windX, ctx.windZ);
     if(this.impactEnabled){
       this._emitShore(field, field.currentTimeSeconds, ctx.camX, ctx.camZ,
                       ctx.camFwdX || 0.0, ctx.camFwdZ || 1.0);
@@ -924,6 +1104,13 @@ AWater.AOcean.OceanSplash.prototype.tick = function(ctx){
   const windX = ctx.windX || 0.0;
   const windZ = ctx.windZ || 0.0;
   const impactRamp = this.impactWindRampTime;
+  //Wind GRAB: as the wind climbs toward a gale it overpowers each drop's own ballistics. windGrab
+  //(0 below windGrabStart, 1 at windGrabFull/hurricane) lifts EVERY particle's wind coupling toward
+  //full and its drag toward mist-fast, so the field stops arcing and streams bodily downwind.
+  const windSpeed = Math.sqrt(windX * windX + windZ * windZ);
+  let windGrab = (windSpeed - this.windGrabStart) / Math.max(0.001, this.windGrabFull - this.windGrabStart);
+  windGrab = windGrab < 0.0 ? 0.0 : (windGrab > 1.0 ? 1.0 : windGrab);
+  windGrab = windGrab * windGrab * (3.0 - 2.0 * windGrab); //smoothstep
   let n = this.liveCount;
   let i = 0;
   while(i < n){
@@ -949,7 +1136,9 @@ AWater.AOcean.OceanSplash.prototype.tick = function(ctx){
     //Air drag sets terminal velocity: fine mist has HIGH drag (sheds its launch fast,
     //reaches the wind/terminal quickly, then hangs and drifts); a heavy bead has LOW drag
     //(keeps momentum, flies out to build the crest, then falls under gravity).
-    const drag = dragMist + (dragBead - dragMist) * cz;
+    let drag = dragMist + (dragBead - dragMist) * cz;
+    //A gale converges even heavy beads to the wind fast (drag -> mist-fast).
+    drag += (dragMist - drag) * windGrab;
     //Wind coupling: fine mist catches the full breeze, a heavy bead only a fraction
     //(coarseWindCouple). Impact spray (type 1) still ramps its felt wind in over
     //impactWindRampTime so it arcs up ballistically first; crest mist feels wind at once.
@@ -959,6 +1148,9 @@ AWater.AOcean.OceanSplash.prototype.tick = function(ctx){
       if(ramp > 1.0) ramp = 1.0;
       couple *= ramp;
     }
+    //...but a gale overrides even the heavy-bead fraction AND the impact arc-ramp: at hurricane
+    //force the felt wind is the FULL wind, so the spray is torn away the instant it is born.
+    couple += (1.0 - couple) * windGrab;
     const fwX = windX * couple, fwZ = windZ * couple;
     //Gravity scales with coarseness (fine mist hangs, a bead falls) AND a small seed-based
     //jitter, so neighbouring drops fall at visibly different speeds.

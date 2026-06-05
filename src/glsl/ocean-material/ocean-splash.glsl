@@ -33,6 +33,27 @@ uniform float uHarmonic;          //droplet spherical-harmonic surface-wobble am
 uniform float uSizeFalloff;       //cluster size distribution exponent (higher = big drops rarer)
 uniform float uSkyBoost;          //brightness lift on the drop sky-reflection (rim reads as sky)
 uniform float uWindNoiseSpeed;    //rate the haze noise scrolls along the wind (wisps blow past)
+uniform vec3 sunDir;              //world-space direction TO the BRIGHTEST light (sun by day, MOON by
+                                  //night) — drives forward-scatter geometry, NOT the day/night gate
+uniform float uSunElevation;      //sin(true SOLAR elevation). Gates the daytime sky lifts so a high
+                                  //MOON (which becomes the brightest light at night) never switches on
+                                  //the blue day-fill — that was the night mist-glow bug.
+uniform float uWaterBounce;       //strength of the LIGHT-FROM-BELOW term (sunlit water bouncing its
+                                  //colour up onto the spray underside; the other half of the ambient)
+uniform float uNightAmbient;      //floor the ambient (both hemisphere halves) drops to at deep night.
+                                  //White foam over a black sea reads as a GLOW under any ambient, so
+                                  //the sky+water fill must dim to ~this fraction once the sun is down.
+uniform vec2 uWind;               //wind velocity (m/s); its LENGTH gates the misty haze look
+uniform float uMistWindMin;       //m/s wind below which spray stays beaded droplets (no haze)
+uniform float uMistWindMax;       //m/s wind at/above which the haze (mist) look is fully present
+uniform float uFoamMix;           //0 = clear glassy beads (bubble look), 1 = opaque aerated FOAM
+uniform float uFoamOpacity;       //body alpha of a foam bead (aerated water is near-opaque)
+uniform float uFoamAlbedo;        //brightness of the foam body (white aerated water; ~1+)
+uniform float uFoamSkyFill;       //brightness of the blue daytime sky-bounce added to foam ambient
+                                  //(lifts shadow-side foam off charcoal; day-gated so night is dark)
+uniform float uFoamCalmFade;      //0..1 how much CALM seas thin the foam (0 = constant, 1 = gone)
+uniform float uDropTopSize;       //cell-local radius of the LARGEST cluster drop (size variety)
+uniform float uWindBreakup;       //how hard rising wind shreds big drops into fine spray (0 = off)
 
 //Scene sun shadow receive (same map + params as the water shader's sunShadow*).
 uniform sampler2D sunShadowMap;   //THREE directional-light depth shadow map
@@ -152,9 +173,14 @@ float dropletCluster(vec2 uv, float seed, out vec3 outN){
   vec2 jit = (vec2(r0, r1) - 0.5) * 0.35;           //keep the drop inside its cell
   //Exponential size falloff: raising r1 to uSizeFalloff makes MOST drops tiny and large ones
   //increasingly rare (the bubble-breakup distribution). Higher uSizeFalloff = fewer big drops.
+  //Wind SHREDS chunks: a building sea breaks big drops into fine spray, so as wind rises we bias
+  //the size distribution smaller (steeper falloff) AND cap the top size down. Calm seas keep the
+  //rare large chunks; storms are nearly all fine grains. (uWindBreakup dials the strength.)
+  float wE = smoothstep(2.0, 10.0, length(uWind));
+  float fall = uSizeFalloff * (1.0 + uWindBreakup * wE);
   float radMin = 0.04;
-  float radMax = 0.20;
-  float rad = mix(radMin, radMax, pow(r1, uSizeFalloff)) * uDropletRadius;   //cell-local units
+  float radMax = uDropTopSize / (1.0 + uWindBreakup * wE * 0.5); //smaller tops at high wind
+  float rad = mix(radMin, radMax, pow(r1, fall)) * uDropletRadius;   //cell-local units
   //Map the cell-local drop into the centred billboard (pc, -1..1) frame for wobbleDrop.
   vec2 centerPc = ((cell + 0.5 + jit) / uDropletCells) * 2.0 - 1.0;
   vec2 pc = uv * 2.0 - 1.0;
@@ -182,6 +208,49 @@ vec3 skyReflect(vec3 viewN){
     sky = mix(sky, texture2D(meteringSurveyTexture, skyUV).rgb * uSkyBoost, 0.4);
   }
   return sky;
+}
+
+//═══ UNIFIED aerated-water shading ═══════════════════════════════════════════════════════════
+//Mist and foam are ONE material — air-laden water — at different optical densities, so they share
+//ONE lighting model (no more two drifting paths). `N` = view-space normal (y-up). `aer` = foaminess
+//0..1: thin translucent MIST (light passes, forward-scatters into the warm sun glow) -> dense
+//opaque FOAM (multiple-scattered bright white with a real lit/shadow form). `dGlint` = wet sun
+//sparkle for the bead tier (0 for the mist puff).
+vec3 aeratedWater(vec3 N, float aer, float sunShadow, float dGlint){
+  float wrap = clamp(dot(N, vSunDirView) * 0.5 + 0.5, 0.0, 1.0); //form: bright sun side -> dark back
+  float glow = vGlow * (1.0 - 0.8 * aer);                        //forward-scatter glow: mist >> foam
+  //Daytime sky irradiance on foam must DIE as the sun nears the horizon, or its (cold blue) lift
+  //pops vividly against the warm/dark dusk water. Steeper gate => a MIDDAY lift only, gone by sunset;
+  //dusk/night then fall back to the plain (correctly dark) hemisphere base. Gate on the TRUE solar
+  //elevation, not sunDir.y — sunDir is the brightest light, which is the MOON at night (a high moon
+  //would otherwise read as daytime and switch the blue fill back on => night mist glow).
+  float dayF = smoothstep(0.04, 0.22, uSunElevation);
+  //Ambient FILL kept MODEST relative to the sun term below, or the lit/shadow FORM washes out (the
+  //old flat flood is exactly what erased the shadow side). Dim a-starry-sky hemisphere base (tracks
+  //time of day) + an explicit blue sky-dome bounce so SHADOW-side spray reads blue, not charcoal.
+  //BOTH lifts are now day-gated: brightness is ~log(energy), so a day-scaled boost reads even where
+  //an un-gated add popped at the dark end. Night/dusk foam sits at the plain vAmbient base.
+  vec3 ambient = vAmbient * mix(1.0, uFoamAlbedo, aer * dayF)
+               + vec3(0.45, 0.62, 0.92) * (uFoamSkyFill * dayF * aer);
+  //LIGHT FROM BELOW — the other half of the ambient. Sky lights the top; the bright sunlit water
+  //bounces its own (teal) colour up onto the spray's UNDERSIDE. Without it the down/shadow side has
+  //only the dim sky hemisphere and reads charcoal. downFace = how much this normal faces the water;
+  //driven by the sun+sky energy (so it tracks time of day) and day-gated so night stays dark.
+  vec3 worldN = normalize(N * mat3(viewMatrix));
+  float downFace = clamp(-worldN.y * 0.5 + 0.5, 0.0, 1.0);
+  vec3 waterBounce = vec3(0.16, 0.34, 0.40) * (vSunCol * 0.6 + vAmbient)
+                   * (uWaterBounce * dayF * downFace * mix(0.6, 1.0, aer));
+  //Body colour: cool translucent water (mist) -> bright near-white aerated foam.
+  vec3 body = mix(vec3(0.60, 0.74, 0.95), vec3(1.0), aer);
+  //Direct sun: half-Lambert WRAP supplies the form (sun side bright, anti-sun side falls to the
+  //blue ambient = the shadow side). Glow (mist) + glint (beads) ride on top. Scene shadow gates it.
+  vec3 direct = vSunCol * (wrap * mix(0.8, 1.1, aer) + glow) * sunShadow + vSunCol * dGlint;
+  //AMBIENT day/night: white foam over a black sea glows under ANY ambient, so the whole hemisphere
+  //fill (sky top + water bottom) must dim to a low floor once the sun sets. Wider window than dayF so
+  //twilight keeps a real ambient while the blue day-fill is already gone. DIRECT (moon) is left alone
+  //so a present moon still lights the spray — what was glowing here was the un-dimmed sky ambient.
+  float nightDim = mix(uNightAmbient, 1.0, smoothstep(-0.08, 0.06, uSunElevation));
+  return (ambient * body + waterBounce) * nightDim + direct;
 }
 
 //Scene sun shadow: 3x3 PCF on the directional-light depth map. A derivative-free
@@ -219,55 +288,66 @@ void main(){
   float z = sqrt(max(0.0, 1.0 - r * r));
   vec3 spherePos = vec3(pc, z);
   //Per-particle offset (vSeed) makes every billboard unique; advancing along Z by vAge01 evolves
-  //the field so the puff dissolves as it ages. On TOP of that, scroll the noise across the
-  //billboard along the wind direction (vWindDir, view-space) over uTime, so the wisps appear to
-  //stream with the wind rather than sit static — the breeze blowing through the spray.
-  vec2 windScroll = vWindDir * (uTime * uWindNoiseSpeed);
+  //the field so the puff dissolves as it ages. The noise MUST stay anchored to a view-stable frame:
+  //the old scroll added vWindDir (the wind projected into the billboard plane), which ROTATES with
+  //the camera, so a static particle's pattern crawled when you turned/moved — the shimmer. Advance
+  //the field along its own evolve (Z) axis by uTime instead: the wisps still morph/flow over time,
+  //but with no view-dependent term the puff looks identical from every angle. The bulk wind motion
+  //still reads — the CPU sim already pushes each particle along the wind.
+  float windAdvance = uTime * uWindNoiseSpeed;
   vec3 nCoord = spherePos * uNoiseScale
-              + vec3(vSeed * 51.3 + windScroll.x, vSeed * 17.7 + windScroll.y, vAge01 * uNoiseEvolve);
+              + vec3(vSeed * 51.3, vSeed * 17.7, vAge01 * uNoiseEvolve + windAdvance);
   float n = fbm3(nCoord);                  //~0..1
-  //Sharp mist->bead transition (matches the vertex size taper) so there is no big glassy
-  //boulder middle: it drives the haze->bead blend below as well as the size in the vertex.
-  float beadMix = smoothstep(0.4, 0.65, vCoarse);
-  //── HAZE branch (mist end): the soft noise-eroded puff. corePow/erode track coarseness
-  //   but this branch is mixed OUT toward the droplet end, so it mainly shapes the mist.
+
+  //── ONE MATERIAL: aerated water across a mist<->foam continuum ─────────────────────────────
+  //`aer` (foaminess 0..1) needs BOTH a coarse/chunky particle AND an energetic sea, so LIGHT waves
+  //stay sparse translucent droplets and only a building sea whips up dense opaque foam. uFoamMix is
+  //the global foaminess master. windE is the shared wave-energy term (also fades + shreds size).
+  float windE = smoothstep(2.0, 10.0, length(uWind));
+  float aer = clamp(vCoarse * windE * uFoamMix, 0.0, 1.0);
+
+  //GEOMETRY select: fine spray becomes a noise-eroded PUFF only when strong wind shreds it
+  //(windMist); otherwise spray is resolved DROPLETS (a bead cluster). Lighting is unified below.
+  float windMist = smoothstep(uMistWindMin, uMistWindMax, length(uWind));
+  float beadMix = mix(1.0, smoothstep(0.4, 0.65, vCoarse), windMist);
+
+  //Mist PUFF silhouette (noise-eroded soft sphere) — used when beadMix is low.
   float corePow = mix(2.0, 4.0, vCoarse);
   float erode = mix(uErode, uErodeCoarse, vCoarse);
   float core = pow(clamp(1.0 - r, 0.0, 1.0), corePow);
   float carve = smoothstep(erode, erode + uSoftEdge, n);
   float hazeDensity = core * carve;
 
-  //── Shared sun half-vector and scene sun shadow (both droplet tiers + the haze use them).
   vec3 Hh = normalize(vSunDirView + vec3(0.0, 0.0, 1.0));//half-vector to the sun
   float sunShadow = getSplashSunShadow();
 
-  //── DROPLET appearance: coarse particles render as a gaussian CLUSTER of many small water beads
-  //   (clear bodies that transmit the background, a sky-Fresnel rim + a tight sun glint each, alpha
-  //   near-zero in the clear centre). Skipped for pure mist (beadMix ~ 0), where it would only be
-  //   mixed out below anyway. beadMix is per-billboard constant, so the branch is GPU-coherent.
-  float dropDensity = 0.0;
-  vec3 dropLit = vec3(0.0);
+  //Bead CLUSTER silhouette + normal — used when beadMix is high. Translucent droplets (mist end)
+  //keep a faint wet-glass sky-Fresnel rim; dense foam suppresses it (rim scaled by 1-aer).
+  float dropCov = 0.0;
+  vec3 dropN = vec3(0.0, 0.0, 1.0);
+  float dGlint = 0.0;
+  vec3 rim = vec3(0.0);
   if(beadMix > 0.001){
-    vec3 dN;
-    float cov = dropletCluster(gl_PointCoord, vSeed, dN);
-    //Water drop, NOT a soap bubble: a clear body that transmits the background (alpha near zero in
-    //the centre), opaque only where it REFLECTS — a bright Fresnel rim reflecting the sky and a
-    //crisp sun sparkle. The rim is the lead read; the body is a dim cool water tint, not a glow.
-    float fres = pow(1.0 - clamp(dN.z, 0.0, 1.0), 3.0);          //sharper grazing-angle rim
-    float dGlint = pow(max(0.0, dot(dN, Hh)), 80.0) * uSparkle * sunShadow; //crisp wet sun sparkle
-    vec3 sky = skyReflect(dN);                                   //bright reflected sky on the rim
-    //Light absorption tints the rim toward water (deeper at grazing where rays cross more water),
-    //but gently so it does not darken the reflection back into a bubble.
-    vec3 absorb = pow(vec3(0.86, 0.93, 0.98), vec3(uAbsorb * (1.0 - dN.z)));
-    dropLit = sky * fres * 1.6 * absorb                          //sky reflection (the bright rim)
-            + vAmbient * vec3(0.55, 0.72, 0.9) * 0.14            //dim cool water body (transmits)
-            + vSunCol * (dGlint + vGlow * 0.25);                 //wet sparkle + a little backlit glow
-    float dAlpha = clamp(fres * 0.7 + dGlint + 0.05, 0.0, 1.0);
-    dropDensity = cov * dAlpha;
+    dropCov = dropletCluster(gl_PointCoord, vSeed, dropN);
+    dGlint = pow(max(0.0, dot(dropN, Hh)), 80.0) * uSparkle * sunShadow;
+    float fres = pow(1.0 - clamp(dropN.z, 0.0, 1.0), 3.0);
+    rim = skyReflect(dropN) * (fres * (1.0 - aer) * 1.2);
   }
 
-  //── Blend mist <-> droplet by coarseness: mist shows haze, a coarse particle is a drop.
-  float density = mix(hazeDensity, dropDensity, beadMix);
+  //ONE lighting model lights BOTH the mist puff (Nhaze) and the foam beads (dropN), so they share
+  //the sun colour + form and never drift apart again. The mist puff Z-biases its normal off a
+  //harsh terminator; the rim rides only the bead path.
+  vec3 Nhaze = normalize(vec3(pc.x, -pc.y, z + 0.3)); //negate y: gl_PointCoord is y-down
+  vec3 litHaze = aeratedWater(Nhaze, aer, sunShadow, 0.0);
+  vec3 litDrop = aeratedWater(dropN, aer, sunShadow, dGlint) + rim;
+  vec3 lit = mix(litHaze, litDrop, beadMix);
+
+  //COVERAGE (silhouette) and OPACITY (translucent mist -> opaque foam) are separate: the aeration
+  //axis drives opacity so light waves read see-through and storm foam reads solid. Calmer seas thin
+  //the whole thing (foamWind), matching the size break-up in the cluster.
+  float density = mix(hazeDensity, dropCov, beadMix);
+  float foamWind = mix(1.0 - uFoamCalmFade, 1.0, windE);
+  float opacity = mix(uOpacity, uFoamOpacity, aer) * foamWind;
 
   //Lifetime fade: a quick rise then a long ease-out, like real spray thinning.
   float fadeIn = smoothstep(0.0, 0.15, vAge01);
@@ -286,19 +366,7 @@ void main(){
     softFade = clamp((sceneZ - vViewZ) / max(0.001, uSoftRange), 0.0, 1.0);
   }
 
-  //Droplets are denser and brighter than haze, so peak opacity climbs toward the drop end.
-  float op = mix(uOpacity, uOpacityCoarse, beadMix);
-  float alpha = density * ageAlpha * softFade * op;
-
-  //HAZE lighting: half-Lambert wrap of the sun over a synthesized spherical normal so the
-  //mist reads as a 3D billow (sun side bright, far side to sky-ambient). The +0.3 z-bias
-  //keeps rim normals off a harsh black terminator; vGlow is added ungated so a backlit puff
-  //still blooms. Scene sun shadow gates the direct terms.
-  vec3 N = normalize(vec3(pc.x, -pc.y, z + 0.3));  //negate y: gl_PointCoord is y-down
-  float wrap = clamp(dot(N, vSunDirView) * 0.5 + 0.5, 0.0, 1.0);
-  vec3 hazeLit = vAmbient + vSunCol * (wrap + vGlow) * sunShadow;
-
-  vec3 lit = mix(hazeLit, dropLit, beadMix);
+  float alpha = density * ageAlpha * softFade * opacity;
   vec3 color = linearToSrgb(acesTonemap(lit));
 
   if(uDebugMode == 1){

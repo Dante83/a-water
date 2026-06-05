@@ -2883,6 +2883,18 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       } else {
         self._splashSunColor.setRGB(1.0, 1.0, 1.0);
       }
+      //TRUE solar elevation (sin), independent of which light is brightest. brightestDirectionalLight
+      //becomes the MOON at night, so its .y cannot tell day from night; the sky state's sun position
+      //can. The splash gates its daytime sky-fill on this so a high moon never reads as daytime.
+      let _sunElev = 1.0;
+      if(self.skyDirector && self.skyDirector.getAtmosphericLUTs){
+        const _luts = self.skyDirector.getAtmosphericLUTs();
+        if(_luts && _luts.skyState && _luts.skyState.sun){
+          const _sp = _luts.skyState.sun.position;
+          const _spl = Math.sqrt(_sp.x * _sp.x + _sp.y * _sp.y + _sp.z * _sp.z);
+          _sunElev = _spl > 1e-4 ? _sp.y / _spl : _sp.y;
+        }
+      }
       if(self.skyDirector && self.skyDirector.lightingManager){
         const yl = self.skyDirector.lightingManager.yAxisHemisphericalLight;
         self._splashAmbient.copy(yl.color).multiplyScalar(yl.intensity);
@@ -2935,6 +2947,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         sunColor: self._splashSunColor,
         skyAmbient: self._splashAmbient,
         sunDir: self._splashSunDir,
+        sunElevation: _sunElev,
         sunShadowEnabled: _shEnabled,
         sunShadowMap: _shMap,
         sunShadowMatrix: _shMatrix,
@@ -2948,7 +2961,11 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         resH: self.refractionGBufferTarget.height,
         linearDepthTexture: self.refractionGBufferTarget.textures[2]
       });
-      sp.mesh.visible = sp.enabled;
+      //Airborne spray is an above-water phenomenon: hide it whenever the camera is submerged, or the
+      //mist/foam billboards punch through the underwater ceiling (they render on OCEAN_LAYER in the
+      //main pass and do not depth-interact with the from-below surface). _wasUnderwater is the same
+      //committed submersion state that drives the underwater fog/ceiling swap.
+      sp.mesh.visible = sp.enabled && !self._wasUnderwater;
     }
   };
 }
