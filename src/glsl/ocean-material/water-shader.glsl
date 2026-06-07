@@ -741,6 +741,27 @@ const float UW_PI = 3.14159265359;
 //light and asymptotes to a visible teal.
 const float UW_HG_G = 0.5;
 const float UW_INV_4PI = 0.07957747154;
+//How much the murk's SUN single-scatter term keeps its view (gaze) dependence.
+//1.0 = full Henyey-Greenstein halo (physical: brighter looking toward the sun,
+//dimmer away). 0.0 = collapse the sun phase to isotropic (1/4π), making the
+//equilibrium teal view-INDEPENDENT so the directly-viewed seabed (down gaze) and
+//the reflected ceiling (up gaze) fade to the SAME teal — the uniform "colour of
+//the water" look. Kept at 0.0: with the sky-ambient term restored the murk is no
+//longer dark, but the physical halo at 1.0 still reintroduces a top/bottom
+//difference between seabed and ceiling, which we don't want here. Flip to 1.0 if
+//you prefer the physical sun glow. MUST stay in lockstep with the chunk's
+//UW_MURK_GAZE_WEIGHT in ocean-grid.js _injectUnderwaterFogChunk so the seabed/
+//curtain fog uses the same phase as this ceiling/body path.
+const float UW_MURK_GAZE_WEIGHT = 0.0;
+//Underwater fog isolation taps — debugging the seabed-vs-ceiling murk match.
+//MUST match UW_DEBUG_FOG_MODE in ocean-grid.js _injectUnderwaterFogChunk so both
+//the direct-seabed (chunk) and reflected-ceiling (this applyUnderwaterFog) paths
+//are bisected together.
+//  0 = normal production blend.
+//  1 = NO fog (raw input passes through).
+//  2 = fog a CONSTANT input color (vec3(0.5)) — isolates the blend from content.
+//  3 = output the inscatter MURK only (full fog) — shows what each path fades to.
+const int UW_DEBUG_FOG_MODE = 0;
 //Underwater path-length scale. 1.0 = physically true geometric distance:
 //extinction (absorption + scattering, per metre) integrates over the REAL ray
 //length, with NO magnification. The distance to a rock is the distance to a
@@ -785,9 +806,12 @@ vec3 underwaterInscatterSurface(vec3 viewDirWorld){
   float sunTransmission = 1.0 - fresnelAirToWater(sunCosZenith);
   vec3 directDownwelling = brightestDirectionalLight * sunTransmission * sunCosZenith;
   vec3 ambientDownwelling = skyAmbientColor;
-  //Sun: HG-phased single scatter into the view ray.
+  //Sun: HG-phased single scatter into the view ray. Blend the HG halo toward
+  //the isotropic phase (1/4π) by UW_MURK_GAZE_WEIGHT — at 0.0 the sun term is
+  //view-independent so the murk equilibrium no longer depends on gaze (the
+  //direct-vs-reflected horizon test; see the const above).
   float cosTheta = -dot(viewDirWorld, brightestDirectionalLightDirection);
-  float pSun = henyeyGreenstein(cosTheta, UW_HG_G);
+  float pSun = mix(UW_INV_4PI, henyeyGreenstein(cosTheta, UW_HG_G), UW_MURK_GAZE_WEIGHT);
   //Sky: hemispherical isotropic approximation. 1/(2π) is the contribution of
   //a uniform upper hemisphere to a single-scattering point with isotropic
   //phase (∫ p_iso L_sky dω over the hemisphere = E_sky/(2π)).
@@ -837,6 +861,10 @@ vec3 applyUnderwaterFog(vec3 color, float dist, vec3 viewDirWorld){
   //(inscatter is front-loaded near the eye), so there is no per-fragment depth
   //term here — every long ray fades to the same camera-depth water colour.
   vec3 inscatter = underwaterInscatterSurface(viewDirWorld);
+  //UW_DEBUG_FOG_MODE isolation taps (see const above), matched to the fog chunk.
+  if(UW_DEBUG_FOG_MODE == 1){ return color; }                                          //raw input, no fog
+  if(UW_DEBUG_FOG_MODE == 2){ return vec3(0.5) * transmittance + inscatter * (vec3(1.0) - transmittance); } //constant input
+  if(UW_DEBUG_FOG_MODE == 3){ return inscatter; }                                      //murk only
   return color * transmittance + inscatter * (vec3(1.0) - transmittance);
 }
 
@@ -1100,6 +1128,21 @@ SOFTWARE.
     //The Snell-window `transmitted` content is above-water (chunk skipped
     //it) so this is its only underwater fog — also correct.
     vec3 viewDirCeiling = normalize(worldPos - cameraPosition);
+    //── BISECTION TAPS (2026-06-06): expose each stage of the ceiling build so we
+    //can find WHERE the reflected ceiling goes dark vs the teal direct seabed.
+    //Only fire for debug modes 50-55; mode 0 falls straight through to the real
+    //return below. Each tap returns a vec3 that flows through the normal
+    //MyAES+sRGB output, so the radiance taps (50/51/53/54) read as they'd
+    //contribute and the scalar taps (52 reflectance, 55 distance) read as
+    //monotonic gray. Walk them in order: if 54 is teal but mode 0 is dark, the
+    //fog isn't reaching its equilibrium (check 55 distance → transmittance);
+    //if 53 is dark, the dark is upstream in 50/51/52.
+    if(oceanShadowDebugMode == 50){ return reflected; }                                  //raw mirror-RT sample (already stage-1 fogged)
+    if(oceanShadowDebugMode == 51){ return transmitted; }                                //raw Snell-window (above-water) sample
+    if(oceanShadowDebugMode == 52){ return vec3(reflectance); }                          //Fresnel water->air (1 = TIR mirror)
+    if(oceanShadowDebugMode == 53){ return ceiling; }                                    //mix(transmitted, reflected) PRE stage-2 fog
+    if(oceanShadowDebugMode == 54){ return underwaterInscatterSurface(viewDirCeiling); } //the teal the stage-2 fog fades toward
+    if(oceanShadowDebugMode == 55){ return vec3(clamp(camToFragDist / 50.0, 0.0, 1.0)); }//cam->ceiling distance, /50m gray
     return applyUnderwaterFog(ceiling, camToFragDist * UW_DIST_SCALE, viewDirCeiling);
   }
 #endif
@@ -2035,7 +2078,10 @@ void main(){
     //Atmospheric perspective is the most expensive post-lighting step (multiple
     //3D LUT samples). Any non-zero debug mode clobbers gl_FragColor below, so
     //skip it then — keeps debug captures snappy on dense ocean scenes.
-    if(oceanShadowDebugMode == 0){
+    //Modes 50-55 are the ceiling bisection taps — they need the ceiling built,
+    //so keep computing it for them (it short-circuits to the requested stage
+    //inside the function). Everything else stays gated to mode 0.
+    if(oceanShadowDebugMode == 0 || (oceanShadowDebugMode >= 50 && oceanShadowDebugMode <= 55)){
       if(underwaterFactor > 0.5){
         //Camera is below the surface: this fragment is the underside of the
         //water (the "ceiling"). Replace the above-water lighting wholesale
@@ -2047,7 +2093,7 @@ void main(){
                                               dbgFoamColor, dbgFoamBlend,
                                               screenUV,
                                               distanceToWorldPosition);
-      } else {
+      } else if(oceanShadowDebugMode == 0){
         //Above water: Mie+Rayleigh atmospheric perspective.
         totalLight = applyAtmosphericPerspective(totalLight, worldPosition.xyz);
       }
@@ -2531,7 +2577,7 @@ void main(){
   //contrast-stretches that range to black-white. White edges are texels with
   //no caster (cleared to 1.0) — useful for seeing the cascade footprint
   //shrink as you move toward C0.
-  if(oceanShadowDebugMode != 0){
+  if(oceanShadowDebugMode != 0 && !(oceanShadowDebugMode >= 50 && oceanShadowDebugMode <= 55)){
     float panelSize = 200.0;
     vec2 fc = gl_FragCoord.xy;
     if(fc.x < panelSize && fc.y < panelSize){

@@ -422,6 +422,73 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //hemispherical. Found in the per-frame light scan; null until then.
   this._fallbackHemiLight = null;
 
+  //Sky downwelling ambient, shared by the underwater murk, the body-colour
+  //blend, and splash lighting. a-starry-sky drives THREE oriented
+  //HemisphereLights as a cheap SH-ambient probe (see A-Starry-Sky
+  //LightingManager.js tick): xAxis points along the sun azimuth, yAxis straight
+  //up (zenith), zAxis the perpendicular horizontal; each `.color` is that axis's
+  //sky-side irradiance, `.groundColor` the seabed/ground bounce side.
+  //
+  //We USED to read only yAxis.color as "the downwelling sky" — but that axis
+  //routinely clamps to ~black. Its value is the order-2 SH irradiance evaluated
+  //straight up, then max-normalised against all 18 hemi channels; at most sun
+  //elevations the zenith lobe rings slightly negative and evalSHHemi clamps it to
+  //0, while the two HORIZONTAL axes carry the real sky colour. So reading the
+  //zenith alone gave a black ambient and the whole underwater murk collapsed to
+  //the sun-only term.
+  //
+  //The physically-correct "downwelling sky onto a horizontal surface" is exactly
+  //what THREE computes when it lights an up-facing (+Y normal) receiver with
+  //these three lights: each HemisphereLight contributes
+  //mix(groundColor, color, 0.5 + 0.5*dot(N, axisDir)). For N = +Y the two
+  //horizontal axes land at dot=0 -> 0.5*color, and the zenith axis at dot=1 ->
+  //1.0*color. We take the SKY side only (drop groundColor — the murk inscatter is
+  //driven by light entering the water from the sky, not by the floor bounce):
+  //    skyAmbient = 0.5*xColor + 1.0*yColor + 0.5*zColor   (each * its intensity)
+  //This is robust to the zenith clamping to 0 (the horizontals still sum to the
+  //full horizon sky) and stays consistent with how the rest of the scene is lit.
+  //Result lands in _skyAmbientScratch (linear RGB); returns true if a source was
+  //found. NOT view/camera dependent — these are global scene lights shared by
+  //every render pass (main and the reflection mirror alike), so this same value
+  //fogs the directly-viewed seabed and the reflected ceiling identically.
+  //THREE applies LinearToSRGB to a Fog's `.color` when it uploads it as the
+  //`fogColor` uniform, so a color set with raw LINEAR values arrives ~brightened
+  //in the shader. The underwater fog chunk reads `fogColor` directly as a linear
+  //radiance (the murk baseline `albedo·(E_sun+E_sky)/4π`), so we must pre-apply
+  //the inverse (SRGBToLinear) when writing _oceanFog.color — exactly as
+  //a-starry-sky's FogRenderer does for its own fog (toFogUniform). Without this
+  //the chunk-fogged seabed/curtain murk renders ~3× too bright (e.g. a 0.09 sRGB
+  //murk reads as 0.57) while the water-shader ceiling — which reads plain Vector3
+  //uniforms, not color-managed — stays correct. That mismatch was the glowing
+  //seabed. Per-channel SRGBToLinear, matching THREE's sRGB transfer function.
+  this._toFogUniform = function(v){
+    return v < 0.04045 ? v * 0.0773993808 : Math.pow(v * 0.9478672986 + 0.0521327014, 2.4);
+  };
+
+  this._skyAmbientScratch = new THREE.Vector3();
+  this._readSkyAmbient = function(){
+    const out = self._skyAmbientScratch;
+    if(self.skyDirector && self.skyDirector.lightingManager){
+      const lm = self.skyDirector.lightingManager;
+      const xL = lm.xAxisHemisphericalLight;
+      const yL = lm.yAxisHemisphericalLight;
+      const zL = lm.zAxisHemisphericalLight;
+      const xI = xL.intensity * 0.5, yI = yL.intensity, zI = zL.intensity * 0.5;
+      out.set(
+        xL.color.r * xI + yL.color.r * yI + zL.color.r * zI,
+        xL.color.g * xI + yL.color.g * yI + zL.color.g * zI,
+        xL.color.b * xI + yL.color.b * yI + zL.color.b * zI
+      );
+      return true;
+    } else if(self._fallbackHemiLight){
+      //Single scene HemisphereLight: an up-facing receiver gets the full sky side.
+      const hL = self._fallbackHemiLight;
+      out.set(hL.color.r * hL.intensity, hL.color.g * hL.intensity, hL.color.b * hL.intensity);
+      return true;
+    }
+    return false;
+  };
+
   //── Sky provider resolution + standalone underwater-fog scaffold ──────────
   //The underwater seabed/curtain murk (see _injectUnderwaterFogChunk) hooks a
   //reservation slot in THREE.ShaderChunk.fog_* that a-starry-sky installs as
@@ -493,6 +560,15 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       '  }',
       '  vec4 fogLinearTosRGB(vec4 c){',
       '    return vec4(mix(c.rgb * 12.92, 1.055 * pow(c.rgb, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c.rgb)), c.a);',
+      '  }',
+      //Narkowicz ACES fit — the SAME operator a-starry-sky and water-shader.glsl
+      //use. The ocean branch tonemaps its fogged result on the sRGB (main-canvas)
+      //path so underwater scene geometry matches the water surface and the
+      //reflection (which both go through MyAES). a-starry-sky declares this itself
+      //on its path, so this copy is standalone-only — the two scaffolds are never
+      //both installed, so there is no duplicate-symbol collision.
+      '  vec3 MyAESFilmicToneMapping(vec3 color){',
+      '    return clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), 0.0, 1.0);',
       '  }',
       '#endif'
     ].join('\n');
@@ -1623,6 +1699,15 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     reflCam.projectionMatrix.copy(mainCamera.projectionMatrix);
     reflCam.updateMatrixWorld();
 
+    //Note: the mirror cam is the VIEWER mirrored across the rest plane, NOT the
+    //camera-at-the-reflecting-pixel. When the viewer is underwater (mainCamY < h)
+    //the mirror cam is ABOVE water (mirrorCamY = 2h - mainCamY > h), so the
+    //chunk's uwCamDepth clamps to 0 in this pass. That's compensated by swapping
+    //the pre-darkened _uwBaselineCamDepth into the fogColor for the mirror pass
+    //(see the murk block), so the reflected ceiling fogs toward the same depth
+    //equilibrium as the direct seabed. (This was probed as a suspected
+    //direct-vs-reflected divergence — ruled out: the depth cancels between views.)
+
     //world position → reflection UV: bias(clip→[0,1]) · proj · view.
     self._reflectionTextureMatrix.set(
       0.5, 0.0, 0.0, 0.5,
@@ -1671,9 +1756,10 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     const prevFogColorG = self._oceanFog.color.g;
     const prevFogColorB = self._oceanFog.color.b;
     if(self._uwBaselineCamDepth){
-      self._oceanFog.color.setRGB(self._uwBaselineCamDepth.x,
-                                  self._uwBaselineCamDepth.y,
-                                  self._uwBaselineCamDepth.z);
+      //SRGBToLinear pre-comp (see _toFogUniform) — same reason as the main pass.
+      self._oceanFog.color.setRGB(self._toFogUniform(self._uwBaselineCamDepth.x),
+                                  self._toFogUniform(self._uwBaselineCamDepth.y),
+                                  self._toFogUniform(self._uwBaselineCamDepth.z));
     }
     //fogFar MUST stay > 0 here. a-starry-sky's fog_fragment routes on
     //`if(fogFar <= 0.0)` → its ATMOSPHERIC-perspective branch, checked BEFORE
@@ -1798,6 +1884,18 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     const skyWasVisible = skyMesh ? skyMesh.visible : false;
     if(skyMesh){ skyMesh.visible = true; }
 
+    //Sun/moon disk planes are hidden underwater for the main render (sky-dome
+    //swap), but the Snell window should still show them refracted through the
+    //surface — so force them visible just for this above-water capture and
+    //restore afterward (mirrors skyMesh above).
+    const rends = self.skyDirector && self.skyDirector.renderers;
+    const sunMesh = rends && rends.sunRenderer && rends.sunRenderer.sunMesh;
+    const moonMesh = rends && rends.moonRenderer && rends.moonRenderer.moonMesh;
+    const sunWasVisible = sunMesh ? sunMesh.visible : false;
+    const moonWasVisible = moonMesh ? moonMesh.visible : false;
+    if(sunMesh){ sunMesh.visible = true; }
+    if(moonMesh){ moonMesh.visible = true; }
+
     const curtain = self.underwaterCurtainMesh;
     const curtainWasVisible = curtain ? curtain.visible : false;
     if(curtain){ curtain.visible = false; }
@@ -1840,6 +1938,8 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     self.renderer.toneMapping = prevToneMapping;
     self.renderer.setRenderTarget(prevRT);
     if(skyMesh){ skyMesh.visible = skyWasVisible; }
+    if(sunMesh){ sunMesh.visible = sunWasVisible; }
+    if(moonMesh){ moonMesh.visible = moonWasVisible; }
     if(curtain){ curtain.visible = curtainWasVisible; }
   };
 
@@ -2012,6 +2112,23 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       //The 1/(4π) is the steradian-normalisation baked into HG.
       'const float UW_HG_G = 0.5;',
       'const float UW_INV_4PI = 0.07957747154;',
+      //Gaze-dependence of the murk's SUN single-scatter term. 1.0 = full HG halo
+      //(physical: brighter toward the sun); 0.0 = isotropic (view-independent
+      //teal) so the direct seabed (down gaze) and reflected ceiling (up gaze)
+      //fade to the SAME teal. Kept at 0.0 for the uniform "colour of the water"
+      //look. MUST match UW_MURK_GAZE_WEIGHT in water-shader.glsl so the seabed/
+      //curtain fog (this chunk) and the ceiling/body fog (the water shader) stay
+      //in lockstep. Flip both to 1.0 to restore the physical sun glow.
+      'const float UW_MURK_GAZE_WEIGHT = 0.0;',
+      //Underwater fog isolation taps — debugging the seabed-vs-ceiling murk match.
+      //MUST match UW_DEBUG_FOG_MODE in water-shader.glsl applyUnderwaterFog.
+      //  0 = normal production blend.
+      //  1 = NO fog (raw input color passes straight through).
+      //  2 = fog a CONSTANT input color (vec3(0.5)) — isolates the fog blend
+      //      from the geometry colour; both paths start from the same input.
+      //  3 = output the MURK only (full fog) — shows EXACTLY what each path
+      //      fades to. Top (ceiling murk) vs bottom (this seabed murk).
+      'const int UW_DEBUG_FOG_MODE = 0;',
       //Underwater path-length scale. 1.0 = physically true geometric distance:
       //extinction integrates over the REAL ray length, no magnification — the
       //distance to a rock is the distance to a rock, a surface->floor reflection
@@ -2069,7 +2186,11 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       //linear RT output, skip the sRGB roundtrip; else sRGB main canvas.
       '  bool uwInputIsSRGB = fogFar < 5.0;',
       '  float uwSunFrac = uwInputIsSRGB ? fogFar : (fogFar - 10.0);',
-      '  float uwAngFactor = 4.0 * 3.14159265359 * uwSunFrac * uwHG',
+      //Blend the HG halo toward isotropic (1/4π) by UW_MURK_GAZE_WEIGHT — at 0.0
+      //the sun term is view-independent, mirroring underwaterInscatterSurface's
+      //pSun blend so the direct seabed murk matches the reflected ceiling murk.
+      '  float uwHGiso = mix(UW_INV_4PI, uwHG, UW_MURK_GAZE_WEIGHT);',
+      '  float uwAngFactor = 4.0 * 3.14159265359 * uwSunFrac * uwHGiso',
       '                    + 2.0 * (1.0 - uwSunFrac);',
       //Single-scatter (angular) term + isotropic multiple-scatter floor. The
       //angular term collapses toward 0 perpendicular to the sun (the horizon
@@ -2086,6 +2207,17 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       //water-shader.glsl underwaterInscatterSurface's camDepthDarken. In the
       //mirror RT pass cameraPosition is the above-water mirror cam, so this
       //clamps to 0 — surface-level inscatter for the post-bounce leg, correct.
+      //INVESTIGATED 2026-06-06 (camera-Y console probe in _renderUnderwater
+      //Reflection): RULED OUT as the direct-vs-reflected brightness divergence.
+      //The probe confirmed the mirror cam is always above water when submerged
+      //(mirrorCamDepth ≡ 0), so this term IS 0 in the reflection — but the same
+      //real depth (mainCamDepth) is applied to BOTH views: directly here for the
+      //seabed, and for the reflection via the pre-darkened fogColor swap
+      //(_uwBaselineCamDepth) in stage 1 PLUS underwaterInscatterSurface's
+      //camDepthDarken (real cam) in stage 2. Identical factor on both sides → it
+      //cancels in the comparison and cannot open a gap between them. The real
+      //asymmetry left is the HG sun-halo VIEW DIRECTION (this seabed gaze vs the
+      //ceiling's up gaze), not the depth term.
       '  float uwCamDepth = max(0.0, uwSurfaceY - cameraPosition.y);',
       '  vec3 uwMurk = uwMurkSurface * exp(-uwExt * uwCamDepth);',
       //fog_fragment runs AFTER colorspace_fragment, so gl_FragColor here is
@@ -2095,9 +2227,23 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       '  vec3 uwLinear = uwInputIsSRGB',
       '    ? fogsRGBToLinear(vec4(gl_FragColor.rgb, 1.0)).rgb',
       '    : gl_FragColor.rgb;',
-      '  uwLinear = uwLinear * uwT + uwMurk * (vec3(1.0) - uwT);',
+      //Fog blend, with the UW_DEBUG_FOG_MODE isolation taps (see const above).
+      '  if(UW_DEBUG_FOG_MODE == 1){ /* raw input, no fog */ }',
+      '  else if(UW_DEBUG_FOG_MODE == 2){ uwLinear = vec3(0.5) * uwT + uwMurk * (vec3(1.0) - uwT); }',
+      '  else if(UW_DEBUG_FOG_MODE == 3){ uwLinear = uwMurk; }',
+      '  else { uwLinear = uwLinear * uwT + uwMurk * (vec3(1.0) - uwT); }',
+      //sRGB (main-canvas) path: TONEMAP the fogged result with MyAES before
+      //encoding — the renderer is NoToneMapping, so scene geometry arrives here
+      //un-tonemapped (raw linear radiance), and without this it would sRGB-encode
+      //straight, reading far brighter than the same geometry seen in the water
+      //surface or the reflection (both of which go through MyAES). This mirrors
+      //a-starry-sky's OWN atmospheric branch, which MyAES-tonemaps its fogged
+      //ground — so above-water and below-water scene geometry now tonemap alike.
+      //LINEAR RT (reflection) path: do NOT tonemap here — the ceiling composite
+      //applies MyAES once when it samples this RT, so tonemapping now would
+      //double it.
       '  gl_FragColor.rgb = uwInputIsSRGB',
-      '    ? fogLinearTosRGB(vec4(uwLinear, 1.0)).rgb',
+      '    ? fogLinearTosRGB(vec4(MyAESFilmicToneMapping(uwLinear), 1.0)).rgb',
       '    : uwLinear;'
     ].join('\n');
     const vertGLSL = [
@@ -2590,19 +2736,15 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           const k = i * trans * cosZ;
           dirX = ml.color.r * k; dirY = ml.color.g * k; dirZ = ml.color.b * k;
         }
-        //skyAmbient from a-starry-sky y-hemispherical (matches water-shader.glsl :1596).
-        //Standalone (no skyDirector): fall back to a scene HemisphereLight's sky
-        //colour as the downwelling ambient so the murk still lifts off the
-        //direct-light-only sun term.
+        //skyAmbient = hemisphere-mean sky downwelling (see _readSkyAmbient).
+        //MUST match the GPU side: the skyAmbientColor uniform set below feeds
+        //water-shader.glsl's underwaterInscatterSurface, and both now read the
+        //same averaged source so the seabed murk and the ceiling/body fog agree.
         let ambX = 0.0, ambY = 0.0, ambZ = 0.0;
-        if(self.skyDirector && self.skyDirector.lightingManager){
-          const yL = self.skyDirector.lightingManager.yAxisHemisphericalLight;
-          const yI = yL.intensity;
-          ambX = yL.color.r * yI; ambY = yL.color.g * yI; ambZ = yL.color.b * yI;
-        } else if(self._fallbackHemiLight){
-          const hL = self._fallbackHemiLight;
-          const hI = hL.intensity;
-          ambX = hL.color.r * hI; ambY = hL.color.g * hI; ambZ = hL.color.b * hI;
+        if(self._readSkyAmbient()){
+          ambX = self._skyAmbientScratch.x;
+          ambY = self._skyAmbientScratch.y;
+          ambZ = self._skyAmbientScratch.z;
         }
         const inv4Pi = 0.07957747154;
         const camDepth = Math.max(0.0, -cameraSubmersion);
@@ -2625,7 +2767,11 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           albY * sumY * inv4Pi,
           albZ * sumZ * inv4Pi
         );
-        self._oceanFog.color.setRGB(self._uwMurkScratch.x, self._uwMurkScratch.y, self._uwMurkScratch.z);
+        //SRGBToLinear pre-comp (see _toFogUniform) so THREE's LinearToSRGB on
+        //fogColor upload cancels and the chunk reads the true linear murk.
+        self._oceanFog.color.setRGB(self._toFogUniform(self._uwMurkScratch.x),
+                                    self._toFogUniform(self._uwMurkScratch.y),
+                                    self._toFogUniform(self._uwMurkScratch.z));
         //Sun fraction (scalar). Computed on luminance-weighted total so it
         //collapses sensibly when E_sky dominates at night and E_sun at noon.
         //Clamped to (0, 1) and to a [0.01, 0.99] band so |fogFar| is always
@@ -2736,6 +2882,17 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           self.scene.background = self._aboveWaterBackground;
         }
       }
+      //Sun/moon disk planes (a-starry-sky's sunRenderer/moonRenderer) are
+      //SEPARATE meshes from the atmosphere dome and render with depthWrite off,
+      //so submerged they punch through the curtain as hard-edged disks — the
+      //sharp circular cutoff matches their angular-diameter plane size. Hide
+      //them for the main underwater render; the transmission pass re-shows them
+      //so the Snell window still gets a refracted sun/moon through the surface.
+      const rends = self.skyDirector && self.skyDirector.renderers;
+      const sunMesh = rends && rends.sunRenderer && rends.sunRenderer.sunMesh;
+      const moonMesh = rends && rends.moonRenderer && rends.moonRenderer.moonMesh;
+      if(sunMesh){ sunMesh.visible = !isUnderwater; }
+      if(moonMesh){ moonMesh.visible = !isUnderwater; }
     }
 
     //Curtain hemisphere — follow the camera, pick up the camera-depth-
@@ -2894,16 +3051,13 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         uniformsRef.aboveWaterTransmissionTexture.value = self._aboveWaterTransmissionTarget.texture;
       }
 
-      //Sky ambient color from a-starry-sky's y-axis hemisphere light (pointing straight up).
-      //This is view-independent and color-correct at all times of day.
-      if(self.skyDirector && self.skyDirector.lightingManager){
-        const yLight = self.skyDirector.lightingManager.yAxisHemisphericalLight;
-        const skyIntensity = yLight.intensity;
-        uniformsRef.skyAmbientColor.value.set(
-          yLight.color.r * skyIntensity,
-          yLight.color.g * skyIntensity,
-          yLight.color.b * skyIntensity
-        );
+      //Sky ambient color = hemisphere-mean sky downwelling (see _readSkyAmbient).
+      //View-independent and colour-correct at all times of day. Reading only the
+      //y-axis hemisphere (the zenith) gave a near-black ambient because that SH
+      //axis clamps to ~0; averaging the three axes fixes it. Falls back to a
+      //scene HemisphereLight when running standalone (no a-starry-sky).
+      if(self._readSkyAmbient()){
+        uniformsRef.skyAmbientColor.value.copy(self._skyAmbientScratch);
       }
 
       //Sync atmospheric perspective uniforms from a-starry-sky
@@ -3063,11 +3217,8 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           _sunElev = _spl > 1e-4 ? _sp.y / _spl : _sp.y;
         }
       }
-      if(self.skyDirector && self.skyDirector.lightingManager){
-        const yl = self.skyDirector.lightingManager.yAxisHemisphericalLight;
-        self._splashAmbient.copy(yl.color).multiplyScalar(yl.intensity);
-      } else if(self._fallbackHemiLight){
-        self._splashAmbient.copy(self._fallbackHemiLight.color).multiplyScalar(self._fallbackHemiLight.intensity);
+      if(self._readSkyAmbient()){
+        self._splashAmbient.setRGB(self._skyAmbientScratch.x, self._skyAmbientScratch.y, self._skyAmbientScratch.z);
       } else {
         self._splashAmbient.setRGB(0.3, 0.4, 0.5);
       }
