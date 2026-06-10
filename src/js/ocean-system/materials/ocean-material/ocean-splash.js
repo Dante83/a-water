@@ -1,7 +1,7 @@
 //This helps
 //--------------------------v
 //https://github.com/mrdoob/three.js/wiki/Uniforms-types
-AWater.AOcean.Materials.Ocean.splashMaterial = {
+ARestlessOcean.Materials.Ocean.splashMaterial = {
   uniforms: {
     //Vertex stage
     uViewportHeight: {value: 1080.0},

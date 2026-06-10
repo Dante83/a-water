@@ -1,138 +1,476 @@
-# A-Water
+# A-Restless-Ocean
 
-A-Water is a tad bit of a misnomer, as the library, presently, only contains code for adding an infinite procedural ocean for the [A-Frame Web Framework](https://aframe.io/). It is a simple drop-in component that allows you produce animated rolling ocean waves in your creations. Click [here](https://code-panda.com/pages/projects/a_ocean/v_0_1_0) to see this project in action (**Warning: requires a powerful GPU - do not open on a mobile phone**).
+A-Restless-Ocean (formerly *a-water*) is a drop-in **procedural ocean** for the
+[A-Frame Web Framework](https://aframe.io/). A single `<a-restless-ocean>` tag gives
+you a horizon-spanning FFT wave field with physically-grounded water colour,
+reflections, self-shadowing, foam, caustics, splash/spray and full underwater
+rendering — and it integrates with [a-starry-sky](https://github.com/Dante83/A-Starry-Sky)
+for matching sky, sun and atmosphere, or runs standalone.
+
+> **Warning:** this is a heavy real-time renderer — it expects a reasonably powerful
+> desktop GPU. It is not intended for mobile phones.
 
 ## Prerequisites
 
-This is built for the [A-Frame Web Framework](https://aframe.io/) version 1.2.0+. It also requires a Web XR compatible web browser.
-
-`https://aframe.io/releases/1.2.0/aframe.min.js`
-
-## Installing
-
-When installing A-Ocean, you'll want to copy the *a-water.v0.1.0.min.js* file, along with the *assets** folder into their own directory in your JavaScript folder. Afterwards, add the minified file into a script tag in your html.
+Built for [A-Frame](https://aframe.io/) **1.2.0+** and a WebGL2-capable browser.
 
 ```html
 <script src="https://aframe.io/releases/1.2.0/aframe.min.js"></script>
-<script src="{PATH_TO_JS_FOLDER}/a-water.v0.1.0.min.js"></script>
 ```
 
-Once these references are set up, add the `<a-ocean>` component into your `<a-scene>` tag from A-Frame like so and make sure to include a camera element so the ocean can track along your position. `<a-ocean>` uses a static mesh plane around your camera, and then modifies the surface of that ocean by varying your position on the displacement map procedurally, giving you the 'appearance' of an infinite ocean without popping artifacts that occur from adding new mesh along the horizon.
+**[a-starry-sky](https://github.com/Dante83/A-Starry-Sky) is highly recommended.** It isn't
+a hard requirement — the ocean detects its absence and runs standalone — but the water
+reflects and lights from the sky, so a-starry-sky is what makes it look its best: it supplies
+the sun/moon, lighting and atmosphere and unlocks sun glint, day/night, eclipses and matching
+underwater fog. See [Sky integration](#sky-integration).
+
+## Installing
+
+Copy `dist/a-restless-ocean.v0.2.0.min.js` and the asset folder into your project, then
+add the script after A-Frame (and after a-starry-sky, if you use it):
+
+```html
+<script src="https://aframe.io/releases/1.2.0/aframe.min.js"></script>
+<script src="{PATH_TO_JS}/a-restless-ocean.v0.2.0.min.js"></script>
+```
+
+## Quick start
+
+Add `<a-restless-ocean>` to your scene and make sure there is a camera — the ocean
+follows the scene's primary camera so it always surrounds the viewer:
 
 ```html
 <a-scene>
-  <a-entity camera look-controls wasd-controls></a-entity>
-  <a-ocean></a-ocean>
+  <a-entity camera look-controls wasd-controls position="0 1.6 0"></a-entity>
+  <a-restless-ocean></a-restless-ocean>
 </a-scene>
 ```
 
-This barebones code will provide you with an infinite scrolling oceans that will track your scenes primary camera. In addition to this basic setup, the following parameters are also available to help you customize your ocean according to your desired environment. These can be found in the `ocean-state` attribute which should be set inside `<a-ocean>`.
+That alone gives you an animated, infinite ocean. Everything below is optional tuning.
 
-**Property** | **Description**
-:--- | :---
-`large_normal_map` | The location of the large wave normal map used for surface details. All file locations are relative to the library minified file folder.
-`small_normal_map` | The location of the small wave normal map used for surface details. All file locations are relative to the library minified file folder.
-`foam_color_map` | The location of the foam color map used to create the foam on the surface of the water. All file locations are relative to the library minified file folder.
-`foam_normal_map` | The location of the foam normal map used to create the foam on the surface of the water. All file locations are relative to the library minified file folder.
-`foam_opacity_map` | The location of the foam opacity map used to create the foam on the surface of the water. All file locations are relative to the library minified file folder.
-`foam_roughness_map` | The location of the foam roughness map used to create the foam on the surface of the water. All file locations are relative to the library minified file folder.
-`caustics_map` | The location of the caustics color map used for creating the caustic projection underneath the water. All file locations are relative to the library minified file folder.
-`height_offset` | The height, in world coordinates, of the infinite water plane relative to 0m.
-`wind_velocity` | The velocity of the wind, higher wind speeds result in larger waves.
-`draw_distance` | The maximum distance away from the camera, for which wave tiles will be added.
-`patch_size` | The width and length of patches that will be added to the scene to fill in the space between the camera and the `draw_distance`
-`patch_data_size` | The pixel dimensions of the output FFT shader.
-`patch_vertex_size` | The length and width of the number of vertices in each patch.
-`wave_scale_multiple` | Increases the size of the waves by a multiple of this number.
-`number_of_octaves` | The number of octaves to use in the FFT simulation.
-`large_normal_map_strength` | Sets the strength of the normal for the large normal map texture. Higher strengths give the appearance of more extreme surface features.
-`small_normal_map_strength` | Sets the strength of the normal for the small normal map texture. Higher strengths give the appearance of more extreme surface features.
-`light_scattering_amounts` | A 3-Vector that gives the amount of each light absorbed/scattered for each color component, red, green and blue. Higher values result in water that looks more clear, while lower values make the water look murkier. The relative values for these decides the overall color for the water and is also used to decide the base scattering for direct light based on wave height.
-`linear_scattering_height_offset` | Gives the starting point for the fake wave-height scattering to begin.
-`linear_scattering_total_wave_height` | Gives the total approximate height for your wave which is used as a multiple in the linear effect.
-`foam_enabled` | Turns ocean foam on or off.
-`foam_start` | Describes when the foam begins to show up on the ocean surface.
-`foam_strength` | Describes the strength of the ocean foam once it begins to show up.
-`caustics_enabled` | Turns underwater caustics on or off.
-`caustics_strength` | Multiplies the intensity of the caustics project mapping.
+## Gallery — see it in action
 
-##Setting File Locations
+The quickest way to get a feel for the ocean is to watch it move. Every look below has a
+**live demo — click through and fly around**, then copy its snippet (or grab the full scene
+under `examples/showcase/`) as a starting point. Pair each with your own island/scene assets
+and an `<a-starry-sky>` for the sky.
 
-The wave simulation makes use of two normal maps which provide multi-scale detailing to improve the look of the waves on the ocean plane. By default, the system presumes these are located in `./image-dir/a-water-assets/water-normal-1.png` (large) and `./image-dir/a-water-assets/water-normal-2.png` (small). However, you can set the locations of these files yourself in the event that you are using a different file structure for your scene with the `large_normal_map` and `small_normal_map` properties.
+| # | Look | Shows off | Demo |
+|---|---|---|---|
+| 1 | Tropical Lagoon | clear shallows + caustics | [▶](https://code-panda.com/pages/projects/a_restless_ocean/showcase/tropical-lagoon) |
+| 2 | Open Blue Ocean | deep-water body colour | [▶](https://code-panda.com/pages/projects/a_restless_ocean/showcase/open-blue-ocean) |
+| 3 | North Sea Storm | whitecaps + spray | [▶](https://code-panda.com/pages/projects/a_restless_ocean/showcase/north-sea-storm) |
+| 4 | Glassy Dawn | mirror reflections | [▶](https://code-panda.com/pages/projects/a_restless_ocean/showcase/glassy-dawn) |
+| 5 | Caribbean Shoals | strong caustics + foam | [▶](https://code-panda.com/pages/projects/a_restless_ocean/showcase/caribbean-shoals) |
+| 6 | Arctic Twilight | long low-sun shadows | [▶](https://code-panda.com/pages/projects/a_restless_ocean/showcase/arctic-twilight) |
+| 7 | Sunset Gold | sun-glint pillar | [▶](https://code-panda.com/pages/projects/a_restless_ocean/showcase/sunset-gold) |
+| 8 | Murky Harbor | coastal turbidity | [▶](https://code-panda.com/pages/projects/a_restless_ocean/showcase/murky-harbor) |
+| 9 | Underwater Reef | below-surface view | [▶](https://code-panda.com/pages/projects/a_restless_ocean/showcase/underwater-reef) |
+| 10 | Whitecap Gale | maximum spindrift | [▶](https://code-panda.com/pages/projects/a_restless_ocean/showcase/whitecap-gale) |
+| 11 | Moonlit Calm | night reflection | [▶](https://code-panda.com/pages/projects/a_restless_ocean/showcase/moonlit-calm) |
+
+### 1. Tropical Lagoon
+Clear, calm turquoise shallows with bright caustics. — [demo](https://code-panda.com/pages/projects/a_restless_ocean/showcase/tropical-lagoon) · `examples/showcase/tropical-lagoon.html`
 
 ```html
-  <a-ocean ocean-state="large_normal_map: './my-image-files/custom-large-normal-map.png';
-    small_normal_map: './my-image-files/custom-small-normal-map.png';"></a-ocean>
+<a-restless-ocean>
+  <ocean-water>
+    <ocean-water-type>5</ocean-water-type>
+    <ocean-wind>3 1</ocean-wind>
+    <ocean-chop>0.7</ocean-chop>
+  </ocean-water>
+  <ocean-caustics>
+    <ocean-caustics-strength>1.6</ocean-caustics-strength>
+  </ocean-caustics>
+  <ocean-foam>
+    <ocean-foam-start>0.12</ocean-foam-start>
+  </ocean-foam>
+</a-restless-ocean>
 ```
 
-If you are using custom normal maps for the surface of your ocean water, you can set the strength of their normals through the `large_normal_map_strength` and `small_normal_map_strength` properties. 1.0 is the natural strength of the normal map you provided, while higher values increase the intensity of the normal map and lower values decrease the value. These values do not start out at 1.0 by default, so if you are using a custom normal map, you may wish to change them.
+### 2. Open Blue Ocean
+Deep navy with a steady mid swell. — [demo](https://code-panda.com/pages/projects/a_restless_ocean/showcase/open-blue-ocean) · `examples/showcase/open-blue-ocean.html`
 
 ```html
-  <a-ocean ocean-state="large_normal_map: './my-image-files/custom-large-normal-map.png';
-    small_normal_map: './my-image-files/custom-small-normal-map.png';
-    large_normal_map_strength: 1.0;
-    small_normal_map_strength: 0.5;"></a-ocean>
+<a-restless-ocean>
+  <ocean-water>
+    <ocean-water-type>1</ocean-water-type>
+    <ocean-wind>8 5</ocean-wind>
+    <ocean-chop>1.0</ocean-chop>
+  </ocean-water>
+</a-restless-ocean>
 ```
 
-Another common desire is to change the default height of the water level. This can be easily set by modifying the `height_offset` property.
+### 3. North Sea Storm
+Grey, wind-blown, heavy whitecaps and spray. — [demo](https://code-panda.com/pages/projects/a_restless_ocean/showcase/north-sea-storm) · `examples/showcase/north-sea-storm.html`
 
 ```html
-  <a-ocean ocean-state="height_offset: 50;"></a-ocean>
+<a-restless-ocean>
+  <ocean-water>
+    <ocean-water-type>3</ocean-water-type>
+    <ocean-wind>22 8</ocean-wind>
+    <ocean-chop>1.2</ocean-chop>
+    <ocean-jonswap-gamma>4.0</ocean-jonswap-gamma>
+  </ocean-water>
+  <ocean-foam>
+    <ocean-foam-start>0.05</ocean-foam-start>
+  </ocean-foam>
+  <ocean-splash>
+    <ocean-splash-capacity>40000</ocean-splash-capacity>
+    <ocean-splash-impact-min-launch>10</ocean-splash-impact-min-launch>
+    <ocean-splash-wind-grab-start>12</ocean-splash-wind-grab-start>
+  </ocean-splash>
+</a-restless-ocean>
 ```
 
-The ocean starts off with some pretty big waves, however, you can make the waves bigger or smaller by changing the `wind_velocity` property. Note that `wind_velocity` is a 2-D vector, as the wind has both a magnitude and a direction. Each component of this vector is the wind velocity along it's respective axis, the wind speed in the x direction and y direction, for instance. The higher the wind velocity, the larger the waves that will result.
+### 4. Glassy Dawn
+Near-still, mirror-flat, crisp reflections. — [demo](https://code-panda.com/pages/projects/a_restless_ocean/showcase/glassy-dawn) · `examples/showcase/glassy-dawn.html`
 
 ```html
-  <!-- +2 wind velocity in the positive x direction and -0.5 in the y direction -->
-  <a-ocean ocean-state="wind_velocity: 2.0 -0.5;"></a-ocean>
+<a-restless-ocean>
+  <ocean-water>
+    <ocean-water-type>1</ocean-water-type>
+    <ocean-wind>1 0.5</ocean-wind>
+    <ocean-chop>0.4</ocean-chop>
+  </ocean-water>
+  <ocean-reflection>
+    <ocean-reflection-scale>1.0</ocean-reflection-scale>
+    <ocean-fresnel-distance-roughness>0.4</ocean-fresnel-distance-roughness>
+  </ocean-reflection>
+</a-restless-ocean>
 ```
 
-The `light_scattering_amounts` property allows you to control the murkiness/clarity of the water and the color of the water in a single property. This property has three components for the red, green and blue channels of light being scattered and refracted through the water. The higher these values, the more clear that particular channel will be, the lower the value, the murkier that color will be - this also sets the color of the water, as allowing more red or blue light through will result in water that looks more red or blue respectively. This also impacts the color of the faked scattering effect. `<a-ocean>` automatically looks for the brightest direct lighting in the scene at startup, and will use this along with the wave height to emulate light scattering through ocean waves. The color of these waves is impacted by the ratios of the colors provided in this property and the color of the direct lighting in the scene.
+### 5. Caribbean Shoals
+Vivid turquoise with strong caustics and shore foam. — [demo](https://code-panda.com/pages/projects/a_restless_ocean/showcase/caribbean-shoals) · `examples/showcase/caribbean-shoals.html`
 
 ```html
-  <!-- Murky algea bloom! -->
-  <a-ocean ocean-state="light_scattering_amounts: 10 11 7;"></a-ocean>
+<a-restless-ocean>
+  <ocean-water>
+    <ocean-water-type>6</ocean-water-type>
+    <ocean-wind>5 2</ocean-wind>
+    <ocean-chop>0.9</ocean-chop>
+  </ocean-water>
+  <ocean-caustics>
+    <ocean-caustics-strength>2.0</ocean-caustics-strength>
+  </ocean-caustics>
+  <ocean-foam>
+    <ocean-foam-start>0.08</ocean-foam-start>
+  </ocean-foam>
+</a-restless-ocean>
 ```
+
+### 6. Arctic Twilight
+Cold, dark water under a low sun with long shadows. — [demo](https://code-panda.com/pages/projects/a_restless_ocean/showcase/arctic-twilight) · `examples/showcase/arctic-twilight.html`
 
 ```html
-  <!-- Cyan depths! -->
-  <a-ocean ocean-state="light_scattering_amounts: 200 550 560;"></a-ocean>
+<a-restless-ocean>
+  <ocean-water>
+    <ocean-water-type>2</ocean-water-type>
+    <ocean-wind>10 6</ocean-wind>
+    <ocean-chop>1.0</ocean-chop>
+  </ocean-water>
+  <ocean-shadow>
+    <ocean-shadow-sun-bias>-0.0017</ocean-shadow-sun-bias>
+  </ocean-shadow>
+  <ocean-reflection>
+    <ocean-reflection-scale>0.8</ocean-reflection-scale>
+  </ocean-reflection>
+</a-restless-ocean>
 ```
+
+### 7. Sunset Gold
+Built to show off the sun-glint pillar. — [demo](https://code-panda.com/pages/projects/a_restless_ocean/showcase/sunset-gold) · `examples/showcase/sunset-gold.html`
 
 ```html
-  <a-ocean ocean-state="height_offset: 50;"></a-ocean>
+<a-restless-ocean>
+  <ocean-water>
+    <ocean-water-type>1</ocean-water-type>
+    <ocean-wind>7 4</ocean-wind>
+    <ocean-chop>1.0</ocean-chop>
+  </ocean-water>
+  <ocean-reflection>
+    <ocean-reflection-scale>1.2</ocean-reflection-scale>
+    <ocean-fresnel-distance-roughness>0.85</ocean-fresnel-distance-roughness>
+  </ocean-reflection>
+</a-restless-ocean>
 ```
 
-The `draw_distance` property says how far away to draw tiles, beyond this value, new tiles will not be generated. The size of the tiles is set by the `patch_size` property. This will also impact the size of the waves generated. The number of vertices on each individual patch, and the size of the heightmap associated with it, is set by the `patch_data_size` property. These can be used to increase the beauty of the scene or increase performance, and there is a healthy balance between the three that needs to be kept if modifying these properties. If, however, you change the patch size, because this changes the size of the output FFT texture, you will also need to modify the `number_of_octaves` that are in use by the FFT transformer. Overall, the easiest way to increase or decrease performance is through `draw_distance`, as it doesn't have sucha  complicated interplay between components.
+### 8. Murky Harbor
+Green coastal water with short underwater visibility. — [demo](https://code-panda.com/pages/projects/a_restless_ocean/showcase/murky-harbor) · `examples/showcase/murky-harbor.html`
 
 ```html
-  <!-- The waves will go way out now! -->
-  <a-ocean ocean-state="draw_distance: 2000.0"></a-ocean>
+<a-restless-ocean>
+  <ocean-water>
+    <ocean-water-type>7</ocean-water-type>
+    <ocean-wind>4 2</ocean-wind>
+    <ocean-chop>0.8</ocean-chop>
+  </ocean-water>
+  <ocean-foam>
+    <ocean-foam-start>0.10</ocean-foam-start>
+  </ocean-foam>
+</a-restless-ocean>
 ```
 
-The `linear_scattering_height_offset` and `linear_scattering_total_wave_height` are used to control the fake light scattering amounts inside of the waves that results from the direct lighting in the scene. The equation that drives this lighting is just a linear function of the heightmap of the waves given by *(wave_height  + linear_scattering_height_offset) / linear_scattering_total_wave_height*. The linear scattering height offset decides how high up to begin the scattering effect, and the linear scattering total wave height is used to normalize this to the height of the wave (we unfortunately don't know the maximum wave height ahead of time). So the first variable moves this linear effect up and down while the second spreads the effect out over a wider height range.
+### 9. Underwater Reef
+Fly the camera below the surface for the ceiling / caustic view. — [demo](https://code-panda.com/pages/projects/a_restless_ocean/showcase/underwater-reef) · `examples/showcase/underwater-reef.html`
 
 ```html
-  <!--For really big waves -->
-  <a-ocean ocean-state="linear_scattering_height_offset: -5.0;
-  linear_scattering_total_wave_height: 30;"></a-ocean>
+<a-restless-ocean>
+  <ocean-water>
+    <ocean-water-type>5</ocean-water-type>
+    <ocean-wind>4 2</ocean-wind>
+    <ocean-chop>0.8</ocean-chop>
+    <ocean-height-offset>6</ocean-height-offset>
+  </ocean-water>
+  <ocean-caustics>
+    <ocean-caustics-strength>1.8</ocean-caustics-strength>
+  </ocean-caustics>
+</a-restless-ocean>
 ```
 
+### 10. Whitecap Gale
+Maximum spray, spindrift stripping off the surface. — [demo](https://code-panda.com/pages/projects/a_restless_ocean/showcase/whitecap-gale) · `examples/showcase/whitecap-gale.html`
 
+```html
+<a-restless-ocean>
+  <ocean-water>
+    <ocean-water-type>4</ocean-water-type>
+    <ocean-wind>28 10</ocean-wind>
+    <ocean-chop>1.2</ocean-chop>
+  </ocean-water>
+  <ocean-foam>
+    <ocean-foam-start>0.04</ocean-foam-start>
+  </ocean-foam>
+  <ocean-splash>
+    <ocean-splash-capacity>50000</ocean-splash-capacity>
+    <ocean-splash-crest-min-height>0.8</ocean-splash-crest-min-height>
+    <ocean-splash-wind-grab-start>10</ocean-splash-wind-grab-start>
+    <ocean-splash-wind-grab-full>28</ocean-splash-wind-grab-full>
+  </ocean-splash>
+</a-restless-ocean>
+```
+
+### 11. Moonlit Calm
+Quiet night water (pair with a night `<a-starry-sky>`). — [demo](https://code-panda.com/pages/projects/a_restless_ocean/showcase/moonlit-calm) · `examples/showcase/moonlit-calm.html`
+
+```html
+<a-restless-ocean>
+  <ocean-water>
+    <ocean-water-type>1</ocean-water-type>
+    <ocean-wind>2 1</ocean-wind>
+    <ocean-chop>0.5</ocean-chop>
+  </ocean-water>
+  <ocean-reflection>
+    <ocean-reflection-scale>1.0</ocean-reflection-scale>
+    <ocean-fresnel-distance-roughness>0.6</ocean-fresnel-distance-roughness>
+  </ocean-reflection>
+  <ocean-atmosphere>
+    <ocean-sky-provider>a-starry-sky</ocean-sky-provider>
+  </ocean-atmosphere>
+</a-restless-ocean>
+```
+
+## Configuration
+
+Everything is tuned with grouped child elements, the a-starry-sky way: one `<ocean-…>`
+element per setting, its value held as that element's text content, grouped under the
+relevant `<ocean-water>` / `<ocean-foam>` / … parent:
+
+```html
+<a-restless-ocean>
+  <ocean-water>
+    <ocean-water-type>5</ocean-water-type>
+    <ocean-chop>1.0</ocean-chop>
+    <ocean-wind>0 3</ocean-wind>
+    <ocean-height-offset>6</ocean-height-offset>
+  </ocean-water>
+  <ocean-foam>
+    <ocean-foam-start>0.1</ocean-foam-start>
+  </ocean-foam>
+</a-restless-ocean>
+```
+
+> For terse or programmatic setups the same settings also accept a compact attribute form
+> (`<ocean-water type="5" chop="1.0">`) and a flat `ocean-state="key: value; …"` string —
+> see `ocean-state.js` — but the value-tag form above is the one documented here.
+
+### `<ocean-water>` — wave field & water body
+
+| Value tag | Default | Description |
+|---|---|---|
+| `<ocean-water-type>` | `0` | Jerlov water-type preset. `0` = custom (use `<ocean-water-absorption>`/`-scattering>`); `1`–`4` open-ocean (clear→bluer), `5`–`7` coastal (greener→murkier). |
+| `<ocean-water-absorption>` | `0.30 0.057 0.010` | Per-channel absorption (m⁻¹), used when type `0`. Red-heavy extinction → deep water reads blue. |
+| `<ocean-water-scattering>` | `0.005 0.005 0.005` | Per-channel scattering (m⁻¹), used when type `0`. |
+| `<ocean-chop>` | `1.0` | Horizontal wave sharpening (Gerstner-style choppiness). |
+| `<ocean-wind>` | `8 5` | Wind vector (x z). Magnitude drives wave size; direction orients the swell. |
+| `<ocean-height-offset>` | `0` | World-Y of the rest water plane (m). |
+| `<ocean-jonswap-gamma>` | `3.3` | JONSWAP peak-enhancement (sea sharpness). |
+| `<ocean-jonswap-fetch>` | `100000` | JONSWAP fetch (m) — how developed the sea is. |
+| `<ocean-directional-turbulence>` | `0.145` | Cross-wind spread. `0` = streaky aligned waves, `1` = isotropic chop. |
+| `<ocean-draw-distance>` | `10000` | Furthest wave tiles from the camera (m). The simplest perf lever. |
+| `<ocean-patch-size>` | `256` | World size of the base wave patch (m). |
+| `<ocean-patch-data-size>` | `512` | FFT texture resolution. |
+| `<ocean-wave-scale-multiple>` | `1.5` | Overall wave-height multiplier. |
+
+### `<ocean-foam>`
+
+| Value tag | Default | Description |
+|---|---|---|
+| `<ocean-foam-enabled>` | `true` | Master foam toggle. |
+| `<ocean-foam-start>` | `0.10` | Wave-fold threshold at which foam appears (lower = more foam). |
+| `<ocean-foam-camera-height>` | `100` | Height of the foam/exclusion ortho camera (m). **Raise it above your tallest island** or the top gets clipped. |
+
+The foam textures (`<ocean-foam-color-map>` / `-opacity-map` / `-normal-map`) are bundled;
+point the whole folder somewhere else with [`<ocean-assets-dir>`](#assets) rather than
+setting each path.
+
+### `<ocean-caustics>`
+
+| Value tag | Default | Description |
+|---|---|---|
+| `<ocean-caustics-enabled>` | `true` | Underwater caustic light toggle. |
+| `<ocean-caustics-strength>` | `1.0` | Caustic intensity multiplier. |
+
+The caustic projection texture (`<ocean-caustics-map>`) is bundled; relocate it with
+[`<ocean-assets-dir>`](#assets).
+
+### `<ocean-reflection>`
+
+| Value tag | Default | Description |
+|---|---|---|
+| `<ocean-reflection-scale>` | `1.0` | Sky-reflection strength. `1.0` = full HDR sky. |
+| `<ocean-reflection-distance-falloff>` | `0.0` | Extra reflection reduction toward the horizon (fakes statistical roughness). |
+| `<ocean-fresnel-distance-roughness>` | `0.85` | Grazing-angle Fresnel roll-off. `0` = none; `~0.85` ≈ ocean-photo horizon. |
+
+### `<ocean-atmosphere>`
+
+| Value tag | Default | Description |
+|---|---|---|
+| `<ocean-atmosphere-enabled>` | `true` | Distance haze / inscattering on the water. |
+| `<ocean-atmosphere-distance-scale>` | `1.0` | Scales how quickly distance haze accumulates. |
+| `<ocean-sky-provider>` | `auto` | `auto` \| `a-starry-sky` \| `standalone` — see [Sky integration](#sky-integration). |
+
+### `<ocean-shadow>`
+
+| Value tag | Default | Description |
+|---|---|---|
+| `<ocean-shadow-sun-bias>` | `-0.0012` | Additive bias when sampling the scene sun shadow on the water. Nudge if you see a grazing-sun shadow stripe. |
+
+### `<ocean-splash>` — spray & mist
+
+The spray system has ~100 art-direction knobs; the common public controls are below. **Any**
+knob is settable as an `<ocean-splash-…>` value tag — take its name and prefix it with
+`ocean-splash-` (e.g. `<ocean-splash-crest-spawn-chance>`). All stay live-editable at runtime
+via `window.oceanSplash`. See the top of `ocean-splash.js` for the full list.
+
+| Value tag | Default | Description |
+|---|---|---|
+| `<ocean-splash-enabled>` | `true` | Master spray toggle. |
+| `<ocean-splash-capacity>` | `24000` | Particle pool size (memory / density ceiling). |
+| `<ocean-splash-max-emit-distance>` | `160` | Don't emit spray beyond this distance from the camera (m). |
+| `<ocean-splash-crest-enabled>` | `true` | Mist torn off breaking wave crests. |
+| `<ocean-splash-crest-min-height>` | `0.0` | Min height above mean sea level for a crest to spray (raise toward Hs/2 for only the biggest tops). |
+| `<ocean-splash-shore-enabled>` | `true` | Shoreline / cliff impact sheets. |
+| `<ocean-splash-shore-jet-scale>` | `1.6` | Strength of the surge-jet sheet leaving a cliff. |
+| `<ocean-splash-impact-enabled>` | `true` | Object-impact bursts (fed by `buoyant`). |
+| `<ocean-splash-impact-min-launch>` | `7.0` | Floor on burst launch speed (m/s). |
+| `<ocean-splash-impact-max-launch>` | `26.0` | Cap on burst launch speed (m/s). |
+| `<ocean-splash-impact-burst-per-speed>` | `6.0` | Particles emitted per m/s of impact speed. |
+| `<ocean-splash-wind-grab-start>` | `14.0` | Wind speed at which air starts overpowering the spray (m/s). |
+| `<ocean-splash-wind-grab-full>` | `32.0` | Wind speed at which spray is fully wind-captured (m/s). |
+| `<ocean-splash-size-scale>` | `10.0` | Overall spray puff size multiplier. |
+
+## Assets
+
+The ocean ships a foam texture set and a caustic texture. They default to
+`./image-dir/a-water-assets/`. To relocate them, point an `<ocean-assets-dir>` tree at
+your folder — the same "set the directory once and flag the sub-dirs" pattern as
+a-starry-sky's `<sky-assets-dir>`:
+
+```html
+<a-restless-ocean>
+  <ocean-assets-dir dir="my-assets/ocean">
+    <ocean-assets-dir dir="foam" foam-path></ocean-assets-dir>
+    <ocean-assets-dir dir="." caustics-path></ocean-assets-dir>
+  </ocean-assets-dir>
+</a-restless-ocean>
+```
+
+* `foam-path` — the dir holds the three foam textures: `Foam002_1K_Color.png`,
+  `Foam002_1K_Opacity.png`, `Foam002_1K_NormalGL.png`.
+* `caustics-path` — the dir holds `caustic-map.webp`. `dir="."` means "the same folder
+  as the parent `dir`".
+* If you set just the outer `dir` with **no** flagged children, every bundled texture is
+  loaded straight from that folder.
+
+Keep the bundled filenames and you never type a per-texture path. If you renamed a file,
+override that one with its value tag (e.g. `<ocean-caustics-map>my-caustics.webp</ocean-caustics-map>`),
+which wins over the `<ocean-assets-dir>` resolution.
+
+## Sky integration
+
+The ocean needs sky/sun/atmosphere context for its lighting, reflections and underwater
+fog. `<ocean-sky-provider>` (inside `<ocean-atmosphere>`) decides where that comes from:
+
+* **`auto`** (default) — if an `<a-starry-sky>` element is present, use it; otherwise run
+  standalone. "Drop it in and it figures itself out."
+* **`a-starry-sky`** — force the a-starry-sky path. Put `<a-restless-ocean>` in a scene
+  with [a-starry-sky](https://github.com/Dante83/A-Starry-Sky) and the ocean picks up its
+  sun/moon, lighting and atmosphere automatically (sun glint, day/night, eclipses).
+* **`standalone`** — install a minimal fog scaffold and light from a plain
+  `THREE.DirectionalLight` + `HemisphereLight`, with no atmosphere dependency.
+
+## Feature notes
+
+* **Underwater** — move the camera below `<ocean-height-offset>` and the renderer switches to
+  the below-surface model: Snell's window, total-internal-reflection ceiling, caustic
+  god-light and depth-graded fog.
+* **Shadows** — the ocean self-shadows its own waves (4-cascade EVSM) and receives the
+  scene's directional sun shadow on the surface, seabed and shoreline.
+* **Exclusion masks** — add `ocean-static-mask` to any mesh and the ocean will not render
+  where that mesh covers the water plane. Useful for cliff alcoves, building interiors,
+  and boat hulls where the ocean surface would otherwise poke through.
+
+```html
+<!-- Prevent water rendering inside a cove or boat hull -->
+<a-entity gltf-model="url(boat-hull.glb)" ocean-static-mask></a-entity>
+```
+
+* **Buoyancy** — add `buoyant` to any entity to have it float on the wave field. The
+  default rigid solver applies Archimedes force and righting torque so the body bobs
+  and rocks to its own waterline from its `density`. The kinematic solver is a
+  gentler plane-fit for props where surprises are unwelcome. Impact splashes fire
+  automatically (requires `<ocean-splash>`).
+
+```html
+<!-- Simple floating buoy -->
+<a-entity geometry="primitive: sphere; radius: 0.5"
+          material="color: red"
+          position="0 0 0"
+          buoyant="density: 0.3"></a-entity>
+
+<!-- Boat on the rigid solver with a tuned hull probe footprint -->
+<a-entity gltf-model="url(boat.glb)"
+          buoyancy-hull="points: -2 -1, -2 1, 2 -1, 2 1; inset: 0.9"
+          buoyant="solver: rigid; density: 0.35; maxTilt: 20"></a-entity>
+```
+
+  `buoyancy-hull` lets you lay out explicit local-space probe points (x z pairs,
+  metres) so the float samples the hull footprint rather than the bounding box corners.
+  Without it, four inset bounding-box corners are used automatically.
 
 ## Author
-* **David Evans / Dante83** - *Main Developer*
+* **David Evans / Dante83** — *Main Developer*
+* **Claude (Anthropic)** - *Coding Buddy & AI Contributor (v0.2.0)*
 
 ## References & Special Thanks
-* **[Oreon Engine](https://github.com/fynnfluegge/oreon-engine) / [Oreon Engine FFT Waves](https://youtu.be/B3YOLg0sA2g)** - These tutorials for building FFT waves using multiple GPU shader passes and the butterfly technique are the key drivers for the heightmaps used for the surface of the water.
-* The [Crest](https://github.com/wave-harmonic/crest) Library is the inspiration for using an static plane centered around the camera with a scrolling texture to drive the heights.
-* The normal maps from [Water Simulation](https://watersimulation.tumblr.com/post/115928250077/scrolling-normal-maps), are used as the surface details for the waves in this component.
-* The normal map techniques from [Blending in Detail](https://blog.selfshadow.com/publications/blending-in-detail/) were critical to providing detailing on the wave surfaces.
-* The height based 'glow' in the water is a trick that is thanks to the tutorial, [Ocean Shader With Gerstner Waves](https://80.lv/articles/tutorial-ocean-shader-with-gerstner-waves/).
-* All the amazing work that has gone into [THREE.JS](https://threejs.org/) and [A-Frame](https://aframe.io/).
-* Caustics texture is from a variation of [Caustics Texture](https://opengameart.org/content/water-caustics-effect-small).
-* Foam texture is from [Foam 2 Texture](ambientCG.com/a/Foam002).
+* **[Oreon Engine](https://github.com/fynnfluegge/oreon-engine) / [Oreon Engine FFT Waves](https://youtu.be/B3YOLg0sA2g)** — the multi-pass GPU FFT / butterfly technique driving the wave heightmaps.
+* The **[Crest](https://github.com/wave-harmonic/crest)** ocean library — inspiration for the banded distance-based wave cascades, broadband-Jacobian foam and camera-centred surface.
+* **[a-starry-sky](https://github.com/Dante83/A-Starry-Sky)** — the sky, sun/moon and atmosphere this ocean integrates with.
+* Caustics texture: a variation of [Water Caustics](https://opengameart.org/content/water-caustics-effect-small).
+* Foam texture: [Foam 2 (ambientCG)](https://ambientcg.com/view?id=Foam002).
+* All the work behind [THREE.JS](https://threejs.org/) and [A-Frame](https://aframe.io/).
 * *And so many other websites and individuals. Thank you for filling our worlds with amazing oceans, deep, mysterious, and uncharted.*
 
 ## License
-This project is licensed under the MIT License - see the [LICENSE.md](./LICENSE.md) file for details
+This project is licensed under the MIT License — see the [LICENSE.md](./LICENSE.md) file for details.

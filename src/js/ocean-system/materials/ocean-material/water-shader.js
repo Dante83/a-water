@@ -1,7 +1,7 @@
 //This helps
 //--------------------------v
 //https://github.com/mrdoob/three.js/wiki/Uniforms-types
-AWater.AOcean.Materials.Ocean.waterMaterial = {
+ARestlessOcean.Materials.Ocean.waterMaterial = {
   uniforms: {
     cascadeDisplacementTextures: {value: [null, null, null, null, null, null]},
     cascadePatchSizes: {value: [4096.0, 1024.0, 256.0, 64.0, 16.0, 4.0]},
@@ -1321,6 +1321,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
         '//The Snell-window `transmitted` content is above-water (chunk skipped',
         '//it) so this is its only underwater fog — also correct.',
         'vec3 viewDirCeiling = normalize(worldPos - cameraPosition);',
+        '//$DEBUG_START$',
         '//── BISECTION TAPS (2026-06-06): expose each stage of the ceiling build so we',
         '//can find WHERE the reflected ceiling goes dark vs the teal direct seabed.',
         '//Only fire for debug modes 50-55; mode 0 falls straight through to the real',
@@ -1336,6 +1337,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
         'if(oceanShadowDebugMode == 53){ return ceiling; }                                    //mix(transmitted, reflected) PRE stage-2 fog',
         'if(oceanShadowDebugMode == 54){ return underwaterInscatterSurface(viewDirCeiling); } //the teal the stage-2 fog fades toward',
         'if(oceanShadowDebugMode == 55){ return vec3(clamp(camToFragDist / 50.0, 0.0, 1.0)); }//cam->ceiling distance, /50m gray',
+        '//$DEBUG_END$',
         'return applyUnderwaterFog(ceiling, camToFragDist * UW_DIST_SCALE, viewDirCeiling);',
       '}',
     '#endif',
@@ -2298,6 +2300,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
       'vec4 finalRenderedColor = linearTosRGB(vec4(MyAESFilmicToneMapping(totalLight), 1.0));',
       'gl_FragColor = finalRenderedColor;',
 
+      '//$DEBUG_START$',
       '//Ocean-shadow debug overrides. Full-screen modes — replace the lighting',
       '//output entirely so we can see what the shadow path is computing.',
       '//Mode 1: shadow factor as grayscale. White = lit, black = fully shadowed.',
@@ -2802,6 +2805,7 @@ AWater.AOcean.Materials.Ocean.waterMaterial = {
           'gl_FragColor = vec4(vec3(v), 1.0);',
         '}',
       '}',
+      '//$DEBUG_END$',
 
       '//Blue noise dithering to break banding (same technique as a-starry-sky).',
       "//Skipped when a debug mode is active so visualisations aren't speckled.",

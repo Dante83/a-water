@@ -1,7 +1,7 @@
 //This helps
 //--------------------------v
 //https://github.com/mrdoob/three.js/wiki/Uniforms-types
-AWater.AOcean.Materials.Ocean.positionPassMaterial = {
+ARestlessOcean.Materials.Ocean.positionPassMaterial = {
   uniforms: {
     worldMatrix: {type: 'mat4', value: new THREE.Matrix4()},
     viewMatrix: {type: 'mat4', value: new THREE.Matrix4()},

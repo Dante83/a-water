@@ -1,7 +1,7 @@
 //This helps
 //--------------------------v
 //https://github.com/mrdoob/three.js/wiki/Uniforms-types
-AWater.AOcean.Materials.FFTWaves.butterflyTextureData = {
+ARestlessOcean.Materials.FFTWaves.butterflyTextureData = {
   uniforms: {
     inputTexture: {type: 't', value: null},
     twiddleTexture: {type: 't', value: null},

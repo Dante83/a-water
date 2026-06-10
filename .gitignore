@@ -5,3 +5,4 @@ package.json
 *.tmp
 examples/personal-ocean
 src/glsl/ocean-material/DEBUG_MODES.md
+examples/demos/

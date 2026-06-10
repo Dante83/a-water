@@ -1,7 +1,7 @@
 //This helps
 //--------------------------v
 //https://github.com/mrdoob/three.js/wiki/Uniforms-types
-AWater.AOcean.Materials.FFTWaves.hkShaderMaterialData = {
+ARestlessOcean.Materials.FFTWaves.hkShaderMaterialData = {
   uniforms: {
     textureH0: {type: 't', value: null},
     N: {type: 'f', value: 256.0},

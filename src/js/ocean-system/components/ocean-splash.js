@@ -22,7 +22,7 @@
 //60fps and debuggable, and avoids CPU->GPU emission plumbing. GPUComputeRenderer
 //is the documented scale-up path if we ever need far more particles.
 
-AWater.AOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
+ARestlessOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
   this.oceanGrid = oceanGrid;
   this.scene = scene;
   this.renderer = oceanGrid.renderer;
@@ -424,7 +424,7 @@ AWater.AOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
   geometry.setDrawRange(0, 0);
   this.geometry = geometry;
 
-  const def = AWater.AOcean.Materials.Ocean.splashMaterial;
+  const def = ARestlessOcean.Materials.Ocean.splashMaterial;
   this.material = new THREE.ShaderMaterial({
     uniforms: THREE.UniformsUtils.clone(def.uniforms),
     vertexShader: def.vertexShader,
@@ -437,14 +437,14 @@ AWater.AOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
 
   //Procedural soft-droplet sprite so the system renders before a real sprite is
   //supplied. Swap later with setSprite().
-  this._defaultSprite = AWater.AOcean.OceanSplash.makeRadialSprite();
+  this._defaultSprite = ARestlessOcean.OceanSplash.makeRadialSprite();
   this.material.uniforms.splashSprite.value = this._defaultSprite;
 
   this.mesh = new THREE.Points(geometry, this.material);
   this.mesh.frustumCulled = false; //positions move every frame; bounds are stale.
   this.mesh.renderOrder = 10;      //draw after opaque scene + water.
   this.mesh.visible = false;       //OceanGrid flips this on after offscreen passes.
-  this.mesh.layers.set(AWater.AOcean.OCEAN_LAYER);
+  this.mesh.layers.set(ARestlessOcean.OCEAN_LAYER);
   scene.add(this.mesh);
 
   //Terrain-height field, copied from the foam ortho on snap-change (async).
@@ -461,7 +461,7 @@ AWater.AOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
 
 //Camera-facing soft sprite: white core easing to transparent, faint speckle so a
 //cluster reads as droplets rather than a flat disc.
-AWater.AOcean.OceanSplash.makeRadialSprite = function(){
+ARestlessOcean.OceanSplash.makeRadialSprite = function(){
   const size = 64;
   const canvas = document.createElement('canvas');
   canvas.width = size; canvas.height = size;
@@ -480,33 +480,14 @@ AWater.AOcean.OceanSplash.makeRadialSprite = function(){
   return tex;
 };
 
-//Parse a declarative "key=value, key=value" string into a config object for the
-//constructor's third arg. Uses '=' and ',' (NOT ':' / ';') on purpose: an A-Frame
-//attribute already claims those as its own property delimiters, so a nested map has
-//to avoid them. Values coerce: true/false -> bool, numeric -> Number, else string.
-//Blank/empty -> {}. Unknown keys are harmless (the constructor copies them anyway).
-AWater.AOcean.OceanSplash.parseConfig = function(str){
-  const cfg = {};
-  if(!str) return cfg;
-  const parts = str.split(',');
-  for(let i = 0; i < parts.length; i++){
-    const eq = parts[i].indexOf('=');
-    if(eq < 0) continue;
-    const key = parts[i].slice(0, eq).trim();
-    if(!key) continue;
-    const raw = parts[i].slice(eq + 1).trim();
-    let val;
-    if(raw === 'true') val = true;
-    else if(raw === 'false') val = false;
-    else if(raw !== '' && !isNaN(Number(raw))) val = Number(raw);
-    else val = raw;
-    cfg[key] = val;
-  }
-  return cfg;
-};
+//Splash is configured declaratively via the nested <ocean-splash> element, whose
+//kebab-case attributes ocean-state.applyNestedConfig converts to the camelCase cfg
+//object handed to this constructor's third arg. Any knob below is settable that
+//way (impact-min-launch -> impactMinLaunch) and stays live-editable on the instance
+//via window.oceanSplash.
 
 //Swap in an authored spray sprite (a THREE.Texture).
-AWater.AOcean.OceanSplash.prototype.setSprite = function(texture){
+ARestlessOcean.OceanSplash.prototype.setSprite = function(texture){
   if(texture && texture.isTexture){
     this.material.uniforms.splashSprite.value = texture;
   }
@@ -514,7 +495,7 @@ AWater.AOcean.OceanSplash.prototype.setSprite = function(texture){
 
 //Spawn one particle. type: 0 crest mist, 1 impact burst. coarse: [0,1] mist->droplet
 //grade (optional; defaults to 0 = finest mist).
-AWater.AOcean.OceanSplash.prototype.spawn = function(px, py, pz, vx, vy, vz, size, life, type, coarse){
+ARestlessOcean.OceanSplash.prototype.spawn = function(px, py, pz, vx, vy, vz, size, life, type, coarse){
   if(this.liveCount >= this.capacity) return; //pool full: drop (cheap, bounded).
   const i = this.liveCount++;
   const p3 = i * 3;
@@ -541,7 +522,7 @@ AWater.AOcean.OceanSplash.prototype.spawn = function(px, py, pz, vx, vy, vz, siz
 //the launch axis becomes the mirror of that velocity reflected off the surface (plus
 //run-up), so spray leaves DIRECTIONALLY along the bounce instead of coning straight
 //up the normal. Omit them (hull) to keep the old normal-cone launch.
-AWater.AOcean.OceanSplash.prototype.emitImpact = function(px, py, pz, nx, ny, nz, speed, tanX, tanZ, span, countScale, inVx, inVy, inVz){
+ARestlessOcean.OceanSplash.prototype.emitImpact = function(px, py, pz, nx, ny, nz, speed, tanX, tanZ, span, countScale, inVx, inVy, inVz){
   if(!this.enabled || !this.impactEnabled) return;
   if(speed <= 0.0) return;
   let count = Math.round(speed * this.impactBurstPerSpeed);
@@ -636,7 +617,7 @@ AWater.AOcean.OceanSplash.prototype.emitImpact = function(px, py, pz, nx, ny, nz
 
 //Sample the cached terrain-height field at world (x,z). Returns the terrain Y, or
 //null when outside the ortho or where no geometry was captured (open water/sky).
-AWater.AOcean.OceanSplash.prototype.sampleTerrainHeight = function(x, z){
+ARestlessOcean.OceanSplash.prototype.sampleTerrainHeight = function(x, z){
   const data = this._terrain;
   if(!data) return null;
   const half = this._terrainHalf;
@@ -656,7 +637,7 @@ AWater.AOcean.OceanSplash.prototype.sampleTerrainHeight = function(x, z){
 //Kick an async readback of the foam terrain-height ortho into a CPU array. Called
 //by OceanGrid only when the foam camera actually re-rendered (snap-change), so the
 //(16 MB at 1024^2) transfer is rare and never blocks the frame.
-AWater.AOcean.OceanSplash.prototype.requestTerrainReadback = function(renderTarget, camX, camZ, half){
+ARestlessOcean.OceanSplash.prototype.requestTerrainReadback = function(renderTarget, camX, camZ, half){
   if(!this.shoreEnabled || this._terrainReadPending) return;
   if(typeof this.renderer.readRenderTargetPixelsAsync !== 'function') return;
   const w = renderTarget.width;
@@ -685,9 +666,9 @@ AWater.AOcean.OceanSplash.prototype.requestTerrainReadback = function(renderTarg
 //GATES; use the analytic field for rates (rise) so a finite difference stays
 //within one phase system. (ocean-grid keeps the snapshot warm only on request, so
 //tick() calls requestFFTSnapshot each frame.)
-AWater.AOcean.OceanSplash.prototype._surfaceHeight = function(field, x, z, t){
-  if(this.useRenderedHeight && AWater.AOcean.sampleWaterHeightFFT){
-    const h = AWater.AOcean.sampleWaterHeightFFT(x, z);
+ARestlessOcean.OceanSplash.prototype._surfaceHeight = function(field, x, z, t){
+  if(this.useRenderedHeight && ARestlessOcean.sampleWaterHeightFFT){
+    const h = ARestlessOcean.sampleWaterHeightFFT(x, z);
     if(h !== null && h !== undefined) return h;
   }
   return field.sampleHeight(x, z, t);
@@ -696,7 +677,7 @@ AWater.AOcean.OceanSplash.prototype._surfaceHeight = function(field, x, z, t){
 //Emit crest mist by scanning the analytic field around the camera for steep,
 //rising tops. Vertical velocity via a small time difference; steepness via the
 //surface normal.
-AWater.AOcean.OceanSplash.prototype._emitCrest = function(field, t, camX, camZ, windX, windZ){
+ARestlessOcean.OceanSplash.prototype._emitCrest = function(field, t, camX, camZ, windX, windZ){
   if(!this.crestEnabled) return;
   const step = this.crestGridStep;
   const r = this.crestRadius;
@@ -736,16 +717,16 @@ AWater.AOcean.OceanSplash.prototype._emitCrest = function(field, t, camX, camZ, 
       //reject below, not the gate that decides where mist lives.)
       const h0 = this._surfaceHeight(field, x, z, t);
       if((h0 - field.heightOffset) < minHeight) continue;
-      let rise = (this.useRenderedHeight && AWater.AOcean.sampleWaterRiseFFT)
-        ? AWater.AOcean.sampleWaterRiseFFT(x, z) : null;
+      let rise = (this.useRenderedHeight && ARestlessOcean.sampleWaterRiseFFT)
+        ? ARestlessOcean.sampleWaterRiseFFT(x, z) : null;
       if(rise === null){
         const h0a = field.sampleHeight(x, z, t);
         const h1a = field.sampleHeight(x, z, t + dt);
         rise = (h1a - h0a) / dt;
       }
       if(rise < riseThresh) continue;
-      let steepness = (this.useRenderedHeight && AWater.AOcean.sampleWaterSlopeFFT)
-        ? AWater.AOcean.sampleWaterSlopeFFT(x, z) : null;
+      let steepness = (this.useRenderedHeight && ARestlessOcean.sampleWaterSlopeFFT)
+        ? ARestlessOcean.sampleWaterSlopeFFT(x, z) : null;
       if(steepness === null){ field.sampleNormal(x, z, t, nrm); steepness = 1.0 - nrm.y; }
       if(steepness < this.crestSteepnessThreshold) continue;
       //Emit a CLUSTER, not a lone particle, so the crest reads as a puff of mist
@@ -781,7 +762,7 @@ AWater.AOcean.OceanSplash.prototype._emitCrest = function(field, t, camX, camZ, 
 //just off breaking crests, so it spreads instead of bursting in patches. This emits a thin, UNGATED
 //(no rise/steepness condition) uniform fine mist over open water, scaled by the same spin ramp as
 //the crest spindrift, launched low so the wind-grab carries it downwind. Off below gale force.
-AWater.AOcean.OceanSplash.prototype._emitSurfaceHaze = function(field, t, camX, camZ, windX, windZ){
+ARestlessOcean.OceanSplash.prototype._emitSurfaceHaze = function(field, t, camX, camZ, windX, windZ){
   if(!this.crestEnabled || this.hazeFloorChance <= 0.0) return;
   const windSpeed = Math.sqrt(windX * windX + windZ * windZ);
   let spin = (windSpeed - this.spindriftStart) / Math.max(0.001, this.spindriftFull - this.spindriftStart);
@@ -831,7 +812,7 @@ AWater.AOcean.OceanSplash.prototype._emitSurfaceHaze = function(field, t, camX, 
 //whole shoreline reads as a wall of spray rather than scattered geysers. Density
 //is biased toward the camera-forward direction and thinned with distance, so the
 //budget goes to visible spray. Needs the terrain field. (fwdX,fwdZ) = camera fwd.
-AWater.AOcean.OceanSplash.prototype._emitShore = function(field, t, camX, camZ, fwdX, fwdZ){
+ARestlessOcean.OceanSplash.prototype._emitShore = function(field, t, camX, camZ, fwdX, fwdZ){
   if(!this.shoreEnabled || !this._terrain) return;
   const step = this.shoreGridStep;
   const r = this.shoreScanRadius;
@@ -892,8 +873,8 @@ AWater.AOcean.OceanSplash.prototype._emitShore = function(field, t, camX, camZ, 
       //Rise = the RENDERED FFT water's own dH/dt (phase-correct) so a burst only fires
       //when the water you SEE is actually surging — not when the analytic phantom wave
       //happens to peak here. Analytic finite difference is the cold-start fallback only.
-      let rise = (this.useRenderedHeight && AWater.AOcean.sampleWaterRiseFFT)
-        ? AWater.AOcean.sampleWaterRiseFFT(x, z) : null;
+      let rise = (this.useRenderedHeight && ARestlessOcean.sampleWaterRiseFFT)
+        ? ARestlessOcean.sampleWaterRiseFFT(x, z) : null;
       if(rise === null){
         const h0a = field.sampleHeight(x, z, t);
         const h1a = field.sampleHeight(x, z, t + dt);
@@ -948,27 +929,29 @@ AWater.AOcean.OceanSplash.prototype._emitShore = function(field, t, camX, camZ, 
   }
 };
 
+//$DEBUG_START$
 //Lazily build the debug surface-probe ball. It is a CHILD of the splash points
 //mesh (which sits at the origin and is never transformed), so it inherits that
 //mesh's visible toggle for free — OceanGrid hides the splash mesh during every
 //offscreen pass and shows it only in the main pass, so the probe is automatically
 //excluded from refraction / reflection / foam captures with no extra plumbing.
 //MeshBasicMaterial = unlit, so it reads the same bright red regardless of sun.
-AWater.AOcean.OceanSplash.prototype._ensureMarker = function(){
+ARestlessOcean.OceanSplash.prototype._ensureMarker = function(){
   if(this._marker) return;
   const geo = new THREE.SphereGeometry(0.5, 16, 12);
   const mat = new THREE.MeshBasicMaterial({ color: 0xff2020 });
   const m = new THREE.Mesh(geo, mat);
-  m.layers.set(AWater.AOcean.OCEAN_LAYER);
+  m.layers.set(ARestlessOcean.OCEAN_LAYER);
   m.frustumCulled = false;
   m.renderOrder = 11;
   this._marker = m;
   this.mesh.add(m);
 };
+//$DEBUG_END$
 
 //Per-frame update. ctx: {time, camX, camZ, windX, windZ, sunColor(THREE.Color),
 //skyAmbient(THREE.Color), viewportHeight, resW, resH, linearDepthTexture}.
-AWater.AOcean.OceanSplash.prototype.tick = function(ctx){
+ARestlessOcean.OceanSplash.prototype.tick = function(ctx){
   const u = this.material.uniforms;
   //Push art / lighting uniforms regardless of enable state so a toggle is instant.
   u.uOpacity.value = this.opacity;
@@ -1050,14 +1033,15 @@ AWater.AOcean.OceanSplash.prototype.tick = function(ctx){
   if(dt < 0.0) dt = 0.0;
   if(dt > 0.05) dt = 0.05; //clamp big stalls so bursts do not teleport.
 
-  const field = AWater.AOcean.waveField;
+  const field = ARestlessOcean.waveField;
 
   //Keep the rendered-FFT height snapshot warm so the emitters can spawn against the
   //water we actually see (see _surfaceHeight). ocean-grid renders it only on demand.
-  if((this.enabled || this.debugMarker) && this.useRenderedHeight && AWater.AOcean.requestFFTSnapshot){
-    AWater.AOcean.requestFFTSnapshot();
+  if((this.enabled || this.debugMarker) && this.useRenderedHeight && ARestlessOcean.requestFFTSnapshot){
+    ARestlessOcean.requestFFTSnapshot();
   }
 
+  //$DEBUG_START$
   //Debug surface probe: park the ball ON the sampled emission surface in front of
   //the camera. Same height source the emitters use, so its alignment with the
   //visible waterline tells us whether spawn POSITION is correct (vs the rise gate).
@@ -1072,6 +1056,7 @@ AWater.AOcean.OceanSplash.prototype.tick = function(ctx){
   } else if(this._marker){
     this._marker.visible = false;
   }
+  //$DEBUG_END$
 
   if(this.enabled && field && dt > 0.0){
     this._emitCrest(field, field.currentTimeSeconds, ctx.camX, ctx.camZ, ctx.windX, ctx.windZ);

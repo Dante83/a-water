@@ -1,4 +1,4 @@
-AWater.AOcean.OceanPatch = function(parentOceanGrid, initialPosition, instanceMeshRef, instanceID, ringIndex){
+ARestlessOcean.OceanPatch = function(parentOceanGrid, initialPosition, instanceMeshRef, instanceID, ringIndex){
   const scene = parentOceanGrid.scene;
   this.initialPosition = initialPosition;
   this.position = new THREE.Vector3();

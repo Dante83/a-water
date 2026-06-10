@@ -35,7 +35,7 @@
 // you nest it under a moving rig, parent-relative handling isn't done yet.
 //
 // Needs the ocean's analytic field (ocean-wave-field.js) live at
-// AWater.AOcean.waveField; until the ocean finishes booting, tick no-ops.
+// ARestlessOcean.waveField; until the ocean finishes booting, tick no-ops.
 
 AFRAME.registerComponent('buoyancy-hull', {
   schema: {
@@ -224,7 +224,7 @@ AFRAME.registerComponent('buoyant', {
   },
   tick: function(time, timeDelta){
     if(!this.data.enabled) return;
-    const field = AWater.AOcean.waveField;
+    const field = ARestlessOcean.waveField;
     if(!field) return; //ocean not up yet.
 
     const hull = this.el.components['buoyancy-hull'];
@@ -259,9 +259,9 @@ AFRAME.registerComponent('buoyant', {
     //returns null and we fall back to the analytic twin per-sample.
     const useFFT = (this.data.source !== 'analytic');
     let fftSampler = null;
-    if(useFFT && typeof AWater.AOcean.sampleWaterHeightFFT === 'function'){
-      if(typeof AWater.AOcean.requestFFTSnapshot === 'function'){ AWater.AOcean.requestFFTSnapshot(); }
-      fftSampler = AWater.AOcean.sampleWaterHeightFFT;
+    if(useFFT && typeof ARestlessOcean.sampleWaterHeightFFT === 'function'){
+      if(typeof ARestlessOcean.requestFFTSnapshot === 'function'){ ARestlessOcean.requestFFTSnapshot(); }
+      fftSampler = ARestlessOcean.sampleWaterHeightFFT;
     }
 
     const com = obj.position; //world centre of mass (direct scene child).

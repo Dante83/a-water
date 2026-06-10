@@ -60,7 +60,7 @@
 //set is strictly smaller than C1's, so a fragment crossing the boundary
 //can lose a shadow that came from a ring-1 wave just outside C0.
 
-AWater.AOcean.OceanShadowCSM = function(oceanGrid, scene, configOverrides){
+ARestlessOcean.OceanShadowCSM = function(oceanGrid, scene, configOverrides){
   this.oceanGrid = oceanGrid;
   this.scene = scene;
 
@@ -90,7 +90,7 @@ AWater.AOcean.OceanShadowCSM = function(oceanGrid, scene, configOverrides){
   this.numCascades = this.cascadeConfigs.length;
   this._waveMargin = 50.0;
 
-  this._shadowMatDef = AWater.AOcean.Materials.Ocean.oceanShadowMaterial;
+  this._shadowMatDef = ARestlessOcean.Materials.Ocean.oceanShadowMaterial;
 
   //Build per-cascade resources: RGBA32F color target with depth renderbuffer
   //(depth used for caster z-test, never read back), linear filtering enabled
@@ -216,7 +216,7 @@ AWater.AOcean.OceanShadowCSM = function(oceanGrid, scene, configOverrides){
   this.casterRingIndices = [];
 };
 
-AWater.AOcean.OceanShadowCSM.prototype._recomputeEvsmClear = function(){
+ARestlessOcean.OceanShadowCSM.prototype._recomputeEvsmClear = function(){
   const c = this._evsmExpC;
   const pos = Math.exp(c);
   const neg = -Math.exp(-c);
@@ -227,7 +227,7 @@ AWater.AOcean.OceanShadowCSM.prototype._recomputeEvsmClear = function(){
 //Live-tune the EVSM warp constant. Pushes to all caster materials and
 //updates the cached clear color. Receiver's evsmExpC must be updated
 //separately via ocean-grid's console hook.
-AWater.AOcean.OceanShadowCSM.prototype.setEvsmExpC = function(c){
+ARestlessOcean.OceanShadowCSM.prototype.setEvsmExpC = function(c){
   this._evsmExpC = +c;
   this._recomputeEvsmClear();
   for(let i = 0, L = this.shadowMaterials.length; i < L; i++){
@@ -239,7 +239,7 @@ AWater.AOcean.OceanShadowCSM.prototype.setEvsmExpC = function(c){
 //time a clipmap tile gets instantiated. ringIndex determines cascade
 //membership: each cascade has a maxRing, and the mesh joins cascade c
 //only if ringIndex <= c.maxRing. Layer membership is set ONCE here.
-AWater.AOcean.OceanShadowCSM.prototype.addCaster = function(mesh, ringIndex){
+ARestlessOcean.OceanShadowCSM.prototype.addCaster = function(mesh, ringIndex){
   if(this.oceanMeshes.indexOf(mesh) !== -1) return;
   const shadowMat = new THREE.ShaderMaterial({
     uniforms: THREE.UniformsUtils.clone(this._shadowMatDef.uniforms),
@@ -263,7 +263,7 @@ AWater.AOcean.OceanShadowCSM.prototype.addCaster = function(mesh, ringIndex){
 //Per-frame: for each cascade, fit camera, render moments, blur. Materials
 //are swapped to the shadow ShaderMaterial once at the start and restored
 //once at the end — all four cascades render under the same swap.
-AWater.AOcean.OceanShadowCSM.prototype.render = function(renderer, mainCamera, sunDirection, sharedOceanUniforms){
+ARestlessOcean.OceanShadowCSM.prototype.render = function(renderer, mainCamera, sunDirection, sharedOceanUniforms){
   if(this.oceanMeshes.length === 0) return;
   if(-sunDirection.y <= 0.0) return;
 
@@ -407,5 +407,5 @@ AWater.AOcean.OceanShadowCSM.prototype.render = function(renderer, mainCamera, s
 };
 
 if(typeof exports !== 'undefined'){
-  module.exports = AWater.AOcean.OceanShadowCSM;
+  module.exports = ARestlessOcean.OceanShadowCSM;
 }

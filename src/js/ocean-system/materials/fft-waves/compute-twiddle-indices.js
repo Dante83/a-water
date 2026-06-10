@@ -1,4 +1,4 @@
-AWater.AOcean.Materials.FFTWaves.computeTwiddleIndices = function(N, renderer){
+ARestlessOcean.Materials.FFTWaves.computeTwiddleIndices = function(N, renderer){
   //Determine the twiddle indices using JS and then
   //return the results as an image.
   let twiddleTexture = [];

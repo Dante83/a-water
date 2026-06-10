@@ -32,14 +32,14 @@
 // share both the physical amplitude and the artistic boost.
 //
 // Public surface:
-//   AWater.AOcean.waveField                         — active instance (or null)
-//   AWater.AOcean.sampleWaterHeight(x, z)           — height at world XZ, now
-//   AWater.AOcean.sampleWaterDisplacement(x,z,out)  — full Gerstner xyz, now
-//   AWater.AOcean.sampleWaterNormal(x, z, out)      — surface normal, now
+//   ARestlessOcean.waveField                         — active instance (or null)
+//   ARestlessOcean.sampleWaterHeight(x, z)           — height at world XZ, now
+//   ARestlessOcean.sampleWaterDisplacement(x,z,out)  — full Gerstner xyz, now
+//   ARestlessOcean.sampleWaterNormal(x, z, out)      — surface normal, now
 // The *(x, z, t)* instance methods take an explicit time (seconds) so a worker
 // or a predict-ahead integrator can sample any time without a frame tick.
 
-AWater.AOcean.OceanWaveField = function(bandLibrary, data){
+ARestlessOcean.OceanWaveField = function(bandLibrary, data){
   this.bandLibrary = bandLibrary;
   this.data = data;
   this.components = [];
@@ -55,17 +55,17 @@ AWater.AOcean.OceanWaveField = function(bandLibrary, data){
 //energy-weighted mean of the bins that fell in it. 16 around the full circle is
 //plenty to capture the wind lobe plus its cross-wind spread without producing
 //more components than per-frame sampling wants to evaluate.
-AWater.AOcean.OceanWaveField.NUM_DIRECTION_BUCKETS = 16;
+ARestlessOcean.OceanWaveField.NUM_DIRECTION_BUCKETS = 16;
 
 //Buckets carrying less than this fraction of the peak bucket's energy are
 //dropped — they contribute imperceptible motion but cost a full cos() per
 //sample. Keeps the active component count to a few dozen.
-AWater.AOcean.OceanWaveField.ENERGY_PRUNE_FRACTION = 0.0025;
+ARestlessOcean.OceanWaveField.ENERGY_PRUNE_FRACTION = 0.0025;
 
 //Rebuild the Gerstner component set from the band library's CURRENT spectrum
 //state. Safe to call any time wind / fetch / gamma / turbulence change; the
 //band library's regenerateH0 already does.
-AWater.AOcean.OceanWaveField.prototype.rebuild = function(){
+ARestlessOcean.OceanWaveField.prototype.rebuild = function(){
   const data = this.data;
   const bandLibrary = this.bandLibrary;
 
@@ -83,14 +83,14 @@ AWater.AOcean.OceanWaveField.prototype.rebuild = function(){
                 this.data.wind_velocity.y * this.data.wind_velocity.y)
     : 0.0;
 
-  this.components = AWater.AOcean.OceanWaveField.buildGerstnerComponents(
+  this.components = ARestlessOcean.OceanWaveField.buildGerstnerComponents(
     bandLibrary.cascadePatchSizes, bandLibrary.N, bandLibrary.omega_p,
     bandLibrary.jonswapGamma, turbulence, bandLibrary.w, windSpeed);
 };
 
 //Deterministic small LCG so a rebuild always lays the random phases down the
 //same way (reproducible physics across reloads). Seed is arbitrary but fixed.
-AWater.AOcean.OceanWaveField._mulberry32 = function(seed){
+ARestlessOcean.OceanWaveField._mulberry32 = function(seed){
   let a = seed >>> 0;
   return function(){
     a |= 0; a = (a + 0x6D2B79F5) | 0;
@@ -109,7 +109,7 @@ AWater.AOcean.OceanWaveField._mulberry32 = function(seed){
 // Returns Array<{kx, ky, omega, amp, phase, dirX, dirZ}> in WORLD units:
 //   k = (kx, ky) maps to world (x, z); amp is metres (pre-waveHeightMultiplier);
 //   omega rad/s; dir is the unit propagation direction.
-AWater.AOcean.OceanWaveField.buildGerstnerComponents = function(
+ARestlessOcean.OceanWaveField.buildGerstnerComponents = function(
     cascadePatchSizes, N, omega_p, gamma, directionalTurbulence, windDir, windSpeed){
   const g = 9.80665;
   const piTimes2 = 2.0 * Math.PI;
@@ -118,9 +118,9 @@ AWater.AOcean.OceanWaveField.buildGerstnerComponents = function(
   const WAVE_SAMPLE_HIGH = 8.0;
   const turb = Math.max(0.0, Math.min(1.0, directionalTurbulence));
   const numCascades = cascadePatchSizes.length;
-  const numBuckets = AWater.AOcean.OceanWaveField.NUM_DIRECTION_BUCKETS;
+  const numBuckets = ARestlessOcean.OceanWaveField.NUM_DIRECTION_BUCKETS;
   const halfN = N * 0.5;
-  const rng = AWater.AOcean.OceanWaveField._mulberry32(0x0CEA0FED);
+  const rng = ARestlessOcean.OceanWaveField._mulberry32(0x0CEA0FED);
 
   //Dead-calm sea: no wind, no waves. omega_p was set to a sentinel huge value
   //by the band library, which would just produce zero energy anyway — bail to a
@@ -141,7 +141,7 @@ AWater.AOcean.OceanWaveField.buildGerstnerComponents = function(
 
     //Per-cascade wind rotation — identical to the h_0 pass, so each cascade's
     //wave-front orientation matches what's rendered.
-    const wRot = AWater.AOcean.LUTlibraries.OceanHeightBandLibrary.rotateWindForCascade(windDir, c);
+    const wRot = ARestlessOcean.LUTlibraries.OceanHeightBandLibrary.rotateWindForCascade(windDir, c);
     const wLen = Math.sqrt(wRot.x * wRot.x + wRot.y * wRot.y) || 1.0;
     const wnx = wRot.x / wLen, wny = wRot.y / wLen;
 
@@ -226,7 +226,7 @@ AWater.AOcean.OceanWaveField.buildGerstnerComponents = function(
     const e = 0.5 * components[i].amp * components[i].amp;
     if(e > peak) peak = e;
   }
-  const cutoff = peak * AWater.AOcean.OceanWaveField.ENERGY_PRUNE_FRACTION;
+  const cutoff = peak * ARestlessOcean.OceanWaveField.ENERGY_PRUNE_FRACTION;
   const kept = [];
   let keptM0 = 0.0;
   for(let i = 0; i < components.length; i++){
@@ -254,7 +254,7 @@ AWater.AOcean.OceanWaveField.buildGerstnerComponents = function(
 //is the standard forgiving approximation for height queries — multi-probe
 //averaging in the buoyant component smooths the residual. Use
 //sampleDisplacement when you need the full leaned position.
-AWater.AOcean.OceanWaveField.prototype.sampleHeight = function(x, z, t){
+ARestlessOcean.OceanWaveField.prototype.sampleHeight = function(x, z, t){
   const comps = this.components;
   let h = 0.0;
   for(let i = 0; i < comps.length; i++){
@@ -267,7 +267,7 @@ AWater.AOcean.OceanWaveField.prototype.sampleHeight = function(x, z, t){
 //Full Gerstner displacement at world (x, z), t. out is a THREE.Vector3 (or any
 //{x,y,z}); returns it. x/z carry the horizontal "lean" scaled by chop, y the
 //height (incl. heightOffset). Useful for spray emitters, true-surface markers.
-AWater.AOcean.OceanWaveField.prototype.sampleDisplacement = function(x, z, t, out){
+ARestlessOcean.OceanWaveField.prototype.sampleDisplacement = function(x, z, t, out){
   const comps = this.components;
   let dx = 0.0, dy = 0.0, dz = 0.0;
   for(let i = 0; i < comps.length; i++){
@@ -288,7 +288,7 @@ AWater.AOcean.OceanWaveField.prototype.sampleDisplacement = function(x, z, t, ou
 //Robust and cheap (4 height samples) — avoids the messy analytic Gerstner
 //partials once the chop term is in play. out is a THREE.Vector3; returns it
 //normalized.
-AWater.AOcean.OceanWaveField.prototype.sampleNormal = function(x, z, t, out){
+ARestlessOcean.OceanWaveField.prototype.sampleNormal = function(x, z, t, out){
   const eps = 0.25; //metres; ~capillary-cascade scale, stable for tilt.
   const hL = this.sampleHeight(x - eps, z, t);
   const hR = this.sampleHeight(x + eps, z, t);
@@ -307,24 +307,24 @@ AWater.AOcean.OceanWaveField.prototype.sampleNormal = function(x, z, t, out){
 // time. These are the entry points gameplay code (swimming, floating props,
 // dock pilings) should reach for; they no-op gracefully before the ocean is up.
 //===========================================================================
-AWater.AOcean.waveField = null;
+ARestlessOcean.waveField = null;
 
-AWater.AOcean.sampleWaterHeight = function(x, z){
-  const f = AWater.AOcean.waveField;
+ARestlessOcean.sampleWaterHeight = function(x, z){
+  const f = ARestlessOcean.waveField;
   return f ? f.sampleHeight(x, z, f.currentTimeSeconds) : 0.0;
 };
 
-AWater.AOcean.sampleWaterDisplacement = function(x, z, out){
+ARestlessOcean.sampleWaterDisplacement = function(x, z, out){
   out = out || new THREE.Vector3();
-  const f = AWater.AOcean.waveField;
+  const f = ARestlessOcean.waveField;
   if(f) return f.sampleDisplacement(x, z, f.currentTimeSeconds, out);
   out.set(0, 0, 0);
   return out;
 };
 
-AWater.AOcean.sampleWaterNormal = function(x, z, out){
+ARestlessOcean.sampleWaterNormal = function(x, z, out){
   out = out || new THREE.Vector3();
-  const f = AWater.AOcean.waveField;
+  const f = ARestlessOcean.waveField;
   if(f) return f.sampleNormal(x, z, f.currentTimeSeconds, out);
   out.set(0, 1, 0);
   return out;
@@ -337,15 +337,16 @@ AWater.AOcean.sampleWaterNormal = function(x, z, out){
 //own random phases (the GPU's phases live in noise textures we don't share). So
 //a nonzero Δ at a point is EXPECTED, not a bug; it's why a float can ride a crest
 //the rendered surface shows as a trough. Call from the console, e.g.
-//   AWater.AOcean.debugWaveAt(2, -45)
-//or watch a floating cube:  setInterval(()=>AWater.AOcean.debugWaveAt(2,-45),250)
+//   ARestlessOcean.debugWaveAt(2, -45)
+//or watch a floating cube:  setInterval(()=>ARestlessOcean.debugWaveAt(2,-45),250)
 //The FFT readback is synchronous (stalls the GPU) — debugging only, kill when done.
-AWater.AOcean.debugWaveAt = function(x, z){
-  const a = AWater.AOcean.sampleWaterHeight(x, z);
+//$DEBUG_START$
+ARestlessOcean.debugWaveAt = function(x, z){
+  const a = ARestlessOcean.sampleWaterHeight(x, z);
   //Compare against the EXACT synchronous readback (ground truth), not the cached
   //snapshot, so the debug works even when no float is keeping the snapshot warm.
-  const f = (typeof AWater.AOcean.sampleWaterHeightFFTExact === 'function')
-    ? AWater.AOcean.sampleWaterHeightFFTExact(x, z) : null;
+  const f = (typeof ARestlessOcean.sampleWaterHeightFFTExact === 'function')
+    ? ARestlessOcean.sampleWaterHeightFFTExact(x, z) : null;
   if(f === null || f === undefined){
     console.log(`[wave @ ${x.toFixed(1)}, ${z.toFixed(1)}]  analytic=${a.toFixed(3)} m   (FFT readback not ready)`);
     return {analytic: a, fft: null};
@@ -353,3 +354,4 @@ AWater.AOcean.debugWaveAt = function(x, z){
   console.log(`[wave @ ${x.toFixed(1)}, ${z.toFixed(1)}]  analytic=${a.toFixed(3)} m   FFT=${f.toFixed(3)} m   Δ=${(a - f).toFixed(3)} m`);
   return {analytic: a, fft: f, diff: a - f};
 };
+//$DEBUG_END$

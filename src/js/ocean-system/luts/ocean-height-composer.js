@@ -1,4 +1,4 @@
-AWater.AOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
+ARestlessOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
   let data = parentOceanGrid.data;
   this.renderer = parentOceanGrid.renderer;
   this.baseTextureWidth = data.patch_data_size;

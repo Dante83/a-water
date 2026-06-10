@@ -2,7 +2,7 @@
 //by ocean-shadow-csm.js. Uniforms mirror the subset of water-shader.glsl
 //needed to displace vertices: cascade textures, patch sizes, spatial offsets,
 //wave-height multiplier, and chop.
-AWater.AOcean.Materials.Ocean.oceanShadowMaterial = {
+ARestlessOcean.Materials.Ocean.oceanShadowMaterial = {
   uniforms: {
     cascadeDisplacementTextures: {value: [null, null, null, null, null, null]},
     cascadePatchSizes: {value: [4096.0, 1024.0, 256.0, 64.0, 16.0, 4.0]},

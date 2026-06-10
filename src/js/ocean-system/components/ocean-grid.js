@@ -17,7 +17,7 @@
 //Pope & Fry 1997 pure-water absorption sits just under Type 1. If the rendered
 //water reads "too cobalt," step up the type number — higher types add CDOM /
 //particulate scattering that lifts the green channel and desaturates the blue.
-AWater.AOcean.JERLOV_PRESETS = [
+ARestlessOcean.JERLOV_PRESETS = [
   null,
   { absorption: {x: 0.279, y: 0.061, z: 0.015}, scattering: {x: 0.001, y: 0.002, z: 0.003} }, // I
   { absorption: {x: 0.284, y: 0.074, z: 0.025}, scattering: {x: 0.003, y: 0.004, z: 0.005} }, // IB
@@ -39,18 +39,18 @@ AWater.AOcean.JERLOV_PRESETS = [
 //  - the per-cascade ocean-CSM light cameras already use their own layers
 //    (7..10, set by ocean-shadow-csm.js:addCaster) and are unaffected.
 //  - any future cameras (or third-party scene cameras) that want to see the
-//    ocean must `camera.layers.enable(AWater.AOcean.OCEAN_LAYER)` —
+//    ocean must `camera.layers.enable(ARestlessOcean.OCEAN_LAYER)` —
 //    likewise any future ocean-class meshes (extra water bodies, foam
-//    decals, etc.) should call `mesh.layers.set(AWater.AOcean.OCEAN_LAYER)`.
+//    decals, etc.) should call `mesh.layers.set(ARestlessOcean.OCEAN_LAYER)`.
 //  - cameras that should NOT see water (foam capture, exclusion capture)
 //    intentionally do nothing — staying on layer 0 keeps them ignorant of
 //    ocean geometry by design.
 //
 //Picked 29 because the exclusion camera already uses 30; keeping them
 //adjacent makes the "ocean-system reserved layers" cluster obvious.
-AWater.AOcean.OCEAN_LAYER = 29;
+ARestlessOcean.OCEAN_LAYER = 29;
 
-AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
+ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //Variable for holding all of our patches
   //For now, just create 1 plane
   this.scene = scene;
@@ -60,7 +60,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.camera = camera;
   //Main scene camera needs to see the ocean even though water meshes have
   //been moved off layer 0 — see OCEAN_LAYER comment above.
-  this.camera.layers.enable(AWater.AOcean.OCEAN_LAYER);
+  this.camera.layers.enable(ARestlessOcean.OCEAN_LAYER);
   this.oceanPatches = [];
   this.oceanPatchIsInFrustrum = [];
   this.drawDistance = data.draw_distance;
@@ -745,8 +745,8 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
   //Initialize all shader LUTs for future ocean viewing
   //Initialize our ocean variables and all associated shaders.
-  this.oceanHeightBandLibrary = new AWater.AOcean.LUTlibraries.OceanHeightBandLibrary(this);
-  this.oceanHeightComposer = new AWater.AOcean.LUTlibraries.OceanHeightComposer(this);
+  this.oceanHeightBandLibrary = new ARestlessOcean.LUTlibraries.OceanHeightBandLibrary(this);
+  this.oceanHeightComposer = new ARestlessOcean.LUTlibraries.OceanHeightComposer(this);
 
   //Discover a-starry-sky's SkyDirector for atmospheric perspective LUTs
   if(this.atmosphericPerspectiveEnabled){
@@ -784,14 +784,14 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //horizon skirt clones the material and uses the {AP, skirt} variant
   //which pins gl_Position.z just inside the far plane.
   function buildVertexShader(atmEnabled, skirt){
-    return AWater.AOcean.Materials.Ocean.waterMaterial.vertexShader
+    return ARestlessOcean.Materials.Ocean.waterMaterial.vertexShader
       .replace(/\$atmospheric_perspective_enabled/g, atmEnabled ? '1' : '0')
       .replace(/\$horizon_skirt/g, skirt ? '1' : '0');
   }
   const vertexShaderSource = buildVertexShader(atmosphereReady, false);
   this.oceanMaterial = new THREE.ShaderMaterial({
     vertexShader: vertexShaderSource,
-    fragmentShader: AWater.AOcean.Materials.Ocean.waterMaterial.fragmentShader(this.causticsEnabled, this.foamEnabled, atmosphereReady, this.atmosphereFunctionsGLSL),
+    fragmentShader: ARestlessOcean.Materials.Ocean.waterMaterial.fragmentShader(this.causticsEnabled, this.foamEnabled, atmosphereReady, this.atmosphereFunctionsGLSL),
     side: THREE.FrontSide,
     transparent: false,
     lights: false,
@@ -805,17 +805,17 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       shader.fragmentShader = shader.fragmentShader.replace(`#include <fog_fragment>`, THREE.fogFrag);
     };
   }
-  this.oceanMaterial.uniforms = AWater.AOcean.Materials.Ocean.waterMaterial.uniforms;
+  this.oceanMaterial.uniforms = ARestlessOcean.Materials.Ocean.waterMaterial.uniforms;
   this.oceanMaterial.uniforms.sizeOfOceanPatch.value = this.patchSize;
 
   this.positionPassMaterial = new THREE.ShaderMaterial({
-    vertexShader: AWater.AOcean.Materials.Ocean.positionPassMaterial.vertexShader,
-    fragmentShader: AWater.AOcean.Materials.Ocean.positionPassMaterial.fragmentShader,
+    vertexShader: ARestlessOcean.Materials.Ocean.positionPassMaterial.vertexShader,
+    fragmentShader: ARestlessOcean.Materials.Ocean.positionPassMaterial.fragmentShader,
     side: THREE.FrontSide,
     transparent: false,
     lights: false
   });
-  this.positionPassMaterial.uniforms = AWater.AOcean.Materials.Ocean.positionPassMaterial.uniforms;
+  this.positionPassMaterial.uniforms = ARestlessOcean.Materials.Ocean.positionPassMaterial.uniforms;
   this.positionPassMaterial.uniforms.worldMatrix.value = this.camera.matrixWorld;
 
   //Ocean-only cascaded shadow map. Dedicated tight-frustum depth pass that
@@ -823,8 +823,8 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //the scene-wide sun shadow map can't resolve. Registered with each mesh
   //below via addCaster(). Safe to skip if the shadow material isn't loaded
   //(older builds without ocean-shadow.js).
-  if(AWater.AOcean.OceanShadowCSM && AWater.AOcean.Materials.Ocean.oceanShadowMaterial){
-    this.oceanShadowCSM = new AWater.AOcean.OceanShadowCSM(this, scene);
+  if(ARestlessOcean.OceanShadowCSM && ARestlessOcean.Materials.Ocean.oceanShadowMaterial){
+    this.oceanShadowCSM = new ARestlessOcean.OceanShadowCSM(this, scene);
   } else {
     this.oceanShadowCSM = null;
   }
@@ -834,12 +834,13 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //the Points mesh and hides it during every offscreen pass below (it is only
   //flipped visible at the very end of tick). Safe to skip if ocean-splash.js or
   //its generated material isn't loaded.
-  if(AWater.AOcean.OceanSplash && AWater.AOcean.Materials.Ocean.splashMaterial){
-    //Declarative start-time overrides from the scene HTML (ocean-state schema
-    //`splash_config`, e.g. "impactMinLaunch=9, shoreJetScale=2, enabled=false").
-    //Any knob is settable; the same fields stay live-editable on the instance.
-    const splashCfg = AWater.AOcean.OceanSplash.parseConfig(data.splash_config);
-    this.oceanSplash = new AWater.AOcean.OceanSplash(this, scene, splashCfg);
+  if(ARestlessOcean.OceanSplash && ARestlessOcean.Materials.Ocean.splashMaterial){
+    //Declarative start-time overrides from the nested <ocean-splash> element,
+    //assembled by ocean-state.applyNestedConfig (e.g. impact-min-launch="9"
+    //shore-jet-scale="2" enabled="false"). Any knob is settable; the same fields
+    //stay live-editable on the instance via window.oceanSplash.
+    const splashCfg = data.splashConfig || {};
+    this.oceanSplash = new ARestlessOcean.OceanSplash(this, scene, splashCfg);
     //Hull impacts: the buoyancy component fires buoyancy-splash on water entry
     //(bubbles up to the scene). Feed it straight into the shared impact emitter.
     const splashSelf = this;
@@ -915,7 +916,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     this.horizonSkirtMesh.renderOrder = 1;
     //Horizon skirt is water-class geometry — move off the default layer so
     //the foam ortho camera does not capture it. See OCEAN_LAYER comment.
-    this.horizonSkirtMesh.layers.set(AWater.AOcean.OCEAN_LAYER);
+    this.horizonSkirtMesh.layers.set(ARestlessOcean.OCEAN_LAYER);
     scene.add(this.horizonSkirtMesh);
   }
 
@@ -958,7 +959,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     this.underwaterCurtainMesh.renderOrder = -10;
     this.underwaterCurtainMesh.visible = false;
     //Off the foam-capture layer so the ortho foam camera ignores it.
-    this.underwaterCurtainMesh.layers.set(AWater.AOcean.OCEAN_LAYER);
+    this.underwaterCurtainMesh.layers.set(ARestlessOcean.OCEAN_LAYER);
     scene.add(this.underwaterCurtainMesh);
   }
 
@@ -1013,7 +1014,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     const key = makeClipmapKey(k, top, right, bottom, left);
     if(!oceanPatchGeometryInstances.hasOwnProperty(key)){
       oceanGridInstanceKeys.push(key);
-      const geometry = AWater.OceanTile(tileSize, numCells, top, right, bottom, left);
+      const geometry = ARestlessOcean.OceanTile(tileSize, numCells, top, right, bottom, left);
       const mesh = new THREE.InstancedMesh(geometry, self.oceanMaterial.clone(), instanceCount[key]);
       mesh.frustumCulled = false;
       //Sit above the horizon skirt (renderOrder 1) so FFT ocean overwrites the
@@ -1042,13 +1043,13 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       //after addCaster, which enables the per-cascade caster layers (7..10);
       //we keep those, only swap default 0 → OCEAN_LAYER.
       mesh.layers.disable(0);
-      mesh.layers.enable(AWater.AOcean.OCEAN_LAYER);
+      mesh.layers.enable(ARestlessOcean.OCEAN_LAYER);
 
       const uniformsRef = mesh.material.uniforms;
       uniformsRef.foamScrollVelocity.value.set(self.foamScrollVelocityVec[0], self.foamScrollVelocityVec[1]);
       //Jerlov preset wins over the explicit RGB vec3s when water_type is in
       //range (1..N). water_type == 0 ⇒ fall through to the custom values.
-      const jerlovPreset = AWater.AOcean.JERLOV_PRESETS[self.data.water_type | 0];
+      const jerlovPreset = ARestlessOcean.JERLOV_PRESETS[self.data.water_type | 0];
       if(jerlovPreset){
         uniformsRef.waterAbsorption.value.copy(jerlovPreset.absorption);
         uniformsRef.waterScattering.value.copy(jerlovPreset.scattering);
@@ -1065,7 +1066,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       //sizeOfOceanPatch stays as base patchSize for consistent world-space normal-map UV scaling
     }
     //Tile geometry spans [0, tileSize]; placing at gx*tileSize centers the 4×4 ring on the camera
-    self.oceanPatches.push(new AWater.AOcean.OceanPatch(
+    self.oceanPatches.push(new ARestlessOcean.OceanPatch(
       self,
       new THREE.Vector3(gx * tileSize, self.heightOffset, gy * tileSize),
       oceanPatchGeometryInstances[key],
@@ -1086,7 +1087,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //
   // sampleFFTHeightAt (EXACT, synchronous) reads single texels straight off the
   // GPU. Each call drains the GPU queue (a stall), so it's a DEBUG ground truth
-  // only — see AWater.AOcean.debugWaveAt.
+  // only — see ARestlessOcean.debugWaveAt.
   //
   // The scalable path is the LOCAL HEIGHT FIELD below: once every ~frame a tiny
   // GPU pass composites the cascades' height into a small RT covering a region
@@ -1111,7 +1112,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this._hfLastIssue = 0;
 
   //EXACT synchronous single-texel readback — DEBUG ground truth only (each call
-  //stalls the GPU queue). See AWater.AOcean.debugWaveAt.
+  //stalls the GPU queue). See ARestlessOcean.debugWaveAt.
   this.sampleFFTHeightAt = function(x, z){
     const composer = self.oceanHeightComposer;
     if(!composer || !composer.cascadeDisplacementTargets || !composer.cascadeDisplacementTargets[0]) return null;
@@ -1269,11 +1270,11 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //Public surface. Consumers call requestFFTSnapshot() each frame they want the
   //field kept warm (it's off when nothing floats). sampleWaterHeightFFT is the
   //cheap cached path; *Exact is the synchronous debug stall path.
-  AWater.AOcean.requestFFTSnapshot = function(){
+  ARestlessOcean.requestFFTSnapshot = function(){
     self._hfWantedUntil = ((typeof performance !== 'undefined') ? performance.now() : Date.now()) + 1000;
   };
-  AWater.AOcean.sampleWaterHeightFFT = function(x, z){ return self.sampleWaterHeightFieldCached(x, z); };
-  AWater.AOcean.sampleWaterHeightFFTExact = function(x, z){ return self.sampleFFTHeightAt(x, z); };
+  ARestlessOcean.sampleWaterHeightFFT = function(x, z){ return self.sampleWaterHeightFieldCached(x, z); };
+  ARestlessOcean.sampleWaterHeightFFTExact = function(x, z){ return self.sampleFFTHeightAt(x, z); };
 
   //Phase-correct surface RISE (dH/dt, m/s) at world (x,z): finite difference of
   //the two most recent rendered-FFT snapshots — the rendered water's OWN vertical
@@ -1281,7 +1282,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //its "rising here?" answer fired spray over visibly-flat/trough water (the
   //bunched, mistimed shore bursts). Returns null until two snapshots exist or
   //outside the region → caller falls back to the analytic rate.
-  AWater.AOcean.sampleWaterRiseFFT = function(x, z){
+  ARestlessOcean.sampleWaterRiseFFT = function(x, z){
     const cur = self._hfSnap, prev = self._hfSnapPrev;
     if(!cur || !prev) return null;
     const dt = (cur.time - prev.time) / 1000.0;
@@ -1296,7 +1297,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //height field's OWN slope (central differences, one texel eps). Same motivation
   //as the rise sampler: the analytic normal peaks on phantom crests, so mist tore
   //off flat water. Returns null outside the region → caller falls back to analytic.
-  AWater.AOcean.sampleWaterSlopeFFT = function(x, z){
+  ARestlessOcean.sampleWaterSlopeFFT = function(x, z){
     const s = self._hfSnap;
     if(!s) return null;
     const eps = s.size / s.res; //one texel (~2 m).
@@ -1530,6 +1531,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     }
   };
 
+  //$DEBUG_START$
   //Dump the scene-wide directional-light shadow camera + the ocean CSM
   //cascades. Use this when terrain-on-water shadows clip at a moving line:
   //the scene shadow's ortho frustum is what gates non-ocean casters
@@ -1617,6 +1619,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     window.setFoamWindBiasMax = function(v){ self.foamWindBiasMax = +v; };
     window.setFoamWindRange = function(start, full){ self.foamWindStart = +start; self.foamWindFull = +full; };
   }
+  //$DEBUG_END$
   const oceanPatchTranslationMatrices = [];
   for(let i = 0, numOceanPatches = self.oceanPatches.length; i < numOceanPatches; ++i){
     oceanPatchTranslationMatrices.push(new THREE.Matrix4());
@@ -2044,7 +2047,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //is read once at the current water_type / explicit RGB; a live water-type
     //swap would need a chunk re-injection + needsUpdate sweep (rare, paid as
     //a one-time recompile when it happens).
-    const presetJ = AWater.AOcean.JERLOV_PRESETS[self.data.water_type | 0];
+    const presetJ = ARestlessOcean.JERLOV_PRESETS[self.data.water_type | 0];
     const absV = presetJ ? presetJ.absorption : self.data.water_absorption;
     const sctV = presetJ ? presetJ.scattering : self.data.water_scattering;
     const ex = Math.max(absV.x + sctV.x, 1e-4);
@@ -2714,7 +2717,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         //  inscatter   = waterAlbedo * (direct + ambient) / π
         //  depthDarken = exp(-extinction * cameraDepth)   (UNDERWATER_DEPTH_MURK=1)
         //  murk        = inscatter * depthDarken * userBrightness
-        const presetJ = AWater.AOcean.JERLOV_PRESETS[self.data.water_type | 0];
+        const presetJ = ARestlessOcean.JERLOV_PRESETS[self.data.water_type | 0];
         const absV = presetJ ? presetJ.absorption : self.data.water_absorption;
         const sctV = presetJ ? presetJ.scattering : self.data.water_scattering;
         const extX = Math.max(absV.x + sctV.x, 1e-4);
@@ -3068,7 +3071,7 @@ AWater.AOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           if(!self.atmosphereFunctionsGLSL){
             self.atmosphereFunctionsGLSL = luts.atmosphereFunctionsString;
             //Recompile all cloned materials on each ocean patch instance
-            const newFragShader = AWater.AOcean.Materials.Ocean.waterMaterial.fragmentShader(
+            const newFragShader = ARestlessOcean.Materials.Ocean.waterMaterial.fragmentShader(
               self.causticsEnabled, self.foamEnabled, true, self.atmosphereFunctionsGLSL
             );
             //Build both vertex variants once via the shared helper so the

@@ -19,7 +19,7 @@
 //The water vertex shader only reads `position`; no normal / uv / tangent /
 //bitangent attribute is written here. The displaced normal is reconstructed
 //in the fragment shader from cascade-displacement central differences.
-AWater.OceanTile = function(worldSize, numCells, top, right, bottom, left){
+ARestlessOcean.OceanTile = function(worldSize, numCells, top, right, bottom, left){
   const gridSize = 2 * numCells + 1;
   const numberOfVertices = gridSize * gridSize;
   const positions = new Float32Array(numberOfVertices * 3);

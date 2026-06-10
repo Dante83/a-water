@@ -2,7 +2,7 @@
 //between the FFT ocean's last visible patch and the geometric horizon line of
 //the sky dome. Reuses a-starry-sky's atmospheric LUTs so the seam between
 //water and sky is continuous.
-AWater.AOcean.Materials.Ocean.horizonSkirtMaterial = {
+ARestlessOcean.Materials.Ocean.horizonSkirtMaterial = {
   uniforms: {
     atmosphereTransmittance: {type: 't', value: null},
     atmosphereMieInscattering: {type: 't', value: null},

@@ -1,7 +1,7 @@
 //This helps
 //--------------------------v
 //https://github.com/mrdoob/three.js/wiki/Uniforms-types
-AWater.AOcean.Materials.FFTWaves.noiseShaderMaterialData = {
+ARestlessOcean.Materials.FFTWaves.noiseShaderMaterialData = {
   uniforms: {
     offset: {type: 'f', value: 1.0},
   },

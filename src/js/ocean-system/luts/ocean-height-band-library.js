@@ -1,4 +1,4 @@
-AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
+ARestlessOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
   let renderer = parentOceanGrid.renderer;
   let data = parentOceanGrid.data;
 
@@ -88,16 +88,16 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
   //grazing → bright sky mirror to the horizon. See water-shader.glsl Fresnel
   //block. cascadeRMSSlope is in units of (slope)² — feed directly into α²_GGX
   //after multiplying by waveHeightMultiplier² (which the shader does).
-  this.cascadeRMSSlope = AWater.AOcean.LUTlibraries.OceanHeightBandLibrary.computeCascadeSlopeVariance(
+  this.cascadeRMSSlope = ARestlessOcean.LUTlibraries.OceanHeightBandLibrary.computeCascadeSlopeVariance(
     this.cascadePatchSizes, this.N, this.omega_p, this.jonswapGamma,
     (data.directional_turbulence !== undefined) ? data.directional_turbulence : 0.145
   );
 
   //Shared twiddle texture (same N for all cascades)
-  this.twiddleTexture = AWater.AOcean.Materials.FFTWaves.computeTwiddleIndices(this.N, renderer);
+  this.twiddleTexture = ARestlessOcean.Materials.FFTWaves.computeTwiddleIndices(this.N, renderer);
 
   //Make a shortcut to our materials namespace
-  const materials = AWater.AOcean.Materials.FFTWaves;
+  const materials = ARestlessOcean.Materials.FFTWaves;
 
   //A is a dimensionless multiplier on the JONSWAP h_0 coefficient. Physical
   //alpha (0.0081) is baked into the shader and gives the true variance, so
@@ -189,7 +189,7 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
     //single cascade's tile period. ±30° spread keeps the overall "wind
     //from one direction" feel intact while decorrelating the cascades'
     //wave-front orientations. Hardcoded; see also [c] index below.
-    h0Var.material.uniforms.w.value = AWater.AOcean.LUTlibraries.OceanHeightBandLibrary.rotateWindForCascade(this.w, c);
+    h0Var.material.uniforms.w.value = ARestlessOcean.LUTlibraries.OceanHeightBandLibrary.rotateWindForCascade(this.w, c);
     h0Var.material.uniforms.omega_p.value = this.omega_p;
     h0Var.material.uniforms.gamma.value = this.jonswapGamma;
     h0Var.material.uniforms.noiseUVOffset.value = noiseOffsets[c];
@@ -384,7 +384,7 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
     //directions decorrelate, breaking visible motif recurrence at single-
     //cascade tile periods.
     for(let c = 0; c < self.numCascades; c++){
-      self.h0Vars[c].material.uniforms.w.value = AWater.AOcean.LUTlibraries.OceanHeightBandLibrary.rotateWindForCascade(newW, c);
+      self.h0Vars[c].material.uniforms.w.value = ARestlessOcean.LUTlibraries.OceanHeightBandLibrary.rotateWindForCascade(newW, c);
       self.h0Vars[c].material.uniforms.omega_p.value = newOmega_p;
     }
 
@@ -404,7 +404,7 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
     self.omega_p = newOmega_p;
 
     //Recompute per-cascade slope variances — depends on omega_p.
-    self.cascadeRMSSlope = AWater.AOcean.LUTlibraries.OceanHeightBandLibrary.computeCascadeSlopeVariance(
+    self.cascadeRMSSlope = ARestlessOcean.LUTlibraries.OceanHeightBandLibrary.computeCascadeSlopeVariance(
       self.cascadePatchSizes, self.N, self.omega_p, self.jonswapGamma,
       (data.directional_turbulence !== undefined) ? data.directional_turbulence : 0.145
     );
@@ -451,8 +451,8 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
   // resolved above, so it cannot drift from the rendered surface. Exposed
   // globally for gameplay (buoyant component, swimming, dock pilings, ...).
   // ========================================================================
-  this.waveField = new AWater.AOcean.OceanWaveField(this, data);
-  AWater.AOcean.waveField = this.waveField;
+  this.waveField = new ARestlessOcean.OceanWaveField(this, data);
+  ARestlessOcean.waveField = this.waveField;
 }
 
 //Per-cascade wind-direction rotation. Each cascade's h_0 spectrum is built
@@ -467,7 +467,7 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
 //cascades sit on opposite sides of the master direction — keeps the total
 //directional moment near zero so the surface still reads as "wind from one
 //direction" rather than a chaotic chop-from-everywhere look.
-AWater.AOcean.LUTlibraries.OceanHeightBandLibrary.CASCADE_WIND_ANGLES_DEG = [0, 10, -10, 20, -20, 30];
+ARestlessOcean.LUTlibraries.OceanHeightBandLibrary.CASCADE_WIND_ANGLES_DEG = [0, 10, -10, 20, -20, 30];
 
 //Compute per-cascade slope variance σ² by mirroring the discrete h_0 spectrum
 //the GPU writes. For each cascade we loop over every (nx, ny) bin in the same
@@ -491,7 +491,7 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary.CASCADE_WIND_ANGLES_DEG = [0, 
 //
 //Returns Float32Array length numCascades. Result is in units of (slope)² —
 //feed into α²_GGX in the shader after scaling by waveHeightMultiplier².
-AWater.AOcean.LUTlibraries.OceanHeightBandLibrary.computeCascadeSlopeVariance = function(
+ARestlessOcean.LUTlibraries.OceanHeightBandLibrary.computeCascadeSlopeVariance = function(
     cascadePatchSizes, N, omega_p, gamma, directionalTurbulence){
   const g = 9.80665;
   const piTimes2 = 2.0 * Math.PI;
@@ -572,8 +572,8 @@ AWater.AOcean.LUTlibraries.OceanHeightBandLibrary.computeCascadeSlopeVariance = 
   return out;
 };
 
-AWater.AOcean.LUTlibraries.OceanHeightBandLibrary.rotateWindForCascade = function(w, c){
-  const angles = AWater.AOcean.LUTlibraries.OceanHeightBandLibrary.CASCADE_WIND_ANGLES_DEG;
+ARestlessOcean.LUTlibraries.OceanHeightBandLibrary.rotateWindForCascade = function(w, c){
+  const angles = ARestlessOcean.LUTlibraries.OceanHeightBandLibrary.CASCADE_WIND_ANGLES_DEG;
   const angleDeg = (c >= 0 && c < angles.length) ? angles[c] : 0;
   const angle = angleDeg * Math.PI / 180;
   const cs = Math.cos(angle);
