@@ -2106,7 +2106,7 @@ ARestlessOcean.Materials.Ocean.waterMaterial = {
       'uniform float atmCameraHeight;',
       'uniform float atmDistanceScale;',
 
-      '//ATMOSPHERE_FUNCTIONS_INJECTION_POINT',
+      '#pragma ATMOSPHERE_FUNCTIONS_INJECTION_POINT',
     '#endif',
 
     '#if(!$atmospheric_perspective_enabled)',
@@ -3994,9 +3994,9 @@ ARestlessOcean.Materials.Ocean.waterMaterial = {
       let updatedCode = originalGLSL[i];
       updatedCode = updatedCode.replace(/\$foam_enabled/g, foamEnabled ? '1' : '0');
       updatedCode = updatedCode.replace(/\$caustics_enabled/g, causticsEnabled ? '1' : '0');
-      updatedCode = updatedCode.replace(/\$atmospheric_perspective_enabled/g, atmosphericPerspectiveEnabled ? '1' : '0');
+      updatedCode = updatedCode.replace(/\$atmospheric_perspective_enabled/g, (atmosphericPerspectiveEnabled && !!atmosphereFunctionsGLSL) ? '1' : '0');
       //Inject atmosphere parameterization functions where the marker is
-      if(atmosphericPerspectiveEnabled && atmosphereFunctionsGLSL && updatedCode.indexOf('//ATMOSPHERE_FUNCTIONS_INJECTION_POINT') !== -1){
+      if(atmosphericPerspectiveEnabled && atmosphereFunctionsGLSL && updatedCode.indexOf('ATMOSPHERE_FUNCTIONS_INJECTION_POINT') !== -1){
         updatedCode = atmosphereFunctionsGLSL;
       }
       updatedLines.push(updatedCode);
@@ -9657,7 +9657,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         if(luts){
           //If we haven't recompiled with atmospheric perspective yet, do it now
           if(!self.atmosphereFunctionsGLSL){
-            self.atmosphereFunctionsGLSL = luts.atmosphereFunctionsString;
+            self.atmosphereFunctionsGLSL = luts.atmosphereFunctionsString || null;
+            if(!self.atmosphereFunctionsGLSL){ return; } //functions not ready yet — retry next tick
             //Recompile all cloned materials on each ocean patch instance
             const newFragShader = ARestlessOcean.Materials.Ocean.waterMaterial.fragmentShader(
               self.causticsEnabled, self.foamEnabled, true, self.atmosphereFunctionsGLSL

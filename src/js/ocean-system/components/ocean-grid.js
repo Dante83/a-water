@@ -3069,7 +3069,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         if(luts){
           //If we haven't recompiled with atmospheric perspective yet, do it now
           if(!self.atmosphereFunctionsGLSL){
-            self.atmosphereFunctionsGLSL = luts.atmosphereFunctionsString;
+            self.atmosphereFunctionsGLSL = luts.atmosphereFunctionsString || null;
+            if(!self.atmosphereFunctionsGLSL){ return; } //functions not ready yet — retry next tick
             //Recompile all cloned materials on each ocean patch instance
             const newFragShader = ARestlessOcean.Materials.Ocean.waterMaterial.fragmentShader(
               self.causticsEnabled, self.foamEnabled, true, self.atmosphereFunctionsGLSL
