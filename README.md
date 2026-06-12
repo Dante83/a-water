@@ -103,20 +103,20 @@ and an `<a-starry-sky>` for the sky.
 
 | # | Look | Shows off | Demo |
 |---|---|---|---|
-| 1 | Tropical Lagoon | clear shallows + caustics | [▶](https://code-panda.com/pages/projects/a_restless_ocean/showcase/tropical-lagoon) |
-| 2 | Open Blue Ocean | deep-water body colour | [▶](https://code-panda.com/pages/projects/a_restless_ocean/showcase/open-blue-ocean) |
-| 3 | North Sea Storm | whitecaps + spray | [▶](https://code-panda.com/pages/projects/a_restless_ocean/showcase/north-sea-storm) |
-| 4 | Glassy Dawn | mirror reflections | [▶](https://code-panda.com/pages/projects/a_restless_ocean/showcase/glassy-dawn) |
-| 5 | Caribbean Shoals | strong caustics + foam | [▶](https://code-panda.com/pages/projects/a_restless_ocean/showcase/caribbean-shoals) |
-| 6 | Arctic Twilight | long low-sun shadows | [▶](https://code-panda.com/pages/projects/a_restless_ocean/showcase/arctic-twilight) |
-| 7 | Sunset Gold | sun-glint pillar | [▶](https://code-panda.com/pages/projects/a_restless_ocean/showcase/sunset-gold) |
-| 8 | Murky Harbor | coastal turbidity | [▶](https://code-panda.com/pages/projects/a_restless_ocean/showcase/murky-harbor) |
-| 9 | Underwater Reef | below-surface view | [▶](https://code-panda.com/pages/projects/a_restless_ocean/showcase/underwater-reef) |
-| 10 | Whitecap Gale | maximum spindrift | [▶](https://code-panda.com/pages/projects/a_restless_ocean/showcase/whitecap-gale) |
-| 11 | Moonlit Calm | night reflection | [▶](https://code-panda.com/pages/projects/a_restless_ocean/showcase/moonlit-calm) |
+| 1 | Tropical Lagoon | clear shallows + caustics | [▶](https://code-panda.neocities.org/examples/a-restless-ocean/v0.2.0/ocean?scene=tropical-lagoon) |
+| 2 | Open Blue Ocean | deep-water body colour | [▶](https://code-panda.neocities.org/examples/a-restless-ocean/v0.2.0/ocean?scene=open-blue-ocean) |
+| 3 | North Sea Storm | whitecaps + spray | [▶](https://code-panda.neocities.org/examples/a-restless-ocean/v0.2.0/ocean?scene=north-sea-storm) |
+| 4 | Glassy Dawn | mirror reflections | [▶](https://code-panda.neocities.org/examples/a-restless-ocean/v0.2.0/ocean?scene=glassy-dawn) |
+| 5 | Caribbean Shoals | strong caustics + foam | [▶](https://code-panda.neocities.org/examples/a-restless-ocean/v0.2.0/ocean?scene=caribbean-shoals) |
+| 6 | Arctic Twilight | long low-sun shadows | [▶](https://code-panda.neocities.org/examples/a-restless-ocean/v0.2.0/ocean?scene=arctic-twilight) |
+| 7 | Sunset Gold | sun-glint pillar | [▶](https://code-panda.neocities.org/examples/a-restless-ocean/v0.2.0/ocean?scene=sunset-gold) |
+| 8 | Murky Harbor | coastal turbidity | [▶](https://code-panda.neocities.org/examples/a-restless-ocean/v0.2.0/ocean?scene=murky-harbor) |
+| 9 | Underwater Reef | below-surface view | [▶](https://code-panda.neocities.org/examples/a-restless-ocean/v0.2.0/ocean?scene=underwater-reef) |
+| 10 | Whitecap Gale | maximum spindrift | [▶](https://code-panda.neocities.org/examples/a-restless-ocean/v0.2.0/ocean?scene=whitecap-gale) |
+| 11 | Moonlit Calm | night reflection | [▶](https://code-panda.neocities.org/examples/a-restless-ocean/v0.2.0/ocean?scene=moonlit-calm) |
 
 ### 1. Tropical Lagoon
-Clear, calm turquoise shallows with bright caustics. — [demo](https://code-panda.com/pages/projects/a_restless_ocean/showcase/tropical-lagoon) · `examples/showcase/tropical-lagoon.html`
+Clear, calm turquoise shallows with bright caustics. — [demo](https://code-panda.neocities.org/examples/a-restless-ocean/v0.2.0/ocean?scene=tropical-lagoon) · `examples/showcase/tropical-lagoon.html`
 
 ```html
 <a-restless-ocean>
@@ -138,7 +138,7 @@ Clear, calm turquoise shallows with bright caustics. — [demo](https://code-pan
 ```
 
 ### 2. Open Blue Ocean
-Deep navy with a steady mid swell. — [demo](https://code-panda.com/pages/projects/a_restless_ocean/showcase/open-blue-ocean) · `examples/showcase/open-blue-ocean.html`
+Deep navy with a steady mid swell. — [demo](https://code-panda.neocities.org/examples/a-restless-ocean/v0.2.0/ocean?scene=open-blue-ocean) · `examples/showcase/open-blue-ocean.html`
 
 ```html
 <a-restless-ocean>
@@ -154,7 +154,7 @@ Deep navy with a steady mid swell. — [demo](https://code-panda.com/pages/proje
 ```
 
 ### 3. North Sea Storm
-Grey, wind-blown, heavy whitecaps and spray. — [demo](https://code-panda.com/pages/projects/a_restless_ocean/showcase/north-sea-storm) · `examples/showcase/north-sea-storm.html`
+Grey, wind-blown, heavy whitecaps and spray. — [demo](https://code-panda.neocities.org/examples/a-restless-ocean/v0.2.0/ocean?scene=north-sea-storm) · `examples/showcase/north-sea-storm.html`
 
 ```html
 <a-restless-ocean>
@@ -179,7 +179,7 @@ Grey, wind-blown, heavy whitecaps and spray. — [demo](https://code-panda.com/p
 ```
 
 ### 4. Glassy Dawn
-Near-still, mirror-flat, crisp reflections. — [demo](https://code-panda.com/pages/projects/a_restless_ocean/showcase/glassy-dawn) · `examples/showcase/glassy-dawn.html`
+Near-still, mirror-flat, crisp reflections. — [demo](https://code-panda.neocities.org/examples/a-restless-ocean/v0.2.0/ocean?scene=glassy-dawn) · `examples/showcase/glassy-dawn.html`
 
 ```html
 <a-restless-ocean>
@@ -199,7 +199,7 @@ Near-still, mirror-flat, crisp reflections. — [demo](https://code-panda.com/pa
 ```
 
 ### 5. Caribbean Shoals
-Vivid turquoise with strong caustics and shore foam. — [demo](https://code-panda.com/pages/projects/a_restless_ocean/showcase/caribbean-shoals) · `examples/showcase/caribbean-shoals.html`
+Vivid turquoise with strong caustics and shore foam. — [demo](https://code-panda.neocities.org/examples/a-restless-ocean/v0.2.0/ocean?scene=caribbean-shoals) · `examples/showcase/caribbean-shoals.html`
 
 ```html
 <a-restless-ocean>
@@ -221,7 +221,7 @@ Vivid turquoise with strong caustics and shore foam. — [demo](https://code-pan
 ```
 
 ### 6. Arctic Twilight
-Cold, dark water under a low sun with long shadows. — [demo](https://code-panda.com/pages/projects/a_restless_ocean/showcase/arctic-twilight) · `examples/showcase/arctic-twilight.html`
+Cold, dark water under a low sun with long shadows. — [demo](https://code-panda.neocities.org/examples/a-restless-ocean/v0.2.0/ocean?scene=arctic-twilight) · `examples/showcase/arctic-twilight.html`
 
 ```html
 <a-restless-ocean>
@@ -243,7 +243,7 @@ Cold, dark water under a low sun with long shadows. — [demo](https://code-pand
 ```
 
 ### 7. Sunset Gold
-Built to show off the sun-glint pillar. — [demo](https://code-panda.com/pages/projects/a_restless_ocean/showcase/sunset-gold) · `examples/showcase/sunset-gold.html`
+Built to show off the sun-glint pillar. — [demo](https://code-panda.neocities.org/examples/a-restless-ocean/v0.2.0/ocean?scene=sunset-gold) · `examples/showcase/sunset-gold.html`
 
 ```html
 <a-restless-ocean>
@@ -263,7 +263,7 @@ Built to show off the sun-glint pillar. — [demo](https://code-panda.com/pages/
 ```
 
 ### 8. Murky Harbor
-Green coastal water with short underwater visibility. — [demo](https://code-panda.com/pages/projects/a_restless_ocean/showcase/murky-harbor) · `examples/showcase/murky-harbor.html`
+Green coastal water with short underwater visibility. — [demo](https://code-panda.neocities.org/examples/a-restless-ocean/v0.2.0/ocean?scene=murky-harbor) · `examples/showcase/murky-harbor.html`
 
 ```html
 <a-restless-ocean>
@@ -282,7 +282,7 @@ Green coastal water with short underwater visibility. — [demo](https://code-pa
 ```
 
 ### 9. Underwater Reef
-Fly the camera below the surface for the ceiling / caustic view. — [demo](https://code-panda.com/pages/projects/a_restless_ocean/showcase/underwater-reef) · `examples/showcase/underwater-reef.html`
+Fly the camera below the surface for the ceiling / caustic view. — [demo](https://code-panda.neocities.org/examples/a-restless-ocean/v0.2.0/ocean?scene=underwater-reef) · `examples/showcase/underwater-reef.html`
 
 ```html
 <a-restless-ocean>
@@ -302,7 +302,7 @@ Fly the camera below the surface for the ceiling / caustic view. — [demo](http
 ```
 
 ### 10. Whitecap Gale
-Maximum spray, spindrift stripping off the surface. — [demo](https://code-panda.com/pages/projects/a_restless_ocean/showcase/whitecap-gale) · `examples/showcase/whitecap-gale.html`
+Maximum spray, spindrift stripping off the surface. — [demo](https://code-panda.neocities.org/examples/a-restless-ocean/v0.2.0/ocean?scene=whitecap-gale) · `examples/showcase/whitecap-gale.html`
 
 ```html
 <a-restless-ocean>
@@ -327,7 +327,7 @@ Maximum spray, spindrift stripping off the surface. — [demo](https://code-pand
 ```
 
 ### 11. Moonlit Calm
-Quiet night water (pair with a night `<a-starry-sky>`). — [demo](https://code-panda.com/pages/projects/a_restless_ocean/showcase/moonlit-calm) · `examples/showcase/moonlit-calm.html`
+Quiet night water (pair with a night `<a-starry-sky>`). — [demo](https://code-panda.neocities.org/examples/a-restless-ocean/v0.2.0/ocean?scene=moonlit-calm) · `examples/showcase/moonlit-calm.html`
 
 ```html
 <a-restless-ocean>
