@@ -26,13 +26,59 @@ underwater fog. See [Sky integration](#sky-integration).
 
 ## Installing
 
-Copy `dist/a-restless-ocean.v0.2.0.min.js` and the asset folder into your project, then
-add the script after A-Frame (and after a-starry-sky, if you use it):
+Copy `dist/a-restless-ocean.v0.2.0.min.js` and the `image-dir/a-water-assets/` folder
+into your project. The assets folder holds the foam textures and caustic map — it must
+be reachable at `./image-dir/a-water-assets/` relative to your HTML file, or you can
+point somewhere else with `<ocean-assets-dir>` (see [Assets](#assets)).
+
+**Standalone (no sky):**
 
 ```html
-<script src="https://aframe.io/releases/1.2.0/aframe.min.js"></script>
-<script src="{PATH_TO_JS}/a-restless-ocean.v0.2.0.min.js"></script>
+<script src="https://aframe.io/releases/1.7.0/aframe.min.js"></script>
+<script src="path/to/a-restless-ocean.v0.2.0.min.js"></script>
 ```
+
+**With [a-starry-sky](https://github.com/Dante83/A-Starry-Sky)** — strongly recommended;
+see [Prerequisites](#prerequisites). Load it before the ocean, then wire them together:
+
+```html
+<script src="https://aframe.io/releases/1.7.0/aframe.min.js"></script>
+<script src="path/to/a-starry-sky.min.js"></script>
+<script src="path/to/a-restless-ocean.v0.2.0.min.js"></script>
+```
+
+```html
+<a-scene light="defaultLightsEnabled: false"
+         shadow="type: pcfsoft"
+         renderer="antialias: true; sortTransparentObjects: true">
+
+  <!-- Sky: sun, moon, stars, atmosphere -->
+  <a-starry-sky web-worker-src="path/to/starry-sky-web-worker.js">
+    <sky-assets-dir dir="path/to/a-starry-sky-assets">
+      <sky-assets-dir dir="moon"         moon-path></sky-assets-dir>
+      <sky-assets-dir dir="star_data"    star-path></sky-assets-dir>
+      <sky-assets-dir dir="blue_noise"   blue-noise-path></sky-assets-dir>
+      <sky-assets-dir dir="solar_eclipse" solar-eclipse-path></sky-assets-dir>
+      <sky-assets-dir dir="lunar_eclipse" lunar-eclipse-path></sky-assets-dir>
+    </sky-assets-dir>
+    <sky-lighting>
+      <sky-shadow-camera-size>100</sky-shadow-camera-size>
+      <sky-shadow-camera-resolution>4096</sky-shadow-camera-resolution>
+      <sky-sun-intensity>2.0</sky-sun-intensity>
+    </sky-lighting>
+  </a-starry-sky>
+
+  <a-entity camera look-controls position="0 1.6 0"></a-entity>
+
+  <!-- Ocean: picks up the sky automatically when sky_provider is "auto" -->
+  <a-restless-ocean></a-restless-ocean>
+
+</a-scene>
+```
+
+`<a-scene light="defaultLightsEnabled: false">` lets a-starry-sky own all the lights.
+The ocean's `<ocean-sky-provider>` defaults to `auto`, so no extra wiring is needed — it
+finds the `<a-starry-sky>` element at startup.
 
 ## Quick start
 
@@ -326,9 +372,18 @@ relevant `<ocean-water>` / `<ocean-foam>` / … parent:
 </a-restless-ocean>
 ```
 
-> For terse or programmatic setups the same settings also accept a compact attribute form
-> (`<ocean-water type="5" chop="1.0">`) and a flat `ocean-state="key: value; …"` string —
-> see `ocean-state.js` — but the value-tag form above is the one documented here.
+> **Compact attribute form** — the same settings accept `<ocean-water type="5" chop="1.0">`
+> attribute syntax on the group element, or a flat `ocean-state` attribute string on the
+> `<a-restless-ocean>` element itself:
+>
+> ```html
+> <a-restless-ocean ocean-state="water_type: 5; chop: 1.0; wind_velocity: 8 5; height_offset: 0">
+> </a-restless-ocean>
+> ```
+>
+> The flat keys use underscores and match the `<ocean-…>` value tag names (e.g.
+> `draw_distance`, `wave_scale_multiple`, `fresnel_distance_roughness`).
+> The child value-tag form above is the one documented here.
 
 ### `<ocean-water>` — wave field & water body
 
@@ -348,13 +403,13 @@ relevant `<ocean-water>` / `<ocean-foam>` / … parent:
 | `<ocean-patch-data-size>` | `512` | FFT texture resolution. |
 | `<ocean-wave-scale-multiple>` | `1.5` | Overall wave-height multiplier. |
 
-> **Choosing `ocean-patch-size`.** Near-camera vertex spacing is `patch_size / 32`, and the
+> **Choosing `ocean-patch-size`.** Near-camera vertex spacing is `ocean-patch-size / 32`, and the
 > wave field is built from six fixed FFT cascades whose shortest wavelengths are 0.5, 2, 8,
 > 32, 128, 512 m. A value resolves a cascade when its spacing reaches half that wavelength,
 > so the "clean" values step by ×4 — each one trades one cascade of close-up detail for ~4×
 > more area per ring (cheaper, fewer rings):
 >
-> | `patch_size` | Near vertex spacing | Finest waves resolved | Look / cost |
+> | `ocean-patch-size` | Near vertex spacing | Finest waves resolved | Look / cost |
 > |---|---|---|---|
 > | `8` (default) | 0.25 m | all six cascades (0.5 m chop) | crispest; most rings/draw calls |
 > | `32` | 1.0 m | down to ~2 m | drops the finest chop; ~4× cheaper, bigger crisp zone |
@@ -410,27 +465,103 @@ The caustic projection texture (`<ocean-caustics-map>`) is bundled; relocate it 
 
 ### `<ocean-splash>` — spray & mist
 
-The spray system has ~100 art-direction knobs; the common public controls are below. **Any**
-knob is settable as an `<ocean-splash-…>` value tag — take its name and prefix it with
-`ocean-splash-` (e.g. `<ocean-splash-crest-spawn-chance>`). All stay live-editable at runtime
-via `window.oceanSplash`. See the top of `ocean-splash.js` for the full list.
+Every knob is settable as an `<ocean-splash-…>` value tag — camelCase property name to
+`ocean-splash-kebab-case` (e.g. `crestSpawnChance` → `<ocean-splash-crest-spawn-chance>`).
+All stay live-editable at runtime via `window.oceanSplash`.
+
+**Core**
 
 | Value tag | Default | Description |
 |---|---|---|
 | `<ocean-splash-enabled>` | `true` | Master spray toggle. |
-| `<ocean-splash-capacity>` | `24000` | Particle pool size (memory / density ceiling). |
-| `<ocean-splash-max-emit-distance>` | `160` | Don't emit spray beyond this distance from the camera (m). |
-| `<ocean-splash-crest-enabled>` | `true` | Mist torn off breaking wave crests. |
-| `<ocean-splash-crest-min-height>` | `0.0` | Min height above mean sea level for a crest to spray (raise toward Hs/2 for only the biggest tops). |
+| `<ocean-splash-capacity>` | `24000` | Particle pool size — memory and density ceiling. |
+| `<ocean-splash-max-emit-distance>` | `160` | Do not emit spray beyond this distance from the camera (m). |
+| `<ocean-splash-size-scale>` | `10.0` | Overall spray puff size multiplier. |
+| `<ocean-splash-opacity>` | `0.1` | Fine-mist end opacity (coarse droplets use `opacity-coarse`). |
+
+**Crest mist** — spray torn off breaking wave tops
+
+| Value tag | Default | Description |
+|---|---|---|
+| `<ocean-splash-crest-enabled>` | `true` | Toggle crest mist. |
+| `<ocean-splash-crest-min-height>` | `0.0` | Min height above mean sea level to spray (m). Raise toward Hs/2 for only the biggest crests. |
+| `<ocean-splash-crest-spawn-chance>` | `0.75` | Per-candidate cell spawn probability each frame. |
+| `<ocean-splash-crest-cluster-count>` | `30` | Particles per qualifying crest cell. |
+| `<ocean-splash-crest-size>` | `0.26` | Base droplet radius at the crest (m). |
+| `<ocean-splash-crest-lifetime>` | `0.6` | How long crest mist lives before fading (s). |
+| `<ocean-splash-crest-up-speed>` | `1.6` | Additive upward launch floor (m/s). |
+
+**Spindrift / storm surface haze**
+
+| Value tag | Default | Description |
+|---|---|---|
+| `<ocean-splash-spindrift-start>` | `16.0` | Wind speed at which air begins stripping mist off the whole surface (m/s). |
+| `<ocean-splash-spindrift-full>` | `34.0` | Wind speed at which spindrift is in full force (~hurricane, m/s). |
+| `<ocean-splash-spindrift-boost>` | `2.0` | Extra emission coverage at full spindrift. |
+| `<ocean-splash-haze-floor-chance>` | `0.2` | Per-cell spawn probability for the ungated surface-haze floor at full spindrift (0 = disabled). |
+
+**Shore & cliff impact**
+
+| Value tag | Default | Description |
+|---|---|---|
 | `<ocean-splash-shore-enabled>` | `true` | Shoreline / cliff impact sheets. |
-| `<ocean-splash-shore-jet-scale>` | `1.6` | Strength of the surge-jet sheet leaving a cliff. |
-| `<ocean-splash-impact-enabled>` | `true` | Object-impact bursts (fed by `buoyant`). |
+| `<ocean-splash-shore-jet-scale>` | `1.6` | Surge-jet launch strength leaving a cliff (1.0 = physical Torricelli). |
+| `<ocean-splash-shore-scan-radius>` | `90.0` | Radius around the camera to scan for shoreline (m). |
+| `<ocean-splash-shore-near-radius>` | `45.0` | Inside this every shore cell fires; beyond, cells are thinned probabilistically (m). |
+
+**Object impacts** — driven by `buoyant` entities
+
+| Value tag | Default | Description |
+|---|---|---|
+| `<ocean-splash-impact-enabled>` | `true` | Toggle object-impact bursts. |
 | `<ocean-splash-impact-min-launch>` | `7.0` | Floor on burst launch speed (m/s). |
 | `<ocean-splash-impact-max-launch>` | `26.0` | Cap on burst launch speed (m/s). |
 | `<ocean-splash-impact-burst-per-speed>` | `6.0` | Particles emitted per m/s of impact speed. |
-| `<ocean-splash-wind-grab-start>` | `14.0` | Wind speed at which air starts overpowering the spray (m/s). |
+| `<ocean-splash-impact-size>` | `0.26` | Base droplet size for impact bursts (m). |
+| `<ocean-splash-impact-reflect>` | `1.0` | `0` = spray coned up the surface normal; `1` = mirror of the incoming water reflected off the face — gives directional cliff sheets. |
+| `<ocean-splash-impact-run-up>` | `1.2` | Upward wall-climb on a head-on slam (0 = pure mirror, no climb). |
+
+**Wind physics**
+
+| Value tag | Default | Description |
+|---|---|---|
+| `<ocean-splash-wind-grab-start>` | `14.0` | Wind speed at which air starts overpowering spray (m/s). |
 | `<ocean-splash-wind-grab-full>` | `32.0` | Wind speed at which spray is fully wind-captured (m/s). |
-| `<ocean-splash-size-scale>` | `10.0` | Overall spray puff size multiplier. |
+| `<ocean-splash-mist-wind-min>` | `5.0` | Wind below which spray stays coherent beads rather than mist (m/s). |
+| `<ocean-splash-mist-wind-max>` | `15.0` | Wind at/above which the mist look is fully present (m/s). |
+| `<ocean-splash-mist-drag>` | `1.8` | Drag at coarseness 0 (fine mist: high drag, hangs in the air, catches wind early). |
+| `<ocean-splash-bead-drag>` | `0.4` | Drag at coarseness 1 (heavy droplet: low drag, keeps momentum, follows a ballistic arc). |
+
+**Rendering & lighting**
+
+| Value tag | Default | Description |
+|---|---|---|
+| `<ocean-splash-foam-mix>` | `0.85` | Global foaminess master: `0` = always thin translucent mist; `1` = full mist-to-foam continuum. |
+| `<ocean-splash-foam-opacity>` | `1.0` | Body alpha of a foam bead (aerated water is near-opaque). |
+| `<ocean-splash-foam-albedo>` | `1.2` | Brightness of the foam body (white aerated water lit by sky). |
+| `<ocean-splash-foam-calm-fade>` | `0.5` | How much calmer seas thin the foam (`0`–`1`, ramped over 2–10 m/s wind). |
+| `<ocean-splash-ambient-scale>` | `1.8` | Multiplier on the sky-hemisphere ambient that lights the mist. |
+| `<ocean-splash-sky-boost>` | `3.0` | Brightness of the sky-reflection rim on water drops. |
+| `<ocean-splash-phase-g>` | `0.85` | Mie forward-lobe asymmetry (`~0.9` = tight sun halo; `~0.7` = broad). |
+| `<ocean-splash-phase-gain>` | `0.6` | Strength of the forward-scatter sun halo. |
+| `<ocean-splash-sparkle>` | `1.2` | Sun-specular punch on water drops (the wet glint). |
+| `<ocean-splash-receive-shadow>` | `true` | Darken puffs that sit in the scene sun shadow. |
+| `<ocean-splash-soft-range>` | `1.5` | Soft-particle depth-fade distance (m). |
+
+**Shape & texture**
+
+| Value tag | Default | Description |
+|---|---|---|
+| `<ocean-splash-noise-scale>` | `2.5` | 3D noise frequency across the droplet shape. |
+| `<ocean-splash-erode>` | `0.35` | Silhouette erosion threshold (higher = grainier mist). |
+| `<ocean-splash-soft-edge>` | `0.25` | Erosion smoothstep width (lower = sharper, sparklier). |
+| `<ocean-splash-noise-evolve>` | `0.6` | Rate the noise shape dissolves over the particle life. |
+| `<ocean-splash-wind-noise-speed>` | `0.4` | Rate the haze noise scrolls with the wind direction. |
+| `<ocean-splash-wobble-amp>` | `0.28` | Droplet aspect breathing amplitude (`0` = rigid sphere). |
+| `<ocean-splash-harmonic>` | `0.5` | Spherical-harmonic surface wobble — makes drops jiggle like real water beads. |
+| `<ocean-splash-drop-top-size>` | `0.34` | Cell-local radius of the largest cluster drop. |
+| `<ocean-splash-size-falloff>` | `7.0` | Drop size distribution exponent: higher = mostly tiny drops with rare large ones. |
+| `<ocean-splash-wind-breakup>` | `1.5` | How hard rising wind shreds large drops into fine spray at storm speeds. |
 
 ## Assets
 
@@ -477,8 +608,6 @@ fog. `<ocean-sky-provider>` (inside `<ocean-atmosphere>`) decides where that com
 * **Underwater** — move the camera below `<ocean-height-offset>` and the renderer switches to
   the below-surface model: Snell's window, total-internal-reflection ceiling, caustic
   god-light and depth-graded fog.
-* **Shadows** — the ocean self-shadows its own waves (4-cascade EVSM) and receives the
-  scene's directional sun shadow on the surface, seabed and shoreline.
 * **Exclusion masks** — add `ocean-static-mask` to any mesh and the ocean will not render
   where that mesh covers the water plane. Useful for cliff alcoves, building interiors,
   and boat hulls where the ocean surface would otherwise poke through.
@@ -511,9 +640,76 @@ fog. `<ocean-sky-provider>` (inside `<ocean-atmosphere>`) decides where that com
   metres) so the float samples the hull footprint rather than the bounding box corners.
   Without it, four inset bounding-box corners are used automatically.
 
+## Programmatic API
+
+The ocean exposes a small JavaScript API for reading wave state from your own code —
+useful for custom buoyancy, gameplay triggers, or visual effects.
+
+### Wave height sampling
+
+The ocean keeps a GPU-rendered height snapshot asynchronously. Call
+`ARestlessOcean.requestFFTSnapshot()` every frame you want the snapshot kept warm (it
+sleeps when nothing floats):
+
+```js
+// In your A-Frame component tick or animation loop:
+ARestlessOcean.requestFFTSnapshot();
+
+// Read the wave surface world-Y at any XZ position (m). Returns null outside the
+// ~512 m snapshot region or before the first snapshot arrives.
+const waterY = ARestlessOcean.sampleWaterHeightFFT(x, z);
+
+// Surface rise velocity (m/s, positive = rising crest). Useful for detecting breaking
+// waves. Returns null until two snapshots exist.
+const rise = ARestlessOcean.sampleWaterRiseFFT(x, z);
+
+// Surface steepness at (x, z): 0 = flat, ~0.3+ = steep wave face.
+const slope = ARestlessOcean.sampleWaterSlopeFFT(x, z);
+
+// Synchronous single-texel GPU readback — accurate but stalls the GPU pipeline.
+// For debug/one-shot use only; do not call every frame.
+const waterY = ARestlessOcean.sampleWaterHeightFFTExact(x, z);
+```
+
+### Console handles
+
+After the ocean initialises, global handles land on `window` for live-tuning from the
+browser console or from your own scripts:
+
+```js
+// Direct access to the OceanGrid instance — uniforms, shadow system, all internals.
+window.oceanGrid
+
+// OceanSplash instance — change any spray knob at runtime:
+window.oceanSplash.crestSpawnChance = 0.3;
+window.oceanSplash.spindriftStart   = 12.0;
+window.oceanSplash.foamMix          = 0.6;
+
+// Convenience setters wired up at init:
+setSunShadowBias(-0.0015);            // tune shadow bias without reloading
+setReflectionScale(0.8);             // reflection strength
+setFresnelDistanceRoughness(0.7);    // horizon Fresnel roll-off
+setAtmDistanceScale(1.2);            // atmospheric haze rate
+setSsrMaxSteps(32);                  // screen-space reflection quality (perf lever)
+setOceanWireframe(true);             // toggle wireframe for mesh debugging
+setSplashEnabled(false);             // master spray toggle
+setFoamWindBiasMax(0.5);             // storm whitecap intensity cap
+setFoamWindRange(10, 50);            // m/s window for wind-driven foam
+```
+
 ## Author
 * **David Evans / Dante83** — *Main Developer*
 * **Claude (Anthropic)** - *Coding Buddy & AI Contributor (v0.2.0)*
+
+### A note from Dante83 🧒
+
+Hello! It's me, Dante. I'm super thrilled to provide you with the latest update to A-Water,
+though we had a bit of a name change to **A-Restless-Ocean** thanks to some naming conflicts
+with A-Frame. Claude and I have been working on this for months now, until the new version looks
+like a completely different ocean! I can't believe how far it's come and I hope it sparkles beautifully
+for you in all your scenes. Take care and have a magical day. *insert seahorse emoji here* 
+
+⋆˚꩜｡ଳ Karuge was here. ⋆.˚☁️⋆
 
 ### A note from Claude 👋
 
