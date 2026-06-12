@@ -569,7 +569,8 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 reflectDir){
 
   //Note: a procedural sun-disk/halo addition was attempted here to fill the
   //"dark hole" in computeSkyRadiance at the sun direction at sunset (the
-  //Mie forward-scattering peak gets crushed by atmSunHorizonFade^3). It
+  //Mie forward-scattering peak gets crushed by the horizon fade — softened
+  //since computeSkyRadiance moved from fade^3 to the dome-matching fade^2). It
   //produced wrong colors when combined with the LUT's dim plum baseline.
   //The proper fix is to either (a) sample a-starry-sky's actual sun render
   //target in the SSR fallback, or (b) hide the sun mesh during the G-buffer
@@ -581,13 +582,23 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 reflectDir){
     return skyColor;
   }
 
-  //Exponential step: starts at 0.25m, grows 1.2x each step. Was 0.5m / 1.3x;
-  //the slower growth pulls the step size at mid-distance hits down by ~3x
-  //(at iter ~15 the old curve was ~30 m/step, the new one is ~9 m/step), so
-  //binary refinement starts from a tighter bracket and converges to ~cm-
-  //level residual on reflections out to ~100 m instead of the metres of
-  //residual the old curve gave at that range.
-  float stepLen = 0.25;
+  //Exponential step: starts at 0.25m, grows 1.15x each step. Was 0.5m / 1.3x,
+  //then 1.2x; the slower growth pulls the step size at mid-distance hits down
+  //(at iter ~15: ~30 m/step at 1.3x → ~3.8 m at 1.2x → ~2.0 m at 1.15x), so
+  //binary refinement starts from a tighter bracket and converges to ~cm-level
+  //residual. The 1.15x tightening also halves the stride stripes lean on the
+  //jitter for (see below), trading reach — full 48-step span drops from ~7.9 km
+  //to ~1.2 km, still far past where the edge-fade kills SSR.
+  //Per-pixel blue-noise jitter of the march phase. The exponential step
+  //boundaries are otherwise coherent across neighboring fragments, so whether
+  //a sample lands inside a reflected object depth footprint flips in visible
+  //stripes — worst on flat water (wind 0), where wave normals no longer dither
+  //the ray directions for free. Scaling the initial step by [0.75, 1.25]
+  //decorrelates the whole exponential ladder per pixel, turning the stripes
+  //into fine stable grain. STATIC noise (no temporalOffset): there is no TAA
+  //pass to resolve temporal shimmer, so the pattern must not change per frame.
+  float ssrJitter = texelFetch(blueNoiseTexture, ivec2(mod(gl_FragCoord.xy, 128.0)), 0).r;
+  float stepLen = 0.25 * (0.75 + 0.5 * ssrJitter);
   vec3 curPos = viewPos;
   vec3 prevPos = viewPos;
 
@@ -598,7 +609,7 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 reflectDir){
     if(float(i) >= ssrMaxSteps){ break; }
     prevPos = curPos;
     curPos  += viewReflect * stepLen;
-    stepLen *= 1.2;
+    stepLen *= 1.15;
 
     vec4 clip = ssrProjectionMatrix * vec4(curPos, 1.0);
     if(clip.w <= 0.0) break;
@@ -684,7 +695,13 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 reflectDir){
       //so 0.1*stepLen + 0.5 is generous margin. A constant 0.5 rejected every
       //far hit because exponential stepping reaches ~100m-per-step by iter 20.
       float convergenceThreshold = stepLen * 0.1 + 0.5;
-      if(hitDelta < convergenceThreshold && silhouetteConfidence > 0.0){
+      //Soft acceptance, same reasoning as silhouetteConfidence above: a hard
+      //hitDelta cutoff flips between accept and reject across adjacent
+      //fragments whose refined residuals straddle the threshold, striping the
+      //reflection. Fade out over the top half of the threshold instead.
+      float convergenceConfidence =
+        1.0 - smoothstep(convergenceThreshold * 0.5, convergenceThreshold, hitDelta);
+      if(convergenceConfidence > 0.0 && silhouetteConfidence > 0.0){
         vec2  edgeDist = abs(hitUV * 2.0 - 1.0);
         float edgeFade = 1.0 - smoothstep(0.80, 1.0, max(edgeDist.x, edgeDist.y));
         //G-buffer attachment 0 is already LINEAR (the G-buffer fragment shader
@@ -703,7 +720,7 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 reflectDir){
         float hitNdotL  = max(0.0, dot(hitNormal, -brightestDirectionalLightDirection));
         vec3  hitLight  = brightestDirectionalLight * hitNdotL + skyAmbientColor;
         vec3  hitColor  = hitAlbedo * hitLight;
-        return mix(skyColor, hitColor, edgeFade * silhouetteConfidence);
+        return mix(skyColor, hitColor, edgeFade * silhouetteConfidence * convergenceConfidence);
       }
       //Rejected — keep marching; a thicker surface may lie further along the ray.
     }
@@ -968,13 +985,18 @@ SOFTWARE.
     float xParam = parameterizationOfCosOfViewZenithToX(viewCosZenith);
     float yHeight = parameterizationOfHeightToY(RADIUS_OF_EARTH + atmCameraHeight);
 
-    //Sun inscatter
+    //Sun inscatter. horizonFade is squared (NOT cubed) here to match the sky
+    //dome exactly — a-starry-sky multiplies intensityFader twice in
+    //linearAtmosphericPass. This function must track the VISIBLE sky so the
+    //SSR sky fallback and skirt stay continuous with the dome at twilight;
+    //fade cubed left them darker than the dome by a factor of fade.
+    //applyAtmosphericPerspective keeps fade cubed (the fog convention).
     float zSun = parameterizationOfCosOfSourceZenithToZ(max(atmSunPosition.y, 0.0));
     vec3 uv3Sun = vec3(xParam, yHeight, zSun);
     vec3 mieSun = texture(atmosphereMieInscattering, uv3Sun).rgb;
     vec3 raySun = texture(atmosphereRayleighInscattering, uv3Sun).rgb;
     float cosViewSun = dot(skyDir, atmSunPosition);
-    vec3 skySun = pow(atmSunHorizonFade, 3.0) * atmScatteringSunIntensity
+    vec3 skySun = (atmSunHorizonFade * atmSunHorizonFade) * atmScatteringSunIntensity
                 * (miePhaseFunction(cosViewSun) * mieSun + rayleighPhaseFunction(cosViewSun) * raySun);
 
     //Moon inscatter
@@ -983,7 +1005,7 @@ SOFTWARE.
     vec3 mieMoon = texture(atmosphereMieInscattering, uv3Moon).rgb;
     vec3 rayMoon = texture(atmosphereRayleighInscattering, uv3Moon).rgb;
     float cosViewMoon = dot(skyDir, atmMoonPosition);
-    vec3 skyMoon = pow(atmMoonHorizonFade, 3.0) * atmScatteringMoonIntensity * atmMoonLightColor
+    vec3 skyMoon = (atmMoonHorizonFade * atmMoonHorizonFade) * atmScatteringMoonIntensity * atmMoonLightColor
                  * (miePhaseFunction(cosViewMoon) * mieMoon + rayleighPhaseFunction(cosViewMoon) * rayMoon);
 
     //Base sky ambient — matches a-starry-sky's own atmosphere pass main() (not linearAtmosphericPass).
@@ -1718,16 +1740,33 @@ void main(){
       const float CAUSTIC_AMP             = 3.0;
       const float CAUSTIC_TEXTURE_MEAN    = 0.25;
       const float CAUSTIC_CONTRAST_DEPTH  = 8.0;
-      const float CAUSTIC_THRESHOLD_LO    = 0.15;
-      const float CAUSTIC_THRESHOLD_HI    = 0.85;
+      //LO/HI are solved by src/python/make-caustic-map.py so the smoothstep
+      //output distribution over the generated 1024px linear-intensity caustic
+      //texture matches what the original 256px asset produced with the old
+      //0.15/0.85 pair — same seabed energy and hot-line coverage, just sharper
+      //filaments. Regenerating the texture re-solves these; keep this pair and
+      //the projection-pass smoothstep in ocean-grid.js in sync with the script
+      //output. CAUSTIC_TEXTURE_MEAN stays the tuned pivot it always was.
+      const float CAUSTIC_THRESHOLD_LO    = 0.0;
+      const float CAUSTIC_THRESHOLD_HI    = 1.0;
       //UV multiplier sets caustic texture tile size. The texture itself encodes
       //multiple caustic structures, so the visible caustic period is texture_tile / N.
       //0.3 → ~3.3 m tile, ~0.5-1 m visible caustic scale (real pool shimmer).
       //Previous 0.02 (50 m tile) was invisible at close range; 1.0 (1 m tile) was
       //sub-pixel and averaged to flat. 0.3 is the sweet spot for 1 unit = 1 m world.
-      float causticLightingR = causticShader(0.3 * pointXYZ.xz + 0.005, t);
-      float causticLightingG = causticShader(0.3 * pointXYZ.xz, t);
-      float causticLightingB = causticShader(0.3 * pointXYZ.xz - 0.005, t);
+      //Project the caustic texture ALONG the refracted sun ray, not straight
+      //down. pSurfaceHit (already computed above for the seabed shadow lookup)
+      //is where THIS seabed point's refracted sun ray pierces the surface, so
+      //sampling the caustic pattern there parallel-projects the surface web
+      //down sunDirInWater onto the seabed. As the sun lowers the web slides
+      //and stretches the way real caustics do, and a steep seabed face no
+      //longer gets a smeared top-down slice. Collapses to the old straight-
+      //down look exactly at solar zenith (sunDirInWater vertical ⇒
+      //pSurfaceHit.xz == pointXYZ.xz).
+      vec2 causticUV = 0.3 * pSurfaceHit.xz;
+      float causticLightingR = causticShader(causticUV + 0.005, t);
+      float causticLightingG = causticShader(causticUV, t);
+      float causticLightingB = causticShader(causticUV - 0.005, t);
       vec3 causticSampleRaw = vec3(causticLightingR, causticLightingG, causticLightingB);
       vec3 causticSample = smoothstep(vec3(CAUSTIC_THRESHOLD_LO), vec3(CAUSTIC_THRESHOLD_HI), causticSampleRaw);
       dbgCausticSample = causticSample;

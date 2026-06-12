@@ -6,3 +6,4 @@ package.json
 examples/personal-ocean
 src/glsl/ocean-material/DEBUG_MODES.md
 examples/demos/
+src/python/__pycache__/

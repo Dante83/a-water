@@ -153,7 +153,13 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     texture.wrapT = THREE.RepeatWrapping;
     texture.magFilter = THREE.LinearFilter;
     texture.minFilter = THREE.LinearMipmapLinearFilter;
+    //The caustic map is LINEAR intensity data, not a color image: it is a
+    //photon-splat density render (see src/python/make-caustic-map.py), so no
+    //sRGB decode applies. The consumer smoothstep thresholds (water-shader
+    //CAUSTIC_THRESHOLD_LO/HI and the projection pass below) are solved by that
+    //script against this texture — regenerate them together.
     texture.colorSpace = THREE.LinearSRGBColorSpace;
+    texture.anisotropy = 8;
     texture.format = THREE.RGBAFormat;
     self.causticMap = texture;
   }, function(err){
@@ -170,7 +176,10 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     texture.wrapT = THREE.RepeatWrapping;
     texture.magFilter = THREE.LinearFilter;
     texture.minFilter = THREE.LinearMipmapLinearFilter;
-    texture.colorSpace = THREE.LinearSRGBColorSpace;
+    //sRGB-authored photo used as linear albedo in the shader — must be decoded
+    //on sample or the final linearTosRGB() double-encodes it (washed-out foam).
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.anisotropy = 8;
     texture.format = THREE.RGBAFormat;
     self.foamColorMap = texture;
   }, function(err){
@@ -186,7 +195,9 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     texture.wrapT = THREE.RepeatWrapping;
     texture.magFilter = THREE.LinearFilter;
     texture.minFilter = THREE.LinearMipmapLinearFilter;
+    //Mask data, not color — stays linear (no sRGB decode).
     texture.colorSpace = THREE.LinearSRGBColorSpace;
+    texture.anisotropy = 8;
     texture.format = THREE.RGBAFormat;
     self.foamOpacityMap = texture;
   }, function(err){
@@ -202,7 +213,9 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     texture.wrapT = THREE.RepeatWrapping;
     texture.magFilter = THREE.LinearFilter;
     texture.minFilter = THREE.LinearMipmapLinearFilter;
+    //Vector data, not color — stays linear (no sRGB decode).
     texture.colorSpace = THREE.LinearSRGBColorSpace;
+    texture.anisotropy = 8;
     texture.format = THREE.RGBAFormat;
     self.foamNormalMap = texture;
   }, function(err){
@@ -290,13 +303,38 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //any material, no shader surgery. SpotLight.map projects a single "slide"
   //across the cone and ignores texture repeat/offset, so the tiling AND the
   //animation are baked into the slide here: a small RT re-rendered each
-  //submerged frame. The slide is periodic across [0,1] (integer tiling), and
-  //the projector XZ is snapped to one tile, so the cast pattern is world-
-  //stable as the camera swims (the foam-camera texel-snap trick).
+  //submerged frame. Each slide texel is unprojected through the projector's
+  //own shadow camera onto the water-surface plane and the pattern is
+  //evaluated in WORLD XZ — so the cast caustics are world-anchored by
+  //construction and the projector itself glides continuously with the camera.
+  //(This replaced the earlier integer-tile XZ snapping: the snap kept the
+  //PATTERN world-stable but made the cone envelope, decay vignette and the
+  //spot shadow POV hop one tile at a time as the camera swam.)
+  //4096 over the 25 m-radius cone = 82 px/m: the texture web's filaments
+  //are ~2.6 cm at the 3.33 m period (the 8 px blur of the 1024 px texture),
+  //so they need >~75 px/m to stay above a pixel in the slide. Shrinking the
+  //cone radius (not raising this) is the cheap lever if they ever alias.
   this.causticProjectionResolution = 4096;
-  this.causticProjectionTiling = 48;      //caustic-map repeats across the slide (integer!)
+  //World-space caustic texture period — MUST match the above-water web:
+  //water-shader.glsl samples causticUV = 0.3 * pSurfaceHit.xz → 1/0.3 ≈ 3.3 m
+  //period (kept as the expression below so the derivation is visible).
+  //Matching the period also matches the drift SPEED for free — both shaders
+  //scroll at the same vec2(0.8,0.1)/8 UV/s, and world speed is UV speed ÷
+  //UV-per-metre. (Drift DIRECTION can differ slightly while the projector is
+  //tilted: the slide evaluates the pattern at the surface plane and the cone
+  //carries it down-ray, exactly like the water shader's pSurfaceHit sample.)
+  //If the water shader's 0.3 multiplier changes, re-derive (period = 1/mult).
+  this.causticTexturePeriod = 1.0 / 0.3;
   this.causticLightHeight = 400.0;        //metres the projector sits above the surface
-  this.causticLightConeRadius = 60.0;     //ground radius the cone covers
+  //Ground radius the cone covers. Sized by RESOLUTION as well as visibility:
+  //the slide RT spreads its 4096 px across the cone diameter, and the web's
+  //filaments are ~2.6 cm at the 3.33 m period (the 8 px blur of the 1024 px
+  //texture), so they need >~75 px/m to resolve. 25 m radius → 82 px/m ≈ 2 px
+  //per filament; the old 60 m radius (34 px/m) left filaments SUB-PIXEL in
+  //the slide and the contrast smoothstep turned the mip average into
+  //pixelated speckle. Visibility (~13 m in Jerlov 1C) + sun-tilt swing of
+  //the lit disc still fit comfortably inside 25 m.
+  this.causticLightConeRadius = 25.0;
   this.causticLightIntensity = 6.0;       //MAIN KNOB — caustic brightness on the seabed
   this._causticProjectionTarget = new THREE.WebGLRenderTarget(
     this.causticProjectionResolution, this.causticProjectionResolution,
@@ -315,7 +353,12 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     uniforms: {
       causticMap: {value: null},
       uTime: {value: 0.0},
-      uTiling: {value: this.causticProjectionTiling}
+      //Inverse view-projection of the projector's shadow camera — the SAME
+      //camera the cookie projects through, so slide texel ↔ world mapping is
+      //exact by construction. Filled per frame in _updateCausticProjection.
+      uInvVP: {value: new THREE.Matrix4()},
+      uSurfaceY: {value: 0.0},
+      uPeriod: {value: this.causticTexturePeriod}
     },
     vertexShader: [
       'varying vec2 vUv;',
@@ -325,25 +368,43 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       '}'
     ].join('\n'),
     //Mirrors causticShader() in water-shader.glsl: two non-parallel scrolling
-    //samples min'd together, then a smoothstep contrast curve. Integer uTiling
-    //keeps the slide seamless across [0,1] so it tiles on the snap grid. The
-    //three chromatically-offset taps give caustic light its R/B dispersion —
-    //the foci of different wavelengths land slightly apart (matches the
-    //+/-0.005 caustic-UV offset the water shader's causticShader uses).
+    //samples min'd together, then a smoothstep contrast curve. The pattern is
+    //sampled in world XZ / uPeriod, the same parameterisation the water
+    //shader uses (0.1 * pSurfaceHit.xz), so size, drift speed AND phase line
+    //up across the waterline. The three chromatically-offset taps give
+    //caustic light its R/B dispersion — the foci of different wavelengths
+    //land slightly apart (matches the +/-0.005 caustic-UV offset the water
+    //shader's causticShader uses).
     fragmentShader: [
       'uniform sampler2D causticMap;',
       'uniform float uTime;',
-      'uniform float uTiling;',
+      'uniform mat4 uInvVP;',
+      'uniform float uSurfaceY;',
+      'uniform float uPeriod;',
       'varying vec2 vUv;',
       'float caustic(vec2 uv, float t){',
       '  vec2 uv1 = uv + vec2(0.8, 0.1) * t;',
       '  vec2 uv2 = uv - vec2(0.2, 0.7) * t;',
       '  float a = texture2D(causticMap, uv1).r;',
       '  float b = texture2D(causticMap, uv2).g;',
-      '  return smoothstep(0.15, 0.85, min(a, b));',
+      //LO/HI are solved by make-caustic-map.py against the generated caustic
+      //texture (must match CAUSTIC_THRESHOLD_LO/HI in water-shader.glsl).
+      '  return smoothstep(0.0, 1.0, min(a, b));',
       '}',
       'void main(){',
-      '  vec2 uv = vUv * uTiling;',
+      //Unproject this slide texel through the projector camera and intersect
+      //the water-surface plane: the pattern is evaluated where the cookie ray
+      //pierces the surface, so it stays world-anchored while the projector
+      //moves, and the keystone of a tilted cone is handled exactly.
+      '  vec2 ndc = vUv * 2.0 - 1.0;',
+      '  vec4 pNear = uInvVP * vec4(ndc, -1.0, 1.0);',
+      '  vec4 pFar  = uInvVP * vec4(ndc,  1.0, 1.0);',
+      '  vec3 ro = pNear.xyz / pNear.w;',
+      '  vec3 rd = normalize(pFar.xyz / pFar.w - ro);',
+      //rd.y is always negative (the projector looks down); the min() guards
+      //the degenerate near-horizontal case rather than dividing by ~0.
+      '  float s = (uSurfaceY - ro.y) / min(rd.y, -0.001);',
+      '  vec2 uv = (ro.xz + rd.xz * s) / uPeriod;',
       '  float t = uTime / 8.0;',
       '  float r = caustic(uv + vec2(0.005), t);',
       '  float g = caustic(uv,               t);',
@@ -366,18 +427,48 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //way down to the seabed. The runtime compensates intensity by
   //pow(causticLightHeight, decay) so surface-level brightness matches what
   //the old decay-0 cast produced — only the depth gradient is new.
-  //castShadow stays off — the scene sun already shadows the seabed, and
-  //SpotLight.map updates its projection matrix on its own (WebGLLights calls
-  //shadow.updateMatrices when a map is present). Kept permanently in the
-  //scene with intensity driven to 0 above water: toggling light.visible would
-  //change the visible-light count and recompile every lit material on each
-  //waterline crossing.
+  //castShadow ON — the scene sun shadow only darkens the seabed's DIFFUSE
+  //term; this cookie light is additive, so without its own occlusion the web
+  //lands on seabed inside an island/hull sun shadow. The water surface
+  //cannot block the cone: ocean patches, the underwater curtain and the
+  //horizon skirt all set castShadow = false, so only real scene casters
+  //(terrain, hulls, lighthouse) register in the spot's shadow map.
+  //castShadow stays PERMANENTLY true: toggling it at the waterline would
+  //change NUM_SPOT_LIGHT_SHADOWS and recompile every lit material on each
+  //crossing — the same churn the intensity-instead-of-visible rule below
+  //avoids. The idle cost above water is one depth pass over whatever sits in
+  //the cone; _updateCausticProjection parks the projector far below the world
+  //while surfaced so that pass frustum-culls to zero draws.
+  //Kept permanently in the scene with intensity driven to 0 above water:
+  //toggling light.visible would change the visible-light count and recompile
+  //every lit material on each waterline crossing. (SpotLight.map updates its
+  //projection matrix on its own — WebGLLights calls shadow.updateMatrices
+  //when a map is present.)
   this.causticSpotLight = new THREE.SpotLight(0xffffff, 0.0);
   this.causticSpotLight.decay = 2.0;
   this.causticSpotLight.distance = 0.0;
-  this.causticSpotLight.penumbra = 0.8;
+  //Low penumbra: THREE's spot falloff starts at angle*(1-penumbra), so a high
+  //value vignettes most of the 60m cone — at 0.8 full brightness reached only
+  //a ~12m ground radius and the visible seabed sat in the falloff ramp. 0.25
+  //keeps full strength to ~45m; the remaining edge lands beyond underwater
+  //visibility (Jerlov 1C ~13m) so no hard cone ring shows.
+  this.causticSpotLight.penumbra = 0.25;
   this.causticSpotLight.angle = Math.atan(this.causticLightConeRadius / this.causticLightHeight);
-  this.causticSpotLight.castShadow = false;
+  this.causticSpotLight.castShadow = true;
+  this.causticSpotLight.shadow.mapSize.set(2048, 2048);
+  //Tight depth range for perspective shadow precision at the receiver band:
+  //the projector sits causticLightHeight (400 m) up the refracted sun ray, so
+  //the seabed lives ~400-460 m from it and above-water casters (island peaks,
+  //lighthouse) no closer than ~200 m. near=100/far=600 brackets both with
+  //margin. light.distance stays 0 so SpotLightShadow.updateMatrices keeps our
+  //far. normalBias 1.5 matches what the scene sun needed on the same imported
+  //terrain (islands.html acne fix).
+  this.causticSpotLight.shadow.camera.near = 100.0;
+  this.causticSpotLight.shadow.camera.far = 600.0;
+  this.causticSpotLight.shadow.normalBias = 1.5;
+  //The slide pass reads this camera's projectionMatrixInverse before THREE's
+  //own shadow pass has ever run updateMatrices — keep it valid from frame 0.
+  this.causticSpotLight.shadow.camera.updateProjectionMatrix();
   this.causticSpotLight.map = this._causticProjectionTarget.texture;
   this._causticLightAdded = false;
 
@@ -417,6 +508,9 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //instead of crashing when running without a-starry-sky.
   this._uwMurkCamDepthScratch = new THREE.Vector3(0.02, 0.06, 0.08);
   this._uwSunDirScratch = new THREE.Vector3();
+  //Refracted (in-water) sun direction for the tilted caustic projector. Reused
+  //per frame to avoid alloc. See _updateCausticProjection.
+  this._causticRefrScratch = new THREE.Vector3();
   //Ambient (downwelling) hemisphere light discovered standalone — fills the
   //inscatter ambient term that normally comes from a-starry-sky's y-axis
   //hemispherical. Found in the per-frame light scan; null until then.
@@ -748,22 +842,28 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.oceanHeightBandLibrary = new ARestlessOcean.LUTlibraries.OceanHeightBandLibrary(this);
   this.oceanHeightComposer = new ARestlessOcean.LUTlibraries.OceanHeightComposer(this);
 
-  //Discover a-starry-sky's SkyDirector for atmospheric perspective LUTs
-  if(this.atmosphericPerspectiveEnabled){
+  //Discover a-starry-sky's SkyDirector for atmospheric perspective LUTs.
+  //Also retried from tick: a-starry-sky may initialize AFTER this component
+  //(DOM order or dynamic insertion), in which case both lookups miss here and
+  //atmospheric perspective would otherwise silently stay off all session.
+  this._discoverSkyDirector = function(){
     //Try the global reference first, then fall back to DOM query
     if(typeof StarrySky !== 'undefined' && StarrySky.skyDirectorRef){
-      this.skyDirector = StarrySky.skyDirectorRef;
+      self.skyDirector = StarrySky.skyDirectorRef;
     }
     else{
       const skyEl = document.querySelector('a-starry-sky');
       if(skyEl && skyEl.components && skyEl.components.starryskywrapper){
-        this.skyDirector = skyEl.components.starryskywrapper.skyDirector;
+        self.skyDirector = skyEl.components.starryskywrapper.skyDirector || null;
       }
     }
-    if(this.skyDirector){
+    return !!self.skyDirector;
+  };
+  if(this.atmosphericPerspectiveEnabled){
+    if(this._discoverSkyDirector()){
       const luts = this.skyDirector.getAtmosphericLUTs();
       if(luts){
-        this.atmosphereFunctionsGLSL = luts.atmosphereFunctionsString;
+        this.atmosphereFunctionsGLSL = luts.atmosphereFunctionsString || null;
       }
     }
   }
@@ -883,42 +983,9 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //  - FFT ocean (renderOrder 2): default depth, draws last over the skirt
   //    wherever real ocean geometry exists.
   this.horizonSkirtMesh = null;
-  if(this.atmosphericPerspectiveEnabled && this.skyDirector){
-    const skirtMaterial = this.oceanMaterial.clone();
-    skirtMaterial.depthTest = true;
-    skirtMaterial.depthWrite = false;
-    skirtMaterial.fog = true;
-    //Rebuild the vertex shader with the $horizon_skirt template flag set so
-    //the rim verts (well past camera.far) survive frustum clipping via the
-    //in-shader Z clamp. See water-vertex.glsl tail.
-    skirtMaterial.vertexShader = buildVertexShader(atmosphereReady, true);
-    //Pin a coarse ringIndex so the vertex shader skips the finer cascades
-    //2-5 in its displacement sum. The skirt is meant to be flat-ish; we just
-    //want the FFT fragment shader to read wave normals at the same XZ.
-    skirtMaterial.uniforms.ringIndex.value = 5;
-    skirtMaterial.uniforms.sizeOfOceanPatch.value = this.patchSize;
-
-    //RingGeometry: flat ring at y=0 rotated from the default XY plane. Outer
-    //radius capped at 1e7 m (10000 km) — the z-clamp keeps the rim fragments
-    //alive past camera.far.
-    const skirtGeometry = new THREE.RingGeometry(8.0, 1.0e7, 256, 1);
-    skirtGeometry.rotateX(-Math.PI / 2);
-
-    //InstancedMesh with a single identity instance — the FFT vertex shader
-    //multiplies by `instanceMatrix`, so we need the attribute present even
-    //though there is only one "instance" of the skirt.
-    this.horizonSkirtMesh = new THREE.InstancedMesh(skirtGeometry, skirtMaterial, 1);
-    this.horizonSkirtMesh.setMatrixAt(0, new THREE.Matrix4());
-    this.horizonSkirtMesh.instanceMatrix.needsUpdate = true;
-    this.horizonSkirtMesh.frustumCulled = false;
-    this.horizonSkirtMesh.castShadow = false;
-    this.horizonSkirtMesh.receiveShadow = false;
-    this.horizonSkirtMesh.renderOrder = 1;
-    //Horizon skirt is water-class geometry — move off the default layer so
-    //the foam ortho camera does not capture it. See OCEAN_LAYER comment.
-    this.horizonSkirtMesh.layers.set(ARestlessOcean.OCEAN_LAYER);
-    scene.add(this.horizonSkirtMesh);
-  }
+  //Creation lives in this._createHorizonSkirt (defined below alongside the
+  //instance-key registration it needs) and is called both at construction and
+  //from tick when the sky is discovered late.
 
   //── Underwater curtain hemisphere ────────────────────────────────────────
   //A hidden BackSide hemisphere centered on the camera, drawn only while
@@ -1312,14 +1379,58 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     return 1.0 - ny;
   };
 
-  //Register the horizon skirt as another instance key so the per-frame uniform
-  //loop pushes the same FFT-ocean updates into its (cloned) uniforms object.
-  //ringIndex was set to 5 at construction and is NOT touched in the per-frame
-  //loop, so the skirt keeps its coarse cascade-displacement settings.
-  if(this.horizonSkirtMesh){
+  //Build the horizon-skirt mesh and register it as another instance key so the
+  //per-frame uniform loop pushes the same FFT-ocean updates into its (cloned)
+  //uniforms object. ringIndex is pinned to 5 here and NOT touched in the
+  //per-frame loop, so the skirt keeps its coarse cascade-displacement settings.
+  //Called at construction when the sky was found in init, and again from tick
+  //if a-starry-sky shows up late (see _discoverSkyDirector).
+  this._createHorizonSkirt = function(){
+    if(self.horizonSkirtMesh){ return; }
+    const skirtMaterial = self.oceanMaterial.clone();
+    skirtMaterial.depthTest = true;
+    skirtMaterial.depthWrite = false;
+    skirtMaterial.fog = true;
+    //Rebuild the vertex shader with the $horizon_skirt template flag set so
+    //the rim verts (well past camera.far) survive frustum clipping via the
+    //in-shader Z clamp. See water-vertex.glsl tail. AP readiness is computed
+    //live: on the late-discovery path this runs after the AP recompile has
+    //already updated self.oceanMaterial, and the clone above picked that up.
+    const skirtAtmReady = !!(self.atmosphericPerspectiveEnabled && self.atmosphereFunctionsGLSL);
+    skirtMaterial.vertexShader = buildVertexShader(skirtAtmReady, true);
+    //Pin a coarse ringIndex so the vertex shader skips the finer cascades
+    //2-5 in its displacement sum. The skirt is meant to be flat-ish; we just
+    //want the FFT fragment shader to read wave normals at the same XZ.
+    skirtMaterial.uniforms.ringIndex.value = 5;
+    skirtMaterial.uniforms.sizeOfOceanPatch.value = self.patchSize;
+
+    //RingGeometry: flat ring at y=0 rotated from the default XY plane. Outer
+    //radius capped at 1e7 m (10000 km) — the z-clamp keeps the rim fragments
+    //alive past camera.far.
+    const skirtGeometry = new THREE.RingGeometry(8.0, 1.0e7, 256, 1);
+    skirtGeometry.rotateX(-Math.PI / 2);
+
+    //InstancedMesh with a single identity instance — the FFT vertex shader
+    //multiplies by `instanceMatrix`, so we need the attribute present even
+    //though there is only one "instance" of the skirt.
+    self.horizonSkirtMesh = new THREE.InstancedMesh(skirtGeometry, skirtMaterial, 1);
+    self.horizonSkirtMesh.setMatrixAt(0, new THREE.Matrix4());
+    self.horizonSkirtMesh.instanceMatrix.needsUpdate = true;
+    self.horizonSkirtMesh.frustumCulled = false;
+    self.horizonSkirtMesh.castShadow = false;
+    self.horizonSkirtMesh.receiveShadow = false;
+    self.horizonSkirtMesh.renderOrder = 1;
+    //Horizon skirt is water-class geometry — move off the default layer so
+    //the foam ortho camera does not capture it. See OCEAN_LAYER comment.
+    self.horizonSkirtMesh.layers.set(ARestlessOcean.OCEAN_LAYER);
+    scene.add(self.horizonSkirtMesh);
+
     const skirtKey = '__horizon_skirt__';
-    oceanPatchGeometryInstances[skirtKey] = this.horizonSkirtMesh;
+    oceanPatchGeometryInstances[skirtKey] = self.horizonSkirtMesh;
     oceanGridInstanceKeys.push(skirtKey);
+  };
+  if(this.atmosphericPerspectiveEnabled && this.skyDirector){
+    this._createHorizonSkirt();
   }
 
   //Console helper — flip the ocean-shadow debug mode on every water tile
@@ -1590,6 +1701,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     window.setSpecFalloffFarDist = this.setSpecFalloffFarDist;
     window.setOceanWireframe = this.setOceanWireframe;
     window.setAtmDistanceScale = this.setAtmDistanceScale;
+    //Direct handle on the grid instance for console probes (RT readback etc.).
+    window.oceanGrid = self;
     //Splash particles: debug tint (0 normal, 1 tint-by-type), master toggle, and
     //a direct handle on the OceanSplash instance for live-tuning its plain-JS
     //knobs (e.g. oceanSplash.crestSpawnChance = 0.2).
@@ -1946,12 +2059,14 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     if(curtain){ curtain.visible = curtainWasVisible; }
   };
 
-  //Refresh the underwater caustic projector. Re-renders the animated caustic
-  //slide, parks the SpotLight high above the camera aimed straight down (a
-  //near-parallel cast so caustic cell size barely changes with seabed depth),
-  //and crossfades its intensity through the waterline via underwaterFactor.
-  //The projector XZ snaps to one slide-tile so the world-projected caustic
-  //pattern stays put as the camera swims. Skipped entirely above water.
+  //Refresh the underwater caustic projector. Positions the SpotLight high
+  //above the camera down the refracted sun ray (a near-parallel cast so
+  //caustic cell size barely changes with seabed depth), re-renders the
+  //animated caustic slide through the projector's own shadow camera (world-
+  //anchored — see the constructor block), and crossfades its intensity
+  //through the waterline via underwaterFactor. The projector tracks the
+  //camera XZ continuously; world anchoring lives in the slide content, so no
+  //snapping and no envelope/shadow jumps. Skipped entirely above water.
   this._updateCausticProjection = function(time, waterSurfaceY, underwaterFactor){
     const light = self.causticSpotLight;
     //Scene isn't available at construction — add the projector + its target
@@ -1963,47 +2078,84 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     }
     //Above water, or the caustic texture hasn't loaded yet: drive intensity to
     //zero (not light.visible — see the constructor note) and skip the RT cost.
+    //castShadow stays true (constructor note), so the spot's shadow depth pass
+    //still runs while surfaced — park the projector far below the world so
+    //that pass frustum-culls every caster and costs nothing. The y-check makes
+    //the park a one-time move per surfacing, not a per-frame write.
     if(!self.causticMap || underwaterFactor <= 0.001){
       light.intensity = 0.0;
+      if(light.position.y > -9000.0){
+        light.position.set(0.0, -10000.0, 0.0);
+        light.target.position.set(0.0, -10400.0, 0.0);
+        light.target.updateMatrixWorld();
+      }
       return;
     }
 
-    //Re-render the animated caustic slide.
-    const mat = self._causticProjectionMaterial;
-    mat.uniforms.causticMap.value = self.causticMap;
-    mat.uniforms.uTime.value = time * 0.001;
-    mat.uniforms.uTiling.value = self.causticProjectionTiling;
-    const prevRT = self.renderer.getRenderTarget();
-    self.renderer.setRenderTarget(self._causticProjectionTarget);
-    self.renderer.render(self._causticProjectionScene, self._causticProjectionCamera);
-    self.renderer.setRenderTarget(prevRT);
+    //Surface anchor: the camera XZ, unsnapped — the slide pass below bakes
+    //world anchoring into the pattern itself, so the projector (and with it
+    //the cone envelope, decay vignette and shadow POV) moves smoothly.
+    const anchorX = self.globalCameraPosition.x;
+    const anchorZ = self.globalCameraPosition.z;
 
-    //Park the projector above the camera, aimed straight down. Snapping XZ to
-    //one caustic tile (footprint / tiling) means each move is a whole pattern
-    //period — invisible — so the cast caustics read as world-anchored.
-    const metersPerTile = (2.0 * self.causticLightConeRadius) / self.causticProjectionTiling;
-    const snapX = Math.floor(self.globalCameraPosition.x / metersPerTile) * metersPerTile;
-    const snapZ = Math.floor(self.globalCameraPosition.z / metersPerTile) * metersPerTile;
-    light.position.set(snapX, waterSurfaceY + self.causticLightHeight, snapZ);
-    light.target.position.set(snapX, waterSurfaceY - 100.0, snapZ);
-    light.target.updateMatrixWorld();
-    light.angle = Math.atan(self.causticLightConeRadius / self.causticLightHeight);
-    //Drive both the colour and the brightness from the scene directional light
-    //so caustics warm and dim through golden hour and fade to nothing once the
-    //sun is below the horizon. cosZenith is the same geometric "how much sun
+    //Sun travel direction (from the brightest directional light toward the
+    //scene — downward when the sun is up). Drives BOTH the projector tilt below
+    //and the colour/brightness. cosZ is the same geometric "how much sun
     //overhead" factor the underwater inscatter uses (water-shader.glsl :1391),
-    //so caustic falloff at low sun matches the rest of the underwater
-    //lighting stack. Without cosZenith, a sun at intensity 1 at 1° above the
-    //horizon would still cast full-strength caustics.
+    //so caustic falloff at low sun matches the rest of the underwater lighting
+    //stack; without it a sun 1° above the horizon would cast full strength.
     let sunMult = 1.0;
+    let haveSun = false;
+    const sunDir = self._uwSunDirScratch;
     if(self.brightestDirectionalLight){
       const ml = self.brightestDirectionalLight;
       light.color.copy(ml.color);
-      self._uwSunDirScratch.set(ml.position.x, ml.position.y, ml.position.z)
+      sunDir.set(ml.position.x, ml.position.y, ml.position.z)
         .sub(ml.target.position).negate().normalize();
-      const cosZ = Math.max(-self._uwSunDirScratch.y, 0.0);
-      sunMult = ml.intensity * cosZ;
+      const cosZ = Math.max(-sunDir.y, 0.0);
+      //Schlick air->water transmission (same as the murk dir term above) —
+      //at grazing sun most light reflects OFF the surface and never enters
+      //the water, so caustics must die toward sunset with the rest of the
+      //underwater light, not linger at cosZ strength.
+      const oneMinusCosZ = 1.0 - cosZ;
+      const fresAW = 0.02037 + (1.0 - 0.02037)
+                   * (oneMinusCosZ*oneMinusCosZ*oneMinusCosZ*oneMinusCosZ*oneMinusCosZ);
+      sunMult = ml.intensity * cosZ * (1.0 - fresAW);
+      haveSun = cosZ > 0.0;
     }
+
+    //Tilt the projector along the sun ray REFRACTED into the water (Snell,
+    //air→water n=1/1.33 at a flat +Y surface) instead of casting straight down,
+    //so the caustic web rakes across the seabed at the true sun angle. refr is
+    //the in-water travel direction — still downward, just leaned toward the
+    //anti-solar azimuth. It collapses to (0,-1,0) at solar zenith, so this is a
+    //pure superset of the old straight-down cast. Total internal reflection
+    //can't occur air→water, but k<0 is guarded anyway; we also fall back to
+    //straight down when the sun is at/below the horizon (projector is off via
+    //sunMult→0 there regardless).
+    const refr = self._causticRefrScratch;
+    if(haveSun){
+      const eta = 1.0 / 1.33;
+      const nDotI = sunDir.y;                       //dot((0,1,0), sunDir)
+      const k = 1.0 - eta * eta * (1.0 - nDotI * nDotI);
+      if(k >= 0.0){
+        const scale = eta * nDotI + Math.sqrt(k);   //R = eta*I - scale*N
+        refr.set(eta * sunDir.x, eta * sunDir.y - scale, eta * sunDir.z).normalize();
+      } else {
+        refr.set(0.0, -1.0, 0.0);
+      }
+    } else {
+      refr.set(0.0, -1.0, 0.0);
+    }
+    //Place the projector one causticLightHeight UP the ray from the surface
+    //anchor and the target down-ray; (target − position) ∝ refr ⇒ the cone axis
+    //is the refracted sun ray, and a surface-level fragment stays exactly
+    //causticLightHeight from the projector (keeps decayCompensation valid).
+    const h = self.causticLightHeight;
+    light.position.set(anchorX - refr.x * h, waterSurfaceY - refr.y * h, anchorZ - refr.z * h);
+    light.target.position.set(anchorX + refr.x * 100.0, waterSurfaceY + refr.y * 100.0, anchorZ + refr.z * 100.0);
+    light.target.updateMatrixWorld();
+    light.angle = Math.atan(self.causticLightConeRadius / self.causticLightHeight);
     //Compensate for the projector's inverse-square decay so the surface-level
     //caustic brightness is invariant to `causticLightHeight`. A fragment at
     //y = surfaceY sits `causticLightHeight` metres from the projector; that
@@ -2013,6 +2165,23 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     const decayCompensation = Math.pow(self.causticLightHeight, light.decay);
     light.intensity = self.causticLightIntensity * self.causticsStrength
                     * underwaterFactor * sunMult * decayCompensation;
+
+    //Re-render the animated caustic slide LAST, through the projector pose
+    //set above. shadow.updateMatrices is the same call WebGLLights makes when
+    //it projects the cookie, so the camera we unproject the slide through is
+    //bit-identical to the one that casts it back out.
+    light.updateWorldMatrix(true, false);
+    light.shadow.updateMatrices(light);
+    const shadowCam = light.shadow.camera;
+    const mat = self._causticProjectionMaterial;
+    mat.uniforms.causticMap.value = self.causticMap;
+    mat.uniforms.uTime.value = time * 0.001;
+    mat.uniforms.uSurfaceY.value = waterSurfaceY;
+    mat.uniforms.uInvVP.value.copy(shadowCam.matrixWorld).multiply(shadowCam.projectionMatrixInverse);
+    const prevRT = self.renderer.getRenderTarget();
+    self.renderer.setRenderTarget(self._causticProjectionTarget);
+    self.renderer.render(self._causticProjectionScene, self._causticProjectionCamera);
+    self.renderer.setRenderTarget(prevRT);
   };
 
   //Fill A-Starry-Sky's reserved underwater-fog slot. Its `advanced` atmospheric
@@ -2141,6 +2310,17 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       //UW_DIST_SCALE so the ceiling and direct-view seabed asymptote to the same
       //effective extinction.
       'const float UW_DIST_SCALE = 1.0;',
+      //Downwelling depth attenuation of the SURFACE lighting (distinct from the
+      //inscatter fog). The light that illuminates a fragment travelled DOWN
+      //through the water column to reach it, so it is Beer-Lambert attenuated by
+      //the fragment's vertical depth below the surface — the same physics the
+      //water-shader seabed branch applies to its sun term (exp(-extinction*downPath)).
+      //Without this, nearby geometry (rocks, seabed, hull) renders at full
+      //THREE-lit brightness no matter how deep the dive, because uwT≈1 at short
+      //range. We reuse uwExt so red dies first → deep geometry reads blue-green
+      //then dark, matching the water colour. 1.0 = physically full attenuation;
+      //lower toward 0 to keep deep geometry brighter/more visible (stylistic).
+      'const float UW_DOWNWELL_STRENGTH = 1.0;',
       'float uwSurfaceY = -fogNear;',
       //Path length is the true geometric distance through water (x the 1.0 scale
       //above). Direction-isotropic — a surface at the camera's own depth fogs the
@@ -2230,11 +2410,19 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       '  vec3 uwLinear = uwInputIsSRGB',
       '    ? fogsRGBToLinear(vec4(gl_FragColor.rgb, 1.0)).rgb',
       '    : gl_FragColor.rgb;',
+      //Downwelling attenuation of the lit surface colour. uwFragDepth is THIS
+      //fragment's depth below the surface (vertical column the light descended
+      //through), independent of the camera-depth darkening on the murk above —
+      //so no double-count. A fragment at the surface (depth 0) keeps full light;
+      //a deep one fades toward dark. Applied only in the production blend so the
+      //UW_DEBUG_FOG_MODE isolation taps stay pure diagnostics.
+      '  float uwFragDepth = max(0.0, uwSurfaceY - vFogWorldPosition.y);',
+      '  vec3 uwDownwell = exp(-uwExt * uwFragDepth * UW_DOWNWELL_STRENGTH);',
       //Fog blend, with the UW_DEBUG_FOG_MODE isolation taps (see const above).
       '  if(UW_DEBUG_FOG_MODE == 1){ /* raw input, no fog */ }',
       '  else if(UW_DEBUG_FOG_MODE == 2){ uwLinear = vec3(0.5) * uwT + uwMurk * (vec3(1.0) - uwT); }',
       '  else if(UW_DEBUG_FOG_MODE == 3){ uwLinear = uwMurk; }',
-      '  else { uwLinear = uwLinear * uwT + uwMurk * (vec3(1.0) - uwT); }',
+      '  else { uwLinear = uwLinear * uwDownwell * uwT + uwMurk * (vec3(1.0) - uwT); }',
       //sRGB (main-canvas) path: TONEMAP the fogged result with MyAES before
       //encoding — the renderer is NoToneMapping, so scene geometry arrives here
       //un-tonemapped (raw linear radiance), and without this it would sRGB-encode
@@ -2331,6 +2519,18 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   };
 
   this.tick = function(time){
+
+    //Late sky discovery — a-starry-sky can initialize after this component
+    //(DOM order, dynamic insertion). Init's one-shot lookup would then have
+    //missed it and atmospheric perspective would silently never activate, so
+    //keep retrying until found. Cheap while unfound (a global/DOM check);
+    //free once found. The skirt is created on the same condition init uses;
+    //the AP recompile further down picks both up once the LUTs arrive.
+    if(self.atmosphericPerspectiveEnabled && !self.skyDirector){
+      if(self._discoverSkyDirector()){
+        self._createHorizonSkirt();
+      }
+    }
 
     //Hide splash particles for the whole offscreen-pass block below (refraction
     //G-buffer, reflection, foam/exclusion orthos, CSM, caustics). They are
@@ -3066,11 +3266,14 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       //Sync atmospheric perspective uniforms from a-starry-sky
       if(self.atmosphericPerspectiveEnabled && self.skyDirector){
         const luts = self.skyDirector.getAtmosphericLUTs();
-        if(luts){
+        //Some sky builds publish the LUTs a few frames before the functions
+        //string. Skip ONLY this AP block until both exist — an early `return`
+        //here would abort tick mid-loop and freeze the CSM/skirt/splash
+        //updates below for the frame (and for good if the string never came).
+        if(luts && (self.atmosphereFunctionsGLSL || luts.atmosphereFunctionsString)){
           //If we haven't recompiled with atmospheric perspective yet, do it now
           if(!self.atmosphereFunctionsGLSL){
-            self.atmosphereFunctionsGLSL = luts.atmosphereFunctionsString || null;
-            if(!self.atmosphereFunctionsGLSL){ return; } //functions not ready yet — retry next tick
+            self.atmosphereFunctionsGLSL = luts.atmosphereFunctionsString;
             //Recompile all cloned materials on each ocean patch instance
             const newFragShader = ARestlessOcean.Materials.Ocean.waterMaterial.fragmentShader(
               self.causticsEnabled, self.foamEnabled, true, self.atmosphereFunctionsGLSL

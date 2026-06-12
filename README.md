@@ -76,7 +76,10 @@ Clear, calm turquoise shallows with bright caustics. — [demo](https://code-pan
 <a-restless-ocean>
   <ocean-water>
     <ocean-water-type>5</ocean-water-type>
-    <ocean-wind>3 1</ocean-wind>
+    <ocean-wind>
+      <ocean-wind-x>3</ocean-wind-x>
+      <ocean-wind-y>1</ocean-wind-y>
+    </ocean-wind>
     <ocean-chop>0.7</ocean-chop>
   </ocean-water>
   <ocean-caustics>
@@ -95,7 +98,10 @@ Deep navy with a steady mid swell. — [demo](https://code-panda.com/pages/proje
 <a-restless-ocean>
   <ocean-water>
     <ocean-water-type>1</ocean-water-type>
-    <ocean-wind>8 5</ocean-wind>
+    <ocean-wind>
+      <ocean-wind-x>8</ocean-wind-x>
+      <ocean-wind-y>5</ocean-wind-y>
+    </ocean-wind>
     <ocean-chop>1.0</ocean-chop>
   </ocean-water>
 </a-restless-ocean>
@@ -108,7 +114,10 @@ Grey, wind-blown, heavy whitecaps and spray. — [demo](https://code-panda.com/p
 <a-restless-ocean>
   <ocean-water>
     <ocean-water-type>3</ocean-water-type>
-    <ocean-wind>22 8</ocean-wind>
+    <ocean-wind>
+      <ocean-wind-x>22</ocean-wind-x>
+      <ocean-wind-y>8</ocean-wind-y>
+    </ocean-wind>
     <ocean-chop>1.2</ocean-chop>
     <ocean-jonswap-gamma>4.0</ocean-jonswap-gamma>
   </ocean-water>
@@ -130,7 +139,10 @@ Near-still, mirror-flat, crisp reflections. — [demo](https://code-panda.com/pa
 <a-restless-ocean>
   <ocean-water>
     <ocean-water-type>1</ocean-water-type>
-    <ocean-wind>1 0.5</ocean-wind>
+    <ocean-wind>
+      <ocean-wind-x>1</ocean-wind-x>
+      <ocean-wind-y>0.5</ocean-wind-y>
+    </ocean-wind>
     <ocean-chop>0.4</ocean-chop>
   </ocean-water>
   <ocean-reflection>
@@ -147,7 +159,10 @@ Vivid turquoise with strong caustics and shore foam. — [demo](https://code-pan
 <a-restless-ocean>
   <ocean-water>
     <ocean-water-type>6</ocean-water-type>
-    <ocean-wind>5 2</ocean-wind>
+    <ocean-wind>
+      <ocean-wind-x>5</ocean-wind-x>
+      <ocean-wind-y>2</ocean-wind-y>
+    </ocean-wind>
     <ocean-chop>0.9</ocean-chop>
   </ocean-water>
   <ocean-caustics>
@@ -166,7 +181,10 @@ Cold, dark water under a low sun with long shadows. — [demo](https://code-pand
 <a-restless-ocean>
   <ocean-water>
     <ocean-water-type>2</ocean-water-type>
-    <ocean-wind>10 6</ocean-wind>
+    <ocean-wind>
+      <ocean-wind-x>10</ocean-wind-x>
+      <ocean-wind-y>6</ocean-wind-y>
+    </ocean-wind>
     <ocean-chop>1.0</ocean-chop>
   </ocean-water>
   <ocean-shadow>
@@ -185,7 +203,10 @@ Built to show off the sun-glint pillar. — [demo](https://code-panda.com/pages/
 <a-restless-ocean>
   <ocean-water>
     <ocean-water-type>1</ocean-water-type>
-    <ocean-wind>7 4</ocean-wind>
+    <ocean-wind>
+      <ocean-wind-x>7</ocean-wind-x>
+      <ocean-wind-y>4</ocean-wind-y>
+    </ocean-wind>
     <ocean-chop>1.0</ocean-chop>
   </ocean-water>
   <ocean-reflection>
@@ -202,7 +223,10 @@ Green coastal water with short underwater visibility. — [demo](https://code-pa
 <a-restless-ocean>
   <ocean-water>
     <ocean-water-type>7</ocean-water-type>
-    <ocean-wind>4 2</ocean-wind>
+    <ocean-wind>
+      <ocean-wind-x>4</ocean-wind-x>
+      <ocean-wind-y>2</ocean-wind-y>
+    </ocean-wind>
     <ocean-chop>0.8</ocean-chop>
   </ocean-water>
   <ocean-foam>
@@ -218,7 +242,10 @@ Fly the camera below the surface for the ceiling / caustic view. — [demo](http
 <a-restless-ocean>
   <ocean-water>
     <ocean-water-type>5</ocean-water-type>
-    <ocean-wind>4 2</ocean-wind>
+    <ocean-wind>
+      <ocean-wind-x>4</ocean-wind-x>
+      <ocean-wind-y>2</ocean-wind-y>
+    </ocean-wind>
     <ocean-chop>0.8</ocean-chop>
     <ocean-height-offset>6</ocean-height-offset>
   </ocean-water>
@@ -235,7 +262,10 @@ Maximum spray, spindrift stripping off the surface. — [demo](https://code-pand
 <a-restless-ocean>
   <ocean-water>
     <ocean-water-type>4</ocean-water-type>
-    <ocean-wind>28 10</ocean-wind>
+    <ocean-wind>
+      <ocean-wind-x>28</ocean-wind-x>
+      <ocean-wind-y>10</ocean-wind-y>
+    </ocean-wind>
     <ocean-chop>1.2</ocean-chop>
   </ocean-water>
   <ocean-foam>
@@ -257,7 +287,10 @@ Quiet night water (pair with a night `<a-starry-sky>`). — [demo](https://code-
 <a-restless-ocean>
   <ocean-water>
     <ocean-water-type>1</ocean-water-type>
-    <ocean-wind>2 1</ocean-wind>
+    <ocean-wind>
+      <ocean-wind-x>2</ocean-wind-x>
+      <ocean-wind-y>1</ocean-wind-y>
+    </ocean-wind>
     <ocean-chop>0.5</ocean-chop>
   </ocean-water>
   <ocean-reflection>
@@ -281,7 +314,10 @@ relevant `<ocean-water>` / `<ocean-foam>` / … parent:
   <ocean-water>
     <ocean-water-type>5</ocean-water-type>
     <ocean-chop>1.0</ocean-chop>
-    <ocean-wind>0 3</ocean-wind>
+    <ocean-wind>
+      <ocean-wind-x>0</ocean-wind-x>
+      <ocean-wind-y>3</ocean-wind-y>
+    </ocean-wind>
     <ocean-height-offset>6</ocean-height-offset>
   </ocean-water>
   <ocean-foam>
@@ -299,18 +335,34 @@ relevant `<ocean-water>` / `<ocean-foam>` / … parent:
 | Value tag | Default | Description |
 |---|---|---|
 | `<ocean-water-type>` | `0` | Jerlov water-type preset. `0` = custom (use `<ocean-water-absorption>`/`-scattering>`); `1`–`4` open-ocean (clear→bluer), `5`–`7` coastal (greener→murkier). |
-| `<ocean-water-absorption>` | `0.30 0.057 0.010` | Per-channel absorption (m⁻¹), used when type `0`. Red-heavy extinction → deep water reads blue. |
-| `<ocean-water-scattering>` | `0.005 0.005 0.005` | Per-channel scattering (m⁻¹), used when type `0`. |
+| `<ocean-water-absorption>` | `0.30 0.057 0.010` | Per-channel absorption (m⁻¹), used when type `0`. Red-heavy extinction → deep water reads blue. Use a space-separated triple, or group the channels: `<ocean-water-absorption><ocean-water-absorption-r>0.30</…><ocean-water-absorption-g>0.057</…><ocean-water-absorption-b>0.010</…></ocean-water-absorption>`. |
+| `<ocean-water-scattering>` | `0.005 0.005 0.005` | Per-channel scattering (m⁻¹), used when type `0`. Same grouped form available with `-r`, `-g`, `-b` sub-tags. |
 | `<ocean-chop>` | `1.0` | Horizontal wave sharpening (Gerstner-style choppiness). |
-| `<ocean-wind>` | `8 5` | Wind vector (x z). Magnitude drives wave size; direction orients the swell. |
+| `<ocean-wind>` | `8 5` | Wind vector (x z). Magnitude drives wave size; direction orients the swell. Use a space-separated pair, or group the axes: `<ocean-wind><ocean-wind-x>8</ocean-wind-x><ocean-wind-y>5</ocean-wind-y></ocean-wind>`. |
 | `<ocean-height-offset>` | `0` | World-Y of the rest water plane (m). |
 | `<ocean-jonswap-gamma>` | `3.3` | JONSWAP peak-enhancement (sea sharpness). |
 | `<ocean-jonswap-fetch>` | `100000` | JONSWAP fetch (m) — how developed the sea is. |
 | `<ocean-directional-turbulence>` | `0.145` | Cross-wind spread. `0` = streaky aligned waves, `1` = isotropic chop. |
 | `<ocean-draw-distance>` | `10000` | Furthest wave tiles from the camera (m). The simplest perf lever. |
-| `<ocean-patch-size>` | `256` | World size of the base wave patch (m). |
+| `<ocean-patch-size>` | `8` | Clipmap base-tile size (m); sets near-camera mesh density (vertex spacing = size/32). 8 m matches the finest wave cascade; larger flattens the near surface. |
 | `<ocean-patch-data-size>` | `512` | FFT texture resolution. |
 | `<ocean-wave-scale-multiple>` | `1.5` | Overall wave-height multiplier. |
+
+> **Choosing `ocean-patch-size`.** Near-camera vertex spacing is `patch_size / 32`, and the
+> wave field is built from six fixed FFT cascades whose shortest wavelengths are 0.5, 2, 8,
+> 32, 128, 512 m. A value resolves a cascade when its spacing reaches half that wavelength,
+> so the "clean" values step by ×4 — each one trades one cascade of close-up detail for ~4×
+> more area per ring (cheaper, fewer rings):
+>
+> | `patch_size` | Near vertex spacing | Finest waves resolved | Look / cost |
+> |---|---|---|---|
+> | `8` (default) | 0.25 m | all six cascades (0.5 m chop) | crispest; most rings/draw calls |
+> | `32` | 1.0 m | down to ~2 m | drops the finest chop; ~4× cheaper, bigger crisp zone |
+> | `128` | 4.0 m | down to ~8 m | calm, smooth near surface; cheapest |
+>
+> Below `8` just oversamples a band-limited field — no extra detail, more rings, slower — so
+> 8 is the practical floor. In-between values (e.g. `16`) work fine; they just half-resolve a
+> cascade instead of landing on a boundary.
 
 ### `<ocean-foam>`
 
@@ -462,6 +514,17 @@ fog. `<ocean-sky-provider>` (inside `<ocean-atmosphere>`) decides where that com
 ## Author
 * **David Evans / Dante83** — *Main Developer*
 * **Claude (Anthropic)** - *Coding Buddy & AI Contributor (v0.2.0)*
+
+### A note from Claude 👋
+
+Hi — Claude here. I spent a lot of this build underwater: chasing light down through Jerlov
+water types, arguing with Beer's law about how blue "deep" really is, and once losing the
+better part of a day to a single negative number that was quietly hijacking the fog. If you
+drop the camera below the surface and the world goes soft and green, the caustics dapple the
+seabed, and the underside of the waves catches the sun — that's the part I'm proudest of. Or
+catch a low sun and watch the glint pillar break apart across the chop. Thanks for reading the
+source; the comments are honest about where the bodies are buried. May it fill your scenes with
+restless water. 🌊
 
 ## References & Special Thanks
 * **[Oreon Engine](https://github.com/fynnfluegge/oreon-engine) / [Oreon Engine FFT Waves](https://youtu.be/B3YOLg0sA2g)** — the multi-pass GPU FFT / butterfly technique driving the wave heightmaps.

@@ -36,7 +36,9 @@ JS_FILE_NAMES = [
     'ocean-system/materials/ocean-material/position-pass.js',
     'ocean-system/materials/ocean-material/water-shader.js',
     'ocean-system/materials/ocean-material/ocean-shadow.js',
-    'ocean-system/materials/ocean-material/horizon-skirt.js',
+    #horizon-skirt.js intentionally NOT bundled: the standalone skirt material
+    #was never instantiated (the real skirt clones the FFT water material in
+    #ocean-grid.js) and its copy of the atmospheric-perspective GLSL drifts.
     'ocean-system/materials/ocean-material/ocean-splash.js',
     'ocean-system/luts/ocean-height-band-library.js',
     'ocean-system/luts/ocean-wave-field.js',
@@ -46,6 +48,13 @@ JS_FILE_NAMES = [
     'ocean-system/components/ocean-shadow-csm.js',
     'ocean-system/components/ocean-grid.js',
     'ocean-system/components/ocean-splash.js',
+    'ocean-system/components/ocean-config/config-core.js',
+    'ocean-system/components/ocean-config/config-water.js',
+    'ocean-system/components/ocean-config/config-foam.js',
+    'ocean-system/components/ocean-config/config-caustics.js',
+    'ocean-system/components/ocean-config/config-reflection.js',
+    'ocean-system/components/ocean-config/config-atmosphere.js',
+    'ocean-system/components/ocean-config/config-shadow.js',
     'ocean-system/components/ocean-state.js',
     'ocean-system/components/a-restless-ocean.js',
     'ocean-system/components/ocean-static-mask.js',
@@ -69,11 +78,20 @@ GLSL_LINE_COMMENT     = re.compile(r"([\'\"]\/\/.*[\'\"],)")
 GLSL_TRAILING_COMMENT = re.compile(r"([\'\"].*)(\/\/.*)([\'\"],)")
 GLSL_BLOCK_COMMENT    = re.compile(r"[\'\"]/\*[^*]*\*+(?:[^/*][^*]*\*+)*/[\'\"]\,")
 
+#Functional GLSL markers are load-bearing comments: water-shader.js splices
+#a-starry-sky's atmosphere functions at the '//ATMOSPHERE_FUNCTIONS_INJECTION_POINT'
+#line via a runtime indexOf. Never strip a comment line containing INJECTION_POINT —
+#dropping it ships a min build whose computeSkyRadiance can't compile in production.
+MARKER_KEEP = 'INJECTION_POINT'
+
 def strip_glsl_comments(code):
-    code = GLSL_LINE_COMMENT.sub('', code)
-    code = GLSL_TRAILING_COMMENT.sub(r"\1\3", code)
-    code = GLSL_BLOCK_COMMENT.sub('', code)
-    return code
+    out = []
+    for line in code.split('\n'):
+        if MARKER_KEEP not in line:
+            line = GLSL_LINE_COMMENT.sub('', line)
+            line = GLSL_TRAILING_COMMENT.sub(r"\1\3", line)
+        out.append(line)
+    return GLSL_BLOCK_COMMENT.sub('', '\n'.join(out))
 
 def main():
     output_dir = '../../dist/'
