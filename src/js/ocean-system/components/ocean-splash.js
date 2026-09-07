@@ -453,7 +453,11 @@ ARestlessOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
   this._terrainH = 0;
   this._terrainCamX = 0;
   this._terrainCamZ = 0;
-  this._terrainHalf = 2048.0;    //foam ortho half-width (metres).
+  //Foam ortho half-width (metres). Only a default — requestTerrainReadback
+  //overwrites it with the value TerrainOrthoPass actually rendered with. Kept
+  //pointing at that same constant so the two cannot drift apart.
+  this._terrainHalf = (ARestlessOcean.Passes && ARestlessOcean.Passes.TerrainOrthoPass)
+    ? ARestlessOcean.Passes.TerrainOrthoPass.FOAM_ORTHO_HALF_WIDTH : 2048.0;
   this._terrainReadPending = false;
 
   this._prevTime = -1.0;

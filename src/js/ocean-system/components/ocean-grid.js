@@ -533,7 +533,12 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       shader.fragmentShader = shader.fragmentShader.replace(`#include <fog_fragment>`, THREE.fogFrag);
     };
   }
-  this.oceanMaterial.uniforms = ARestlessOcean.Materials.Ocean.waterMaterial.uniforms;
+  //Per-grid CLONE of the module-global uniform template, not an alias. In 0.2.0
+  //this was a straight assignment, so the line below (and anything else writing
+  //through oceanMaterial.uniforms) wrote into the global — fine with one ocean,
+  //a cross-body stomp with two. See ARestlessOcean.cloneUniforms for the array
+  //deep-clone that UniformsUtils.clone does not do.
+  this.oceanMaterial.uniforms = ARestlessOcean.cloneUniforms(ARestlessOcean.Materials.Ocean.waterMaterial.uniforms);
   this.oceanMaterial.uniforms.sizeOfOceanPatch.value = this.patchSize;
 
   //Ocean-only cascaded shadow map, orchestrated by
@@ -706,7 +711,11 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     if(!oceanPatchGeometryInstances.hasOwnProperty(key)){
       oceanGridInstanceKeys.push(key);
       const geometry = ARestlessOcean.OceanTile(tileSize, numCells, top, right, bottom, left);
-      const mesh = new THREE.InstancedMesh(geometry, self.oceanMaterial.clone(), instanceCount[key]);
+      //Material.clone() runs UniformsUtils.clone, which slices arrays rather
+      //than deep-cloning them — so re-clone the uniforms properly on top.
+      const tileMaterial = self.oceanMaterial.clone();
+      tileMaterial.uniforms = ARestlessOcean.cloneUniforms(self.oceanMaterial.uniforms);
+      const mesh = new THREE.InstancedMesh(geometry, tileMaterial, instanceCount[key]);
       mesh.frustumCulled = false;
       //Sit above the horizon skirt (renderOrder 1) so FFT ocean overwrites the
       //pure-inscatter skirt fragments wherever real ocean geometry exists.
@@ -802,6 +811,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this._createHorizonSkirt = function(){
     if(self.horizonSkirtMesh){ return; }
     const skirtMaterial = self.oceanMaterial.clone();
+    //Same array deep-clone as the tile materials above.
+    skirtMaterial.uniforms = ARestlessOcean.cloneUniforms(self.oceanMaterial.uniforms);
     skirtMaterial.depthTest = true;
     skirtMaterial.depthWrite = false;
     skirtMaterial.fog = true;

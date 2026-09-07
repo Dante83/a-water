@@ -68,6 +68,22 @@ ARestlessOcean.Passes.TerrainOrthoPass = function(oceanGrid){
 
 ARestlessOcean.Passes.TerrainOrthoPass.MAX_STALE_FRAMES = 30;
 
+//── The two ortho half-widths, in metres — SINGLE SOURCE OF TRUTH ──────────
+//These drive, in this file: both OrthographicCamera extents and both texel
+//sizes; outside it: the foam terrain readback handed to ocean-splash.js, and
+//the FOAM_ORTHO_HALF_WIDTH / EXCLUSION_ORTHO_HALF_WIDTH consts spliced into
+//water-shader.glsl by the template's fragmentShader(). Before Phase 0 these
+//were nine bare literals across five files, two of them inside GLSL, with
+//comments in ocean-grid.js admitting they had to be kept in sync by hand.
+//
+//Changing FOAM changes the shore-foam sample window (4096 m across at 1024^2
+//= 4 m/texel today). Changing EXCLUSION tightens the boat-hull mask; that is
+//the deferred fit-to-boat fix, which was blocked precisely on this hoist.
+//Both feed the shader as consts, not uniforms — they are per-session values
+//and uniform slots are scarce here.
+ARestlessOcean.Passes.TerrainOrthoPass.FOAM_ORTHO_HALF_WIDTH = 2048.0;
+ARestlessOcean.Passes.TerrainOrthoPass.EXCLUSION_ORTHO_HALF_WIDTH = 250.0;
+
 ARestlessOcean.Passes.TerrainOrthoPass.prototype.init = function(){
   const grid = this.oceanGrid;
 
@@ -79,7 +95,8 @@ ARestlessOcean.Passes.TerrainOrthoPass.prototype.init = function(){
   this.foamRenderTarget = new THREE.WebGLRenderTarget(1024, 1024, {
     type: THREE.FloatType
   });
-  this.foamCamera = new THREE.OrthographicCamera(-2048.0, 2048.0, 2048.0, -2048.0, 0.1, grid.foamCameraHeight + 500.0);
+  const foamHalf = ARestlessOcean.Passes.TerrainOrthoPass.FOAM_ORTHO_HALF_WIDTH;
+  this.foamCamera = new THREE.OrthographicCamera(-foamHalf, foamHalf, foamHalf, -foamHalf, 0.1, grid.foamCameraHeight + 500.0);
   this.scene.add(this.foamCamera);
 
   //Depth camera pointing down for ocean exclusion mapping. Unlike foamCamera
@@ -96,7 +113,8 @@ ARestlessOcean.Passes.TerrainOrthoPass.prototype.init = function(){
     minFilter: THREE.NearestFilter,
     magFilter: THREE.NearestFilter
   });
-  this.exclusionCamera = new THREE.OrthographicCamera(-250.0, 250.0, 250.0, -250.0, 0.1, grid.foamCameraHeight + 500.0);
+  const exclHalf = ARestlessOcean.Passes.TerrainOrthoPass.EXCLUSION_ORTHO_HALF_WIDTH;
+  this.exclusionCamera = new THREE.OrthographicCamera(-exclHalf, exclHalf, exclHalf, -exclHalf, 0.1, grid.foamCameraHeight + 500.0);
   this.exclusionCamera.layers.disableAll();
   this.exclusionCamera.layers.set(30);
   this.scene.add(this.exclusionCamera);
@@ -110,7 +128,10 @@ ARestlessOcean.Passes.TerrainOrthoPass.prototype.init = function(){
     transparent: false,
     lights: false
   });
-  this.positionPassMaterial.uniforms = ARestlessOcean.Materials.Ocean.positionPassMaterial.uniforms;
+  //Cloned, not aliased. In 0.2.0 this assigned the module-global directly and
+  //nothing anywhere cloned it, so two ocean grids would have shared one uniforms
+  //map — and worldMatrix would have pointed at whichever grid constructed last.
+  this.positionPassMaterial.uniforms = ARestlessOcean.cloneUniforms(ARestlessOcean.Materials.Ocean.positionPassMaterial.uniforms);
   this.positionPassMaterial.uniforms.worldMatrix.value = grid.camera.matrixWorld;
 };
 
@@ -135,8 +156,10 @@ ARestlessOcean.Passes.TerrainOrthoPass.prototype.tick = function(ctx){
   //shader must then sample using these SNAPPED positions (uploaded as
   //foamCameraXZ / exclusionCameraXZ uniforms), not raw cameraPosition.
   //Same pattern as the per-cell clipmap snap at the top of OceanGrid.tick.
-  const foamTexel = (2.0 * 2048.0) / this.foamRenderTarget.width; // 4096m / 1024px = 4m
-  const exclTexel = (2.0 *  250.0) / this.exclusionRenderTarget.width; // 500m / 1024px ~ 0.488m
+  const foamHalf = ARestlessOcean.Passes.TerrainOrthoPass.FOAM_ORTHO_HALF_WIDTH;
+  const exclHalf = ARestlessOcean.Passes.TerrainOrthoPass.EXCLUSION_ORTHO_HALF_WIDTH;
+  const foamTexel = (2.0 * foamHalf) / this.foamRenderTarget.width; // 4096m / 1024px = 4m
+  const exclTexel = (2.0 * exclHalf) / this.exclusionRenderTarget.width; // 500m / 1024px ~ 0.488m
   const foamSnapX = Math.round(ctx.cameraX / foamTexel) * foamTexel;
   const foamSnapZ = Math.round(ctx.cameraZ / foamTexel) * foamTexel;
   const exclSnapX = Math.round(ctx.cameraX / exclTexel) * exclTexel;
@@ -182,9 +205,9 @@ ARestlessOcean.Passes.TerrainOrthoPass.prototype.tick = function(ctx){
       this._lastFoamSnapZ = foamSnapZ;
       //Copy the just-rendered terrain-height ortho to the CPU (async) so the
       //splash system can detect the shoreline. Only fires on snap-change, so
-      //the transfer is rare. Half-width is 2048 m (see foamTexel above).
+      //the transfer is rare.
       if(ctx.onFoamRendered){
-        ctx.onFoamRendered(this.foamRenderTarget, foamSnapX, foamSnapZ, 2048.0);
+        ctx.onFoamRendered(this.foamRenderTarget, foamSnapX, foamSnapZ, foamHalf);
       }
     }
     if(renderExcl){
