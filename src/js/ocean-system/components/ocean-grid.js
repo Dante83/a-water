@@ -228,28 +228,21 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   let rendererSize = new THREE.Vector2();
   this.renderer.getDrawingBufferSize(rendererSize);
 
-  //Set up screen-space G-buffer for refraction pass. Three attachments:
-  //  0: albedo + opaque-mask in .a   (stub-grey for now; per-mesh in A1)
-  //  1: world-space normal in .rgb
-  //  2: linear view-space depth in .r (replaces the old separate linearize pass)
-  //A WebGL2 MRT — the scene is rendered once via scene.overrideMaterial below,
-  //and the water shader later samples albedo + normal to relight the seabed
-  //inside the body-color path (Step 5 of docs/water-review/SUMMARY.txt).
-  this.refractionGBufferTarget = new THREE.WebGLRenderTarget(
-    rendererSize.x, rendererSize.y,
-    {
-      count: 3,
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
-      format: THREE.RGBAFormat,
-      type: THREE.HalfFloatType,
-      depthTexture: new THREE.DepthTexture(
-        rendererSize.x, rendererSize.y,
-        THREE.UnsignedIntType
-      )
-    }
-  );
-  this.refractionGBufferTarget.depthTexture.format = THREE.DepthFormat;
+
+  //Screen-space G-buffer for the refraction pass (albedo / world-normal /
+  //linear-depth MRT). Lives in ARestlessOcean.Passes.RefractionGBufferPass;
+  //read its header for the per-mesh material-swap rationale. Guarded like the
+  //other passes so a missing script tag degrades rather than throws.
+  if(ARestlessOcean.Passes && ARestlessOcean.Passes.RefractionGBufferPass){
+    this.refractionGBufferPass = new ARestlessOcean.Passes.RefractionGBufferPass(this);
+    this.refractionGBufferPass.init(rendererSize.x, rendererSize.y);
+    //Back-compat alias — the target was `oceanGrid.refractionGBufferTarget` in
+    //0.2.0 and is still read by the uniform upload loop and ocean-splash.js.
+    this.refractionGBufferTarget = this.refractionGBufferPass.target;
+  } else {
+    this.refractionGBufferPass = null;
+    this.refractionGBufferTarget = null;
+  }
 
   //── Underwater planar reflection ─────────────────────────────────────────
   //The TIR "mirror" the underwater ceiling samples outside Snell's window —
@@ -559,94 +552,6 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     this._installStandaloneFogScaffold();
   }
 
-  //G-buffer override material — one per source material, built on demand.
-  //Writes linear albedo (baseColor × decoded albedoMap) + geometric world-
-  //space normal + linear view-space depth. Per-mesh material swap in tick()
-  //below picks the right variant for each mesh before the refraction render.
-  //
-  //Fallback texture for materials without a .map — sampling a null sampler
-  //is undefined; bind a 1×1 white pixel and gate via hasAlbedoMap uniform.
-  const whiteData = new Uint8Array([255, 255, 255, 255]);
-  this._gBufferWhitePixel = new THREE.DataTexture(whiteData, 1, 1, THREE.RGBAFormat, THREE.UnsignedByteType);
-  this._gBufferWhitePixel.needsUpdate = true;
-
-  const gBufferVertexShader = [
-    'out vec3 vWorldNormal;',
-    'out float vViewZ;',
-    'out vec2 vUv;',
-    'void main(){',
-    '  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);',
-    '  vViewZ = -mvPosition.z;',
-    '  vWorldNormal = normalize(mat3(modelMatrix) * normal);',
-    '  vUv = uv;',
-    '  gl_Position = projectionMatrix * mvPosition;',
-    '}'
-  ].join('\n');
-
-  //Albedo path stores LINEAR values into the HalfFloat target. Source albedo
-  //maps from GLTF (the island model) are sRGB-encoded, so decode here once.
-  //Material.color values are already linear (THREE.Color stores linear).
-  const gBufferFragmentShader = [
-    'precision highp float;',
-    'layout(location = 0) out vec4 gAlbedo;',
-    'layout(location = 1) out vec4 gNormal;',
-    'layout(location = 2) out vec4 gLinearDepth;',
-    'in vec3 vWorldNormal;',
-    'in float vViewZ;',
-    'in vec2 vUv;',
-    'uniform vec3 baseColor;',
-    'uniform sampler2D albedoMap;',
-    'uniform int hasAlbedoMap;',
-    'vec3 srgbToLinear(vec3 c){ return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }',
-    'void main(){',
-    '  vec3 albedo = baseColor;',
-    '  if(hasAlbedoMap == 1){',
-    '    vec3 texel = texture(albedoMap, vUv).rgb;',
-    '    albedo *= srgbToLinear(texel);',
-    '  }',
-    '  gAlbedo = vec4(albedo, 1.0);',
-    '  gNormal = vec4(normalize(vWorldNormal), 1.0);',
-    '  gLinearDepth = vec4(vViewZ, 0.0, 0.0, 1.0);',
-    '}'
-  ].join('\n');
-
-  //Cache keyed by source-material UUID; built lazily on first sight.
-  this._gBufferMaterialCache = new Map();
-  this._swappedMeshes = [];
-
-  const grid = this;
-  this._buildGBufferMaterialFor = function(srcMat){
-    const hasMap = !!(srcMat.map && srcMat.map.isTexture);
-    const fallbackColor = new THREE.Color(0.5, 0.42, 0.32);
-    const baseColorRef = (srcMat.color && srcMat.color.isColor) ? srcMat.color : fallbackColor;
-    return new THREE.ShaderMaterial({
-      glslVersion: THREE.GLSL3,
-      uniforms: {
-        baseColor: { value: baseColorRef },
-        albedoMap: { value: hasMap ? srcMat.map : grid._gBufferWhitePixel },
-        hasAlbedoMap: { value: hasMap ? 1 : 0 }
-      },
-      vertexShader: gBufferVertexShader,
-      fragmentShader: gBufferFragmentShader,
-      side: srcMat.side !== undefined ? srcMat.side : THREE.FrontSide
-    });
-  };
-
-  this._resolveGBufferMaterial = function(srcMat){
-    if(Array.isArray(srcMat)){
-      const arr = new Array(srcMat.length);
-      for(let i = 0; i < srcMat.length; ++i){
-        arr[i] = grid._resolveGBufferMaterial(srcMat[i]);
-      }
-      return arr;
-    }
-    let cached = grid._gBufferMaterialCache.get(srcMat.uuid);
-    if(!cached){
-      cached = grid._buildGBufferMaterialFor(srcMat);
-      grid._gBufferMaterialCache.set(srcMat.uuid, cached);
-    }
-    return cached;
-  };
 
   //Set up depth camera pointing down for edge foam
   //1024² RGBA FloatType = ~16 MB (was 4096² ≈ 268 MB). The ortho still covers
@@ -2308,12 +2213,11 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
     //Ensure render targets match current drawing buffer size (A-Frame may resize after construction)
     self.renderer.getDrawingBufferSize(rendererSize);
-    if(self.refractionGBufferTarget.width !== rendererSize.x || self.refractionGBufferTarget.height !== rendererSize.y){
-      self.refractionGBufferTarget.setSize(rendererSize.x, rendererSize.y);
-      self.refractionGBufferTarget.depthTexture = new THREE.DepthTexture(
-        rendererSize.x, rendererSize.y, THREE.UnsignedIntType
-      );
-      self.refractionGBufferTarget.depthTexture.format = THREE.DepthFormat;
+    if(self.refractionGBufferTarget &&
+       (self.refractionGBufferTarget.width !== rendererSize.x || self.refractionGBufferTarget.height !== rendererSize.y)){
+      self.refractionGBufferPass.resize(rendererSize.x, rendererSize.y);
+      //setSize replaces the depth texture object, so refresh the alias.
+      self.refractionGBufferTarget = self.refractionGBufferPass.target;
       self._reflectionTarget.setSize(
         Math.max(1, (rendererSize.x * self.reflectionResolutionScale) | 0),
         Math.max(1, (rendererSize.y * self.reflectionResolutionScale) | 0)
@@ -2360,55 +2264,16 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].visible = false;
     }
 
-    //Render scene to G-buffer (3 MRT attachments: albedo, world-normal,
-    //linear-depth). scene.overrideMaterial can't carry per-mesh albedo, so
-    //we swap each visible non-ocean mesh's material to a cached G-buffer
-    //variant that reads that source material's own .color / .map. Restored
-    //immediately after render.
-    self._swappedMeshes.length = 0;
-    const curtainSkip = self.underwaterCurtainMesh;
-    scene.traverse(function(obj){
-      if(!obj.isMesh || !obj.visible || !obj.material) return;
-      //Skip ShaderMaterial sources — they're custom shaders (ocean, etc.)
-      //whose attribute usage we can't safely replace with our G-buffer shader.
-      if(obj.material.isShaderMaterial) return;
-      if(Array.isArray(obj.material) && obj.material.some(function(m){ return m.isShaderMaterial; })) return;
-      //Skip the underwater curtain: a 300 m BackSide sphere would write a
-      //spherical shell into refraction depth and the water shader's Snell-
-      //window seabed lookup would sample curtain colour instead of seabed.
-      if(obj === curtainSkip) return;
-      const gBuf = self._resolveGBufferMaterial(obj.material);
-      self._swappedMeshes.push({ mesh: obj, original: obj.material });
-      obj.material = gBuf;
-    });
-
-    const currentRefractionRT = self.renderer.getRenderTarget();
-    //Suppress the scene backdrop for this pass. A-Frame's `background` component
-    //drives BOTH scene.background AND the renderer clear color/alpha, and THREE
-    //clears a render target to those — filling the G-buffer's open-water texels
-    //with the sky colour at alpha 1 ("geometry present"), so the water samples
-    //the backdrop as its refraction and blends invisibly into it. We force the
-    //clear to alpha 0 ("no seabed → fall back to body colour") AND null the
-    //background so no background quad re-opaques it. Both restored right after,
-    //so the MAIN render still shows the sky. (Mirrors the transmission pass.)
-    const _savedBackground = scene.background;
-    scene.background = null;
-    self._refrClearColor = self._refrClearColor || new THREE.Color();
-    self.renderer.getClearColor(self._refrClearColor);
-    const _savedClearAlpha = self.renderer.getClearAlpha();
-    self.renderer.setClearColor(0x000000, 0.0);
-    self.renderer.setRenderTarget(self.refractionGBufferTarget);
-    self.renderer.clear();
-    self.renderer.render(scene, sceneCamera);
-    self.renderer.setRenderTarget(currentRefractionRT);
-    self.renderer.setClearColor(self._refrClearColor, _savedClearAlpha);
-    scene.background = _savedBackground;
-
-    for(let i = 0, n = self._swappedMeshes.length; i < n; ++i){
-      const entry = self._swappedMeshes[i];
-      entry.mesh.material = entry.original;
+    //Render scene to the refraction G-buffer (3 MRT attachments: albedo,
+    //world-normal, linear-depth). The ocean meshes are hidden above; the
+    //underwater curtain is skipped inside the pass.
+    if(self.refractionGBufferPass){
+      self.refractionGBufferPass.tick({
+        scene: scene,
+        camera: sceneCamera,
+        skipMesh: self.underwaterCurtainMesh
+      });
     }
-    self._swappedMeshes.length = 0;
 
     //Underwater planar reflection — rendered from the mirror camera while the
     //ocean grid is still hidden (so water is never in its own reflection) and
