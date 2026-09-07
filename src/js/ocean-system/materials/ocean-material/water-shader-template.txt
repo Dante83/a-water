@@ -190,6 +190,15 @@ ARestlessOcean.Materials.Ocean.waterMaterial = {
   },
 
   fragmentShader: function(causticsEnabled, foamEnabled, atmosphericPerspectiveEnabled, atmosphereFunctionsGLSL){
+    //Ortho half-widths, owned by ARestlessOcean.Passes.TerrainOrthoPass so the
+    //shader and the OrthographicCameras can never disagree. Substituted here
+    //rather than in ocean-grid.js because BOTH fragment-shader build sites (the
+    //initial material, and the one-shot atmospheric-perspective recompile) go
+    //through this function; doing it in the caller would mean remembering both.
+    //The fallbacks keep this working if the pass file is not loaded.
+    const orthoPass = ARestlessOcean.Passes && ARestlessOcean.Passes.TerrainOrthoPass;
+    const foamHalf = (orthoPass ? orthoPass.FOAM_ORTHO_HALF_WIDTH : 2048.0).toFixed(1);
+    const exclusionHalf = (orthoPass ? orthoPass.EXCLUSION_ORTHO_HALF_WIDTH : 250.0).toFixed(1);
     let originalGLSL = [
       {fragment_glsl}
     ];
@@ -200,6 +209,8 @@ ARestlessOcean.Materials.Ocean.waterMaterial = {
       updatedCode = updatedCode.replace(/\$foam_enabled/g, foamEnabled ? '1' : '0');
       updatedCode = updatedCode.replace(/\$caustics_enabled/g, causticsEnabled ? '1' : '0');
       updatedCode = updatedCode.replace(/\$atmospheric_perspective_enabled/g, atmosphericPerspectiveEnabled ? '1' : '0');
+      updatedCode = updatedCode.replace(/\$foam_ortho_half_width/g, foamHalf);
+      updatedCode = updatedCode.replace(/\$exclusion_ortho_half_width/g, exclusionHalf);
       //Inject atmosphere parameterization functions where the marker is
       if(atmosphericPerspectiveEnabled && atmosphereFunctionsGLSL && updatedCode.indexOf('//ATMOSPHERE_FUNCTIONS_INJECTION_POINT') !== -1){
         updatedCode = atmosphereFunctionsGLSL;

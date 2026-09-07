@@ -11,6 +11,15 @@ varying vec4 vOceanShadowCoord1;
 varying vec4 vOceanShadowCoord2;
 varying vec4 vOceanShadowCoord3;
 
+//Half-widths of the two top-down ortho atlases, in metres. These MUST match
+//the OrthographicCamera extents the JS side builds (TerrainOrthoPass), so the
+//JS owns the value and splices it in here at material-build time rather than
+//us keeping a second copy in sync by hand. They are per-session constants, not
+//per-frame values, so they are consts rather than uniforms: uniform slots are
+//scarce in this shader (see the THREE.Fog smuggle in the underwater path).
+const float FOAM_ORTHO_HALF_WIDTH = $foam_ortho_half_width;
+const float EXCLUSION_ORTHO_HALF_WIDTH = $exclusion_ortho_half_width;
+
 //uniform vec3 cameraDirection;
 uniform float sizeOfOceanPatch;
 uniform int ringIndex;
@@ -1182,11 +1191,12 @@ void main(){
   //would skip that, causing LOD tile edge divergence).
   vec3 offsetPosition = vDisplacedPosition;
   vec4 worldPosition = vModelMatrix * vInstanceMatrix * vec4(offsetPosition, 1.0);
-  //Exclusion sample. Half-width here MUST match exclusionCamera's ortho
-  //half-width in ocean-grid.js (currently 250 m). The exclusion target
+  //Exclusion sample. The half-width comes from TerrainOrthoPass via the
+  //const at the top of this file, so it can no longer drift from
+  //exclusionCamera's ortho extent. The exclusion target
   //covers only the small layer-30 mask volumes near the camera (boat
   //interior hulls etc.), not the broad terrain — that's foamRenderMap.
-  vec2 exclusionPosition = 0.5 * (((worldPosition.xz - exclusionCameraXZ) / vec2(250.0)) + 1.0);
+  vec2 exclusionPosition = 0.5 * (((worldPosition.xz - exclusionCameraXZ) / vec2(EXCLUSION_ORTHO_HALF_WIDTH)) + 1.0);
   exclusionPosition = vec2(exclusionPosition.x, 1.0 - exclusionPosition.y);
   //Exclusion-map discard. The exclusion render captures layer-30 meshes
   //(boat hulls, etc.) from above — discardHeight is the topmost layer-30
@@ -1441,7 +1451,7 @@ void main(){
     //turbulence boost is needed. The shore branch still adds its turbulence-
     //driven boost on top for the breaker-line near terrain.
     foamAmount = fftFoamAmount;
-    vec2 foamPosition = 0.5 * (((worldPosition.xz - foamCameraXZ) / vec2(2048.0)) + 1.0);
+    vec2 foamPosition = 0.5 * (((worldPosition.xz - foamCameraXZ) / vec2(FOAM_ORTHO_HALF_WIDTH)) + 1.0);
     foamPosition = vec2(foamPosition.x, 1.0 - foamPosition.y);
     if(foamPosition.x < 1.0 && foamPosition.x > 0.0 && foamPosition.y < 1.0 && foamPosition.y > 0.0){
       vec2 foamHeightData = texture2D(foamRenderMap, foamPosition).ga;

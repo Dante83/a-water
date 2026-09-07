@@ -62,10 +62,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //been moved off layer 0 — see OCEAN_LAYER comment above.
   this.camera.layers.enable(ARestlessOcean.OCEAN_LAYER);
   this.oceanPatches = [];
-  this.oceanPatchIsInFrustrum = [];
   this.drawDistance = data.draw_distance;
   this.patchSize = data.patch_size;
-  this.dataPatchSize = data.patch_size;
   this.heightOffset = data.height_offset;
   this.causticsEnabled = data.caustics_enabled;
   this.causticsStrength = data.caustics_strength;
@@ -99,11 +97,6 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.atmosphericPerspectiveDistanceScale = data.atmospheric_perspective_distance_scale;
   this.skyDirector = null;
   this.atmosphereFunctionsGLSL = null;
-  //Clip planes with small bias to prevent waterline artifacts
-  this.refractionClipPlane = new THREE.Plane();
-  this.refractionClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, -1, 0), new THREE.Vector3(0, this.heightOffset, 0));
-  this.foamClipPlane = new THREE.Plane();
-  this.foamClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, -1, 0), new THREE.Vector3(0, this.heightOffset + 1.0, 0));
   //Foam-texture scroll velocity: wind-relative, ~20° off wind axis at 4% of
   //wind speed. Slow drift so the foam-bubble texture doesn't read as racing
   //across the surface.
@@ -125,11 +118,6 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.foamWindFull = 50.0;     //m/s: bias saturates here (storm).
   this.foamWindBiasMax = 0.6;   //max value added to turbulence (FUDGE / art).
   this._foamWindBias = 0.0;     //computed each frame from current wind.
-  this.raycaster = new THREE.Raycaster(
-    new THREE.Vector3(0.0,100.0,0.0),
-    this.downVector
-  );
-  this.cameraFrustum = new THREE.Frustum();
 
   this.brightestDirectionalLight = false;
   this.directionalLights = [];
@@ -222,94 +210,53 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     console.error(err);
   });
 
-  //Number of cascades (matches ocean-height-band-library cascade count)
-  this.numberOfOceanHeightBands = 6;
-
   let rendererSize = new THREE.Vector2();
   this.renderer.getDrawingBufferSize(rendererSize);
 
-  //Set up screen-space G-buffer for refraction pass. Three attachments:
-  //  0: albedo + opaque-mask in .a   (stub-grey for now; per-mesh in A1)
-  //  1: world-space normal in .rgb
-  //  2: linear view-space depth in .r (replaces the old separate linearize pass)
-  //A WebGL2 MRT — the scene is rendered once via scene.overrideMaterial below,
-  //and the water shader later samples albedo + normal to relight the seabed
-  //inside the body-color path (Step 5 of docs/water-review/SUMMARY.txt).
-  this.refractionGBufferTarget = new THREE.WebGLRenderTarget(
-    rendererSize.x, rendererSize.y,
-    {
-      count: 3,
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
-      format: THREE.RGBAFormat,
-      type: THREE.HalfFloatType,
-      depthTexture: new THREE.DepthTexture(
-        rendererSize.x, rendererSize.y,
-        THREE.UnsignedIntType
-      )
-    }
-  );
-  this.refractionGBufferTarget.depthTexture.format = THREE.DepthFormat;
 
-  //── Underwater planar reflection ─────────────────────────────────────────
-  //The TIR "mirror" the underwater ceiling samples outside Snell's window —
-  //the underwater scene rendered each submerged frame from a virtual camera
-  //mirrored across the rest water plane. Half-resolution: the sample is
-  //wave-distorted and fogged so it needs no crispness, and the whole pass is
-  //skipped entirely above water. HalfFloat so un-tone-mapped (linear) scene
-  //radiance is not clamped at 1.
-  this.reflectionResolutionScale = 0.5;
-  this._reflectionTarget = new THREE.WebGLRenderTarget(
-    Math.max(1, (rendererSize.x * this.reflectionResolutionScale) | 0),
-    Math.max(1, (rendererSize.y * this.reflectionResolutionScale) | 0),
-    {
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
-      format: THREE.RGBAFormat,
-      type: THREE.HalfFloatType
-    }
-  );
-  this._reflectionCamera = new THREE.PerspectiveCamera();
-  this._reflectionTextureMatrix = new THREE.Matrix4();
+  //Screen-space G-buffer for the refraction pass (albedo / world-normal /
+  //linear-depth MRT). Lives in ARestlessOcean.Passes.RefractionGBufferPass;
+  //read its header for the per-mesh material-swap rationale. Guarded like the
+  //other passes so a missing script tag degrades rather than throws.
+  if(ARestlessOcean.Passes && ARestlessOcean.Passes.RefractionGBufferPass){
+    this.refractionGBufferPass = new ARestlessOcean.Passes.RefractionGBufferPass(this);
+    this.refractionGBufferPass.init(rendererSize.x, rendererSize.y);
+    //Back-compat alias — the target was `oceanGrid.refractionGBufferTarget` in
+    //0.2.0 and is still read by the uniform upload loop and ocean-splash.js.
+    this.refractionGBufferTarget = this.refractionGBufferPass.target;
+  } else {
+    this.refractionGBufferPass = null;
+    this.refractionGBufferTarget = null;
+  }
 
-  //── Above-water transmission target ──────────────────────────────────────
-  //Sampled by the underwater ceiling's Snell-window transmitted ray. The
-  //refraction G-buffer is wrong for that lookup — it strips materials to
-  //raw albedo, hides the sky dome, and skips above-water atmospheric fog,
-  //so above-water content reads as flat unshaded ghost shapes through the
-  //surface. This RT is a separate submerged-frame render of the FULLY-LIT
-  //scene: sky dome restored, real materials, atmospheric perspective from
-  //a-starry-sky reinstated, ocean grid + curtain hidden. Half-res HalfFloat
-  //matching the reflection target — the sample is wave-distorted so it
-  //needs no crispness, and HalfFloat keeps un-tone-mapped sky radiance
-  //unclamped. Skipped entirely above water (the sample is never read then).
-  this._aboveWaterTransmissionTarget = new THREE.WebGLRenderTarget(
-    Math.max(1, (rendererSize.x * this.reflectionResolutionScale) | 0),
-    Math.max(1, (rendererSize.y * this.reflectionResolutionScale) | 0),
-    {
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
-      format: THREE.RGBAFormat,
-      type: THREE.HalfFloatType
-    }
-  );
+  //── Underwater planar reflection + above-water transmission ──────────────
+  //Both submerged-only render targets, the mirror camera, the clip plane and
+  //the one-shot clipping-shader warm live in
+  //ARestlessOcean.Passes.ReflectionPass. Read its header before touching the
+  //tick ordering — the one-frame lag on the underwater murk values and the
+  //fogFar > 0 rule are both load-bearing.
+  if(ARestlessOcean.Passes && ARestlessOcean.Passes.ReflectionPass){
+    this.reflectionPass = new ARestlessOcean.Passes.ReflectionPass(this);
+    this.reflectionPass.init(rendererSize.x, rendererSize.y);
+    //Back-compat aliases — read by the per-instance uniform upload loop.
+    this.reflectionResolutionScale = this.reflectionPass.resolutionScale;
+    this._reflectionTarget = this.reflectionPass.target;
+    this._aboveWaterTransmissionTarget = this.reflectionPass.transmissionTarget;
+    this._reflectionTextureMatrix = this.reflectionPass._reflectionTextureMatrix;
+  } else {
+    this.reflectionPass = null;
+    this.reflectionResolutionScale = 0.5;
+    this._reflectionTarget = null;
+    this._aboveWaterTransmissionTarget = null;
+    this._reflectionTextureMatrix = new THREE.Matrix4();
+  }
 
-  //── Underwater caustic projection ────────────────────────────────────────
-  //The water shader paints caustics onto the refracted seabed when the camera
-  //is ABOVE water; submerged, the seabed is seen directly and never passes
-  //through the water shader. To put caustics on it without touching the (often
-  //imported, unknown) seabed materials, project them with a SpotLight cookie —
-  //the one THREE light type whose `.map` is cast onto whatever it lights, on
-  //any material, no shader surgery. SpotLight.map projects a single "slide"
-  //across the cone and ignores texture repeat/offset, so the tiling AND the
-  //animation are baked into the slide here: a small RT re-rendered each
-  //submerged frame. Each slide texel is unprojected through the projector's
-  //own shadow camera onto the water-surface plane and the pattern is
-  //evaluated in WORLD XZ — so the cast caustics are world-anchored by
-  //construction and the projector itself glides continuously with the camera.
-  //(This replaced the earlier integer-tile XZ snapping: the snap kept the
-  //PATTERN world-stable but made the cone envelope, decay vignette and the
-  //spot shadow POV hop one tile at a time as the camera swam.)
+  //── Underwater caustic projection — KNOBS ────────────────────────────────
+  //The projector itself (slide RT, SpotLight, per-frame update) lives in
+  //ARestlessOcean.Passes.CausticProjectionPass; read its header for why a
+  //SpotLight cookie is the mechanism. These knobs stay on the grid so the
+  //existing window.oceanGrid.causticLight* console tuning keeps working, and
+  //because causticsStrength is also consumed by the water shader uniforms.
   //4096 over the 25 m-radius cone = 82 px/m: the texture web's filaments
   //are ~2.6 cm at the 3.33 m period (the 8 px blur of the 1024 px texture),
   //so they need >~75 px/m to stay above a pixel in the slide. Shrinking the
@@ -336,141 +283,18 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //the lit disc still fit comfortably inside 25 m.
   this.causticLightConeRadius = 25.0;
   this.causticLightIntensity = 6.0;       //MAIN KNOB — caustic brightness on the seabed
-  this._causticProjectionTarget = new THREE.WebGLRenderTarget(
-    this.causticProjectionResolution, this.causticProjectionResolution,
-    {
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
-      format: THREE.RGBAFormat,
-      type: THREE.UnsignedByteType,
-      depthBuffer: false,
-      stencilBuffer: false
-    }
-  );
-  this._causticProjectionScene = new THREE.Scene();
-  this._causticProjectionCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-  this._causticProjectionMaterial = new THREE.ShaderMaterial({
-    uniforms: {
-      causticMap: {value: null},
-      uTime: {value: 0.0},
-      //Inverse view-projection of the projector's shadow camera — the SAME
-      //camera the cookie projects through, so slide texel ↔ world mapping is
-      //exact by construction. Filled per frame in _updateCausticProjection.
-      uInvVP: {value: new THREE.Matrix4()},
-      uSurfaceY: {value: 0.0},
-      uPeriod: {value: this.causticTexturePeriod}
-    },
-    vertexShader: [
-      'varying vec2 vUv;',
-      'void main(){',
-      '  vUv = uv;',
-      '  gl_Position = vec4(position.xy, 0.0, 1.0);',
-      '}'
-    ].join('\n'),
-    //Mirrors causticShader() in water-shader.glsl: two non-parallel scrolling
-    //samples min'd together, then a smoothstep contrast curve. The pattern is
-    //sampled in world XZ / uPeriod, the same parameterisation the water
-    //shader uses (0.1 * pSurfaceHit.xz), so size, drift speed AND phase line
-    //up across the waterline. The three chromatically-offset taps give
-    //caustic light its R/B dispersion — the foci of different wavelengths
-    //land slightly apart (matches the +/-0.005 caustic-UV offset the water
-    //shader's causticShader uses).
-    fragmentShader: [
-      'uniform sampler2D causticMap;',
-      'uniform float uTime;',
-      'uniform mat4 uInvVP;',
-      'uniform float uSurfaceY;',
-      'uniform float uPeriod;',
-      'varying vec2 vUv;',
-      'float caustic(vec2 uv, float t){',
-      '  vec2 uv1 = uv + vec2(0.8, 0.1) * t;',
-      '  vec2 uv2 = uv - vec2(0.2, 0.7) * t;',
-      '  float a = texture2D(causticMap, uv1).r;',
-      '  float b = texture2D(causticMap, uv2).g;',
-      //LO/HI are solved by make-caustic-map.py against the generated caustic
-      //texture (must match CAUSTIC_THRESHOLD_LO/HI in water-shader.glsl).
-      '  return smoothstep(0.0, 1.0, min(a, b));',
-      '}',
-      'void main(){',
-      //Unproject this slide texel through the projector camera and intersect
-      //the water-surface plane: the pattern is evaluated where the cookie ray
-      //pierces the surface, so it stays world-anchored while the projector
-      //moves, and the keystone of a tilted cone is handled exactly.
-      '  vec2 ndc = vUv * 2.0 - 1.0;',
-      '  vec4 pNear = uInvVP * vec4(ndc, -1.0, 1.0);',
-      '  vec4 pFar  = uInvVP * vec4(ndc,  1.0, 1.0);',
-      '  vec3 ro = pNear.xyz / pNear.w;',
-      '  vec3 rd = normalize(pFar.xyz / pFar.w - ro);',
-      //rd.y is always negative (the projector looks down); the min() guards
-      //the degenerate near-horizontal case rather than dividing by ~0.
-      '  float s = (uSurfaceY - ro.y) / min(rd.y, -0.001);',
-      '  vec2 uv = (ro.xz + rd.xz * s) / uPeriod;',
-      '  float t = uTime / 8.0;',
-      '  float r = caustic(uv + vec2(0.005), t);',
-      '  float g = caustic(uv,               t);',
-      '  float b = caustic(uv - vec2(0.005), t);',
-      '  gl_FragColor = vec4(r, g, b, 1.0);',
-      '}'
-    ].join('\n'),
-    depthTest: false,
-    depthWrite: false,
-    toneMapped: false
-  });
-  this._causticProjectionScene.add(new THREE.Mesh(
-    new THREE.PlaneGeometry(2.0, 2.0), this._causticProjectionMaterial
-  ));
 
-  //The projector. distance 0 → no hard cutoff. decay 2 (inverse-square) gives
-  //a soft depth falloff: fragments farther from the projector (= deeper, since
-  //the projector sits above the surface and tracks the camera XZ) receive
-  //less light, approximating the Beer-Lambert attenuation of sunlight on its
-  //way down to the seabed. The runtime compensates intensity by
-  //pow(causticLightHeight, decay) so surface-level brightness matches what
-  //the old decay-0 cast produced — only the depth gradient is new.
-  //castShadow ON — the scene sun shadow only darkens the seabed's DIFFUSE
-  //term; this cookie light is additive, so without its own occlusion the web
-  //lands on seabed inside an island/hull sun shadow. The water surface
-  //cannot block the cone: ocean patches, the underwater curtain and the
-  //horizon skirt all set castShadow = false, so only real scene casters
-  //(terrain, hulls, lighthouse) register in the spot's shadow map.
-  //castShadow stays PERMANENTLY true: toggling it at the waterline would
-  //change NUM_SPOT_LIGHT_SHADOWS and recompile every lit material on each
-  //crossing — the same churn the intensity-instead-of-visible rule below
-  //avoids. The idle cost above water is one depth pass over whatever sits in
-  //the cone; _updateCausticProjection parks the projector far below the world
-  //while surfaced so that pass frustum-culls to zero draws.
-  //Kept permanently in the scene with intensity driven to 0 above water:
-  //toggling light.visible would change the visible-light count and recompile
-  //every lit material on each waterline crossing. (SpotLight.map updates its
-  //projection matrix on its own — WebGLLights calls shadow.updateMatrices
-  //when a map is present.)
-  this.causticSpotLight = new THREE.SpotLight(0xffffff, 0.0);
-  this.causticSpotLight.decay = 2.0;
-  this.causticSpotLight.distance = 0.0;
-  //Low penumbra: THREE's spot falloff starts at angle*(1-penumbra), so a high
-  //value vignettes most of the 60m cone — at 0.8 full brightness reached only
-  //a ~12m ground radius and the visible seabed sat in the falloff ramp. 0.25
-  //keeps full strength to ~45m; the remaining edge lands beyond underwater
-  //visibility (Jerlov 1C ~13m) so no hard cone ring shows.
-  this.causticSpotLight.penumbra = 0.25;
-  this.causticSpotLight.angle = Math.atan(this.causticLightConeRadius / this.causticLightHeight);
-  this.causticSpotLight.castShadow = true;
-  this.causticSpotLight.shadow.mapSize.set(2048, 2048);
-  //Tight depth range for perspective shadow precision at the receiver band:
-  //the projector sits causticLightHeight (400 m) up the refracted sun ray, so
-  //the seabed lives ~400-460 m from it and above-water casters (island peaks,
-  //lighthouse) no closer than ~200 m. near=100/far=600 brackets both with
-  //margin. light.distance stays 0 so SpotLightShadow.updateMatrices keeps our
-  //far. normalBias 1.5 matches what the scene sun needed on the same imported
-  //terrain (islands.html acne fix).
-  this.causticSpotLight.shadow.camera.near = 100.0;
-  this.causticSpotLight.shadow.camera.far = 600.0;
-  this.causticSpotLight.shadow.normalBias = 1.5;
-  //The slide pass reads this camera's projectionMatrixInverse before THREE's
-  //own shadow pass has ever run updateMatrices — keep it valid from frame 0.
-  this.causticSpotLight.shadow.camera.updateProjectionMatrix();
-  this.causticSpotLight.map = this._causticProjectionTarget.texture;
-  this._causticLightAdded = false;
+  //The projector pass itself. Guarded like OceanShadowCSM / OceanSplash so a
+  //missing script tag degrades to "no underwater caustics" rather than throwing.
+  if(ARestlessOcean.Passes && ARestlessOcean.Passes.CausticProjectionPass){
+    this.causticProjectionPass = new ARestlessOcean.Passes.CausticProjectionPass(this);
+    this.causticProjectionPass.init();
+    //Back-compat alias — the projector was `oceanGrid.causticSpotLight` in 0.2.0.
+    this.causticSpotLight = this.causticProjectionPass.light;
+  } else {
+    this.causticProjectionPass = null;
+    this.causticSpotLight = null;
+  }
 
   //── Underwater fog (via A-Starry-Sky's fog reservation hook) ──────────────
   //Geometry seen DIRECTLY underwater (the seabed) is drawn by its own
@@ -488,14 +312,6 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //  fog.near  = -waterSurfaceY (selects ocean branch + world-Y gate)
   //  fog.far   = scalar transmittance density (1/m), avg of extinction
   this.underwaterFogColor = new THREE.Color(0.12, 0.24, 0.27);   //sky-dome bg swap colour fallback
-  //Multiplier on the computed murk colour. Our inscatter formula
-  //(albedo · (sun + ambient) / π) assumes ISOTROPIC phase, but real water
-  //is strongly forward-scattering — the back-scattered radiance reaching the
-  //eye is a fraction of what the isotropic formula predicts. 0.35 is the
-  //empirical compensation that makes shallow water read as "subtle absorption"
-  //rather than "saturated cyan." Live-tunable; will likely become a data
-  //attribute once we expose a user-facing parameter.
-  this.underwaterFogBrightness = 0.35;
   this._oceanFog = new THREE.Fog(0x1a2d33, -1.0, 1.0);  //near<0 + far>0 => ocean branch
   this._capturedSkyFog = undefined;            //A-Starry-Sky's fog, tracked while above water
   this._fogChunkInjected = false;
@@ -508,9 +324,6 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //instead of crashing when running without a-starry-sky.
   this._uwMurkCamDepthScratch = new THREE.Vector3(0.02, 0.06, 0.08);
   this._uwSunDirScratch = new THREE.Vector3();
-  //Refracted (in-water) sun direction for the tilted caustic projector. Reused
-  //per frame to avoid alloc. See _updateCausticProjection.
-  this._causticRefrScratch = new THREE.Vector3();
   //Ambient (downwelling) hemisphere light discovered standalone — fills the
   //inscatter ambient term that normally comes from a-starry-sky's y-axis
   //hemispherical. Found in the per-frame light scan; null until then.
@@ -584,7 +397,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   };
 
   //── Sky provider resolution + standalone underwater-fog scaffold ──────────
-  //The underwater seabed/curtain murk (see _injectUnderwaterFogChunk) hooks a
+  //The underwater seabed/curtain murk (see the UnderwaterFogChunk pass) hooks a
   //reservation slot in THREE.ShaderChunk.fog_* that a-starry-sky installs as
   //part of its atmospheric-perspective fog. Without a-starry-sky that slot
   //never exists, so the seabed renders un-fogged (flat). Detection by sniffing
@@ -606,236 +419,51 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     return (hasGlobal || hasElement) ? 'a-starry-sky' : 'standalone';
   };
 
-  //Install a minimal, self-contained fog scaffold into THREE.ShaderChunk.fog_*
-  //carrying the SAME reservation tokens a-starry-sky leaves, so the existing
-  //_injectUnderwaterFogChunk() can fill them unchanged. We deliberately do NOT
-  //replicate a-starry-sky's atmosphere here — only the plumbing the ocean
-  //branch needs: the vFogWorldPosition varying, the sRGB helpers the chunk
-  //calls, and a stock linear-fog else-branch for fogNear >= 0. Idempotent and
-  //skipped entirely when a-starry-sky owns the slot.
-  this._installStandaloneFogScaffold = function(){
-    if(self._standaloneFogScaffoldInstalled) return;
-    const fragToken = '//$$OCEAN_SHADER_SHADER_FRAGMENT_RESERVATION$$';
-    const vertToken = '//$$OCEAN_SHADER_SHADER_VERTEX_RESERVATION$$';
-    //If something already provided the token (a-starry-sky raced us), don't
-    //clobber it — let _injectUnderwaterFogChunk fill whatever is there.
-    if(THREE.ShaderChunk.fog_fragment &&
-       THREE.ShaderChunk.fog_fragment.indexOf(fragToken) !== -1){
-      self._standaloneFogScaffoldInstalled = true;
-      return;
-    }
-    THREE.ShaderChunk.fog_pars_vertex = [
-      '#ifdef USE_FOG',
-      '  varying float vFogDepth;',
-      '  varying vec3 vFogWorldPosition;',
-      '#endif'
-    ].join('\n');
-    THREE.ShaderChunk.fog_vertex = [
-      '#ifdef USE_FOG',
-      '  ' + vertToken,
-      '#endif'
-    ].join('\n');
-    THREE.ShaderChunk.fog_pars_fragment = [
-      '#ifdef USE_FOG',
-      '  uniform vec3 fogColor;',
-      '  varying float vFogDepth;',
-      '  varying vec3 vFogWorldPosition;',
-      '  #ifdef FOG_EXP2',
-      '    uniform float fogDensity;',
-      '  #else',
-      '    uniform float fogNear;',
-      '    uniform float fogFar;',
-      '  #endif',
-      //sRGB <-> linear helpers the injected ocean branch calls by name. Match
-      //a-starry-sky's signatures (vec4 in / vec4 out) so the chunk GLSL is
-      //identical on both paths.
-      '  vec4 fogsRGBToLinear(vec4 c){',
-      '    return vec4(mix(c.rgb / 12.92, pow((c.rgb + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c.rgb)), c.a);',
-      '  }',
-      '  vec4 fogLinearTosRGB(vec4 c){',
-      '    return vec4(mix(c.rgb * 12.92, 1.055 * pow(c.rgb, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c.rgb)), c.a);',
-      '  }',
-      //Narkowicz ACES fit — the SAME operator a-starry-sky and water-shader.glsl
-      //use. The ocean branch tonemaps its fogged result on the sRGB (main-canvas)
-      //path so underwater scene geometry matches the water surface and the
-      //reflection (which both go through MyAES). a-starry-sky declares this itself
-      //on its path, so this copy is standalone-only — the two scaffolds are never
-      //both installed, so there is no duplicate-symbol collision.
-      '  vec3 MyAESFilmicToneMapping(vec3 color){',
-      '    return clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), 0.0, 1.0);',
-      '  }',
-      '#endif'
-    ].join('\n');
-    THREE.ShaderChunk.fog_fragment = [
-      '#ifdef USE_FOG',
-      '  #ifdef FOG_EXP2',
-      '    float fogFactor = 1.0 - exp(-fogDensity * fogDensity * vFogDepth * vFogDepth);',
-      '    gl_FragColor.rgb = mix(gl_FragColor.rgb, fogColor, fogFactor);',
-      '  #else',
-      //fogNear < 0 selects the ocean branch (same convention as the a-starry-sky
-      //path). The reservation token is filled by _injectUnderwaterFogChunk; the
-      //else is plain linear fog so any above-water fog still works standalone.
-      '    if(fogNear < 0.0){',
-      '      ' + fragToken,
-      '    } else {',
-      '      float fogFactor = smoothstep(fogNear, fogFar, vFogDepth);',
-      '      gl_FragColor.rgb = mix(gl_FragColor.rgb, fogColor, fogFactor);',
-      '    }',
-      '  #endif',
-      '#endif'
-    ].join('\n');
-    self._standaloneFogScaffoldInstalled = true;
-  };
 
   //Resolve now (constructor time, before any material compiles) and, if we own
   //the sky, lay down the scaffold so the curtain/seabed fog materials built
   //below pick it up on first compile.
+  //Underwater fog chunk. Not a render pass — a one-shot installer for the
+  //THREE.ShaderChunk.fog_* ocean branch that fogs directly-viewed seabed. It
+  //also writes the standalone fog scaffold when no a-starry-sky is present to
+  //provide the reservation slot. See its header for the THREE.Fog smuggle.
   this._skyProvider = this._resolveSkyProvider();
-  if(this._skyProvider === 'standalone'){
-    this._installStandaloneFogScaffold();
+  if(ARestlessOcean.Passes && ARestlessOcean.Passes.UnderwaterFogChunk){
+    this.underwaterFogChunk = new ARestlessOcean.Passes.UnderwaterFogChunk(this);
+    this.underwaterFogChunk.init(this._skyProvider);
+  } else {
+    this.underwaterFogChunk = null;
   }
 
-  //G-buffer override material — one per source material, built on demand.
-  //Writes linear albedo (baseColor × decoded albedoMap) + geometric world-
-  //space normal + linear view-space depth. Per-mesh material swap in tick()
-  //below picks the right variant for each mesh before the refraction render.
-  //
-  //Fallback texture for materials without a .map — sampling a null sampler
-  //is undefined; bind a 1×1 white pixel and gate via hasAlbedoMap uniform.
-  const whiteData = new Uint8Array([255, 255, 255, 255]);
-  this._gBufferWhitePixel = new THREE.DataTexture(whiteData, 1, 1, THREE.RGBAFormat, THREE.UnsignedByteType);
-  this._gBufferWhitePixel.needsUpdate = true;
 
-  const gBufferVertexShader = [
-    'out vec3 vWorldNormal;',
-    'out float vViewZ;',
-    'out vec2 vUv;',
-    'void main(){',
-    '  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);',
-    '  vViewZ = -mvPosition.z;',
-    '  vWorldNormal = normalize(mat3(modelMatrix) * normal);',
-    '  vUv = uv;',
-    '  gl_Position = projectionMatrix * mvPosition;',
-    '}'
-  ].join('\n');
 
-  //Albedo path stores LINEAR values into the HalfFloat target. Source albedo
-  //maps from GLTF (the island model) are sRGB-encoded, so decode here once.
-  //Material.color values are already linear (THREE.Color stores linear).
-  const gBufferFragmentShader = [
-    'precision highp float;',
-    'layout(location = 0) out vec4 gAlbedo;',
-    'layout(location = 1) out vec4 gNormal;',
-    'layout(location = 2) out vec4 gLinearDepth;',
-    'in vec3 vWorldNormal;',
-    'in float vViewZ;',
-    'in vec2 vUv;',
-    'uniform vec3 baseColor;',
-    'uniform sampler2D albedoMap;',
-    'uniform int hasAlbedoMap;',
-    'vec3 srgbToLinear(vec3 c){ return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }',
-    'void main(){',
-    '  vec3 albedo = baseColor;',
-    '  if(hasAlbedoMap == 1){',
-    '    vec3 texel = texture(albedoMap, vUv).rgb;',
-    '    albedo *= srgbToLinear(texel);',
-    '  }',
-    '  gAlbedo = vec4(albedo, 1.0);',
-    '  gNormal = vec4(normalize(vWorldNormal), 1.0);',
-    '  gLinearDepth = vec4(vViewZ, 0.0, 0.0, 1.0);',
-    '}'
-  ].join('\n');
-
-  //Cache keyed by source-material UUID; built lazily on first sight.
-  this._gBufferMaterialCache = new Map();
-  this._swappedMeshes = [];
-
-  const grid = this;
-  this._buildGBufferMaterialFor = function(srcMat){
-    const hasMap = !!(srcMat.map && srcMat.map.isTexture);
-    const fallbackColor = new THREE.Color(0.5, 0.42, 0.32);
-    const baseColorRef = (srcMat.color && srcMat.color.isColor) ? srcMat.color : fallbackColor;
-    return new THREE.ShaderMaterial({
-      glslVersion: THREE.GLSL3,
-      uniforms: {
-        baseColor: { value: baseColorRef },
-        albedoMap: { value: hasMap ? srcMat.map : grid._gBufferWhitePixel },
-        hasAlbedoMap: { value: hasMap ? 1 : 0 }
-      },
-      vertexShader: gBufferVertexShader,
-      fragmentShader: gBufferFragmentShader,
-      side: srcMat.side !== undefined ? srcMat.side : THREE.FrontSide
-    });
-  };
-
-  this._resolveGBufferMaterial = function(srcMat){
-    if(Array.isArray(srcMat)){
-      const arr = new Array(srcMat.length);
-      for(let i = 0; i < srcMat.length; ++i){
-        arr[i] = grid._resolveGBufferMaterial(srcMat[i]);
-      }
-      return arr;
-    }
-    let cached = grid._gBufferMaterialCache.get(srcMat.uuid);
-    if(!cached){
-      cached = grid._buildGBufferMaterialFor(srcMat);
-      grid._gBufferMaterialCache.set(srcMat.uuid, cached);
-    }
-    return cached;
-  };
-
-  //Set up depth camera pointing down for edge foam
-  //1024² RGBA FloatType = ~16 MB (was 4096² ≈ 268 MB). The ortho still covers
-  //4096 m, so texel size is 4 m/texel (was 1 m). Shore-foam band is 0.5–4 m
-  //(water-shader: shoreFade), so the breaker line quantises to ~4 m steps —
-  //bump back to 2048² (2 m/texel, ~67 MB) if the shoreline reads stair-stepped.
-  this.foamRenderTarget = new THREE.WebGLRenderTarget(1024, 1024, {
-    type: THREE.FloatType
-  });
+  //Terrain ortho atlases: the foam terrain-height capture and the layer-30
+  //boat-hull exclusion capture. Both live in
+  //ARestlessOcean.Passes.TerrainOrthoPass — read its header for why they are
+  //one module rather than two. Guarded like the other passes.
   this.foamCameraHeight = data.foam_camera_height;
-  this.foamCamera = new THREE.OrthographicCamera(-2048.0, 2048.0, 2048.0, -2048.0, 0.1, this.foamCameraHeight + 500.0);
-  this.scene.add(this.foamCamera);
-
-  //Set up a depth camera pointing down for ocean exclusion mapping.
-  //Unlike foamCamera this is NOT a terrain-height capture — it renders only
-  //layer-30 meshes (boat interior hulls and similar volumes that need water
-  //masked inside them). One small mesh near the camera, so the render
-  //target is sized to that scope: 500 m × 500 m at 1024² ≈ 0.49 m/texel.
-  //The previous 4096² × 2048 m × 2048 m sizing was a 256 MB FloatType
-  //buffer to mask a single boat — pure VRAM waste.
-  //
-  //Keep the shader's exclusion-sample radius (water-shader.glsl, divide-by
-  //in vec2(...)) in sync with this ortho extent's half-width.
-  //NEAREST filtering is mandatory here: the .g channel is a discard *threshold*
-  //(boat world-Y) and .a is a 0/1 mask, neither of which may be interpolated
-  //across the hard boat/no-boat boundary. The RT default (LinearFilter) blended
-  //the below-water interior-floor height with the rim and the cleared (G=0=sea
-  //level) texels, so along the hull rim discardHeight drifted below the water
-  //(over-discard → ring straight to the seabed) or above it (under-discard →
-  //water leaks into the hull). NEAREST gives each water fragment one clean texel.
-  //NEAREST filtering is mandatory here: the .g channel is a discard *threshold*
-  //(boat world-Y) and .a is a 0/1 mask, neither of which may be interpolated
-  //across the hard boat/no-boat boundary. The RT default (LinearFilter) blended
-  //the below-water interior-floor height with the rim and the cleared (G=0=sea
-  //level) texels, so along the hull rim discardHeight drifted below the water
-  //(over-discard → ring straight to the seabed) or above it (under-discard →
-  //water leaks into the hull). NEAREST gives each water fragment one clean texel.
-  //
-  //Residual keel-crease tris + a ~1px waterline edge remain: they're texel-
-  //resolution limited (~0.49 m/texel over this 500 m ortho). Confirmed via a
-  //2048² test (the tris shrank with texel size). The sharp fix is a tighter
-  //ortho extent (fit-to-boat, or a smaller fixed radius) for sub-decimetre
-  //texels at this same 16 MB size — deferred, as it needs the hardcoded 250 m
-  //half-width in water-shader.glsl uniform-ized (a create-shader.py regen).
-  this.exclusionRenderTarget = new THREE.WebGLRenderTarget(1024, 1024, {
-    type: THREE.FloatType,
-    minFilter: THREE.NearestFilter,
-    magFilter: THREE.NearestFilter
-  });
-  this.exclusionCamera = new THREE.OrthographicCamera(-250.0, 250.0, 250.0, -250.0, 0.1, this.foamCameraHeight + 500.0);
-  this.exclusionCamera.layers.disableAll();
-  this.exclusionCamera.layers.set(30);
-  this.scene.add(this.exclusionCamera);
+  if(ARestlessOcean.Passes && ARestlessOcean.Passes.TerrainOrthoPass){
+    this.terrainOrthoPass = new ARestlessOcean.Passes.TerrainOrthoPass(this);
+    this.terrainOrthoPass.init();
+    //Back-compat aliases — all of these were OceanGrid fields in 0.2.0 and are
+    //still read by the per-instance uniform upload loop and the debug hooks.
+    this.foamRenderTarget = this.terrainOrthoPass.foamRenderTarget;
+    this.exclusionRenderTarget = this.terrainOrthoPass.exclusionRenderTarget;
+    this.foamCamera = this.terrainOrthoPass.foamCamera;
+    this.exclusionCamera = this.terrainOrthoPass.exclusionCamera;
+    this.positionPassMaterial = this.terrainOrthoPass.positionPassMaterial;
+    this._foamCameraXZ = this.terrainOrthoPass.foamCameraXZ;
+    this._exclusionCameraXZ = this.terrainOrthoPass.exclusionCameraXZ;
+  } else {
+    this.terrainOrthoPass = null;
+    this.foamRenderTarget = null;
+    this.exclusionRenderTarget = null;
+    this.foamCamera = null;
+    this.exclusionCamera = null;
+    this.positionPassMaterial = null;
+    this._foamCameraXZ = new THREE.Vector2();
+    this._exclusionCameraXZ = new THREE.Vector2();
+  }
 
   //Initialize all shader LUTs for future ocean viewing
   //Initialize our ocean variables and all associated shaders.
@@ -905,27 +533,28 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       shader.fragmentShader = shader.fragmentShader.replace(`#include <fog_fragment>`, THREE.fogFrag);
     };
   }
-  this.oceanMaterial.uniforms = ARestlessOcean.Materials.Ocean.waterMaterial.uniforms;
+  //Per-grid CLONE of the module-global uniform template, not an alias. In 0.2.0
+  //this was a straight assignment, so the line below (and anything else writing
+  //through oceanMaterial.uniforms) wrote into the global — fine with one ocean,
+  //a cross-body stomp with two. See ARestlessOcean.cloneUniforms for the array
+  //deep-clone that UniformsUtils.clone does not do.
+  this.oceanMaterial.uniforms = ARestlessOcean.cloneUniforms(ARestlessOcean.Materials.Ocean.waterMaterial.uniforms);
   this.oceanMaterial.uniforms.sizeOfOceanPatch.value = this.patchSize;
 
-  this.positionPassMaterial = new THREE.ShaderMaterial({
-    vertexShader: ARestlessOcean.Materials.Ocean.positionPassMaterial.vertexShader,
-    fragmentShader: ARestlessOcean.Materials.Ocean.positionPassMaterial.fragmentShader,
-    side: THREE.FrontSide,
-    transparent: false,
-    lights: false
-  });
-  this.positionPassMaterial.uniforms = ARestlessOcean.Materials.Ocean.positionPassMaterial.uniforms;
-  this.positionPassMaterial.uniforms.worldMatrix.value = this.camera.matrixWorld;
-
-  //Ocean-only cascaded shadow map. Dedicated tight-frustum depth pass that
-  //only contains the water InstancedMeshes — gives per-wave self-shadow that
-  //the scene-wide sun shadow map can't resolve. Registered with each mesh
-  //below via addCaster(). Safe to skip if the shadow material isn't loaded
-  //(older builds without ocean-shadow.js).
-  if(ARestlessOcean.OceanShadowCSM && ARestlessOcean.Materials.Ocean.oceanShadowMaterial){
-    this.oceanShadowCSM = new ARestlessOcean.OceanShadowCSM(this, scene);
+  //Ocean-only cascaded shadow map, orchestrated by
+  //ARestlessOcean.Passes.OceanShadowPass. Dedicated tight-frustum depth pass
+  //that only contains the water InstancedMeshes — gives per-wave self-shadow
+  //that the scene-wide sun shadow map can't resolve. Each mesh registers
+  //itself below via addCaster().
+  if(ARestlessOcean.Passes && ARestlessOcean.Passes.OceanShadowPass){
+    this.oceanShadowPass = new ARestlessOcean.Passes.OceanShadowPass(this);
+    this.oceanShadowPass.init();
+    //Back-compat alias — the CSM was `oceanGrid.oceanShadowCSM` in 0.2.0 and is
+    //still read by the debug helpers and the EVSM console setters. Null when
+    //ocean-shadow-csm.js or its generated material isn't loaded.
+    this.oceanShadowCSM = this.oceanShadowPass.csm;
   } else {
+    this.oceanShadowPass = null;
     this.oceanShadowCSM = null;
   }
 
@@ -1082,7 +711,11 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     if(!oceanPatchGeometryInstances.hasOwnProperty(key)){
       oceanGridInstanceKeys.push(key);
       const geometry = ARestlessOcean.OceanTile(tileSize, numCells, top, right, bottom, left);
-      const mesh = new THREE.InstancedMesh(geometry, self.oceanMaterial.clone(), instanceCount[key]);
+      //Material.clone() runs UniformsUtils.clone, which slices arrays rather
+      //than deep-cloning them — so re-clone the uniforms properly on top.
+      const tileMaterial = self.oceanMaterial.clone();
+      tileMaterial.uniforms = ARestlessOcean.cloneUniforms(self.oceanMaterial.uniforms);
+      const mesh = new THREE.InstancedMesh(geometry, tileMaterial, instanceCount[key]);
       mesh.frustumCulled = false;
       //Sit above the horizon skirt (renderOrder 1) so FFT ocean overwrites the
       //pure-inscatter skirt fragments wherever real ocean geometry exists.
@@ -1103,8 +736,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       //cascades; finest ring 0 contributes to all four. Layers are set
       //inside addCaster so per-cascade light cameras naturally pick the
       //right caster set without any per-frame layer toggling here.
-      if(self.oceanShadowCSM){
-        self.oceanShadowCSM.addCaster(mesh, k);
+      if(self.oceanShadowPass){
+        self.oceanShadowPass.addCaster(mesh, k);
       }
       //Move ocean patch off the default layer onto OCEAN_LAYER. Must happen
       //after addCaster, which enables the per-cascade caster layers (7..10);
@@ -1143,241 +776,31 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     instanceIterations[key] += 1;
   });
 
-  this.numberOfPatches = this.oceanPatches.length;
   this.numCells = numCells;
   this.ringCount = ringCount;
   this.globalCameraPosition = new THREE.Vector3();
 
+
   //═══════════════════════════════════════════════════════════════════════════
   // FFT surface sampling on the CPU — the EXACT rendered water, for buoyancy.
   //═══════════════════════════════════════════════════════════════════════════
-  //
-  // sampleFFTHeightAt (EXACT, synchronous) reads single texels straight off the
-  // GPU. Each call drains the GPU queue (a stall), so it's a DEBUG ground truth
-  // only — see ARestlessOcean.debugWaveAt.
-  //
-  // The scalable path is the LOCAL HEIGHT FIELD below: once every ~frame a tiny
-  // GPU pass composites the cascades' height into a small RT covering a region
-  // that follows the camera, and we async-read just THAT (a few hundred KB, not
-  // the 12 MB of full cascade textures). Every buoyancy query is then a cheap
-  // bilinear lookup of the cached field — exact (it IS the rendered surface, so
-  // floats ride the water you see) and O(1) per probe regardless of object
-  // count. Objects outside the region return null → caller falls back to
-  // analytic. Tunables: HEIGHT_FIELD_RES (grid resolution), HEIGHT_FIELD_SIZE
-  // (world metres covered → SIZE/RES = m/texel, caps the smallest wave it
-  // resolves), HEIGHT_FIELD_INTERVAL_MS (refresh throttle; waves move slowly so
-  // ~15 Hz is plenty, the cached field is reused every frame between refreshes).
-  const HEIGHT_FIELD_RES = 256;
-  const HEIGHT_FIELD_SIZE = 512.0;          //metres; 2 m/texel at res 256.
-  const HEIGHT_FIELD_INTERVAL_MS = 66;      //~15 Hz refresh.
-  this._hfSnap = null;            //resolved {data, originX, originZ, size, res, time}.
-  this._hfSnapPrev = null;        //prior resolved snapshot, kept for dH/dt (rise).
-  this._hfBufs = null;            //triple-buffered readback (see _updateHeightField).
-  this._hfBackIdx = 0;
-  this._hfPending = false;
-  this._hfWantedUntil = 0;        //only run while a consumer asked recently.
-  this._hfLastIssue = 0;
-
-  //EXACT synchronous single-texel readback — DEBUG ground truth only (each call
-  //stalls the GPU queue). See ARestlessOcean.debugWaveAt.
-  this.sampleFFTHeightAt = function(x, z){
-    const composer = self.oceanHeightComposer;
-    if(!composer || !composer.cascadeDisplacementTargets || !composer.cascadeDisplacementTargets[0]) return null;
-    self._fftProbeBuf = self._fftProbeBuf || new Float32Array(4);
-    const buf = self._fftProbeBuf;
-    const res = composer.baseTextureWidth;
-    const offsets = self.oceanMaterial.uniforms.cascadeSpatialOffsets.value;
-    const whm = composer.waveHeightMultiplier;
-    let h = self.heightOffset;
-    for(let c = 0; c < composer.cascadeDisplacementTargets.length; c++){
-      const patch = composer._cascadePatchSizes[c];
-      let u = (x + offsets[c].x) / patch;
-      let v = (z + offsets[c].y) / patch;
-      u -= Math.floor(u); v -= Math.floor(v);
-      const px = Math.min(res - 1, Math.max(0, Math.floor(u * res)));
-      const py = Math.min(res - 1, Math.max(0, Math.floor(v * res)));
-      self.renderer.readRenderTargetPixels(composer.cascadeDisplacementTargets[c], px, py, 1, 1, buf);
-      h += buf[1] * whm; //.y (green) = vertical displacement.
-    }
-    return h;
-  };
-
-  //── Local height-field GPU pass (composite cascades → small RT) ─────────────
-  //Build the pass once. The fragment shader mirrors the water vertex shader's
-  //cascade composition (sum each cascade's .y at (worldXZ+offset)/patch), but
-  //over a region grid instead of mesh vertices, and bakes heightOffset + whm in.
-  const HF_N = self.oceanHeightComposer.numCascades;
-  let hfSumLines = '';
-  for(let c = 0; c < HF_N; c++){
-    hfSumLines += 'dy += texture2D(hfCascadeTex[' + c + '], (worldXZ + hfCascadeOffset[' + c + ']) / hfCascadePatch[' + c + ']).y;\n';
+  //Both readback mechanisms (the scalable local height field and the per-frame
+  //submersion probe) live in ARestlessOcean.Passes.HeightReadbackPass — read its
+  //header for the async-readback rationale and the triple-buffering. It also
+  //installs the public ARestlessOcean.sampleWater* / requestFFTSnapshot API.
+  if(ARestlessOcean.Passes && ARestlessOcean.Passes.HeightReadbackPass){
+    this.heightReadbackPass = new ARestlessOcean.Passes.HeightReadbackPass(this);
+    this.heightReadbackPass.init();
+    this.heightReadbackPass.installGlobalAPI();
+    //Back-compat aliases — both were OceanGrid methods in 0.2.0 and are called
+    //by buoyant.js / the debug console through the grid.
+    this.sampleFFTHeightAt = function(x, z){ return self.heightReadbackPass.sampleFFTHeightAt(x, z); };
+    this.sampleWaterHeightFieldCached = function(x, z){ return self.heightReadbackPass.sampleWaterHeightFieldCached(x, z); };
+  } else {
+    this.heightReadbackPass = null;
+    this.sampleFFTHeightAt = function(){ return null; };
+    this.sampleWaterHeightFieldCached = function(){ return null; };
   }
-  const hfVert = 'varying vec2 vHfUv;\nvoid main(){ vHfUv = uv; gl_Position = vec4(position, 1.0); }';
-  const hfFrag = [
-    'precision highp float;',
-    'varying vec2 vHfUv;',
-    'uniform sampler2D hfCascadeTex[' + HF_N + '];',
-    'uniform vec2 hfCascadeOffset[' + HF_N + '];',
-    'uniform float hfCascadePatch[' + HF_N + '];',
-    'uniform float hfWhm;',
-    'uniform float hfHeightOffset;',
-    'uniform vec2 hfRegionOrigin;',
-    'uniform float hfRegionSize;',
-    'void main(){',
-    '  vec2 worldXZ = hfRegionOrigin + vHfUv * hfRegionSize;',
-    '  float dy = 0.0;',
-    '  ' + hfSumLines,
-    '  gl_FragColor = vec4(hfHeightOffset + dy * hfWhm, 0.0, 0.0, 1.0);',
-    '}'
-  ].join('\n');
-  this._heightFieldMaterial = new THREE.ShaderMaterial({
-    uniforms: {
-      hfCascadeTex: {value: new Array(HF_N).fill(null)},
-      hfCascadeOffset: {value: (function(){ const a = []; for(let i = 0; i < HF_N; i++) a.push(new THREE.Vector2()); return a; })()},
-      hfCascadePatch: {value: new Array(HF_N).fill(1.0)},
-      hfWhm: {value: 1.0},
-      hfHeightOffset: {value: 0.0},
-      hfRegionOrigin: {value: new THREE.Vector2()},
-      hfRegionSize: {value: HEIGHT_FIELD_SIZE}
-    },
-    vertexShader: hfVert,
-    fragmentShader: hfFrag,
-    depthTest: false,
-    depthWrite: false
-  });
-  this._heightFieldScene = new THREE.Scene();
-  this._heightFieldScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this._heightFieldMaterial));
-  this._heightFieldCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-  this._heightFieldRT = new THREE.WebGLRenderTarget(HEIGHT_FIELD_RES, HEIGHT_FIELD_RES, {
-    minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
-    format: THREE.RGBAFormat, type: THREE.FloatType,
-    depthBuffer: false, stencilBuffer: false, generateMipmaps: false
-  });
-  this._hfN = HF_N;
-
-  //Render the field + issue the async readback. Region follows the camera,
-  //snapped to the texel grid so the sampled field doesn't shimmer as it pans.
-  this._updateHeightField = function(){
-    const now = (typeof performance !== 'undefined') ? performance.now() : Date.now();
-    if(now > self._hfWantedUntil) return;
-    if(self._hfPending) return;
-    if(now - self._hfLastIssue < HEIGHT_FIELD_INTERVAL_MS) return;
-    const composer = self.oceanHeightComposer;
-    if(!composer || !composer.cascadeDisplacementTextures || !composer.cascadeDisplacementTextures[0]) return;
-    if(typeof self.renderer.readRenderTargetPixelsAsync !== 'function') return;
-
-    const texel = HEIGHT_FIELD_SIZE / HEIGHT_FIELD_RES;
-    const originX = Math.floor((self.globalCameraPosition.x - HEIGHT_FIELD_SIZE * 0.5) / texel) * texel;
-    const originZ = Math.floor((self.globalCameraPosition.z - HEIGHT_FIELD_SIZE * 0.5) / texel) * texel;
-    const u = self._heightFieldMaterial.uniforms;
-    const offsets = self.oceanMaterial.uniforms.cascadeSpatialOffsets.value;
-    for(let c = 0; c < self._hfN; c++){
-      u.hfCascadeTex.value[c] = composer.cascadeDisplacementTextures[c];
-      u.hfCascadePatch.value[c] = composer._cascadePatchSizes[c];
-      u.hfCascadeOffset.value[c].copy(offsets[c]);
-    }
-    u.hfWhm.value = composer.waveHeightMultiplier;
-    u.hfHeightOffset.value = self.heightOffset;
-    u.hfRegionOrigin.value.set(originX, originZ);
-    u.hfRegionSize.value = HEIGHT_FIELD_SIZE;
-
-    const prevRT = self.renderer.getRenderTarget();
-    self.renderer.setRenderTarget(self._heightFieldRT);
-    self.renderer.render(self._heightFieldScene, self._heightFieldCamera);
-    self.renderer.setRenderTarget(prevRT);
-
-    if(!self._hfBufs){
-      const sz = HEIGHT_FIELD_RES * HEIGHT_FIELD_RES * 4;
-      //Triple-buffered: only one read is ever in flight, so 3 buffers guarantee
-      //the in-flight write target is neither the current nor the previous
-      //snapshot. That lets us retain a stable PREVIOUS field to finite-difference
-      //for surface rise (dH/dt) without the next readback clobbering it mid-transfer.
-      self._hfBufs = [new Float32Array(sz), new Float32Array(sz), new Float32Array(sz)];
-    }
-    const buf = self._hfBufs[self._hfBackIdx];
-    self._hfPending = true;
-    self._hfLastIssue = now;
-    self.renderer.readRenderTargetPixelsAsync(self._heightFieldRT, 0, 0, HEIGHT_FIELD_RES, HEIGHT_FIELD_RES, buf).then(function(){
-      self._hfSnapPrev = self._hfSnap; //keep the prior field so consumers can read dH/dt.
-      self._hfSnap = {data: buf, originX: originX, originZ: originZ, size: HEIGHT_FIELD_SIZE, res: HEIGHT_FIELD_RES, time: now};
-      self._hfBackIdx = (self._hfBackIdx + 1) % 3; //rotate; never reuse current/prev.
-      self._hfPending = false;
-    }).catch(function(){ self._hfPending = false; });
-  };
-
-  //Bilinear lookup of a GIVEN resolved snapshot's baked height (.x) at world
-  //(x,z). Returns null outside that snapshot's region. Shared by the cached-height,
-  //rise and slope samplers below so they all read the same field consistently.
-  this._sampleSnapHeight = function(s, x, z){
-    if(!s) return null;
-    const uu = (x - s.originX) / s.size;
-    const vv = (z - s.originZ) / s.size;
-    if(uu < 0.0 || uu > 1.0 || vv < 0.0 || vv > 1.0) return null;
-    const res = s.res, data = s.data;
-    const fx = uu * res - 0.5, fy = vv * res - 0.5;
-    let x0 = Math.floor(fx), y0 = Math.floor(fy);
-    const tx = fx - x0, ty = fy - y0;
-    let x1 = x0 + 1, y1 = y0 + 1;
-    x0 = x0 < 0 ? 0 : (x0 > res - 1 ? res - 1 : x0);
-    x1 = x1 < 0 ? 0 : (x1 > res - 1 ? res - 1 : x1);
-    y0 = y0 < 0 ? 0 : (y0 > res - 1 ? res - 1 : y0);
-    y1 = y1 < 0 ? 0 : (y1 > res - 1 ? res - 1 : y1);
-    const h00 = data[(y0 * res + x0) * 4], h10 = data[(y0 * res + x1) * 4];
-    const h01 = data[(y1 * res + x0) * 4], h11 = data[(y1 * res + x1) * 4];
-    const a = h00 + (h10 - h00) * tx;
-    const b = h01 + (h11 - h01) * tx;
-    return a + (b - a) * ty;
-  };
-
-  //Cheap bilinear lookup of the CURRENT field. Returns null outside the region or
-  //before the first field resolves → caller falls back to analytic.
-  this.sampleWaterHeightFieldCached = function(x, z){
-    return self._sampleSnapHeight(self._hfSnap, x, z);
-  };
-
-  //Public surface. Consumers call requestFFTSnapshot() each frame they want the
-  //field kept warm (it's off when nothing floats). sampleWaterHeightFFT is the
-  //cheap cached path; *Exact is the synchronous debug stall path.
-  ARestlessOcean.requestFFTSnapshot = function(){
-    self._hfWantedUntil = ((typeof performance !== 'undefined') ? performance.now() : Date.now()) + 1000;
-  };
-  ARestlessOcean.sampleWaterHeightFFT = function(x, z){ return self.sampleWaterHeightFieldCached(x, z); };
-  ARestlessOcean.sampleWaterHeightFFTExact = function(x, z){ return self.sampleFFTHeightAt(x, z); };
-
-  //Phase-correct surface RISE (dH/dt, m/s) at world (x,z): finite difference of
-  //the two most recent rendered-FFT snapshots — the rendered water's OWN vertical
-  //velocity. The analytic twin shares the spectrum but not the GPU's phases, so
-  //its "rising here?" answer fired spray over visibly-flat/trough water (the
-  //bunched, mistimed shore bursts). Returns null until two snapshots exist or
-  //outside the region → caller falls back to the analytic rate.
-  ARestlessOcean.sampleWaterRiseFFT = function(x, z){
-    const cur = self._hfSnap, prev = self._hfSnapPrev;
-    if(!cur || !prev) return null;
-    const dt = (cur.time - prev.time) / 1000.0;
-    if(dt <= 1e-4) return null;
-    const hc = self._sampleSnapHeight(cur, x, z);
-    const hp = self._sampleSnapHeight(prev, x, z);
-    if(hc === null || hp === null) return null;
-    return (hc - hp) / dt;
-  };
-
-  //Phase-correct STEEPNESS (1 - normal.y) at world (x,z) from the rendered-FFT
-  //height field's OWN slope (central differences, one texel eps). Same motivation
-  //as the rise sampler: the analytic normal peaks on phantom crests, so mist tore
-  //off flat water. Returns null outside the region → caller falls back to analytic.
-  ARestlessOcean.sampleWaterSlopeFFT = function(x, z){
-    const s = self._hfSnap;
-    if(!s) return null;
-    const eps = s.size / s.res; //one texel (~2 m).
-    const hxp = self._sampleSnapHeight(s, x + eps, z);
-    const hxn = self._sampleSnapHeight(s, x - eps, z);
-    const hzp = self._sampleSnapHeight(s, x, z + eps);
-    const hzn = self._sampleSnapHeight(s, x, z - eps);
-    if(hxp === null || hxn === null || hzp === null || hzn === null) return null;
-    const dhdx = (hxp - hxn) / (2.0 * eps);
-    const dhdz = (hzp - hzn) / (2.0 * eps);
-    const ny = 1.0 / Math.sqrt(1.0 + dhdx * dhdx + dhdz * dhdz);
-    return 1.0 - ny;
-  };
 
   //Build the horizon-skirt mesh and register it as another instance key so the
   //per-frame uniform loop pushes the same FFT-ocean updates into its (cloned)
@@ -1388,6 +811,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this._createHorizonSkirt = function(){
     if(self.horizonSkirtMesh){ return; }
     const skirtMaterial = self.oceanMaterial.clone();
+    //Same array deep-clone as the tile materials above.
+    skirtMaterial.uniforms = ARestlessOcean.cloneUniforms(self.oceanMaterial.uniforms);
     skirtMaterial.depthTest = true;
     skirtMaterial.depthWrite = false;
     skirtMaterial.fog = true;
@@ -1433,28 +858,17 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     this._createHorizonSkirt();
   }
 
-  //Console helper — flip the ocean-shadow debug mode on every water tile
-  //material at once. Call from the browser console as
-  //  setOceanShadowDebug(0|1|2)
-  //  0 = normal render, 1 = shadow factor as full-screen grayscale,
-  //  2 = cascade-index tint (red C0, green C1, blue C2, yellow C3).
-  //Cascade-depth thumbnails and the bottom-corner jacobian/foam panels
-  //appear only when mode is non-zero.
-  this.setOceanShadowDebug = function(mode){
+  //Iterate every ocean surface mesh — all clipmap ring InstancedMeshes plus
+  //the horizon skirt. The one sanctioned way for anything outside this
+  //constructor to reach the water materials, so the instance map and key list
+  //stay closure-private. Used by the debug setters today; the passes
+  //WATER-TYPES.md adds next get it for free.
+  this.forEachOceanMesh = function(cb){
     for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
-      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.oceanShadowDebugMode.value = mode | 0;
+      cb(oceanPatchGeometryInstances[oceanGridInstanceKeys[i]], oceanGridInstanceKeys[i]);
     }
   };
-  //Opacity for the cascade-band overlay (debug mode 40). 0 = scene only,
-  //1 = overlay only, 0.5 = half-and-half. Call setOceanShadowDebug(40) first,
-  //then setDebugBlend(0.5) to dial how strongly the cascade colours show over
-  //the real waves.
-  this.setDebugBlend = function(v){
-    const blend = +v;
-    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
-      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.debugBlend.value = blend;
-    }
-  };
+
   //Diagnostic toggles — flip the scene-wide sun shadow or the ocean-only
   //CSM on/off across every water tile so we can isolate which one is
   //producing a given visible shadow. Call as setSunShadowEnabled(0) etc.
@@ -1471,111 +885,6 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //console for live tuning.
   this._sunShadowBiasOffset = (data && typeof data.sun_shadow_bias === 'number')
     ? data.sun_shadow_bias : -0.0012;
-  this.setSunShadowBias = function(offset){
-    self._sunShadowBiasOffset = +offset || 0.0;
-  };
-  this.setSunShadowEnabled = function(enabled){
-    self._sunShadowOverride = enabled === null || enabled === undefined ? null : !!enabled;
-    const v = self._sunShadowOverride === false ? 0 : 1;
-    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
-      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.sunShadowEnabled.value = v;
-    }
-  };
-  this.setOceanShadowEnabled = function(enabled){
-    self._oceanShadowOverride = enabled === null || enabled === undefined ? null : !!enabled;
-    const v = self._oceanShadowOverride === false ? 0 : 1;
-    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
-      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.oceanShadowEnabled.value = v;
-    }
-  };
-  //Live-tune the receiver-side normal-offset bias from the console. Pushes
-  //to every water tile material at once so the change is visible next
-  //frame. Pass a value in WORLD METERS — typical range 0.05 to 2.0.
-  this.setOceanShadowNormalBias = function(meters){
-    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
-      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.oceanShadowNormalBias.value = +meters;
-    }
-  };
-  //EVSM warp constant. Pushes to BOTH the receiver materials and the
-  //caster materials (via the CSM helper). Keep them in sync — caster
-  //emits exp(c·z) moments and receiver computes exp(c·refZ); a mismatch
-  //makes every comparison nonsense.
-  this.setOceanEvsmExpC = function(c){
-    const v = +c;
-    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
-      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.evsmExpC.value = v;
-    }
-    if(self.oceanShadowCSM){
-      self.oceanShadowCSM.setEvsmExpC(v);
-    }
-  };
-  //EVSM minimum variance floor. Tiny number; raise (e.g. 1e-3) if you
-  //see speckle in penumbra; lower (e.g. 1e-5) if shadow gradients feel
-  //too soft.
-  this.setOceanEvsmMinVariance = function(v){
-    const f = +v;
-    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
-      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.evsmMinVariance.value = f;
-    }
-  };
-  //EVSM light-bleed reduction threshold in [0, 1). Higher = harder
-  //shadows, more contrast; lower = softer with risk of light bleed.
-  this.setOceanEvsmLightBleedReduction = function(v){
-    const f = +v;
-    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
-      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.evsmLightBleedReduction.value = f;
-    }
-  };
-  this.setReflectionScale = function(v){
-    self.reflectionScale = +v;
-  };
-  //SSR march step cap. 48 = full reach (default); try 32/16/8 to find the
-  //fps/quality knee; 0 skips the march entirely (sky-only) as a bottleneck A/B.
-  this.setSsrMaxSteps = function(v){
-    self.ssrMaxSteps = +v;
-  };
-  this.setReflectionDistanceFalloff = function(v){
-    self.reflectionDistanceFalloff = +v;
-  };
-  this.setFresnelDistanceRoughness = function(v){
-    self.fresnelDistanceRoughness = +v;
-  };
-  this.setSurfaceRoughness = function(v){
-    self.surfaceRoughness = +v;
-  };
-  //Crest-style sun-glint live knobs. setSpecFresnelGate(0..1): 0 = legacy
-  //ungated additive glint, 1 = Crest Fresnel-gated. setSpecFalloffFar /
-  //setSpecFalloffFarDist drive the distance lobe-widening ramp (far defaults
-  //to 275 = near, a no-op until lowered). setSpecBoost is _DirectionalLightBoost.
-  this.setSpecFresnelGate = function(v){
-    self.specFresnelGate = +v;
-  };
-  this.setSpecBoost = function(v){
-    self.specBoost = +v;
-  };
-  this.setSpecFalloffFar = function(v){
-    self.specFalloffFar = +v;
-  };
-  this.setSpecFalloffFarDist = function(v){
-    self.specFalloffFarDist = +v;
-  };
-  //Live-tune atmospheric perspective strength. Default 1.0. Set to 0.0 to
-  //fully bypass extinction + inscatter on the water surface (the per-frame
-  //tick will still overwrite at the next ocean-grid update unless we keep
-  //it in sync — that's why we also mirror onto the cached field).
-  this.setAtmDistanceScale = function(v){
-    self.atmosphericPerspectiveDistanceScale = +v;
-  };
-  //Render every ocean tile (FFT tiles + horizon skirt) as wireframe so the
-  //clipmap cell structure and per-ring tessellation density are visible.
-  //ShaderMaterial honours `wireframe` natively — no shader recompile needed.
-  //Call from the console: setOceanWireframe(1) on, setOceanWireframe(0) off.
-  this.setOceanWireframe = function(enabled){
-    const flag = !!enabled;
-    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
-      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.wireframe = flag;
-    }
-  };
   //Toggle THREE.CameraHelper wireframes for every shadow camera in play so
   //you can SEE the frustums in 3D — way more useful than reading dimensions
   //out of a dump. White = scene sun shadow (Three.js DirectionalLight), and
@@ -1583,156 +892,14 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //are added directly to the scene; update() is called per-frame from tick.
   //Call as setShadowHelpers(1) / setShadowHelpers(0).
   this._shadowHelpers = null;
-  this.setShadowHelpers = function(enabled){
-    const on = !!enabled;
-    if(!on){
-      if(self._shadowHelpers){
-        for(let i = 0; i < self._shadowHelpers.length; i++){
-          self.scene.remove(self._shadowHelpers[i]);
-          self._shadowHelpers[i].dispose && self._shadowHelpers[i].dispose();
-        }
-        self._shadowHelpers = null;
-      }
-      return;
-    }
-    if(self._shadowHelpers) return;
-    self._shadowHelpers = [];
-    const colors = [0xff4040, 0xff9020, 0xffe040, 0x40e060]; //C0..C3 fine→coarse
-    //THREE.CameraHelper uses vertex colours, so setting .material.color does
-    //nothing visible — the default rainbow palette (yellow/magenta/red/green)
-    //comes from the BufferGeometry's color attribute. Use setColors() to
-    //override all five segments to a single solid colour so each helper is
-    //distinguishable by its own colour rather than all wearing the rainbow.
-    const tintHelper = function(helper, hex){
-      const c = new THREE.Color(hex);
-      if(typeof helper.setColors === 'function'){
-        helper.setColors(c, c, c, c, c);
-      } else {
-        //Fallback for older Three.js without setColors: paint the color
-        //attribute directly. Three colours per line segment vertex.
-        const attr = helper.geometry && helper.geometry.attributes.color;
-        if(attr){
-          for(let i = 0; i < attr.count; i++){
-            attr.setXYZ(i, c.r, c.g, c.b);
-          }
-          attr.needsUpdate = true;
-        }
-      }
-      helper.material.depthTest = false;
-      helper.material.toneMapped = false;
-      helper.renderOrder = 999;
-    };
-    //Scene sun shadow camera (the one that gates lighthouse/terrain shadows).
-    const light = self.brightestDirectionalLight;
-    if(light && light.shadow && light.shadow.camera){
-      const h = new THREE.CameraHelper(light.shadow.camera);
-      tintHelper(h, 0xffffff);
-      self.scene.add(h);
-      self._shadowHelpers.push(h);
-    }
-    //Ocean CSM cascades.
-    if(self.oceanShadowCSM && self.oceanShadowCSM.cascades){
-      const cs = self.oceanShadowCSM.cascades;
-      for(let i = 0; i < cs.length; i++){
-        const h = new THREE.CameraHelper(cs[i].lightCamera);
-        tintHelper(h, colors[i] || 0xffffff);
-        self.scene.add(h);
-        self._shadowHelpers.push(h);
-      }
-    }
-  };
 
-  //$DEBUG_START$
-  //Dump the scene-wide directional-light shadow camera + the ocean CSM
-  //cascades. Use this when terrain-on-water shadows clip at a moving line:
-  //the scene shadow's ortho frustum is what gates non-ocean casters
-  //(lighthouse, trees, rocks). Increase `sky-shadow-camera-size` in the
-  //host scene if the printed footprint is smaller than the visible water.
-  this.dumpShadowRanges = function(){
-    const light = self.brightestDirectionalLight;
-    if(light && light.shadow && light.shadow.camera){
-      const sc = light.shadow.camera;
-      const w = (sc.right - sc.left);
-      const h = (sc.top - sc.bottom);
-      const target = light.target ? light.target.position : null;
-      console.log('[scene sun shadow]',
-        'extent', w.toFixed(1), 'x', h.toFixed(1), 'm',
-        'near/far', sc.near.toFixed(1), '/', sc.far.toFixed(1),
-        'light pos', light.position.toArray().map(function(v){return v.toFixed(1);}).join(', '),
-        'target', target ? target.toArray().map(function(v){return v.toFixed(1);}).join(', ') : 'none',
-        'map', light.shadow.mapSize.x + 'x' + light.shadow.mapSize.y,
-        '→ texel', (w / light.shadow.mapSize.x * 100).toFixed(1) + ' cm');
-    } else {
-      console.log('[scene sun shadow] no light/shadow camera registered');
-    }
-    if(self.oceanShadowCSM && self.oceanShadowCSM.cascades){
-      const cs = self.oceanShadowCSM.cascades;
-      for(let i = 0; i < cs.length; i++){
-        const cfg = cs[i].cfg;
-        console.log('[ocean CSM C' + i + ']',
-          'extent', cfg.extent.toFixed(1), 'm',
-          'depthRange', cs[i].depthRange.toFixed(1), 'm',
-          'map', cfg.mapSize + 'x' + cfg.mapSize,
-          '→ texel', (cfg.extent / cfg.mapSize * 100).toFixed(1) + ' cm',
-          'layer', cfg.layer, 'maxRing', cfg.maxRing);
-      }
-    }
-  };
-  if(typeof window !== 'undefined'){
-    window.dumpShadowRanges = this.dumpShadowRanges;
-    window.setShadowHelpers = this.setShadowHelpers;
-    window.setSunShadowBias = this.setSunShadowBias;
-    window.setOceanShadowDebug = this.setOceanShadowDebug;
-    window.setDebugBlend = this.setDebugBlend;
-    window.setSunShadowEnabled = this.setSunShadowEnabled;
-    window.setOceanShadowEnabled = this.setOceanShadowEnabled;
-    window.setOceanShadowNormalBias = this.setOceanShadowNormalBias;
-    window.setOceanEvsmExpC = this.setOceanEvsmExpC;
-    window.setOceanEvsmMinVariance = this.setOceanEvsmMinVariance;
-    window.setOceanEvsmLightBleedReduction = this.setOceanEvsmLightBleedReduction;
-    window.setReflectionScale = this.setReflectionScale;
-    window.setSsrMaxSteps = this.setSsrMaxSteps;
-    window.setReflectionDistanceFalloff = this.setReflectionDistanceFalloff;
-    window.setFresnelDistanceRoughness = this.setFresnelDistanceRoughness;
-    window.setSurfaceRoughness = this.setSurfaceRoughness;
-    window.setSpecFresnelGate = this.setSpecFresnelGate;
-    window.setSpecBoost = this.setSpecBoost;
-    window.setSpecFalloffFar = this.setSpecFalloffFar;
-    window.setSpecFalloffFarDist = this.setSpecFalloffFarDist;
-    window.setOceanWireframe = this.setOceanWireframe;
-    window.setAtmDistanceScale = this.setAtmDistanceScale;
-    //Direct handle on the grid instance for console probes (RT readback etc.).
-    window.oceanGrid = self;
-    //Splash particles: debug tint (0 normal, 1 tint-by-type), master toggle, and
-    //a direct handle on the OceanSplash instance for live-tuning its plain-JS
-    //knobs (e.g. oceanSplash.crestSpawnChance = 0.2).
-    window.setSplashDebug = function(n){ if(self.oceanSplash) self.oceanSplash.debugMode = n | 0; };
-    window.setSplashEnabled = function(e){ if(self.oceanSplash) self.oceanSplash.enabled = !!e; };
-    //Debug surface probe: a red ball parked on the sampled emission surface in
-    //front of the camera, to check whether spawn HEIGHT tracks the visible
-    //waterline. The probe is a child of the splash mesh, which only renders when
-    //the system is enabled, so turning the probe on also forces enabled = true.
-    window.setSplashMarker = function(e){
-      if(!self.oceanSplash) return;
-      self.oceanSplash.debugMarker = !!e;
-      if(e) self.oceanSplash.enabled = true;
-    };
-    window.oceanSplash = self.oceanSplash;
-    //Reflection-vector shore launch: setSplashReflect(reflect, runUp) tunes how the
-    //impact sheet leaves a cliff. reflect 0=cone up the surface normal (old look),
-    //1=mirror the incoming water off the face; runUp adds upward climb on a head-on
-    //slam. e.g. setSplashReflect(1, 1.2) (defaults) → tall directional cliff sheets.
-    window.setSplashReflect = function(reflect, runUp){
-      if(!self.oceanSplash) return;
-      if(reflect !== undefined) self.oceanSplash.impactReflect = +reflect;
-      if(runUp !== undefined) self.oceanSplash.impactRunUp = +runUp;
-    };
-    //Wind-driven foam ("dip the Jacobian"): tune the storm-whitening ramp live.
-    //setFoamWindBiasMax(0.6) sets the cap; setFoamWindRange(10,50) the m/s window.
-    window.setFoamWindBiasMax = function(v){ self.foamWindBiasMax = +v; };
-    window.setFoamWindRange = function(start, full){ self.foamWindStart = +start; self.foamWindFull = +full; };
+  //Live-tuning setters + the window.* console surface. Installed from
+  //ocean-system/passes/ocean-debug-controls.js; the whole console block is
+  //stripped from the dist builds by make-combined.py's DEBUG markers.
+  if(typeof ARestlessOcean.installOceanDebugControls === 'function'){
+    ARestlessOcean.installOceanDebugControls(this);
   }
-  //$DEBUG_END$
+
   const oceanPatchTranslationMatrices = [];
   for(let i = 0, numOceanPatches = self.oceanPatches.length; i < numOceanPatches; ++i){
     oceanPatchTranslationMatrices.push(new THREE.Matrix4());
@@ -1769,754 +936,11 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     }
   };
 
-  //Render the underwater scene from a camera mirrored across the rest water
-  //plane (y = heightOffset) into the planar-reflection target — the TIR
-  //mirror the ceiling samples outside Snell's window. Reflecting the camera's
-  //position, forward and up across the plane and then doing a normal lookAt
-  //keeps the virtual camera right-handed (no winding flip) — the
-  //THREE.Reflector trick. Caller renders this while the ocean grid is hidden.
-  this._renderUnderwaterReflection = function(scene, mainCamera){
-    //Mirror across the DISPLACED surface at the camera's XZ (last frame's
-    //CPU probe), not the flat rest plane. The chunk's `uwSurfaceY` is also
-    //the displaced height (set from `-_oceanFog.near`), so this keeps the
-    //mirror's reference plane and the chunk's fog-crossing plane in sync —
-    //the complementary segment compose (chunk fogs |SP|, applyUnderwaterFog
-    //fogs |CS|) only sums to the true bounce-path length when both planes
-    //agree. Falls back to heightOffset before the first probe runs. Wave
-    //amplitude away from the camera's XZ is still an unmodelled error, but
-    //bringing the camera-XZ height into the mirror plane removes the bulk
-    //of the mismatch under any swell.
-    const h = (self._lastWaterSurfaceY !== undefined)
-      ? self._lastWaterSurfaceY
-      : self.heightOffset;
-    const reflCam = self._reflectionCamera;
-    if(!self._reflScratch){
-      self._reflScratch = {
-        pos: new THREE.Vector3(), fwd: new THREE.Vector3(),
-        up: new THREE.Vector3(), quat: new THREE.Quaternion(),
-        target: new THREE.Vector3(), clearColor: new THREE.Color(),
-        murk: new THREE.Color()
-      };
-    }
-    const s = self._reflScratch;
-    mainCamera.getWorldPosition(s.pos);
-    mainCamera.getWorldDirection(s.fwd);
-    mainCamera.getWorldQuaternion(s.quat);
-    s.up.set(0.0, 1.0, 0.0).applyQuaternion(s.quat);
 
-    //Mirror the camera across the rest water plane: y → 2h - y, and flip the
-    //y of both the forward and up vectors.
-    reflCam.position.set(s.pos.x, 2.0 * h - s.pos.y, s.pos.z);
-    reflCam.up.set(s.up.x, -s.up.y, s.up.z);
-    s.target.set(s.pos.x + s.fwd.x,
-                 (2.0 * h - s.pos.y) - s.fwd.y,
-                 s.pos.z + s.fwd.z);
-    reflCam.lookAt(s.target);
-    reflCam.projectionMatrix.copy(mainCamera.projectionMatrix);
-    reflCam.updateMatrixWorld();
 
-    //Note: the mirror cam is the VIEWER mirrored across the rest plane, NOT the
-    //camera-at-the-reflecting-pixel. When the viewer is underwater (mainCamY < h)
-    //the mirror cam is ABOVE water (mirrorCamY = 2h - mainCamY > h), so the
-    //chunk's uwCamDepth clamps to 0 in this pass. That's compensated by swapping
-    //the pre-darkened _uwBaselineCamDepth into the fogColor for the mirror pass
-    //(see the murk block), so the reflected ceiling fogs toward the same depth
-    //equilibrium as the direct seabed. (This was probed as a suspected
-    //direct-vs-reflected divergence — ruled out: the depth cancels between views.)
 
-    //world position → reflection UV: bias(clip→[0,1]) · proj · view.
-    self._reflectionTextureMatrix.set(
-      0.5, 0.0, 0.0, 0.5,
-      0.0, 0.5, 0.0, 0.5,
-      0.0, 0.0, 0.5, 0.5,
-      0.0, 0.0, 0.0, 1.0
-    );
-    self._reflectionTextureMatrix.multiply(reflCam.projectionMatrix);
-    self._reflectionTextureMatrix.multiply(reflCam.matrixWorldInverse);
 
-    //Hide the sky dome — only the underwater scene belongs in the mirror;
-    //empty directions then read as the dark clear colour (the ceiling shader
-    //fogs them toward the murk). The ocean grid is already hidden by the
-    //caller, so the water never appears in its own reflection.
-    const atmRenderer = self.skyDirector && self.skyDirector.renderers && self.skyDirector.renderers.atmosphereRenderer;
-    const skyMesh = atmRenderer && atmRenderer.skyMesh;
-    const skyWasVisible = skyMesh ? skyMesh.visible : false;
-    if(skyMesh){ skyMesh.visible = false; }
-    //Keep the underwater curtain visible in the mirror so the direct view and
-    //the reflected view share the same backdrop. Hiding it left empty mirror
-    //directions falling back to the dark clear colour while the direct view
-    //filled the same directions with the murk-coloured curtain — so the
-    //reflected horizon colours stopped matching the direct horizon.
 
-    const prevRT = self.renderer.getRenderTarget();
-    const prevToneMapping = self.renderer.toneMapping;
-    self.renderer.getClearColor(s.clearColor);
-    const prevClearAlpha = self.renderer.getClearAlpha();
-
-    //Force scene.fog to the UNDERWATER ocean fog for the mirror RT (don't just
-    //inherit it). The chunk then fogs the reflected geometry over the bounce
-    //path: by the reflection-trick equivalence the mirror camera's straight-line
-    //distance to a fragment equals the real cam→surface→reflected-point path, so
-    //it's one segment. Setting it explicitly (rather than relying on the prior
-    //frame's swap still being mounted) guarantees the reflection never picks up
-    //the atmospheric fog on the boundary frame. Only do it when the ocean fog is
-    //actually armed (chunk injected); otherwise leave whatever is mounted.
-    const prevFog = scene.fog;
-    if(self._fogChunkInjected){ scene.fog = self._oceanFog; }
-    //Swap the chunk's fogColor to the CAMERA-DEPTH-darkened baseline for this
-    //pass so the reflected geometry fogs toward the same teal the direct seabed
-    //reaches (see _uwBaselineCamDepth). The mirror cam is above water so the
-    //chunk can't derive the camera-depth darkening itself. Save/restore the raw
-    //RGB (the tick rewrites fogColor from _uwMurkScratch every frame anyway).
-    const prevFogColorR = self._oceanFog.color.r;
-    const prevFogColorG = self._oceanFog.color.g;
-    const prevFogColorB = self._oceanFog.color.b;
-    if(self._uwBaselineCamDepth){
-      //SRGBToLinear pre-comp (see _toFogUniform) — same reason as the main pass.
-      self._oceanFog.color.setRGB(self._toFogUniform(self._uwBaselineCamDepth.x),
-                                  self._toFogUniform(self._uwBaselineCamDepth.y),
-                                  self._toFogUniform(self._uwBaselineCamDepth.z));
-    }
-    //fogFar MUST stay > 0 here. a-starry-sky's fog_fragment routes on
-    //`if(fogFar <= 0.0)` → its ATMOSPHERIC-perspective branch, checked BEFORE
-    //our `else if(fogNear < 0.0)` ocean branch. The old NEGATIVE sign (meant to
-    //signal "linear output" to our chunk) therefore sent the whole mirror pass
-    //into a-starry-sky's atmospheric fog — our ocean chunk never ran in the
-    //reflection at all, so the reflected geometry read bright/atmospheric
-    //instead of teal. So we carry the linear/sRGB flag in fogFar's MAGNITUDE, not its
-    //sign: add a +10 offset for the linear RT pass (range [10,11]) vs the main
-    //canvas's bare sunFrac (range [0,1]). The chunk reads `fogFar > 5.0` ⇒
-    //linear output (skip the sRGB roundtrip — this RT is NoToneMapping linear
-    //HalfFloat, composited pre-tonemap so the single main-canvas tonemap encodes
-    //once), and recovers sunFrac as `fogFar - 10.0`. Both passes keep fogFar > 0
-    //so both correctly land in the ocean branch. Falls back to 0.5 if the probe
-    //hasn't populated _uwSunFrac yet.
-    const prevFogFar = self._oceanFog.far;
-    const sunFracForRT = (self._uwSunFrac !== undefined) ? self._uwSunFrac : 0.5;
-    self._oceanFog.far = sunFracForRT + 10.0;
-
-    //Clip everything above the waterline out of the mirror cam's render.
-    //Without this, cave walls, the above-water portion of the lighthouse, and
-    //any other stationary world geometry sitting above the surface lands in
-    //the RT and gets sampled by the underwater ceiling shader's TIR lookup —
-    //producing the "dark band of cave stone where the underwater rock should
-    //be reflected" artifact at the waterline. The water grid itself is hidden
-    //by the caller, so the wavy ocean surface never collides with this plane.
-    //Plane convention: distance(p) = normal·p + constant; fragments with
-    //distance < 0 are clipped. normal=(0,-1,0), constant=waterSurfaceY clips
-    //fragments where y > waterSurfaceY (above water).
-    if(!self._reflClipPlane){
-      self._reflClipPlane = new THREE.Plane(new THREE.Vector3(0.0, -1.0, 0.0), 0.0);
-    }
-    self._reflClipPlane.constant = h;
-    const prevClippingPlanes = self.renderer.clippingPlanes;
-    const prevLocalClipping = self.renderer.localClippingEnabled;
-    self.renderer.clippingPlanes = [self._reflClipPlane];
-    self.renderer.localClippingEnabled = true;
-
-    //Linear output (NoToneMapping) so the colour feeds straight into the
-    //ceiling's linear composite without a tone-map / encode round-trip.
-    self.renderer.toneMapping = THREE.NoToneMapping;
-    self.renderer.setRenderTarget(self._reflectionTarget);
-    //Clear to the SURFACE-level inscatter murk (LINEAR — the RT is NoToneMapping
-    //and feeds the ceiling's linear composite directly), not black and not the
-    //camera-depth murk. This RT is the reflected (post-bounce) leg, whose path
-    //starts at the surface, so its infinite-depth equilibrium is the surface
-    //murk — the SAME teal the reflected geometry fogs to (mirror cam above water
-    //→ uwCamDepth 0). Empty/curtain-gap directions then match the reflected
-    //seabed instead of going dim, so the ceiling's TIR lookup reads teal, not a
-    //dark void. Falls back to the camera-depth murk, then a seeded default,
-    //before the first surface-murk update (one-frame lag, invisible).
-    const m = self._uwReflCamDepthMurk || self._uwReflSurfaceMurk || self._uwMurkCamDepthScratch;
-    if(m){ s.murk.setRGB(m.x, m.y, m.z); } else { s.murk.setRGB(0.02, 0.06, 0.08); }
-    self.renderer.setClearColor(s.murk, 1.0);
-    self.renderer.clear();
-    self.renderer.render(scene, reflCam);
-
-    self.renderer.clippingPlanes = prevClippingPlanes;
-    self.renderer.localClippingEnabled = prevLocalClipping;
-    self._oceanFog.far = prevFogFar;
-    self._oceanFog.color.setRGB(prevFogColorR, prevFogColorG, prevFogColorB);
-    scene.fog = prevFog;
-    self.renderer.setClearColor(s.clearColor, prevClearAlpha);
-    self.renderer.toneMapping = prevToneMapping;
-    self.renderer.setRenderTarget(prevRT);
-    if(skyMesh){ skyMesh.visible = skyWasVisible; }
-  };
-
-  //Pre-compile the underwater shader variants during load so the FIRST dip
-  //doesn't stall. The only NEW program variant introduced underwater is the
-  //clipping one: _renderUnderwaterReflection renders the whole scene with a
-  //renderer-level clipping plane, and going from zero clipping planes to one
-  //changes NUM_CLIPPING_PLANES, forcing every scene material to recompile the
-  //first time it's drawn clipped (the multi-hundred-ms hitch on first
-  //submersion; smooth after, once both variants are cached). Nothing else that
-  //flips underwater changes a program: the ocean fog and a-starry-sky fog are
-  //both linear THREE.Fog sharing ONE program (they differ only in uniform
-  //values, and the fog-chunk injection already rebuilt that program above
-  //water via its own needsUpdate sweep); .side and .visible are GL state, not
-  //defines. So clipping is the whole fix.
-  //
-  //We warm through the REAL render path, not renderer.compile(): compile() does
-  //NOT bake the global clipping-plane define, so it only re-created the no-clip
-  //variants that already existed (measured: Programs still jumped +37 on the
-  //first dip after a compile()-based warm). Driving the actual reflection pass
-  //once renders the whole visible scene under the clip plane, compiling+linking
-  //every clipping variant now (one controlled frame at load) instead of
-  //mid-dive. The pass sets and restores its own fog/clip/sky/RT state, so this
-  //is self-contained; the throwaway RT contents are discarded. Runs once.
-  this._warmUnderwaterShaders = function(){
-    if(self._underwaterShadersWarmed) return;
-    if(!self.scene || !self.camera || !self.renderer) return;
-    if(!self._reflectionTarget || !self._aboveWaterTransmissionTarget) return;
-    try {
-      //Reflection = the clipping warm (the +37). Transmission adds no new
-      //programs (same materials as a normal above-water frame) but is cheap and
-      //keeps the Snell-window source primed too.
-      self._renderUnderwaterReflection(self.scene, self.camera);
-      self._renderAboveWaterTransmission(self.scene, self.camera);
-    } catch(e){ /* best-effort warm; never break the frame over a precompile */ }
-    self._underwaterShadersWarmed = true;
-  };
-
-  //Render the fully-lit above-water scene from the submerged camera into the
-  //above-water transmission target — the source the underwater ceiling's
-  //Snell-window transmitted ray samples. The refraction G-buffer can't serve
-  //this role (raw albedo, sky dome hidden, no atmospheric fog), so this
-  //replays the same camera with: sky dome restored, materials un-swapped,
-  //scene.fog handed back to a-starry-sky's atmospheric-perspective version
-  //(so above-water terrain hazes naturally), ocean grid + curtain hidden
-  //(they'd occlude the upward view). Linear output so the colour drops
-  //straight into the ceiling composite. Caller hides the ocean grid; we
-  //handle the rest.
-  this._renderAboveWaterTransmission = function(scene, mainCamera){
-    if(!self._uwTxScratch){
-      self._uwTxScratch = { clearColor: new THREE.Color() };
-    }
-    const s = self._uwTxScratch;
-
-    const atmRenderer = self.skyDirector && self.skyDirector.renderers && self.skyDirector.renderers.atmosphereRenderer;
-    const skyMesh = atmRenderer && atmRenderer.skyMesh;
-    const skyWasVisible = skyMesh ? skyMesh.visible : false;
-    if(skyMesh){ skyMesh.visible = true; }
-
-    //Sun/moon disk planes are hidden underwater for the main render (sky-dome
-    //swap), but the Snell window should still show them refracted through the
-    //surface — so force them visible just for this above-water capture and
-    //restore afterward (mirrors skyMesh above).
-    const rends = self.skyDirector && self.skyDirector.renderers;
-    const sunMesh = rends && rends.sunRenderer && rends.sunRenderer.sunMesh;
-    const moonMesh = rends && rends.moonRenderer && rends.moonRenderer.moonMesh;
-    const sunWasVisible = sunMesh ? sunMesh.visible : false;
-    const moonWasVisible = moonMesh ? moonMesh.visible : false;
-    if(sunMesh){ sunMesh.visible = true; }
-    if(moonMesh){ moonMesh.visible = true; }
-
-    const curtain = self.underwaterCurtainMesh;
-    const curtainWasVisible = curtain ? curtain.visible : false;
-    if(curtain){ curtain.visible = false; }
-
-    //Swap the ocean underwater fog for the captured above-water fog (the
-    //a-starry-sky atmospheric perspective version, captured in tick on every
-    //above-water frame). Above-water fragments would otherwise get NO fog
-    //at all here — the ocean chunk's world-Y gate excludes them, and the
-    //atmospheric perspective branch isn't entered when scene.fog is the
-    //ocean fog. Fall back to whatever's mounted if no capture exists yet.
-    const prevFog = scene.fog;
-    if(self._capturedSkyFog !== undefined){
-      scene.fog = self._capturedSkyFog;
-    }
-
-    //Background swap — while submerged scene.background was set to the
-    //murk colour; for this pass we want the captured above-water bg (the
-    //sky colour) so cleared/sky-dome pixels read correctly.
-    const prevBackground = scene.background;
-    if(self._aboveWaterBackground !== undefined){
-      scene.background = self._aboveWaterBackground;
-    }
-
-    const prevRT = self.renderer.getRenderTarget();
-    const prevToneMapping = self.renderer.toneMapping;
-    self.renderer.getClearColor(s.clearColor);
-    const prevClearAlpha = self.renderer.getClearAlpha();
-
-    //Linear output — feeds straight into the ceiling's linear composite
-    //without a tone-map / encode round-trip.
-    self.renderer.toneMapping = THREE.NoToneMapping;
-    self.renderer.setRenderTarget(self._aboveWaterTransmissionTarget);
-    self.renderer.setClearColor(0x000000, 1.0);
-    self.renderer.clear();
-    self.renderer.render(scene, mainCamera);
-
-    scene.fog = prevFog;
-    scene.background = prevBackground;
-    self.renderer.setClearColor(s.clearColor, prevClearAlpha);
-    self.renderer.toneMapping = prevToneMapping;
-    self.renderer.setRenderTarget(prevRT);
-    if(skyMesh){ skyMesh.visible = skyWasVisible; }
-    if(sunMesh){ sunMesh.visible = sunWasVisible; }
-    if(moonMesh){ moonMesh.visible = moonWasVisible; }
-    if(curtain){ curtain.visible = curtainWasVisible; }
-  };
-
-  //Refresh the underwater caustic projector. Positions the SpotLight high
-  //above the camera down the refracted sun ray (a near-parallel cast so
-  //caustic cell size barely changes with seabed depth), re-renders the
-  //animated caustic slide through the projector's own shadow camera (world-
-  //anchored — see the constructor block), and crossfades its intensity
-  //through the waterline via underwaterFactor. The projector tracks the
-  //camera XZ continuously; world anchoring lives in the slide content, so no
-  //snapping and no envelope/shadow jumps. Skipped entirely above water.
-  this._updateCausticProjection = function(time, waterSurfaceY, underwaterFactor){
-    const light = self.causticSpotLight;
-    //Scene isn't available at construction — add the projector + its target
-    //once, on the first tick that has a scene.
-    if(!self._causticLightAdded && self.scene){
-      self.scene.add(light);
-      self.scene.add(light.target);
-      self._causticLightAdded = true;
-    }
-    //Above water, or the caustic texture hasn't loaded yet: drive intensity to
-    //zero (not light.visible — see the constructor note) and skip the RT cost.
-    //castShadow stays true (constructor note), so the spot's shadow depth pass
-    //still runs while surfaced — park the projector far below the world so
-    //that pass frustum-culls every caster and costs nothing. The y-check makes
-    //the park a one-time move per surfacing, not a per-frame write.
-    if(!self.causticMap || underwaterFactor <= 0.001){
-      light.intensity = 0.0;
-      if(light.position.y > -9000.0){
-        light.position.set(0.0, -10000.0, 0.0);
-        light.target.position.set(0.0, -10400.0, 0.0);
-        light.target.updateMatrixWorld();
-      }
-      return;
-    }
-
-    //Surface anchor: the camera XZ, unsnapped — the slide pass below bakes
-    //world anchoring into the pattern itself, so the projector (and with it
-    //the cone envelope, decay vignette and shadow POV) moves smoothly.
-    const anchorX = self.globalCameraPosition.x;
-    const anchorZ = self.globalCameraPosition.z;
-
-    //Sun travel direction (from the brightest directional light toward the
-    //scene — downward when the sun is up). Drives BOTH the projector tilt below
-    //and the colour/brightness. cosZ is the same geometric "how much sun
-    //overhead" factor the underwater inscatter uses (water-shader.glsl :1391),
-    //so caustic falloff at low sun matches the rest of the underwater lighting
-    //stack; without it a sun 1° above the horizon would cast full strength.
-    let sunMult = 1.0;
-    let haveSun = false;
-    const sunDir = self._uwSunDirScratch;
-    if(self.brightestDirectionalLight){
-      const ml = self.brightestDirectionalLight;
-      light.color.copy(ml.color);
-      sunDir.set(ml.position.x, ml.position.y, ml.position.z)
-        .sub(ml.target.position).negate().normalize();
-      const cosZ = Math.max(-sunDir.y, 0.0);
-      //Schlick air->water transmission (same as the murk dir term above) —
-      //at grazing sun most light reflects OFF the surface and never enters
-      //the water, so caustics must die toward sunset with the rest of the
-      //underwater light, not linger at cosZ strength.
-      const oneMinusCosZ = 1.0 - cosZ;
-      const fresAW = 0.02037 + (1.0 - 0.02037)
-                   * (oneMinusCosZ*oneMinusCosZ*oneMinusCosZ*oneMinusCosZ*oneMinusCosZ);
-      sunMult = ml.intensity * cosZ * (1.0 - fresAW);
-      haveSun = cosZ > 0.0;
-    }
-
-    //Tilt the projector along the sun ray REFRACTED into the water (Snell,
-    //air→water n=1/1.33 at a flat +Y surface) instead of casting straight down,
-    //so the caustic web rakes across the seabed at the true sun angle. refr is
-    //the in-water travel direction — still downward, just leaned toward the
-    //anti-solar azimuth. It collapses to (0,-1,0) at solar zenith, so this is a
-    //pure superset of the old straight-down cast. Total internal reflection
-    //can't occur air→water, but k<0 is guarded anyway; we also fall back to
-    //straight down when the sun is at/below the horizon (projector is off via
-    //sunMult→0 there regardless).
-    const refr = self._causticRefrScratch;
-    if(haveSun){
-      const eta = 1.0 / 1.33;
-      const nDotI = sunDir.y;                       //dot((0,1,0), sunDir)
-      const k = 1.0 - eta * eta * (1.0 - nDotI * nDotI);
-      if(k >= 0.0){
-        const scale = eta * nDotI + Math.sqrt(k);   //R = eta*I - scale*N
-        refr.set(eta * sunDir.x, eta * sunDir.y - scale, eta * sunDir.z).normalize();
-      } else {
-        refr.set(0.0, -1.0, 0.0);
-      }
-    } else {
-      refr.set(0.0, -1.0, 0.0);
-    }
-    //Place the projector one causticLightHeight UP the ray from the surface
-    //anchor and the target down-ray; (target − position) ∝ refr ⇒ the cone axis
-    //is the refracted sun ray, and a surface-level fragment stays exactly
-    //causticLightHeight from the projector (keeps decayCompensation valid).
-    const h = self.causticLightHeight;
-    light.position.set(anchorX - refr.x * h, waterSurfaceY - refr.y * h, anchorZ - refr.z * h);
-    light.target.position.set(anchorX + refr.x * 100.0, waterSurfaceY + refr.y * 100.0, anchorZ + refr.z * 100.0);
-    light.target.updateMatrixWorld();
-    light.angle = Math.atan(self.causticLightConeRadius / self.causticLightHeight);
-    //Compensate for the projector's inverse-square decay so the surface-level
-    //caustic brightness is invariant to `causticLightHeight`. A fragment at
-    //y = surfaceY sits `causticLightHeight` metres from the projector; that
-    //gives a `1 / height^decay` attenuation we cancel here. Fragments deeper
-    //than the surface still attenuate (their distance to the projector is
-    //larger), producing the depth falloff this decay was added for.
-    const decayCompensation = Math.pow(self.causticLightHeight, light.decay);
-    light.intensity = self.causticLightIntensity * self.causticsStrength
-                    * underwaterFactor * sunMult * decayCompensation;
-
-    //Re-render the animated caustic slide LAST, through the projector pose
-    //set above. shadow.updateMatrices is the same call WebGLLights makes when
-    //it projects the cookie, so the camera we unproject the slide through is
-    //bit-identical to the one that casts it back out.
-    light.updateWorldMatrix(true, false);
-    light.shadow.updateMatrices(light);
-    const shadowCam = light.shadow.camera;
-    const mat = self._causticProjectionMaterial;
-    mat.uniforms.causticMap.value = self.causticMap;
-    mat.uniforms.uTime.value = time * 0.001;
-    mat.uniforms.uSurfaceY.value = waterSurfaceY;
-    mat.uniforms.uInvVP.value.copy(shadowCam.matrixWorld).multiply(shadowCam.projectionMatrixInverse);
-    const prevRT = self.renderer.getRenderTarget();
-    self.renderer.setRenderTarget(self._causticProjectionTarget);
-    self.renderer.render(self._causticProjectionScene, self._causticProjectionCamera);
-    self.renderer.setRenderTarget(prevRT);
-  };
-
-  //Fill A-Starry-Sky's reserved underwater-fog slot. Its `advanced` atmospheric
-  //perspective globally patches THREE.ShaderChunk.fog_fragment / fog_vertex and
-  //leaves an empty `else if(fogNear < 0.0)` branch marked with a //$$...$$
-  //token. String-replace that token with a per-channel Beer-Lambert absorption
-  //fog. Polled from tick() — the token only exists once A-Starry-Sky's
-  //FogRenderer has run, and only in `advanced` mode; a harmless no-op
-  //otherwise. Runs once, then forces a one-time recompile so already-built
-  //materials pick up the new chunk.
-  this._injectUnderwaterFogChunk = function(){
-    if(self._fogChunkInjected) return;
-    const fragToken = '//$$OCEAN_SHADER_SHADER_FRAGMENT_RESERVATION$$';
-    const vertToken = '//$$OCEAN_SHADER_SHADER_VERTEX_RESERVATION$$';
-    const fragChunk = THREE.ShaderChunk.fog_fragment;
-    const vertChunk = THREE.ShaderChunk.fog_vertex;
-    const parsFragChunk = THREE.ShaderChunk.fog_pars_fragment;
-    if(!fragChunk || fragChunk.indexOf(fragToken) === -1) return;  //not patched yet
-
-    //fog_pars_fragment runs at file scope (uniform declarations). Append our
-    //sun-direction uniform there — fog_fragment runs inside main() so uniform
-    //declarations don't work in our reservation slot. Idempotent guard so
-    //repeated calls don't accumulate copies.
-    if(parsFragChunk && parsFragChunk.indexOf('uniform vec3 uwSunDir;') === -1){
-      THREE.ShaderChunk.fog_pars_fragment = parsFragChunk + '\nuniform vec3 uwSunDir;\n';
-    }
-
-    //Per-channel extinction (1/m) baked into the chunk as a const vec3 —
-    //THREE.Fog only smuggles one Color + two floats, so for per-channel
-    //chromatic falloff (red dies faster than blue, the cue that distant
-    //underwater geometry reads cyan/blue) we inject extinction directly. It
-    //is read once at the current water_type / explicit RGB; a live water-type
-    //swap would need a chunk re-injection + needsUpdate sweep (rare, paid as
-    //a one-time recompile when it happens).
-    const presetJ = ARestlessOcean.JERLOV_PRESETS[self.data.water_type | 0];
-    const absV = presetJ ? presetJ.absorption : self.data.water_absorption;
-    const sctV = presetJ ? presetJ.scattering : self.data.water_scattering;
-    const ex = Math.max(absV.x + sctV.x, 1e-4);
-    const ey = Math.max(absV.y + sctV.y, 1e-4);
-    const ez = Math.max(absV.z + sctV.z, 1e-4);
-    const extLit = 'vec3(' + ex.toFixed(6) + ',' + ey.toFixed(6) + ',' + ez.toFixed(6) + ')';
-    //Per-channel multiple-scatter ratio for the diffuse "ocean colour" glow the
-    //chunk adds below. fogColor already carries albedo·(E_sun+E_sky)/4π, and we
-    //want fogColor·uwMsRatio == R∞·(E_sun+E_sky)/π — the semi-infinite diffuse
-    //reflectance term that matches water-shader.glsl's underwaterInscatterSurface.
-    //Solving: uwMsRatio = 4·R∞/albedo, R∞ = (1-√(1-a))/(1+√(1-a)). ~4× the old
-    //a²/(1-a)/(4π) floor at ocean albedos (~0.2) so the murk reads as real teal.
-    const rInf = function(a){ const s = Math.sqrt(Math.max(1.0 - a, 0.0)); return (1.0 - s) / (1.0 + s); };
-    const albMx = (sctV.x / ex), albMy = (sctV.y / ey), albMz = (sctV.z / ez);
-    const msx = 4.0 * rInf(albMx) / Math.max(albMx, 1e-4);
-    const msy = 4.0 * rInf(albMy) / Math.max(albMy, 1e-4);
-    const msz = 4.0 * rInf(albMz) / Math.max(albMz, 1e-4);
-    const msLit = 'vec3(' + msx.toFixed(6) + ',' + msy.toFixed(6) + ',' + msz.toFixed(6) + ')';
-
-    //Smuggle convention for the ocean branch (fogFar > 0 && fogNear < 0):
-    //  fogColor.rgb = isotropic-baseline inscatter at depth 0, per channel.
-    //                 `waterAlbedo · (E_sun + E_sky) / (4π)` — i.e., the
-    //                 surface equilibrium AS IF both sun and sky had isotropic
-    //                 phase. The chunk re-weights below to push sun through
-    //                 Henyey-Greenstein while keeping sky isotropic.
-    //  -fogNear     = water surface Y (the waterline) — selects ocean branch
-    //                 AND drives the world-Y gate.
-    //  fogFar       = signed sun-fraction smuggle:
-    //                   sign(fogFar)  → linear-vs-sRGB target encoding
-    //                                   (+ = sRGB canvas, − = linear RT).
-    //                   |fogFar|      → fraction of E_sun in (E_sun + E_sky),
-    //                                   used to split HG-vs-isotropic terms.
-    //  uwSunDir     = world-space direction sunlight TRAVELS (away from sun),
-    //                 matching water-shader.glsl's brightestDirectionalLightDirection.
-    //                 Declared in fog_pars_fragment via the append above.
-    //Per-channel extinction is the const `uwExt` baked in above.
-    //NO WORLD-Y GATE: the ocean branch only runs when the camera is submerged
-    //(scene.fog is swapped to the ocean fog underwater; above water it's
-    //a-starry-sky's atmospheric fog and this branch is never entered). When
-    //submerged the whole view is underwater, so every fragment fogs uniformly.
-    //Above-water geometry (the lighthouse etc.) is never DIRECTLY visible from
-    //below — any sightline from a submerged camera to an air-side point crosses
-    //the surface, and the FFT surface mesh (clipmap + horizon skirt) is rendered
-    //along it and overdraws those pixels with the Snell-window transmission
-    //composite. So the over-fog on those hidden fragments is masked by the real
-    //wavy surface; the surface mesh IS the per-fragment medium boundary. This
-    //replaces the old flat `vFogWorldPosition.y < uwSurfaceY` plane gate, whose
-    //single-point/2-cascade probe height left a flat fog ceiling that bobbed at
-    //the wrong (long-swell-only) frequency and an un-fogged band under crests.
-    //The mirror RT independently clips y>waterline (see _renderUnderwater
-    //Reflection's _reflClipPlane), so its fragments are all below-surface too —
-    //removing the gate doesn't change that pass. vFogWorldPosition is
-    //A-Starry-Sky's existing advanced-fog varying; the vertex slot below fills
-    //it for the ocean branch (still used for the per-fragment depth darkening).
-    const fragGLSL = [
-      'const vec3 uwExt = ' + extLit + ';',
-      'const vec3 uwMsRatio = ' + msLit + ';',
-      //Phase-function constants. g=0.85 is the canonical clean-ocean
-      //Henyey-Greenstein asymmetry parameter (Mobley 1994), but a phase
-      //that peaked makes perpendicular-to-sun scatter ~100× weaker than
-      //the forward halo — the horizon under a noon sun reads nearly black.
-      //0.5 (turbid coastal range) lifts the perpendicular contribution so
-      //the horizon picks up real sun light and asymptotes to teal. Match
-      //the same value in water-shader.glsl's underwaterInscatterSurface.
-      //The 1/(4π) is the steradian-normalisation baked into HG.
-      'const float UW_HG_G = 0.5;',
-      'const float UW_INV_4PI = 0.07957747154;',
-      //Gaze-dependence of the murk's SUN single-scatter term. 1.0 = full HG halo
-      //(physical: brighter toward the sun); 0.0 = isotropic (view-independent
-      //teal) so the direct seabed (down gaze) and reflected ceiling (up gaze)
-      //fade to the SAME teal. Kept at 0.0 for the uniform "colour of the water"
-      //look. MUST match UW_MURK_GAZE_WEIGHT in water-shader.glsl so the seabed/
-      //curtain fog (this chunk) and the ceiling/body fog (the water shader) stay
-      //in lockstep. Flip both to 1.0 to restore the physical sun glow.
-      'const float UW_MURK_GAZE_WEIGHT = 0.0;',
-      //Underwater fog isolation taps — debugging the seabed-vs-ceiling murk match.
-      //MUST match UW_DEBUG_FOG_MODE in water-shader.glsl applyUnderwaterFog.
-      //  0 = normal production blend.
-      //  1 = NO fog (raw input color passes straight through).
-      //  2 = fog a CONSTANT input color (vec3(0.5)) — isolates the fog blend
-      //      from the geometry colour; both paths start from the same input.
-      //  3 = output the MURK only (full fog) — shows EXACTLY what each path
-      //      fades to. Top (ceiling murk) vs bottom (this seabed murk).
-      'const int UW_DEBUG_FOG_MODE = 0;',
-      //Underwater path-length scale. 1.0 = physically true geometric distance:
-      //extinction integrates over the REAL ray length, no magnification — the
-      //distance to a rock is the distance to a rock, a surface->floor reflection
-      //bounce is just its real longer path. Was 0.3, a non-physical clarity fudge
-      //(see the matching note in water-shader.glsl). Set water visibility via
-      //water_type / the Jerlov coefficients instead. Must match the water-shader
-      //UW_DIST_SCALE so the ceiling and direct-view seabed asymptote to the same
-      //effective extinction.
-      'const float UW_DIST_SCALE = 1.0;',
-      //Downwelling depth attenuation of the SURFACE lighting (distinct from the
-      //inscatter fog). The light that illuminates a fragment travelled DOWN
-      //through the water column to reach it, so it is Beer-Lambert attenuated by
-      //the fragment's vertical depth below the surface — the same physics the
-      //water-shader seabed branch applies to its sun term (exp(-extinction*downPath)).
-      //Without this, nearby geometry (rocks, seabed, hull) renders at full
-      //THREE-lit brightness no matter how deep the dive, because uwT≈1 at short
-      //range. We reuse uwExt so red dies first → deep geometry reads blue-green
-      //then dark, matching the water colour. 1.0 = physically full attenuation;
-      //lower toward 0 to keep deep geometry brighter/more visible (stylistic).
-      'const float UW_DOWNWELL_STRENGTH = 1.0;',
-      'float uwSurfaceY = -fogNear;',
-      //Path length is the true geometric distance through water (x the 1.0 scale
-      //above). Direction-isotropic — a surface at the camera's own depth fogs the
-      //same as one above or below it at the same range.
-      //  * MAIN render (real camera below water): the whole camera→frag ray
-      //    is in water → discount the full geometric length.
-      //  * MIRROR render (mirror camera above water, by the reflection-trick
-      //    equivalence the mirror straight-line = the real bounce path): the
-      //    camera→bounce segment is ALREADY fogged by the water shader's
-      //    applyUnderwaterFog at the ceiling, so this branch only fogs the
-      //    post-bounce leg = (1 - t)·totalLen, then applies the same discount.
-      //    For an object TOUCHING the surface t collapses to the frag →
-      //    second leg = 0 → no extra fog, so the reflection of that touching
-      //    point matches the surrounding water surface.
-      '  vec3 dir = vFogWorldPosition - cameraPosition;',
-      '  float totalLen = length(dir);',
-      '  float uwDist;',
-      '  if(cameraPosition.y < uwSurfaceY){',
-      '    uwDist = totalLen * UW_DIST_SCALE;',
-      '  } else {',
-      '    float t = (uwSurfaceY - cameraPosition.y) / dir.y;',
-      '    t = clamp(t, 0.0, 1.0);',
-      '    uwDist = (1.0 - t) * totalLen * UW_DIST_SCALE;',
-      '  }',
-      '  vec3 uwT = exp(-uwExt * uwDist);',
-      //HG sun phase. cosθ = dot(incident, scattered) = dot(uwSunDir, -viewDir)
-      //= -dot(uwSunDir, viewDir). cosθ ≈ +1 when the camera looks TOWARD the
-      //sun (forward scatter, peaked HG); ≈ -1 looking down-sun.
-      '  vec3 uwViewDir = (totalLen > 1e-4) ? (dir / totalLen) : vec3(0.0, -1.0, 0.0);',
-      '  float uwCosTheta = -dot(uwViewDir, uwSunDir);',
-      '  float uwG2 = UW_HG_G * UW_HG_G;',
-      '  float uwHG = (1.0 - uwG2) * UW_INV_4PI',
-      '             / pow(max(1.0 + uwG2 - 2.0 * UW_HG_G * uwCosTheta, 1e-4), 1.5);',
-      //Angular factor that turns the isotropic-baseline fogColor into the
-      //actual physical inscatter. Derivation: real = α·(E_sun·p_HG + E_sky·p_sky),
-      //baseline (full iso) = α·(E_sun + E_sky)·(1/4π). With sunFrac = E_sun/(E_sun+E_sky):
-      //  real / baseline = 4π · sunFrac · p_HG + 2 · (1 - sunFrac)
-      //  (sky uses p_sky = 1/(2π) for a uniform upper-hemisphere with isotropic
-      //   phase; 4π·1/(2π) = 2). |fogFar| carries sunFrac, sign carries
-      //   linear/sRGB.
-      //fogFar magnitude carries BOTH the sunFrac and the output-domain flag:
-      //  main canvas (sRGB) → fogFar = sunFrac        in [0,1]
-      //  reflection RT (linear) → fogFar = sunFrac+10 in [10,11]
-      //The sign can't carry the flag — a-starry-sky reserves fogFar<=0 for its
-      //atmospheric branch (which would steal this whole pass from us). >5 ⇒
-      //linear RT output, skip the sRGB roundtrip; else sRGB main canvas.
-      '  bool uwInputIsSRGB = fogFar < 5.0;',
-      '  float uwSunFrac = uwInputIsSRGB ? fogFar : (fogFar - 10.0);',
-      //Blend the HG halo toward isotropic (1/4π) by UW_MURK_GAZE_WEIGHT — at 0.0
-      //the sun term is view-independent, mirroring underwaterInscatterSurface's
-      //pSun blend so the direct seabed murk matches the reflected ceiling murk.
-      '  float uwHGiso = mix(UW_INV_4PI, uwHG, UW_MURK_GAZE_WEIGHT);',
-      '  float uwAngFactor = 4.0 * 3.14159265359 * uwSunFrac * uwHGiso',
-      '                    + 2.0 * (1.0 - uwSunFrac);',
-      //Single-scatter (angular) term + isotropic multiple-scatter floor. The
-      //angular term collapses toward 0 perpendicular to the sun (the horizon
-      //under a high sun), which read as black; the MS floor (fogColor·uwMsRatio,
-      //view-independent) keeps the distance fading to a real teal. Mirrors
-      //water-shader.glsl underwaterInscatterSurface so seabed and ceiling agree.
-      '  vec3 uwMurkSurface = fogColor * uwAngFactor + fogColor * uwMsRatio;',
-      //Camera-depth darkening (NOT fragment depth). Inscatter is front-loaded
-      //near the eye, so the equilibrium every long ray fades to is the medium's
-      //radiance at the CAMERA's depth — one "colour of the water" in all
-      //directions. Darkening by the far fragment's own depth instead crushed
-      //the deep seabed / abyss veil to black and made it disagree with the
-      //ceiling (which darkens by ~0) and the curtain (camera depth). Matches
-      //water-shader.glsl underwaterInscatterSurface's camDepthDarken. In the
-      //mirror RT pass cameraPosition is the above-water mirror cam, so this
-      //clamps to 0 — surface-level inscatter for the post-bounce leg, correct.
-      //INVESTIGATED 2026-06-06 (camera-Y console probe in _renderUnderwater
-      //Reflection): RULED OUT as the direct-vs-reflected brightness divergence.
-      //The probe confirmed the mirror cam is always above water when submerged
-      //(mirrorCamDepth ≡ 0), so this term IS 0 in the reflection — but the same
-      //real depth (mainCamDepth) is applied to BOTH views: directly here for the
-      //seabed, and for the reflection via the pre-darkened fogColor swap
-      //(_uwBaselineCamDepth) in stage 1 PLUS underwaterInscatterSurface's
-      //camDepthDarken (real cam) in stage 2. Identical factor on both sides → it
-      //cancels in the comparison and cannot open a gap between them. The real
-      //asymmetry left is the HG sun-halo VIEW DIRECTION (this seabed gaze vs the
-      //ceiling's up gaze), not the depth term.
-      '  float uwCamDepth = max(0.0, uwSurfaceY - cameraPosition.y);',
-      '  vec3 uwMurk = uwMurkSurface * exp(-uwExt * uwCamDepth);',
-      //fog_fragment runs AFTER colorspace_fragment, so gl_FragColor here is
-      //already in the target encoding — the sRGB roundtrip is needed ONLY
-      //for the sRGB-encoded path. Doing it unconditionally pushed the
-      //reflection RT's linear data through a spurious pow(·, 2.4) cycle.
-      '  vec3 uwLinear = uwInputIsSRGB',
-      '    ? fogsRGBToLinear(vec4(gl_FragColor.rgb, 1.0)).rgb',
-      '    : gl_FragColor.rgb;',
-      //Downwelling attenuation of the lit surface colour. uwFragDepth is THIS
-      //fragment's depth below the surface (vertical column the light descended
-      //through), independent of the camera-depth darkening on the murk above —
-      //so no double-count. A fragment at the surface (depth 0) keeps full light;
-      //a deep one fades toward dark. Applied only in the production blend so the
-      //UW_DEBUG_FOG_MODE isolation taps stay pure diagnostics.
-      '  float uwFragDepth = max(0.0, uwSurfaceY - vFogWorldPosition.y);',
-      '  vec3 uwDownwell = exp(-uwExt * uwFragDepth * UW_DOWNWELL_STRENGTH);',
-      //Fog blend, with the UW_DEBUG_FOG_MODE isolation taps (see const above).
-      '  if(UW_DEBUG_FOG_MODE == 1){ /* raw input, no fog */ }',
-      '  else if(UW_DEBUG_FOG_MODE == 2){ uwLinear = vec3(0.5) * uwT + uwMurk * (vec3(1.0) - uwT); }',
-      '  else if(UW_DEBUG_FOG_MODE == 3){ uwLinear = uwMurk; }',
-      '  else { uwLinear = uwLinear * uwDownwell * uwT + uwMurk * (vec3(1.0) - uwT); }',
-      //sRGB (main-canvas) path: TONEMAP the fogged result with MyAES before
-      //encoding — the renderer is NoToneMapping, so scene geometry arrives here
-      //un-tonemapped (raw linear radiance), and without this it would sRGB-encode
-      //straight, reading far brighter than the same geometry seen in the water
-      //surface or the reflection (both of which go through MyAES). This mirrors
-      //a-starry-sky's OWN atmospheric branch, which MyAES-tonemaps its fogged
-      //ground — so above-water and below-water scene geometry now tonemap alike.
-      //LINEAR RT (reflection) path: do NOT tonemap here — the ceiling composite
-      //applies MyAES once when it samples this RT, so tonemapping now would
-      //double it.
-      '  gl_FragColor.rgb = uwInputIsSRGB',
-      '    ? fogLinearTosRGB(vec4(MyAESFilmicToneMapping(uwLinear), 1.0)).rgb',
-      '    : uwLinear;'
-    ].join('\n');
-    const vertGLSL = [
-      'vFogDepth = - mvPosition.z;',
-      'vFogWorldPosition = (modelMatrix * vec4(transformed, 1.0)).xyz;'
-    ].join('\n');
-
-    THREE.ShaderChunk.fog_fragment = fragChunk.replace(fragToken, fragGLSL);
-    if(vertChunk && vertChunk.indexOf(vertToken) !== -1){
-      THREE.ShaderChunk.fog_vertex = vertChunk.replace(vertToken, vertGLSL);
-    }
-    self._fogChunkInjected = true;
-
-    //Sun-direction broadcast for the chunk's HG sun phase. The chunk's GLSL
-    //references `uwSunDir` (world-space, points FROM sun TO scene = the
-    //direction sunlight travels — same convention as water-shader.glsl's
-    //brightestDirectionalLightDirection). Three's UniformsUtils.clone deep-
-    //clones Vector3, so we can't share a single reference via UniformsLib;
-    //instead we patch the per-shader-lib uniforms map so NEWLY-built fog
-    //materials get the slot, then per-frame traverse the scene and write
-    //the current sun direction into each material's local Vector3 clone.
-    //_sharedUwSunDir is the source-of-truth that the tick updates; the
-    //traversal copies it onto every fog material.
-    if(!self._sharedUwSunDir){
-      self._sharedUwSunDir = new THREE.Vector3(0.0, -1.0, 0.0);
-    }
-    const shaderLibNames = ['basic', 'lambert', 'phong', 'standard', 'physical', 'toon'];
-    for(let i = 0; i < shaderLibNames.length; ++i){
-      const lib = THREE.ShaderLib && THREE.ShaderLib[shaderLibNames[i]];
-      if(lib && lib.uniforms && !lib.uniforms.uwSunDir){
-        lib.uniforms.uwSunDir = { value: new THREE.Vector3(0.0, -1.0, 0.0) };
-      }
-    }
-    if(THREE.UniformsLib && THREE.UniformsLib.fog && !THREE.UniformsLib.fog.uwSunDir){
-      THREE.UniformsLib.fog.uwSunDir = { value: new THREE.Vector3(0.0, -1.0, 0.0) };
-    }
-
-    //Rebuild fog-enabled materials already compiled against the old chunk
-    //(one-time startup hitch). At the same time, attach the uwSunDir uniform
-    //to any material that lacks it — covers existing scenes that were built
-    //before the ShaderLib patch above could take effect.
-    if(self.scene){
-      self.scene.traverse(function(obj){
-        if(!obj.isMesh || !obj.material) return;
-        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-        for(let i = 0; i < mats.length; ++i){
-          const m = mats[i];
-          if(!m || !m.fog) continue;
-          if(m.uniforms && !m.uniforms.uwSunDir){
-            m.uniforms.uwSunDir = { value: new THREE.Vector3(0.0, -1.0, 0.0) };
-          }
-          m.needsUpdate = true;
-        }
-      });
-    }
-  };
-
-  //Per-frame broadcast of the current sun direction to every fog-receiving
-  //material's `uwSunDir` uniform. Source is `self._sharedUwSunDir`, which the
-  //tick updates once after probing the directional-light list. Cost is one
-  //scene traversal per frame; the per-material write is a Vector3.copy().
-  this._broadcastUwSunDir = function(){
-    if(!self.scene || !self._sharedUwSunDir) return;
-    const src = self._sharedUwSunDir;
-    self.scene.traverse(function(obj){
-      if(!obj.isMesh || !obj.material) return;
-      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-      for(let i = 0; i < mats.length; ++i){
-        const m = mats[i];
-        if(!m || !m.fog || !m.uniforms) continue;
-        //Self-heal: a material added to the scene AFTER the chunk-injection
-        //traversal won't have the slot yet. Attach it on first sight and
-        //flag needsUpdate so the next render rebuilds the program with the
-        //appended fog_pars_fragment uniform declaration in scope.
-        if(!m.uniforms.uwSunDir){
-          m.uniforms.uwSunDir = { value: new THREE.Vector3() };
-          m.needsUpdate = true;
-        }
-        m.uniforms.uwSunDir.value.copy(src);
-      }
-    });
-  };
 
   this.tick = function(time){
 
@@ -2568,20 +992,12 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
     //Ensure render targets match current drawing buffer size (A-Frame may resize after construction)
     self.renderer.getDrawingBufferSize(rendererSize);
-    if(self.refractionGBufferTarget.width !== rendererSize.x || self.refractionGBufferTarget.height !== rendererSize.y){
-      self.refractionGBufferTarget.setSize(rendererSize.x, rendererSize.y);
-      self.refractionGBufferTarget.depthTexture = new THREE.DepthTexture(
-        rendererSize.x, rendererSize.y, THREE.UnsignedIntType
-      );
-      self.refractionGBufferTarget.depthTexture.format = THREE.DepthFormat;
-      self._reflectionTarget.setSize(
-        Math.max(1, (rendererSize.x * self.reflectionResolutionScale) | 0),
-        Math.max(1, (rendererSize.y * self.reflectionResolutionScale) | 0)
-      );
-      self._aboveWaterTransmissionTarget.setSize(
-        Math.max(1, (rendererSize.x * self.reflectionResolutionScale) | 0),
-        Math.max(1, (rendererSize.y * self.reflectionResolutionScale) | 0)
-      );
+    if(self.refractionGBufferTarget &&
+       (self.refractionGBufferTarget.width !== rendererSize.x || self.refractionGBufferTarget.height !== rendererSize.y)){
+      self.refractionGBufferPass.resize(rendererSize.x, rendererSize.y);
+      //setSize replaces the depth texture object, so refresh the alias.
+      self.refractionGBufferTarget = self.refractionGBufferPass.target;
+      if(self.reflectionPass) self.reflectionPass.resize(rendererSize.x, rendererSize.y);
     }
 
     //Update the state of our ocean grid
@@ -2612,174 +1028,52 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].instanceMatrix.needsUpdate = true;
     }
 
-    //Frustum Cull our grid
-    //self.cameraFrustum.setFromProjectionMatrix(self.camera.projectionMatrix.clone().multiply(self.camera.matrixWorldInverse));
-
     //Hide all of our ocean grid elements
     for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
       oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].visible = false;
     }
 
-    //Render scene to G-buffer (3 MRT attachments: albedo, world-normal,
-    //linear-depth). scene.overrideMaterial can't carry per-mesh albedo, so
-    //we swap each visible non-ocean mesh's material to a cached G-buffer
-    //variant that reads that source material's own .color / .map. Restored
-    //immediately after render.
-    self._swappedMeshes.length = 0;
-    const curtainSkip = self.underwaterCurtainMesh;
-    scene.traverse(function(obj){
-      if(!obj.isMesh || !obj.visible || !obj.material) return;
-      //Skip ShaderMaterial sources — they're custom shaders (ocean, etc.)
-      //whose attribute usage we can't safely replace with our G-buffer shader.
-      if(obj.material.isShaderMaterial) return;
-      if(Array.isArray(obj.material) && obj.material.some(function(m){ return m.isShaderMaterial; })) return;
-      //Skip the underwater curtain: a 300 m BackSide sphere would write a
-      //spherical shell into refraction depth and the water shader's Snell-
-      //window seabed lookup would sample curtain colour instead of seabed.
-      if(obj === curtainSkip) return;
-      const gBuf = self._resolveGBufferMaterial(obj.material);
-      self._swappedMeshes.push({ mesh: obj, original: obj.material });
-      obj.material = gBuf;
-    });
-
-    const currentRefractionRT = self.renderer.getRenderTarget();
-    //Suppress the scene backdrop for this pass. A-Frame's `background` component
-    //drives BOTH scene.background AND the renderer clear color/alpha, and THREE
-    //clears a render target to those — filling the G-buffer's open-water texels
-    //with the sky colour at alpha 1 ("geometry present"), so the water samples
-    //the backdrop as its refraction and blends invisibly into it. We force the
-    //clear to alpha 0 ("no seabed → fall back to body colour") AND null the
-    //background so no background quad re-opaques it. Both restored right after,
-    //so the MAIN render still shows the sky. (Mirrors the transmission pass.)
-    const _savedBackground = scene.background;
-    scene.background = null;
-    self._refrClearColor = self._refrClearColor || new THREE.Color();
-    self.renderer.getClearColor(self._refrClearColor);
-    const _savedClearAlpha = self.renderer.getClearAlpha();
-    self.renderer.setClearColor(0x000000, 0.0);
-    self.renderer.setRenderTarget(self.refractionGBufferTarget);
-    self.renderer.clear();
-    self.renderer.render(scene, sceneCamera);
-    self.renderer.setRenderTarget(currentRefractionRT);
-    self.renderer.setClearColor(self._refrClearColor, _savedClearAlpha);
-    scene.background = _savedBackground;
-
-    for(let i = 0, n = self._swappedMeshes.length; i < n; ++i){
-      const entry = self._swappedMeshes[i];
-      entry.mesh.material = entry.original;
+    //Render scene to the refraction G-buffer (3 MRT attachments: albedo,
+    //world-normal, linear-depth). The ocean meshes are hidden above; the
+    //underwater curtain is skipped inside the pass.
+    if(self.refractionGBufferPass){
+      self.refractionGBufferPass.tick({
+        scene: scene,
+        camera: sceneCamera,
+        skipMesh: self.underwaterCurtainMesh
+      });
     }
-    self._swappedMeshes.length = 0;
 
     //Underwater planar reflection — rendered from the mirror camera while the
     //ocean grid is still hidden (so water is never in its own reflection) and
     //materials are restored to their lit originals. Gated on last frame's
     //submersion state — the probe runs later in tick, and one frame of lag on
     //the in/out transition is invisible. Pure overhead above water, so skip.
-    if(self._wasUnderwater){
-      self._renderUnderwaterReflection(scene, sceneCamera);
-      self._renderAboveWaterTransmission(scene, sceneCamera);
+    if(self._wasUnderwater && self.reflectionPass){
+      self.reflectionPass.tick({scene: scene, camera: sceneCamera});
     }
 
-    //Update our sea foam camera - use position pass material to output world-space height data
-    const currentRenderTarget = self.renderer.getRenderTarget();
-    const prevClearAlpha = renderer.getClearAlpha();
-    //Snap foam/exclusion camera XZ to texel-sized increments so the orthos
-    //sample the same world-space points across frames — otherwise the foam
-    //and exclusion atlases shift by a fractional pixel each frame as the
-    //player moves, producing visible flicker on the foam pattern. The water
-    //shader must then sample using these SNAPPED positions (uploaded as
-    //foamCameraXZ / exclusionCameraXZ uniforms), not raw cameraPosition.
-    //Same pattern as the per-cell clipmap snap at the top of this tick.
-    const foamTexel = (2.0 * 2048.0) / self.foamRenderTarget.width; // 4096m / 1024px = 4m
-    const exclTexel = (2.0 *  250.0) / self.exclusionRenderTarget.width; // 500m / 1024px ≈ 0.488m
-    const foamSnapX = Math.round(self.globalCameraPosition.x / foamTexel) * foamTexel;
-    const foamSnapZ = Math.round(self.globalCameraPosition.z / foamTexel) * foamTexel;
-    const exclSnapX = Math.round(self.globalCameraPosition.x / exclTexel) * exclTexel;
-    const exclSnapZ = Math.round(self.globalCameraPosition.z / exclTexel) * exclTexel;
-    self._foamCameraXZ = self._foamCameraXZ || new THREE.Vector2();
-    self._exclusionCameraXZ = self._exclusionCameraXZ || new THREE.Vector2();
-    self._foamCameraXZ.set(foamSnapX, foamSnapZ);
-    self._exclusionCameraXZ.set(exclSnapX, exclSnapZ);
 
-    //── Snap-gated re-render ───────────────────────────────────────────────
-    //The foam/exclusion orthos capture STATIC terrain height from a fixed
-    //top-down view, so their output is INVARIANT to camera yaw — it only
-    //changes when the snapped origin translates. Re-rendering identical
-    //FloatType atlases every frame during pure rotation was the bulk of the
-    //per-frame GPU cost behind the "freezes when I rotate" symptom. We now
-    //re-render only on a snap delta, with a periodic forced refresh so slow-
-    //moving dynamic occluders (a drifting boat etc.) still imprint their
-    //height within FOAM_MAX_STALE_FRAMES.
-    const FOAM_MAX_STALE_FRAMES = 30;   // ~0.5 s @60 fps safety refresh
-    self._foamStaleFrames = (self._foamStaleFrames || 0) + 1;
-    const forceFoamRefresh = !self._foamEverRendered || self._foamStaleFrames >= FOAM_MAX_STALE_FRAMES;
-    const renderFoam = forceFoamRefresh || self._lastFoamSnapX !== foamSnapX || self._lastFoamSnapZ !== foamSnapZ;
-    const renderExcl = forceFoamRefresh || self._lastExclSnapX !== exclSnapX || self._lastExclSnapZ !== exclSnapZ;
-
-    if(renderFoam || renderExcl){
-      self.scene.overrideMaterial = self.positionPassMaterial;
-      self.renderer.setClearAlpha(0.0);
-      //Null the backdrop for these top-down position passes too. With a
-      //scene.background set, THREE's background quad stamps alpha 1 into the
-      //foam/exclusion atlases over open water — and the exclusion .a channel is
-      //the water shader's discard gate (worldPosition.y > discardHeight). That
-      //made every open-water fragment within exclusion range discard (near water
-      //gone, horizon — outside range — survived). Restored at the block's end.
-      var _foamSavedBackground = scene.background;
-      scene.background = null;
-      if(renderFoam){
-        self.foamCamera.position.set(foamSnapX, this.heightOffset + self.foamCameraHeight, foamSnapZ);
-        self.foamCamera.lookAt(foamSnapX, this.heightOffset - 1.0, foamSnapZ);
-        self.foamCamera.updateProjectionMatrix();
-        self.renderer.setRenderTarget(self.foamRenderTarget);
-        self.renderer.clear();
-        self.renderer.render(scene, self.foamCamera);
-        self.renderer.setRenderTarget(null);
-        self._lastFoamSnapX = foamSnapX;
-        self._lastFoamSnapZ = foamSnapZ;
-        //Copy the just-rendered terrain-height ortho to the CPU (async) so the
-        //splash system can detect the shoreline. Only fires on snap-change, so
-        //the transfer is rare. Half-width is 2048 m (see foamTexel above).
-        if(self.oceanSplash){
-          self.oceanSplash.requestTerrainReadback(self.foamRenderTarget, foamSnapX, foamSnapZ, 2048.0);
+    //Foam + boat-hull exclusion ortho atlases. Snap-gated inside the pass, so
+    //pure camera rotation costs nothing. Runs while the ocean meshes are still
+    //hidden (they are shown again just below).
+    if(self.terrainOrthoPass){
+      self.terrainOrthoPass.tick({
+        scene: scene,
+        cameraX: self.globalCameraPosition.x,
+        cameraZ: self.globalCameraPosition.z,
+        heightOffset: self.heightOffset,
+        onFoamRendered: function(rt, snapX, snapZ, halfWidth){
+          if(self.oceanSplash){
+            self.oceanSplash.requestTerrainReadback(rt, snapX, snapZ, halfWidth);
+          }
         }
-      }
-      if(renderExcl){
-        self.exclusionCamera.position.set(exclSnapX, this.heightOffset + self.foamCameraHeight, exclSnapZ);
-        self.exclusionCamera.lookAt(exclSnapX, this.heightOffset - 1.0, exclSnapZ);
-        self.exclusionCamera.updateProjectionMatrix();
-        self.renderer.setRenderTarget(self.exclusionRenderTarget);
-        self.renderer.clear();
-        //Capture the boat hull DOUBLE-SIDED for this pass only. The boat is a
-        //thin/mixed-winding shell, so FrontSide back-face-culls every floor or
-        //hull triangle whose normal points away from this top-down camera —
-        //those texels capture nothing, read mask 0, and the water is never
-        //discarded there, poking through one un-captured triangle at a time
-        //("little tris" inside the hull). DoubleSide makes the capture purely
-        //depth-based regardless of winding. Restored to FrontSide immediately
-        //so the shared foam terrain pass is unaffected. (.side is a cull-state
-        //toggle, not a #define — no shader recompile.)
-        self.positionPassMaterial.side = THREE.DoubleSide;
-        self.renderer.render(scene, self.exclusionCamera);
-        self.positionPassMaterial.side = THREE.FrontSide;
-        self.renderer.setRenderTarget(null);
-        self._lastExclSnapX = exclSnapX;
-        self._lastExclSnapZ = exclSnapZ;
-      }
-      //Restore our original materials + clear state (captured BEFORE zeroing —
-      //the old code captured alpha AFTER setClearAlpha(0) and so "restored" 0,
-      //leaking a 0 clear alpha into the rest of the frame).
-      self.scene.overrideMaterial = null;
-      self.renderer.setRenderTarget(currentRenderTarget);
-      self.renderer.setClearAlpha(prevClearAlpha);
-      scene.background = _foamSavedBackground;
-      self._foamStaleFrames = 0;
-      self._foamEverRendered = true;
+      });
+      //foamRenderMap / exclusionMap always point at their (persistent) textures,
+      //whether or not the pass re-rendered this frame.
+      this.foamRenderMap = self.terrainOrthoPass.foamRenderTarget.texture;
+      this.exclusionMap = self.terrainOrthoPass.exclusionRenderTarget.texture;
     }
-    //foamRenderMap / exclusionMap always point at their (persistent) textures,
-    //whether or not we re-rendered this frame.
-    this.foamRenderMap = self.foamRenderTarget.texture;
-    this.exclusionMap = self.exclusionRenderTarget.texture;
 
     //Show all of our ocean grid elements again
     for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
@@ -2793,81 +1087,16 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
     //Refresh the local CPU height field for scalable exact buoyancy queries
     //(tiny GPU pass + async read; no-ops unless something asked for it).
-    self._updateHeightField();
+    if(self.heightReadbackPass) self.heightReadbackPass.tick();
 
     //── Underwater submersion probe ────────────────────────────────────────
-    //Read two 1-px FFT-displacement texels above/below the camera so the CPU
-    //knows the wave-displaced water level — the only way to drive the air/water
-    //swap without it popping under passing crests. Cascades 0 (4096 m) + 1
-    //(1024 m) carry the dominant swell; the small cascades add at most
-    //decimetre chop and are skipped.
-    //
-    //The read is ASYNC (PBO fence) when the renderer supports it. A synchronous
-    //readRenderTargetPixels drains the ENTIRE GPU command queue before it
-    //returns, and that stall grows with GPU load — which is exactly why
-    //rotating (more geometry in flight) made the frame freeze. The async result
-    //lands a few frames later; the surface moves at swell speed and the swap is
-    //smoothed over a 1 m band, so the lag is invisible (we already accept a
-    //one-frame lag for the reflection mirror plane below). A fresh pair of reads
-    //is issued only once the previous pair resolves (_probePending), and the
-    //last resolved height is reused every frame in between. Falls back to the
-    //blocking read on renderers without readRenderTargetPixelsAsync.
-    const composer = self.oceanHeightComposer;
-    const probeReady = composer && composer.cascadeDisplacementTextures && composer.cascadeDisplacementTextures[1];
-    const canAsyncProbe = typeof self.renderer.readRenderTargetPixelsAsync === 'function';
-    if(self._probeWaterSurfaceY === undefined){ self._probeWaterSurfaceY = self.heightOffset; }
-    let waterSurfaceY = self._probeWaterSurfaceY;
+    //One 2-texel readback at the camera giving the wave-displaced water level —
+    //the only way to drive the air/water swap without it popping under passing
+    //crests. Async where supported; see HeightReadbackPass for why.
+    let waterSurfaceY = self.heightReadbackPass
+      ? self.heightReadbackPass.probeWaterSurfaceY()
+      : self.heightOffset;
 
-    if(probeReady && canAsyncProbe){
-      if(!self._probePending){
-        self._probePending = true;
-        self._probeBuf0 = self._probeBuf0 || new Float32Array(4);
-        self._probeBuf1 = self._probeBuf1 || new Float32Array(4);
-        const bufs = [self._probeBuf0, self._probeBuf1];
-        const res = composer.baseTextureWidth;
-        const offsets = self.oceanMaterial.uniforms.cascadeSpatialOffsets.value;
-        const whm = composer.waveHeightMultiplier;
-        const promises = [];
-        for(let c = 0; c < 2; ++c){
-          const patch = composer._cascadePatchSizes[c];
-          let u = (self.globalCameraPosition.x + offsets[c].x) / patch;
-          let v = (self.globalCameraPosition.z + offsets[c].y) / patch;
-          u -= Math.floor(u);
-          v -= Math.floor(v);
-          const px = Math.min(res - 1, Math.max(0, Math.floor(u * res)));
-          const py = Math.min(res - 1, Math.max(0, Math.floor(v * res)));
-          const rt = composer.cascadeDisplacementTargets[c];
-          promises.push(self.renderer.readRenderTargetPixelsAsync(rt, px, py, 1, 1, bufs[c]));
-        }
-        Promise.all(promises).then(function(){
-          //.y (green) channel = vertical displacement, summed over both cascades.
-          self._probeWaterSurfaceY = self.heightOffset + (self._probeBuf0[1] + self._probeBuf1[1]) * whm;
-          self._probePending = false;
-        }).catch(function(){ self._probePending = false; });
-      }
-      //waterSurfaceY already holds the last resolved value (set above).
-    } else if(probeReady){
-      //Blocking fallback (original behaviour) — renderers without async readback.
-      self._surfaceProbeBuffer = self._surfaceProbeBuffer || new Float32Array(4);
-      const buf = self._surfaceProbeBuffer;
-      const res = composer.baseTextureWidth;
-      const offsets = self.oceanMaterial.uniforms.cascadeSpatialOffsets.value;
-      const whm = composer.waveHeightMultiplier;
-      waterSurfaceY = self.heightOffset;
-      for(let c = 0; c < 2; ++c){
-        const patch = composer._cascadePatchSizes[c];
-        let u = (self.globalCameraPosition.x + offsets[c].x) / patch;
-        let v = (self.globalCameraPosition.z + offsets[c].y) / patch;
-        u -= Math.floor(u);
-        v -= Math.floor(v);
-        const px = Math.min(res - 1, Math.max(0, Math.floor(u * res)));
-        const py = Math.min(res - 1, Math.max(0, Math.floor(v * res)));
-        const rt = composer.cascadeDisplacementTargets[c];
-        self.renderer.readRenderTargetPixels(rt, px, py, 1, 1, buf);
-        waterSurfaceY += buf[1] * whm;   //.y (green) channel = vertical displacement
-      }
-      self._probeWaterSurfaceY = waterSurfaceY;
-    }
     //Stash this frame's displaced surface height for next frame's reflection
     //mirror plane (the RT renders BEFORE this probe runs, so there's a
     //one-frame lag — same pattern as `_wasUnderwater`).
@@ -2886,7 +1115,17 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     }
 
     //Underwater caustic projector — caustics on the directly-viewed seabed.
-    self._updateCausticProjection(time, waterSurfaceY, underwaterFactor);
+    if(self.causticProjectionPass){
+      self.causticProjectionPass.tick({
+        time: time,
+        waterSurfaceY: waterSurfaceY,
+        underwaterFactor: underwaterFactor,
+        causticMap: self.causticMap,
+        cameraX: self.globalCameraPosition.x,
+        cameraZ: self.globalCameraPosition.z,
+        sunLight: self.brightestDirectionalLight
+      });
+    }
 
     //Underwater fog. Fill A-Starry-Sky's reserved fog-shader slot once it is
     //available, then swap scene.fog between A-Starry-Sky's atmospheric fog
@@ -2894,7 +1133,9 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //swap never recompiles; A-Starry-Sky's FogRenderer keeps updating its own
     //(now-detached) Fog harmlessly while we own scene.fog underwater. Negative
     //fogNear selects the injected ocean branch.
-    self._injectUnderwaterFogChunk();
+    if(self.underwaterFogChunk){
+      self._fogChunkInjected = self.underwaterFogChunk.tick();
+    }
     //Warm the underwater (clipping) shader variants once, a short delay after
     //the fog chunk is injected — the delay lets the injection's own needsUpdate
     //recompiles flush first so the warmed clipping program builds against the
@@ -2902,10 +1143,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //on the dip, defeating the point). If the player somehow dives within this
     //window the old lazy compile still covers correctness; this only moves the
     //hitch off the dip in the common case.
-    if(!self._underwaterShadersWarmed && self._fogChunkInjected){
-      self._warmCountdown = (self._warmCountdown === undefined) ? 20 : (self._warmCountdown - 1);
-      if(self._warmCountdown <= 0){ self._warmUnderwaterShaders(); }
-    }
+    if(self.reflectionPass) self.reflectionPass.tickWarm(self._fogChunkInjected);
     if(self.scene){
       if(isUnderwater && self._fogChunkInjected){
         //Murk colour derived from the SAME stack the water shader uses for its
@@ -3206,8 +1444,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         //points FROM the sun TO the scene (the direction sunlight travels).
         //directionalLightDirection above is `(target - position).normalize()`
         //= same convention, so copy directly.
-        if(self._sharedUwSunDir){
-          self._sharedUwSunDir.copy(directionalLightDirection);
+        if(self.underwaterFogChunk && self.underwaterFogChunk._sharedUwSunDir){
+          self.underwaterFogChunk._sharedUwSunDir.copy(directionalLightDirection);
         }
 
         //Wire sun shadow-map receive. Enabled only when the main light actually
@@ -3341,43 +1579,20 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       self.horizonSkirtMesh.position.set(sceneCamera.position.x, self.heightOffset, sceneCamera.position.z);
     }
 
-    //Ocean-only CSM pass. Runs after every ocean material has had its cascade
-    //textures/uniforms refreshed for this frame, so the shadow material picks
-    //up the current FFT state by reference. Then we push the resulting depth
-    //texture + shadow matrix back to each water material.
-    if(self.oceanShadowCSM && self.directionalLights.length > 0 && oceanGridInstanceKeys.length > 0){
-      const mainLight = self.directionalLights[0];
-      directionalLightDirection.set(mainLight.position.x, mainLight.position.y, mainLight.position.z);
-      directionalLightDirection.sub(mainLight.target.position).negate().normalize();
-      const firstMeshUniforms = oceanPatchGeometryInstances[oceanGridInstanceKeys[0]].material.uniforms;
-      self.oceanShadowCSM.render(self.renderer, sceneCamera, directionalLightDirection, firstMeshUniforms);
 
-      //Sun below horizon → CSM.render() early-exits; disable the sampler so
-      //the water shader doesn't read stale maps.
-      const sunBelowHorizon = -directionalLightDirection.y <= 0.0;
-      const cascades = self.oceanShadowCSM.cascades;
-      const numCascades = self.oceanShadowCSM.numCascades;
-      for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
-        const u = oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms;
-        if(sunBelowHorizon || self._oceanShadowOverride === false){
-          u.oceanShadowEnabled.value = 0;
-          if(sunBelowHorizon) continue;
-        } else {
-          u.oceanShadowEnabled.value = 1;
-        }
-        //Push every cascade's moment texture (RGBA32F, post-blur), shadow
-        //matrix, and map size. Matrices live as separate uniform names
-        //(oceanShadowMatrix0..3) and must be projected per-vertex;
-        //texture/mapSize are arrays sampled in the fragment cascade walk.
-        for(let c = 0; c < numCascades; c++){
-          u.oceanShadowMap.value[c] = cascades[c].renderTarget.texture;
-          u.oceanShadowMapSize.value[c].set(cascades[c].cfg.mapSize, cascades[c].cfg.mapSize);
-        }
-        u.oceanShadowMatrix0.value.copy(cascades[0].shadowMatrix);
-        u.oceanShadowMatrix1.value.copy(cascades[1].shadowMatrix);
-        u.oceanShadowMatrix2.value.copy(cascades[2].shadowMatrix);
-        u.oceanShadowMatrix3.value.copy(cascades[3].shadowMatrix);
-      }
+    //Ocean-only CSM pass. MUST run after every ocean material has had its
+    //cascade textures/uniforms refreshed for this frame — the shadow material
+    //picks up the current FFT state by reference. The pass then pushes the
+    //resulting depth textures + shadow matrices back to each water material.
+    if(self.oceanShadowPass){
+      self.oceanShadowPass.tick({
+        camera: sceneCamera,
+        sunLight: self.directionalLights.length > 0 ? self.directionalLights[0] : null,
+        instanceKeys: oceanGridInstanceKeys,
+        instances: oceanPatchGeometryInstances,
+        sunDirectionScratch: directionalLightDirection,
+        oceanShadowOverride: self._oceanShadowOverride
+      });
     }
 
     //Refresh shadow-frustum visualisers if active. Both the scene sun shadow
@@ -3392,7 +1607,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //Broadcast the current sun direction to every fog-receiving material so
     //the underwater chunk's HG sun phase reads the right vector. Cheap scene
     //traversal; the per-material write is a Vector3.copy().
-    self._broadcastUwSunDir();
+    if(self.underwaterFogChunk) self.underwaterFogChunk.broadcastSunDir();
 
     //── Splash particles ──────────────────────────────────────────────────────
     //Run emission + sim last (the offscreen passes are done), then re-show the
