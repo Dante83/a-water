@@ -559,14 +559,20 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.oceanMaterial.uniforms = ARestlessOcean.Materials.Ocean.waterMaterial.uniforms;
   this.oceanMaterial.uniforms.sizeOfOceanPatch.value = this.patchSize;
 
-  //Ocean-only cascaded shadow map. Dedicated tight-frustum depth pass that
-  //only contains the water InstancedMeshes — gives per-wave self-shadow that
-  //the scene-wide sun shadow map can't resolve. Registered with each mesh
-  //below via addCaster(). Safe to skip if the shadow material isn't loaded
-  //(older builds without ocean-shadow.js).
-  if(ARestlessOcean.OceanShadowCSM && ARestlessOcean.Materials.Ocean.oceanShadowMaterial){
-    this.oceanShadowCSM = new ARestlessOcean.OceanShadowCSM(this, scene);
+  //Ocean-only cascaded shadow map, orchestrated by
+  //ARestlessOcean.Passes.OceanShadowPass. Dedicated tight-frustum depth pass
+  //that only contains the water InstancedMeshes — gives per-wave self-shadow
+  //that the scene-wide sun shadow map can't resolve. Each mesh registers
+  //itself below via addCaster().
+  if(ARestlessOcean.Passes && ARestlessOcean.Passes.OceanShadowPass){
+    this.oceanShadowPass = new ARestlessOcean.Passes.OceanShadowPass(this);
+    this.oceanShadowPass.init();
+    //Back-compat alias — the CSM was `oceanGrid.oceanShadowCSM` in 0.2.0 and is
+    //still read by the debug helpers and the EVSM console setters. Null when
+    //ocean-shadow-csm.js or its generated material isn't loaded.
+    this.oceanShadowCSM = this.oceanShadowPass.csm;
   } else {
+    this.oceanShadowPass = null;
     this.oceanShadowCSM = null;
   }
 
@@ -744,8 +750,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       //cascades; finest ring 0 contributes to all four. Layers are set
       //inside addCaster so per-cascade light cameras naturally pick the
       //right caster set without any per-frame layer toggling here.
-      if(self.oceanShadowCSM){
-        self.oceanShadowCSM.addCaster(mesh, k);
+      if(self.oceanShadowPass){
+        self.oceanShadowPass.addCaster(mesh, k);
       }
       //Move ocean patch off the default layer onto OCEAN_LAYER. Must happen
       //after addCaster, which enables the per-cascade caster layers (7..10);
@@ -1847,43 +1853,20 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       self.horizonSkirtMesh.position.set(sceneCamera.position.x, self.heightOffset, sceneCamera.position.z);
     }
 
-    //Ocean-only CSM pass. Runs after every ocean material has had its cascade
-    //textures/uniforms refreshed for this frame, so the shadow material picks
-    //up the current FFT state by reference. Then we push the resulting depth
-    //texture + shadow matrix back to each water material.
-    if(self.oceanShadowCSM && self.directionalLights.length > 0 && oceanGridInstanceKeys.length > 0){
-      const mainLight = self.directionalLights[0];
-      directionalLightDirection.set(mainLight.position.x, mainLight.position.y, mainLight.position.z);
-      directionalLightDirection.sub(mainLight.target.position).negate().normalize();
-      const firstMeshUniforms = oceanPatchGeometryInstances[oceanGridInstanceKeys[0]].material.uniforms;
-      self.oceanShadowCSM.render(self.renderer, sceneCamera, directionalLightDirection, firstMeshUniforms);
 
-      //Sun below horizon → CSM.render() early-exits; disable the sampler so
-      //the water shader doesn't read stale maps.
-      const sunBelowHorizon = -directionalLightDirection.y <= 0.0;
-      const cascades = self.oceanShadowCSM.cascades;
-      const numCascades = self.oceanShadowCSM.numCascades;
-      for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
-        const u = oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms;
-        if(sunBelowHorizon || self._oceanShadowOverride === false){
-          u.oceanShadowEnabled.value = 0;
-          if(sunBelowHorizon) continue;
-        } else {
-          u.oceanShadowEnabled.value = 1;
-        }
-        //Push every cascade's moment texture (RGBA32F, post-blur), shadow
-        //matrix, and map size. Matrices live as separate uniform names
-        //(oceanShadowMatrix0..3) and must be projected per-vertex;
-        //texture/mapSize are arrays sampled in the fragment cascade walk.
-        for(let c = 0; c < numCascades; c++){
-          u.oceanShadowMap.value[c] = cascades[c].renderTarget.texture;
-          u.oceanShadowMapSize.value[c].set(cascades[c].cfg.mapSize, cascades[c].cfg.mapSize);
-        }
-        u.oceanShadowMatrix0.value.copy(cascades[0].shadowMatrix);
-        u.oceanShadowMatrix1.value.copy(cascades[1].shadowMatrix);
-        u.oceanShadowMatrix2.value.copy(cascades[2].shadowMatrix);
-        u.oceanShadowMatrix3.value.copy(cascades[3].shadowMatrix);
-      }
+    //Ocean-only CSM pass. MUST run after every ocean material has had its
+    //cascade textures/uniforms refreshed for this frame — the shadow material
+    //picks up the current FFT state by reference. The pass then pushes the
+    //resulting depth textures + shadow matrices back to each water material.
+    if(self.oceanShadowPass){
+      self.oceanShadowPass.tick({
+        camera: sceneCamera,
+        sunLight: self.directionalLights.length > 0 ? self.directionalLights[0] : null,
+        instanceKeys: oceanGridInstanceKeys,
+        instances: oceanPatchGeometryInstances,
+        sunDirectionScratch: directionalLightDirection,
+        oceanShadowOverride: self._oceanShadowOverride
+      });
     }
 
     //Refresh shadow-frustum visualisers if active. Both the scene sun shadow
