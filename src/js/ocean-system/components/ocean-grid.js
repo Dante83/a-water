@@ -244,48 +244,27 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     this.refractionGBufferTarget = null;
   }
 
-  //── Underwater planar reflection ─────────────────────────────────────────
-  //The TIR "mirror" the underwater ceiling samples outside Snell's window —
-  //the underwater scene rendered each submerged frame from a virtual camera
-  //mirrored across the rest water plane. Half-resolution: the sample is
-  //wave-distorted and fogged so it needs no crispness, and the whole pass is
-  //skipped entirely above water. HalfFloat so un-tone-mapped (linear) scene
-  //radiance is not clamped at 1.
-  this.reflectionResolutionScale = 0.5;
-  this._reflectionTarget = new THREE.WebGLRenderTarget(
-    Math.max(1, (rendererSize.x * this.reflectionResolutionScale) | 0),
-    Math.max(1, (rendererSize.y * this.reflectionResolutionScale) | 0),
-    {
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
-      format: THREE.RGBAFormat,
-      type: THREE.HalfFloatType
-    }
-  );
-  this._reflectionCamera = new THREE.PerspectiveCamera();
-  this._reflectionTextureMatrix = new THREE.Matrix4();
-
-  //── Above-water transmission target ──────────────────────────────────────
-  //Sampled by the underwater ceiling's Snell-window transmitted ray. The
-  //refraction G-buffer is wrong for that lookup — it strips materials to
-  //raw albedo, hides the sky dome, and skips above-water atmospheric fog,
-  //so above-water content reads as flat unshaded ghost shapes through the
-  //surface. This RT is a separate submerged-frame render of the FULLY-LIT
-  //scene: sky dome restored, real materials, atmospheric perspective from
-  //a-starry-sky reinstated, ocean grid + curtain hidden. Half-res HalfFloat
-  //matching the reflection target — the sample is wave-distorted so it
-  //needs no crispness, and HalfFloat keeps un-tone-mapped sky radiance
-  //unclamped. Skipped entirely above water (the sample is never read then).
-  this._aboveWaterTransmissionTarget = new THREE.WebGLRenderTarget(
-    Math.max(1, (rendererSize.x * this.reflectionResolutionScale) | 0),
-    Math.max(1, (rendererSize.y * this.reflectionResolutionScale) | 0),
-    {
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
-      format: THREE.RGBAFormat,
-      type: THREE.HalfFloatType
-    }
-  );
+  //── Underwater planar reflection + above-water transmission ──────────────
+  //Both submerged-only render targets, the mirror camera, the clip plane and
+  //the one-shot clipping-shader warm live in
+  //ARestlessOcean.Passes.ReflectionPass. Read its header before touching the
+  //tick ordering — the one-frame lag on the underwater murk values and the
+  //fogFar > 0 rule are both load-bearing.
+  if(ARestlessOcean.Passes && ARestlessOcean.Passes.ReflectionPass){
+    this.reflectionPass = new ARestlessOcean.Passes.ReflectionPass(this);
+    this.reflectionPass.init(rendererSize.x, rendererSize.y);
+    //Back-compat aliases — read by the per-instance uniform upload loop.
+    this.reflectionResolutionScale = this.reflectionPass.resolutionScale;
+    this._reflectionTarget = this.reflectionPass.target;
+    this._aboveWaterTransmissionTarget = this.reflectionPass.transmissionTarget;
+    this._reflectionTextureMatrix = this.reflectionPass._reflectionTextureMatrix;
+  } else {
+    this.reflectionPass = null;
+    this.reflectionResolutionScale = 0.5;
+    this._reflectionTarget = null;
+    this._aboveWaterTransmissionTarget = null;
+    this._reflectionTextureMatrix = new THREE.Matrix4();
+  }
 
   //── Underwater caustic projection — KNOBS ────────────────────────────────
   //The projector itself (slide RT, SpotLight, per-frame update) lives in
@@ -1295,295 +1274,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     }
   };
 
-  //Render the underwater scene from a camera mirrored across the rest water
-  //plane (y = heightOffset) into the planar-reflection target — the TIR
-  //mirror the ceiling samples outside Snell's window. Reflecting the camera's
-  //position, forward and up across the plane and then doing a normal lookAt
-  //keeps the virtual camera right-handed (no winding flip) — the
-  //THREE.Reflector trick. Caller renders this while the ocean grid is hidden.
-  this._renderUnderwaterReflection = function(scene, mainCamera){
-    //Mirror across the DISPLACED surface at the camera's XZ (last frame's
-    //CPU probe), not the flat rest plane. The chunk's `uwSurfaceY` is also
-    //the displaced height (set from `-_oceanFog.near`), so this keeps the
-    //mirror's reference plane and the chunk's fog-crossing plane in sync —
-    //the complementary segment compose (chunk fogs |SP|, applyUnderwaterFog
-    //fogs |CS|) only sums to the true bounce-path length when both planes
-    //agree. Falls back to heightOffset before the first probe runs. Wave
-    //amplitude away from the camera's XZ is still an unmodelled error, but
-    //bringing the camera-XZ height into the mirror plane removes the bulk
-    //of the mismatch under any swell.
-    const h = (self._lastWaterSurfaceY !== undefined)
-      ? self._lastWaterSurfaceY
-      : self.heightOffset;
-    const reflCam = self._reflectionCamera;
-    if(!self._reflScratch){
-      self._reflScratch = {
-        pos: new THREE.Vector3(), fwd: new THREE.Vector3(),
-        up: new THREE.Vector3(), quat: new THREE.Quaternion(),
-        target: new THREE.Vector3(), clearColor: new THREE.Color(),
-        murk: new THREE.Color()
-      };
-    }
-    const s = self._reflScratch;
-    mainCamera.getWorldPosition(s.pos);
-    mainCamera.getWorldDirection(s.fwd);
-    mainCamera.getWorldQuaternion(s.quat);
-    s.up.set(0.0, 1.0, 0.0).applyQuaternion(s.quat);
 
-    //Mirror the camera across the rest water plane: y → 2h - y, and flip the
-    //y of both the forward and up vectors.
-    reflCam.position.set(s.pos.x, 2.0 * h - s.pos.y, s.pos.z);
-    reflCam.up.set(s.up.x, -s.up.y, s.up.z);
-    s.target.set(s.pos.x + s.fwd.x,
-                 (2.0 * h - s.pos.y) - s.fwd.y,
-                 s.pos.z + s.fwd.z);
-    reflCam.lookAt(s.target);
-    reflCam.projectionMatrix.copy(mainCamera.projectionMatrix);
-    reflCam.updateMatrixWorld();
 
-    //Note: the mirror cam is the VIEWER mirrored across the rest plane, NOT the
-    //camera-at-the-reflecting-pixel. When the viewer is underwater (mainCamY < h)
-    //the mirror cam is ABOVE water (mirrorCamY = 2h - mainCamY > h), so the
-    //chunk's uwCamDepth clamps to 0 in this pass. That's compensated by swapping
-    //the pre-darkened _uwBaselineCamDepth into the fogColor for the mirror pass
-    //(see the murk block), so the reflected ceiling fogs toward the same depth
-    //equilibrium as the direct seabed. (This was probed as a suspected
-    //direct-vs-reflected divergence — ruled out: the depth cancels between views.)
-
-    //world position → reflection UV: bias(clip→[0,1]) · proj · view.
-    self._reflectionTextureMatrix.set(
-      0.5, 0.0, 0.0, 0.5,
-      0.0, 0.5, 0.0, 0.5,
-      0.0, 0.0, 0.5, 0.5,
-      0.0, 0.0, 0.0, 1.0
-    );
-    self._reflectionTextureMatrix.multiply(reflCam.projectionMatrix);
-    self._reflectionTextureMatrix.multiply(reflCam.matrixWorldInverse);
-
-    //Hide the sky dome — only the underwater scene belongs in the mirror;
-    //empty directions then read as the dark clear colour (the ceiling shader
-    //fogs them toward the murk). The ocean grid is already hidden by the
-    //caller, so the water never appears in its own reflection.
-    const atmRenderer = self.skyDirector && self.skyDirector.renderers && self.skyDirector.renderers.atmosphereRenderer;
-    const skyMesh = atmRenderer && atmRenderer.skyMesh;
-    const skyWasVisible = skyMesh ? skyMesh.visible : false;
-    if(skyMesh){ skyMesh.visible = false; }
-    //Keep the underwater curtain visible in the mirror so the direct view and
-    //the reflected view share the same backdrop. Hiding it left empty mirror
-    //directions falling back to the dark clear colour while the direct view
-    //filled the same directions with the murk-coloured curtain — so the
-    //reflected horizon colours stopped matching the direct horizon.
-
-    const prevRT = self.renderer.getRenderTarget();
-    const prevToneMapping = self.renderer.toneMapping;
-    self.renderer.getClearColor(s.clearColor);
-    const prevClearAlpha = self.renderer.getClearAlpha();
-
-    //Force scene.fog to the UNDERWATER ocean fog for the mirror RT (don't just
-    //inherit it). The chunk then fogs the reflected geometry over the bounce
-    //path: by the reflection-trick equivalence the mirror camera's straight-line
-    //distance to a fragment equals the real cam→surface→reflected-point path, so
-    //it's one segment. Setting it explicitly (rather than relying on the prior
-    //frame's swap still being mounted) guarantees the reflection never picks up
-    //the atmospheric fog on the boundary frame. Only do it when the ocean fog is
-    //actually armed (chunk injected); otherwise leave whatever is mounted.
-    const prevFog = scene.fog;
-    if(self._fogChunkInjected){ scene.fog = self._oceanFog; }
-    //Swap the chunk's fogColor to the CAMERA-DEPTH-darkened baseline for this
-    //pass so the reflected geometry fogs toward the same teal the direct seabed
-    //reaches (see _uwBaselineCamDepth). The mirror cam is above water so the
-    //chunk can't derive the camera-depth darkening itself. Save/restore the raw
-    //RGB (the tick rewrites fogColor from _uwMurkScratch every frame anyway).
-    const prevFogColorR = self._oceanFog.color.r;
-    const prevFogColorG = self._oceanFog.color.g;
-    const prevFogColorB = self._oceanFog.color.b;
-    if(self._uwBaselineCamDepth){
-      //SRGBToLinear pre-comp (see _toFogUniform) — same reason as the main pass.
-      self._oceanFog.color.setRGB(self._toFogUniform(self._uwBaselineCamDepth.x),
-                                  self._toFogUniform(self._uwBaselineCamDepth.y),
-                                  self._toFogUniform(self._uwBaselineCamDepth.z));
-    }
-    //fogFar MUST stay > 0 here. a-starry-sky's fog_fragment routes on
-    //`if(fogFar <= 0.0)` → its ATMOSPHERIC-perspective branch, checked BEFORE
-    //our `else if(fogNear < 0.0)` ocean branch. The old NEGATIVE sign (meant to
-    //signal "linear output" to our chunk) therefore sent the whole mirror pass
-    //into a-starry-sky's atmospheric fog — our ocean chunk never ran in the
-    //reflection at all, so the reflected geometry read bright/atmospheric
-    //instead of teal. So we carry the linear/sRGB flag in fogFar's MAGNITUDE, not its
-    //sign: add a +10 offset for the linear RT pass (range [10,11]) vs the main
-    //canvas's bare sunFrac (range [0,1]). The chunk reads `fogFar > 5.0` ⇒
-    //linear output (skip the sRGB roundtrip — this RT is NoToneMapping linear
-    //HalfFloat, composited pre-tonemap so the single main-canvas tonemap encodes
-    //once), and recovers sunFrac as `fogFar - 10.0`. Both passes keep fogFar > 0
-    //so both correctly land in the ocean branch. Falls back to 0.5 if the probe
-    //hasn't populated _uwSunFrac yet.
-    const prevFogFar = self._oceanFog.far;
-    const sunFracForRT = (self._uwSunFrac !== undefined) ? self._uwSunFrac : 0.5;
-    self._oceanFog.far = sunFracForRT + 10.0;
-
-    //Clip everything above the waterline out of the mirror cam's render.
-    //Without this, cave walls, the above-water portion of the lighthouse, and
-    //any other stationary world geometry sitting above the surface lands in
-    //the RT and gets sampled by the underwater ceiling shader's TIR lookup —
-    //producing the "dark band of cave stone where the underwater rock should
-    //be reflected" artifact at the waterline. The water grid itself is hidden
-    //by the caller, so the wavy ocean surface never collides with this plane.
-    //Plane convention: distance(p) = normal·p + constant; fragments with
-    //distance < 0 are clipped. normal=(0,-1,0), constant=waterSurfaceY clips
-    //fragments where y > waterSurfaceY (above water).
-    if(!self._reflClipPlane){
-      self._reflClipPlane = new THREE.Plane(new THREE.Vector3(0.0, -1.0, 0.0), 0.0);
-    }
-    self._reflClipPlane.constant = h;
-    const prevClippingPlanes = self.renderer.clippingPlanes;
-    const prevLocalClipping = self.renderer.localClippingEnabled;
-    self.renderer.clippingPlanes = [self._reflClipPlane];
-    self.renderer.localClippingEnabled = true;
-
-    //Linear output (NoToneMapping) so the colour feeds straight into the
-    //ceiling's linear composite without a tone-map / encode round-trip.
-    self.renderer.toneMapping = THREE.NoToneMapping;
-    self.renderer.setRenderTarget(self._reflectionTarget);
-    //Clear to the SURFACE-level inscatter murk (LINEAR — the RT is NoToneMapping
-    //and feeds the ceiling's linear composite directly), not black and not the
-    //camera-depth murk. This RT is the reflected (post-bounce) leg, whose path
-    //starts at the surface, so its infinite-depth equilibrium is the surface
-    //murk — the SAME teal the reflected geometry fogs to (mirror cam above water
-    //→ uwCamDepth 0). Empty/curtain-gap directions then match the reflected
-    //seabed instead of going dim, so the ceiling's TIR lookup reads teal, not a
-    //dark void. Falls back to the camera-depth murk, then a seeded default,
-    //before the first surface-murk update (one-frame lag, invisible).
-    const m = self._uwReflCamDepthMurk || self._uwReflSurfaceMurk || self._uwMurkCamDepthScratch;
-    if(m){ s.murk.setRGB(m.x, m.y, m.z); } else { s.murk.setRGB(0.02, 0.06, 0.08); }
-    self.renderer.setClearColor(s.murk, 1.0);
-    self.renderer.clear();
-    self.renderer.render(scene, reflCam);
-
-    self.renderer.clippingPlanes = prevClippingPlanes;
-    self.renderer.localClippingEnabled = prevLocalClipping;
-    self._oceanFog.far = prevFogFar;
-    self._oceanFog.color.setRGB(prevFogColorR, prevFogColorG, prevFogColorB);
-    scene.fog = prevFog;
-    self.renderer.setClearColor(s.clearColor, prevClearAlpha);
-    self.renderer.toneMapping = prevToneMapping;
-    self.renderer.setRenderTarget(prevRT);
-    if(skyMesh){ skyMesh.visible = skyWasVisible; }
-  };
-
-  //Pre-compile the underwater shader variants during load so the FIRST dip
-  //doesn't stall. The only NEW program variant introduced underwater is the
-  //clipping one: _renderUnderwaterReflection renders the whole scene with a
-  //renderer-level clipping plane, and going from zero clipping planes to one
-  //changes NUM_CLIPPING_PLANES, forcing every scene material to recompile the
-  //first time it's drawn clipped (the multi-hundred-ms hitch on first
-  //submersion; smooth after, once both variants are cached). Nothing else that
-  //flips underwater changes a program: the ocean fog and a-starry-sky fog are
-  //both linear THREE.Fog sharing ONE program (they differ only in uniform
-  //values, and the fog-chunk injection already rebuilt that program above
-  //water via its own needsUpdate sweep); .side and .visible are GL state, not
-  //defines. So clipping is the whole fix.
-  //
-  //We warm through the REAL render path, not renderer.compile(): compile() does
-  //NOT bake the global clipping-plane define, so it only re-created the no-clip
-  //variants that already existed (measured: Programs still jumped +37 on the
-  //first dip after a compile()-based warm). Driving the actual reflection pass
-  //once renders the whole visible scene under the clip plane, compiling+linking
-  //every clipping variant now (one controlled frame at load) instead of
-  //mid-dive. The pass sets and restores its own fog/clip/sky/RT state, so this
-  //is self-contained; the throwaway RT contents are discarded. Runs once.
-  this._warmUnderwaterShaders = function(){
-    if(self._underwaterShadersWarmed) return;
-    if(!self.scene || !self.camera || !self.renderer) return;
-    if(!self._reflectionTarget || !self._aboveWaterTransmissionTarget) return;
-    try {
-      //Reflection = the clipping warm (the +37). Transmission adds no new
-      //programs (same materials as a normal above-water frame) but is cheap and
-      //keeps the Snell-window source primed too.
-      self._renderUnderwaterReflection(self.scene, self.camera);
-      self._renderAboveWaterTransmission(self.scene, self.camera);
-    } catch(e){ /* best-effort warm; never break the frame over a precompile */ }
-    self._underwaterShadersWarmed = true;
-  };
-
-  //Render the fully-lit above-water scene from the submerged camera into the
-  //above-water transmission target — the source the underwater ceiling's
-  //Snell-window transmitted ray samples. The refraction G-buffer can't serve
-  //this role (raw albedo, sky dome hidden, no atmospheric fog), so this
-  //replays the same camera with: sky dome restored, materials un-swapped,
-  //scene.fog handed back to a-starry-sky's atmospheric-perspective version
-  //(so above-water terrain hazes naturally), ocean grid + curtain hidden
-  //(they'd occlude the upward view). Linear output so the colour drops
-  //straight into the ceiling composite. Caller hides the ocean grid; we
-  //handle the rest.
-  this._renderAboveWaterTransmission = function(scene, mainCamera){
-    if(!self._uwTxScratch){
-      self._uwTxScratch = { clearColor: new THREE.Color() };
-    }
-    const s = self._uwTxScratch;
-
-    const atmRenderer = self.skyDirector && self.skyDirector.renderers && self.skyDirector.renderers.atmosphereRenderer;
-    const skyMesh = atmRenderer && atmRenderer.skyMesh;
-    const skyWasVisible = skyMesh ? skyMesh.visible : false;
-    if(skyMesh){ skyMesh.visible = true; }
-
-    //Sun/moon disk planes are hidden underwater for the main render (sky-dome
-    //swap), but the Snell window should still show them refracted through the
-    //surface — so force them visible just for this above-water capture and
-    //restore afterward (mirrors skyMesh above).
-    const rends = self.skyDirector && self.skyDirector.renderers;
-    const sunMesh = rends && rends.sunRenderer && rends.sunRenderer.sunMesh;
-    const moonMesh = rends && rends.moonRenderer && rends.moonRenderer.moonMesh;
-    const sunWasVisible = sunMesh ? sunMesh.visible : false;
-    const moonWasVisible = moonMesh ? moonMesh.visible : false;
-    if(sunMesh){ sunMesh.visible = true; }
-    if(moonMesh){ moonMesh.visible = true; }
-
-    const curtain = self.underwaterCurtainMesh;
-    const curtainWasVisible = curtain ? curtain.visible : false;
-    if(curtain){ curtain.visible = false; }
-
-    //Swap the ocean underwater fog for the captured above-water fog (the
-    //a-starry-sky atmospheric perspective version, captured in tick on every
-    //above-water frame). Above-water fragments would otherwise get NO fog
-    //at all here — the ocean chunk's world-Y gate excludes them, and the
-    //atmospheric perspective branch isn't entered when scene.fog is the
-    //ocean fog. Fall back to whatever's mounted if no capture exists yet.
-    const prevFog = scene.fog;
-    if(self._capturedSkyFog !== undefined){
-      scene.fog = self._capturedSkyFog;
-    }
-
-    //Background swap — while submerged scene.background was set to the
-    //murk colour; for this pass we want the captured above-water bg (the
-    //sky colour) so cleared/sky-dome pixels read correctly.
-    const prevBackground = scene.background;
-    if(self._aboveWaterBackground !== undefined){
-      scene.background = self._aboveWaterBackground;
-    }
-
-    const prevRT = self.renderer.getRenderTarget();
-    const prevToneMapping = self.renderer.toneMapping;
-    self.renderer.getClearColor(s.clearColor);
-    const prevClearAlpha = self.renderer.getClearAlpha();
-
-    //Linear output — feeds straight into the ceiling's linear composite
-    //without a tone-map / encode round-trip.
-    self.renderer.toneMapping = THREE.NoToneMapping;
-    self.renderer.setRenderTarget(self._aboveWaterTransmissionTarget);
-    self.renderer.setClearColor(0x000000, 1.0);
-    self.renderer.clear();
-    self.renderer.render(scene, mainCamera);
-
-    scene.fog = prevFog;
-    scene.background = prevBackground;
-    self.renderer.setClearColor(s.clearColor, prevClearAlpha);
-    self.renderer.toneMapping = prevToneMapping;
-    self.renderer.setRenderTarget(prevRT);
-    if(skyMesh){ skyMesh.visible = skyWasVisible; }
-    if(sunMesh){ sunMesh.visible = sunWasVisible; }
-    if(moonMesh){ moonMesh.visible = moonWasVisible; }
-    if(curtain){ curtain.visible = curtainWasVisible; }
-  };
 
 
   //Fill A-Starry-Sky's reserved underwater-fog slot. Its `advanced` atmospheric
@@ -1975,14 +1667,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       self.refractionGBufferPass.resize(rendererSize.x, rendererSize.y);
       //setSize replaces the depth texture object, so refresh the alias.
       self.refractionGBufferTarget = self.refractionGBufferPass.target;
-      self._reflectionTarget.setSize(
-        Math.max(1, (rendererSize.x * self.reflectionResolutionScale) | 0),
-        Math.max(1, (rendererSize.y * self.reflectionResolutionScale) | 0)
-      );
-      self._aboveWaterTransmissionTarget.setSize(
-        Math.max(1, (rendererSize.x * self.reflectionResolutionScale) | 0),
-        Math.max(1, (rendererSize.y * self.reflectionResolutionScale) | 0)
-      );
+      if(self.reflectionPass) self.reflectionPass.resize(rendererSize.x, rendererSize.y);
     }
 
     //Update the state of our ocean grid
@@ -2037,9 +1722,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //materials are restored to their lit originals. Gated on last frame's
     //submersion state — the probe runs later in tick, and one frame of lag on
     //the in/out transition is invisible. Pure overhead above water, so skip.
-    if(self._wasUnderwater){
-      self._renderUnderwaterReflection(scene, sceneCamera);
-      self._renderAboveWaterTransmission(scene, sceneCamera);
+    if(self._wasUnderwater && self.reflectionPass){
+      self.reflectionPass.tick({scene: scene, camera: sceneCamera});
     }
 
 
@@ -2130,10 +1814,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //on the dip, defeating the point). If the player somehow dives within this
     //window the old lazy compile still covers correctness; this only moves the
     //hitch off the dip in the common case.
-    if(!self._underwaterShadersWarmed && self._fogChunkInjected){
-      self._warmCountdown = (self._warmCountdown === undefined) ? 20 : (self._warmCountdown - 1);
-      if(self._warmCountdown <= 0){ self._warmUnderwaterShaders(); }
-    }
+    if(self.reflectionPass) self.reflectionPass.tickWarm(self._fogChunkInjected);
     if(self.scene){
       if(isUnderwater && self._fogChunkInjected){
         //Murk colour derived from the SAME stack the water shader uses for its
