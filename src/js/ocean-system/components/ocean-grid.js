@@ -847,28 +847,17 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     this._createHorizonSkirt();
   }
 
-  //Console helper — flip the ocean-shadow debug mode on every water tile
-  //material at once. Call from the browser console as
-  //  setOceanShadowDebug(0|1|2)
-  //  0 = normal render, 1 = shadow factor as full-screen grayscale,
-  //  2 = cascade-index tint (red C0, green C1, blue C2, yellow C3).
-  //Cascade-depth thumbnails and the bottom-corner jacobian/foam panels
-  //appear only when mode is non-zero.
-  this.setOceanShadowDebug = function(mode){
+  //Iterate every ocean surface mesh — all clipmap ring InstancedMeshes plus
+  //the horizon skirt. The one sanctioned way for anything outside this
+  //constructor to reach the water materials, so the instance map and key list
+  //stay closure-private. Used by the debug setters today; the passes
+  //WATER-TYPES.md adds next get it for free.
+  this.forEachOceanMesh = function(cb){
     for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
-      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.oceanShadowDebugMode.value = mode | 0;
+      cb(oceanPatchGeometryInstances[oceanGridInstanceKeys[i]], oceanGridInstanceKeys[i]);
     }
   };
-  //Opacity for the cascade-band overlay (debug mode 40). 0 = scene only,
-  //1 = overlay only, 0.5 = half-and-half. Call setOceanShadowDebug(40) first,
-  //then setDebugBlend(0.5) to dial how strongly the cascade colours show over
-  //the real waves.
-  this.setDebugBlend = function(v){
-    const blend = +v;
-    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
-      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.debugBlend.value = blend;
-    }
-  };
+
   //Diagnostic toggles — flip the scene-wide sun shadow or the ocean-only
   //CSM on/off across every water tile so we can isolate which one is
   //producing a given visible shadow. Call as setSunShadowEnabled(0) etc.
@@ -885,111 +874,6 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //console for live tuning.
   this._sunShadowBiasOffset = (data && typeof data.sun_shadow_bias === 'number')
     ? data.sun_shadow_bias : -0.0012;
-  this.setSunShadowBias = function(offset){
-    self._sunShadowBiasOffset = +offset || 0.0;
-  };
-  this.setSunShadowEnabled = function(enabled){
-    self._sunShadowOverride = enabled === null || enabled === undefined ? null : !!enabled;
-    const v = self._sunShadowOverride === false ? 0 : 1;
-    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
-      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.sunShadowEnabled.value = v;
-    }
-  };
-  this.setOceanShadowEnabled = function(enabled){
-    self._oceanShadowOverride = enabled === null || enabled === undefined ? null : !!enabled;
-    const v = self._oceanShadowOverride === false ? 0 : 1;
-    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
-      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.oceanShadowEnabled.value = v;
-    }
-  };
-  //Live-tune the receiver-side normal-offset bias from the console. Pushes
-  //to every water tile material at once so the change is visible next
-  //frame. Pass a value in WORLD METERS — typical range 0.05 to 2.0.
-  this.setOceanShadowNormalBias = function(meters){
-    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
-      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.oceanShadowNormalBias.value = +meters;
-    }
-  };
-  //EVSM warp constant. Pushes to BOTH the receiver materials and the
-  //caster materials (via the CSM helper). Keep them in sync — caster
-  //emits exp(c·z) moments and receiver computes exp(c·refZ); a mismatch
-  //makes every comparison nonsense.
-  this.setOceanEvsmExpC = function(c){
-    const v = +c;
-    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
-      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.evsmExpC.value = v;
-    }
-    if(self.oceanShadowCSM){
-      self.oceanShadowCSM.setEvsmExpC(v);
-    }
-  };
-  //EVSM minimum variance floor. Tiny number; raise (e.g. 1e-3) if you
-  //see speckle in penumbra; lower (e.g. 1e-5) if shadow gradients feel
-  //too soft.
-  this.setOceanEvsmMinVariance = function(v){
-    const f = +v;
-    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
-      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.evsmMinVariance.value = f;
-    }
-  };
-  //EVSM light-bleed reduction threshold in [0, 1). Higher = harder
-  //shadows, more contrast; lower = softer with risk of light bleed.
-  this.setOceanEvsmLightBleedReduction = function(v){
-    const f = +v;
-    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
-      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms.evsmLightBleedReduction.value = f;
-    }
-  };
-  this.setReflectionScale = function(v){
-    self.reflectionScale = +v;
-  };
-  //SSR march step cap. 48 = full reach (default); try 32/16/8 to find the
-  //fps/quality knee; 0 skips the march entirely (sky-only) as a bottleneck A/B.
-  this.setSsrMaxSteps = function(v){
-    self.ssrMaxSteps = +v;
-  };
-  this.setReflectionDistanceFalloff = function(v){
-    self.reflectionDistanceFalloff = +v;
-  };
-  this.setFresnelDistanceRoughness = function(v){
-    self.fresnelDistanceRoughness = +v;
-  };
-  this.setSurfaceRoughness = function(v){
-    self.surfaceRoughness = +v;
-  };
-  //Crest-style sun-glint live knobs. setSpecFresnelGate(0..1): 0 = legacy
-  //ungated additive glint, 1 = Crest Fresnel-gated. setSpecFalloffFar /
-  //setSpecFalloffFarDist drive the distance lobe-widening ramp (far defaults
-  //to 275 = near, a no-op until lowered). setSpecBoost is _DirectionalLightBoost.
-  this.setSpecFresnelGate = function(v){
-    self.specFresnelGate = +v;
-  };
-  this.setSpecBoost = function(v){
-    self.specBoost = +v;
-  };
-  this.setSpecFalloffFar = function(v){
-    self.specFalloffFar = +v;
-  };
-  this.setSpecFalloffFarDist = function(v){
-    self.specFalloffFarDist = +v;
-  };
-  //Live-tune atmospheric perspective strength. Default 1.0. Set to 0.0 to
-  //fully bypass extinction + inscatter on the water surface (the per-frame
-  //tick will still overwrite at the next ocean-grid update unless we keep
-  //it in sync — that's why we also mirror onto the cached field).
-  this.setAtmDistanceScale = function(v){
-    self.atmosphericPerspectiveDistanceScale = +v;
-  };
-  //Render every ocean tile (FFT tiles + horizon skirt) as wireframe so the
-  //clipmap cell structure and per-ring tessellation density are visible.
-  //ShaderMaterial honours `wireframe` natively — no shader recompile needed.
-  //Call from the console: setOceanWireframe(1) on, setOceanWireframe(0) off.
-  this.setOceanWireframe = function(enabled){
-    const flag = !!enabled;
-    for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
-      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.wireframe = flag;
-    }
-  };
   //Toggle THREE.CameraHelper wireframes for every shadow camera in play so
   //you can SEE the frustums in 3D — way more useful than reading dimensions
   //out of a dump. White = scene sun shadow (Three.js DirectionalLight), and
@@ -997,156 +881,14 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //are added directly to the scene; update() is called per-frame from tick.
   //Call as setShadowHelpers(1) / setShadowHelpers(0).
   this._shadowHelpers = null;
-  this.setShadowHelpers = function(enabled){
-    const on = !!enabled;
-    if(!on){
-      if(self._shadowHelpers){
-        for(let i = 0; i < self._shadowHelpers.length; i++){
-          self.scene.remove(self._shadowHelpers[i]);
-          self._shadowHelpers[i].dispose && self._shadowHelpers[i].dispose();
-        }
-        self._shadowHelpers = null;
-      }
-      return;
-    }
-    if(self._shadowHelpers) return;
-    self._shadowHelpers = [];
-    const colors = [0xff4040, 0xff9020, 0xffe040, 0x40e060]; //C0..C3 fine→coarse
-    //THREE.CameraHelper uses vertex colours, so setting .material.color does
-    //nothing visible — the default rainbow palette (yellow/magenta/red/green)
-    //comes from the BufferGeometry's color attribute. Use setColors() to
-    //override all five segments to a single solid colour so each helper is
-    //distinguishable by its own colour rather than all wearing the rainbow.
-    const tintHelper = function(helper, hex){
-      const c = new THREE.Color(hex);
-      if(typeof helper.setColors === 'function'){
-        helper.setColors(c, c, c, c, c);
-      } else {
-        //Fallback for older Three.js without setColors: paint the color
-        //attribute directly. Three colours per line segment vertex.
-        const attr = helper.geometry && helper.geometry.attributes.color;
-        if(attr){
-          for(let i = 0; i < attr.count; i++){
-            attr.setXYZ(i, c.r, c.g, c.b);
-          }
-          attr.needsUpdate = true;
-        }
-      }
-      helper.material.depthTest = false;
-      helper.material.toneMapped = false;
-      helper.renderOrder = 999;
-    };
-    //Scene sun shadow camera (the one that gates lighthouse/terrain shadows).
-    const light = self.brightestDirectionalLight;
-    if(light && light.shadow && light.shadow.camera){
-      const h = new THREE.CameraHelper(light.shadow.camera);
-      tintHelper(h, 0xffffff);
-      self.scene.add(h);
-      self._shadowHelpers.push(h);
-    }
-    //Ocean CSM cascades.
-    if(self.oceanShadowCSM && self.oceanShadowCSM.cascades){
-      const cs = self.oceanShadowCSM.cascades;
-      for(let i = 0; i < cs.length; i++){
-        const h = new THREE.CameraHelper(cs[i].lightCamera);
-        tintHelper(h, colors[i] || 0xffffff);
-        self.scene.add(h);
-        self._shadowHelpers.push(h);
-      }
-    }
-  };
 
-  //$DEBUG_START$
-  //Dump the scene-wide directional-light shadow camera + the ocean CSM
-  //cascades. Use this when terrain-on-water shadows clip at a moving line:
-  //the scene shadow's ortho frustum is what gates non-ocean casters
-  //(lighthouse, trees, rocks). Increase `sky-shadow-camera-size` in the
-  //host scene if the printed footprint is smaller than the visible water.
-  this.dumpShadowRanges = function(){
-    const light = self.brightestDirectionalLight;
-    if(light && light.shadow && light.shadow.camera){
-      const sc = light.shadow.camera;
-      const w = (sc.right - sc.left);
-      const h = (sc.top - sc.bottom);
-      const target = light.target ? light.target.position : null;
-      console.log('[scene sun shadow]',
-        'extent', w.toFixed(1), 'x', h.toFixed(1), 'm',
-        'near/far', sc.near.toFixed(1), '/', sc.far.toFixed(1),
-        'light pos', light.position.toArray().map(function(v){return v.toFixed(1);}).join(', '),
-        'target', target ? target.toArray().map(function(v){return v.toFixed(1);}).join(', ') : 'none',
-        'map', light.shadow.mapSize.x + 'x' + light.shadow.mapSize.y,
-        '→ texel', (w / light.shadow.mapSize.x * 100).toFixed(1) + ' cm');
-    } else {
-      console.log('[scene sun shadow] no light/shadow camera registered');
-    }
-    if(self.oceanShadowCSM && self.oceanShadowCSM.cascades){
-      const cs = self.oceanShadowCSM.cascades;
-      for(let i = 0; i < cs.length; i++){
-        const cfg = cs[i].cfg;
-        console.log('[ocean CSM C' + i + ']',
-          'extent', cfg.extent.toFixed(1), 'm',
-          'depthRange', cs[i].depthRange.toFixed(1), 'm',
-          'map', cfg.mapSize + 'x' + cfg.mapSize,
-          '→ texel', (cfg.extent / cfg.mapSize * 100).toFixed(1) + ' cm',
-          'layer', cfg.layer, 'maxRing', cfg.maxRing);
-      }
-    }
-  };
-  if(typeof window !== 'undefined'){
-    window.dumpShadowRanges = this.dumpShadowRanges;
-    window.setShadowHelpers = this.setShadowHelpers;
-    window.setSunShadowBias = this.setSunShadowBias;
-    window.setOceanShadowDebug = this.setOceanShadowDebug;
-    window.setDebugBlend = this.setDebugBlend;
-    window.setSunShadowEnabled = this.setSunShadowEnabled;
-    window.setOceanShadowEnabled = this.setOceanShadowEnabled;
-    window.setOceanShadowNormalBias = this.setOceanShadowNormalBias;
-    window.setOceanEvsmExpC = this.setOceanEvsmExpC;
-    window.setOceanEvsmMinVariance = this.setOceanEvsmMinVariance;
-    window.setOceanEvsmLightBleedReduction = this.setOceanEvsmLightBleedReduction;
-    window.setReflectionScale = this.setReflectionScale;
-    window.setSsrMaxSteps = this.setSsrMaxSteps;
-    window.setReflectionDistanceFalloff = this.setReflectionDistanceFalloff;
-    window.setFresnelDistanceRoughness = this.setFresnelDistanceRoughness;
-    window.setSurfaceRoughness = this.setSurfaceRoughness;
-    window.setSpecFresnelGate = this.setSpecFresnelGate;
-    window.setSpecBoost = this.setSpecBoost;
-    window.setSpecFalloffFar = this.setSpecFalloffFar;
-    window.setSpecFalloffFarDist = this.setSpecFalloffFarDist;
-    window.setOceanWireframe = this.setOceanWireframe;
-    window.setAtmDistanceScale = this.setAtmDistanceScale;
-    //Direct handle on the grid instance for console probes (RT readback etc.).
-    window.oceanGrid = self;
-    //Splash particles: debug tint (0 normal, 1 tint-by-type), master toggle, and
-    //a direct handle on the OceanSplash instance for live-tuning its plain-JS
-    //knobs (e.g. oceanSplash.crestSpawnChance = 0.2).
-    window.setSplashDebug = function(n){ if(self.oceanSplash) self.oceanSplash.debugMode = n | 0; };
-    window.setSplashEnabled = function(e){ if(self.oceanSplash) self.oceanSplash.enabled = !!e; };
-    //Debug surface probe: a red ball parked on the sampled emission surface in
-    //front of the camera, to check whether spawn HEIGHT tracks the visible
-    //waterline. The probe is a child of the splash mesh, which only renders when
-    //the system is enabled, so turning the probe on also forces enabled = true.
-    window.setSplashMarker = function(e){
-      if(!self.oceanSplash) return;
-      self.oceanSplash.debugMarker = !!e;
-      if(e) self.oceanSplash.enabled = true;
-    };
-    window.oceanSplash = self.oceanSplash;
-    //Reflection-vector shore launch: setSplashReflect(reflect, runUp) tunes how the
-    //impact sheet leaves a cliff. reflect 0=cone up the surface normal (old look),
-    //1=mirror the incoming water off the face; runUp adds upward climb on a head-on
-    //slam. e.g. setSplashReflect(1, 1.2) (defaults) → tall directional cliff sheets.
-    window.setSplashReflect = function(reflect, runUp){
-      if(!self.oceanSplash) return;
-      if(reflect !== undefined) self.oceanSplash.impactReflect = +reflect;
-      if(runUp !== undefined) self.oceanSplash.impactRunUp = +runUp;
-    };
-    //Wind-driven foam ("dip the Jacobian"): tune the storm-whitening ramp live.
-    //setFoamWindBiasMax(0.6) sets the cap; setFoamWindRange(10,50) the m/s window.
-    window.setFoamWindBiasMax = function(v){ self.foamWindBiasMax = +v; };
-    window.setFoamWindRange = function(start, full){ self.foamWindStart = +start; self.foamWindFull = +full; };
+  //Live-tuning setters + the window.* console surface. Installed from
+  //ocean-system/passes/ocean-debug-controls.js; the whole console block is
+  //stripped from the dist builds by make-combined.py's DEBUG markers.
+  if(typeof ARestlessOcean.installOceanDebugControls === 'function'){
+    ARestlessOcean.installOceanDebugControls(this);
   }
-  //$DEBUG_END$
+
   const oceanPatchTranslationMatrices = [];
   for(let i = 0, numOceanPatches = self.oceanPatches.length; i < numOceanPatches; ++i){
     oceanPatchTranslationMatrices.push(new THREE.Matrix4());
