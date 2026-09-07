@@ -62,10 +62,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //been moved off layer 0 — see OCEAN_LAYER comment above.
   this.camera.layers.enable(ARestlessOcean.OCEAN_LAYER);
   this.oceanPatches = [];
-  this.oceanPatchIsInFrustrum = [];
   this.drawDistance = data.draw_distance;
   this.patchSize = data.patch_size;
-  this.dataPatchSize = data.patch_size;
   this.heightOffset = data.height_offset;
   this.causticsEnabled = data.caustics_enabled;
   this.causticsStrength = data.caustics_strength;
@@ -99,11 +97,6 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.atmosphericPerspectiveDistanceScale = data.atmospheric_perspective_distance_scale;
   this.skyDirector = null;
   this.atmosphereFunctionsGLSL = null;
-  //Clip planes with small bias to prevent waterline artifacts
-  this.refractionClipPlane = new THREE.Plane();
-  this.refractionClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, -1, 0), new THREE.Vector3(0, this.heightOffset, 0));
-  this.foamClipPlane = new THREE.Plane();
-  this.foamClipPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, -1, 0), new THREE.Vector3(0, this.heightOffset + 1.0, 0));
   //Foam-texture scroll velocity: wind-relative, ~20° off wind axis at 4% of
   //wind speed. Slow drift so the foam-bubble texture doesn't read as racing
   //across the surface.
@@ -125,11 +118,6 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.foamWindFull = 50.0;     //m/s: bias saturates here (storm).
   this.foamWindBiasMax = 0.6;   //max value added to turbulence (FUDGE / art).
   this._foamWindBias = 0.0;     //computed each frame from current wind.
-  this.raycaster = new THREE.Raycaster(
-    new THREE.Vector3(0.0,100.0,0.0),
-    this.downVector
-  );
-  this.cameraFrustum = new THREE.Frustum();
 
   this.brightestDirectionalLight = false;
   this.directionalLights = [];
@@ -221,9 +209,6 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   }, function(err){
     console.error(err);
   });
-
-  //Number of cascades (matches ocean-height-band-library cascade count)
-  this.numberOfOceanHeightBands = 6;
 
   let rendererSize = new THREE.Vector2();
   this.renderer.getDrawingBufferSize(rendererSize);
@@ -327,14 +312,6 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //  fog.near  = -waterSurfaceY (selects ocean branch + world-Y gate)
   //  fog.far   = scalar transmittance density (1/m), avg of extinction
   this.underwaterFogColor = new THREE.Color(0.12, 0.24, 0.27);   //sky-dome bg swap colour fallback
-  //Multiplier on the computed murk colour. Our inscatter formula
-  //(albedo · (sun + ambient) / π) assumes ISOTROPIC phase, but real water
-  //is strongly forward-scattering — the back-scattered radiance reaching the
-  //eye is a fraction of what the isotropic formula predicts. 0.35 is the
-  //empirical compensation that makes shallow water read as "subtle absorption"
-  //rather than "saturated cyan." Live-tunable; will likely become a data
-  //attribute once we expose a user-facing parameter.
-  this.underwaterFogBrightness = 0.35;
   this._oceanFog = new THREE.Fog(0x1a2d33, -1.0, 1.0);  //near<0 + far>0 => ocean branch
   this._capturedSkyFog = undefined;            //A-Starry-Sky's fog, tracked while above water
   this._fogChunkInjected = false;
@@ -790,7 +767,6 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     instanceIterations[key] += 1;
   });
 
-  this.numberOfPatches = this.oceanPatches.length;
   this.numCells = numCells;
   this.ringCount = ringCount;
   this.globalCameraPosition = new THREE.Vector3();
@@ -1298,9 +1274,6 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
       oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].instanceMatrix.needsUpdate = true;
     }
-
-    //Frustum Cull our grid
-    //self.cameraFrustum.setFromProjectionMatrix(self.camera.projectionMatrix.clone().multiply(self.camera.matrixWorldInverse));
 
     //Hide all of our ocean grid elements
     for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
