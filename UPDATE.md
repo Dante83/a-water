@@ -1,3 +1,31 @@
+**Version 0.3.0 — in progress**
+
+Groundwork for multiple water types (rivers, lakes, waterfalls, shorelines) —
+see [`WATER-TYPES.md`](./WATER-TYPES.md) for the architecture and
+[`WATER-TYPES-PROGRESS.md`](./WATER-TYPES-PROGRESS.md) for the running log.
+
+* **Phase 0 — `ocean-grid.js` decomposed.** The 3497-line god file is down to
+  1712 lines, with its render passes extracted into eight modules under
+  `ocean-system/passes/` sharing an `init / resize / tick / dispose` lifecycle:
+  refraction G-buffer, reflection + transmission, caustic projection, terrain
+  orthos (foam + hull exclusion), height readback + submersion probe, ocean CSM
+  orchestration, the underwater fog-chunk installer, and the debug console
+  surface. A pure refactor — no visual change — but it is what makes room for
+  the six new passes the multi-water plan needs.
+* Added `OceanGrid.forEachOceanMesh(cb)` as the sanctioned way to reach the
+  water materials from outside the grid, so the clipmap instance map stays
+  private.
+* Added `ARestlessOcean.cloneUniforms()`, which deep-clones the uniform arrays
+  `THREE.UniformsUtils.clone` only shallow-copies. Water materials no longer
+  share `Vector2` instances with the module-global template — a prerequisite for
+  a second body of water existing at all. `positionPassMaterial` in particular
+  was never cloned anywhere.
+* The foam (2048 m) and hull-exclusion (250 m) ortho half-widths are no longer
+  nine hand-synced literals across five files; they now come from one constant
+  and are spliced into `water-shader.glsl` as consts at material-build time.
+* Removed a pile of dead fields from `ocean-grid.js`, including a `Raycaster`
+  built on an undefined vector that had never worked.
+
 **Version 0.2.0 — "a-restless-ocean"**
 
 This release renames the library from **a-water** to **a-restless-ocean** (the public
