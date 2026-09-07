@@ -553,58 +553,34 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   }
 
 
-  //Set up depth camera pointing down for edge foam
-  //1024² RGBA FloatType = ~16 MB (was 4096² ≈ 268 MB). The ortho still covers
-  //4096 m, so texel size is 4 m/texel (was 1 m). Shore-foam band is 0.5–4 m
-  //(water-shader: shoreFade), so the breaker line quantises to ~4 m steps —
-  //bump back to 2048² (2 m/texel, ~67 MB) if the shoreline reads stair-stepped.
-  this.foamRenderTarget = new THREE.WebGLRenderTarget(1024, 1024, {
-    type: THREE.FloatType
-  });
-  this.foamCameraHeight = data.foam_camera_height;
-  this.foamCamera = new THREE.OrthographicCamera(-2048.0, 2048.0, 2048.0, -2048.0, 0.1, this.foamCameraHeight + 500.0);
-  this.scene.add(this.foamCamera);
 
-  //Set up a depth camera pointing down for ocean exclusion mapping.
-  //Unlike foamCamera this is NOT a terrain-height capture — it renders only
-  //layer-30 meshes (boat interior hulls and similar volumes that need water
-  //masked inside them). One small mesh near the camera, so the render
-  //target is sized to that scope: 500 m × 500 m at 1024² ≈ 0.49 m/texel.
-  //The previous 4096² × 2048 m × 2048 m sizing was a 256 MB FloatType
-  //buffer to mask a single boat — pure VRAM waste.
-  //
-  //Keep the shader's exclusion-sample radius (water-shader.glsl, divide-by
-  //in vec2(...)) in sync with this ortho extent's half-width.
-  //NEAREST filtering is mandatory here: the .g channel is a discard *threshold*
-  //(boat world-Y) and .a is a 0/1 mask, neither of which may be interpolated
-  //across the hard boat/no-boat boundary. The RT default (LinearFilter) blended
-  //the below-water interior-floor height with the rim and the cleared (G=0=sea
-  //level) texels, so along the hull rim discardHeight drifted below the water
-  //(over-discard → ring straight to the seabed) or above it (under-discard →
-  //water leaks into the hull). NEAREST gives each water fragment one clean texel.
-  //NEAREST filtering is mandatory here: the .g channel is a discard *threshold*
-  //(boat world-Y) and .a is a 0/1 mask, neither of which may be interpolated
-  //across the hard boat/no-boat boundary. The RT default (LinearFilter) blended
-  //the below-water interior-floor height with the rim and the cleared (G=0=sea
-  //level) texels, so along the hull rim discardHeight drifted below the water
-  //(over-discard → ring straight to the seabed) or above it (under-discard →
-  //water leaks into the hull). NEAREST gives each water fragment one clean texel.
-  //
-  //Residual keel-crease tris + a ~1px waterline edge remain: they're texel-
-  //resolution limited (~0.49 m/texel over this 500 m ortho). Confirmed via a
-  //2048² test (the tris shrank with texel size). The sharp fix is a tighter
-  //ortho extent (fit-to-boat, or a smaller fixed radius) for sub-decimetre
-  //texels at this same 16 MB size — deferred, as it needs the hardcoded 250 m
-  //half-width in water-shader.glsl uniform-ized (a create-shader.py regen).
-  this.exclusionRenderTarget = new THREE.WebGLRenderTarget(1024, 1024, {
-    type: THREE.FloatType,
-    minFilter: THREE.NearestFilter,
-    magFilter: THREE.NearestFilter
-  });
-  this.exclusionCamera = new THREE.OrthographicCamera(-250.0, 250.0, 250.0, -250.0, 0.1, this.foamCameraHeight + 500.0);
-  this.exclusionCamera.layers.disableAll();
-  this.exclusionCamera.layers.set(30);
-  this.scene.add(this.exclusionCamera);
+  //Terrain ortho atlases: the foam terrain-height capture and the layer-30
+  //boat-hull exclusion capture. Both live in
+  //ARestlessOcean.Passes.TerrainOrthoPass — read its header for why they are
+  //one module rather than two. Guarded like the other passes.
+  this.foamCameraHeight = data.foam_camera_height;
+  if(ARestlessOcean.Passes && ARestlessOcean.Passes.TerrainOrthoPass){
+    this.terrainOrthoPass = new ARestlessOcean.Passes.TerrainOrthoPass(this);
+    this.terrainOrthoPass.init();
+    //Back-compat aliases — all of these were OceanGrid fields in 0.2.0 and are
+    //still read by the per-instance uniform upload loop and the debug hooks.
+    this.foamRenderTarget = this.terrainOrthoPass.foamRenderTarget;
+    this.exclusionRenderTarget = this.terrainOrthoPass.exclusionRenderTarget;
+    this.foamCamera = this.terrainOrthoPass.foamCamera;
+    this.exclusionCamera = this.terrainOrthoPass.exclusionCamera;
+    this.positionPassMaterial = this.terrainOrthoPass.positionPassMaterial;
+    this._foamCameraXZ = this.terrainOrthoPass.foamCameraXZ;
+    this._exclusionCameraXZ = this.terrainOrthoPass.exclusionCameraXZ;
+  } else {
+    this.terrainOrthoPass = null;
+    this.foamRenderTarget = null;
+    this.exclusionRenderTarget = null;
+    this.foamCamera = null;
+    this.exclusionCamera = null;
+    this.positionPassMaterial = null;
+    this._foamCameraXZ = new THREE.Vector2();
+    this._exclusionCameraXZ = new THREE.Vector2();
+  }
 
   //Initialize all shader LUTs for future ocean viewing
   //Initialize our ocean variables and all associated shaders.
@@ -676,16 +652,6 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   }
   this.oceanMaterial.uniforms = ARestlessOcean.Materials.Ocean.waterMaterial.uniforms;
   this.oceanMaterial.uniforms.sizeOfOceanPatch.value = this.patchSize;
-
-  this.positionPassMaterial = new THREE.ShaderMaterial({
-    vertexShader: ARestlessOcean.Materials.Ocean.positionPassMaterial.vertexShader,
-    fragmentShader: ARestlessOcean.Materials.Ocean.positionPassMaterial.fragmentShader,
-    side: THREE.FrontSide,
-    transparent: false,
-    lights: false
-  });
-  this.positionPassMaterial.uniforms = ARestlessOcean.Materials.Ocean.positionPassMaterial.uniforms;
-  this.positionPassMaterial.uniforms.worldMatrix.value = this.camera.matrixWorld;
 
   //Ocean-only cascaded shadow map. Dedicated tight-frustum depth pass that
   //only contains the water InstancedMeshes — gives per-wave self-shadow that
@@ -2285,106 +2251,27 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       self._renderAboveWaterTransmission(scene, sceneCamera);
     }
 
-    //Update our sea foam camera - use position pass material to output world-space height data
-    const currentRenderTarget = self.renderer.getRenderTarget();
-    const prevClearAlpha = renderer.getClearAlpha();
-    //Snap foam/exclusion camera XZ to texel-sized increments so the orthos
-    //sample the same world-space points across frames — otherwise the foam
-    //and exclusion atlases shift by a fractional pixel each frame as the
-    //player moves, producing visible flicker on the foam pattern. The water
-    //shader must then sample using these SNAPPED positions (uploaded as
-    //foamCameraXZ / exclusionCameraXZ uniforms), not raw cameraPosition.
-    //Same pattern as the per-cell clipmap snap at the top of this tick.
-    const foamTexel = (2.0 * 2048.0) / self.foamRenderTarget.width; // 4096m / 1024px = 4m
-    const exclTexel = (2.0 *  250.0) / self.exclusionRenderTarget.width; // 500m / 1024px ≈ 0.488m
-    const foamSnapX = Math.round(self.globalCameraPosition.x / foamTexel) * foamTexel;
-    const foamSnapZ = Math.round(self.globalCameraPosition.z / foamTexel) * foamTexel;
-    const exclSnapX = Math.round(self.globalCameraPosition.x / exclTexel) * exclTexel;
-    const exclSnapZ = Math.round(self.globalCameraPosition.z / exclTexel) * exclTexel;
-    self._foamCameraXZ = self._foamCameraXZ || new THREE.Vector2();
-    self._exclusionCameraXZ = self._exclusionCameraXZ || new THREE.Vector2();
-    self._foamCameraXZ.set(foamSnapX, foamSnapZ);
-    self._exclusionCameraXZ.set(exclSnapX, exclSnapZ);
 
-    //── Snap-gated re-render ───────────────────────────────────────────────
-    //The foam/exclusion orthos capture STATIC terrain height from a fixed
-    //top-down view, so their output is INVARIANT to camera yaw — it only
-    //changes when the snapped origin translates. Re-rendering identical
-    //FloatType atlases every frame during pure rotation was the bulk of the
-    //per-frame GPU cost behind the "freezes when I rotate" symptom. We now
-    //re-render only on a snap delta, with a periodic forced refresh so slow-
-    //moving dynamic occluders (a drifting boat etc.) still imprint their
-    //height within FOAM_MAX_STALE_FRAMES.
-    const FOAM_MAX_STALE_FRAMES = 30;   // ~0.5 s @60 fps safety refresh
-    self._foamStaleFrames = (self._foamStaleFrames || 0) + 1;
-    const forceFoamRefresh = !self._foamEverRendered || self._foamStaleFrames >= FOAM_MAX_STALE_FRAMES;
-    const renderFoam = forceFoamRefresh || self._lastFoamSnapX !== foamSnapX || self._lastFoamSnapZ !== foamSnapZ;
-    const renderExcl = forceFoamRefresh || self._lastExclSnapX !== exclSnapX || self._lastExclSnapZ !== exclSnapZ;
-
-    if(renderFoam || renderExcl){
-      self.scene.overrideMaterial = self.positionPassMaterial;
-      self.renderer.setClearAlpha(0.0);
-      //Null the backdrop for these top-down position passes too. With a
-      //scene.background set, THREE's background quad stamps alpha 1 into the
-      //foam/exclusion atlases over open water — and the exclusion .a channel is
-      //the water shader's discard gate (worldPosition.y > discardHeight). That
-      //made every open-water fragment within exclusion range discard (near water
-      //gone, horizon — outside range — survived). Restored at the block's end.
-      var _foamSavedBackground = scene.background;
-      scene.background = null;
-      if(renderFoam){
-        self.foamCamera.position.set(foamSnapX, this.heightOffset + self.foamCameraHeight, foamSnapZ);
-        self.foamCamera.lookAt(foamSnapX, this.heightOffset - 1.0, foamSnapZ);
-        self.foamCamera.updateProjectionMatrix();
-        self.renderer.setRenderTarget(self.foamRenderTarget);
-        self.renderer.clear();
-        self.renderer.render(scene, self.foamCamera);
-        self.renderer.setRenderTarget(null);
-        self._lastFoamSnapX = foamSnapX;
-        self._lastFoamSnapZ = foamSnapZ;
-        //Copy the just-rendered terrain-height ortho to the CPU (async) so the
-        //splash system can detect the shoreline. Only fires on snap-change, so
-        //the transfer is rare. Half-width is 2048 m (see foamTexel above).
-        if(self.oceanSplash){
-          self.oceanSplash.requestTerrainReadback(self.foamRenderTarget, foamSnapX, foamSnapZ, 2048.0);
+    //Foam + boat-hull exclusion ortho atlases. Snap-gated inside the pass, so
+    //pure camera rotation costs nothing. Runs while the ocean meshes are still
+    //hidden (they are shown again just below).
+    if(self.terrainOrthoPass){
+      self.terrainOrthoPass.tick({
+        scene: scene,
+        cameraX: self.globalCameraPosition.x,
+        cameraZ: self.globalCameraPosition.z,
+        heightOffset: self.heightOffset,
+        onFoamRendered: function(rt, snapX, snapZ, halfWidth){
+          if(self.oceanSplash){
+            self.oceanSplash.requestTerrainReadback(rt, snapX, snapZ, halfWidth);
+          }
         }
-      }
-      if(renderExcl){
-        self.exclusionCamera.position.set(exclSnapX, this.heightOffset + self.foamCameraHeight, exclSnapZ);
-        self.exclusionCamera.lookAt(exclSnapX, this.heightOffset - 1.0, exclSnapZ);
-        self.exclusionCamera.updateProjectionMatrix();
-        self.renderer.setRenderTarget(self.exclusionRenderTarget);
-        self.renderer.clear();
-        //Capture the boat hull DOUBLE-SIDED for this pass only. The boat is a
-        //thin/mixed-winding shell, so FrontSide back-face-culls every floor or
-        //hull triangle whose normal points away from this top-down camera —
-        //those texels capture nothing, read mask 0, and the water is never
-        //discarded there, poking through one un-captured triangle at a time
-        //("little tris" inside the hull). DoubleSide makes the capture purely
-        //depth-based regardless of winding. Restored to FrontSide immediately
-        //so the shared foam terrain pass is unaffected. (.side is a cull-state
-        //toggle, not a #define — no shader recompile.)
-        self.positionPassMaterial.side = THREE.DoubleSide;
-        self.renderer.render(scene, self.exclusionCamera);
-        self.positionPassMaterial.side = THREE.FrontSide;
-        self.renderer.setRenderTarget(null);
-        self._lastExclSnapX = exclSnapX;
-        self._lastExclSnapZ = exclSnapZ;
-      }
-      //Restore our original materials + clear state (captured BEFORE zeroing —
-      //the old code captured alpha AFTER setClearAlpha(0) and so "restored" 0,
-      //leaking a 0 clear alpha into the rest of the frame).
-      self.scene.overrideMaterial = null;
-      self.renderer.setRenderTarget(currentRenderTarget);
-      self.renderer.setClearAlpha(prevClearAlpha);
-      scene.background = _foamSavedBackground;
-      self._foamStaleFrames = 0;
-      self._foamEverRendered = true;
+      });
+      //foamRenderMap / exclusionMap always point at their (persistent) textures,
+      //whether or not the pass re-rendered this frame.
+      this.foamRenderMap = self.terrainOrthoPass.foamRenderTarget.texture;
+      this.exclusionMap = self.terrainOrthoPass.exclusionRenderTarget.texture;
     }
-    //foamRenderMap / exclusionMap always point at their (persistent) textures,
-    //whether or not we re-rendered this frame.
-    this.foamRenderMap = self.foamRenderTarget.texture;
-    this.exclusionMap = self.exclusionRenderTarget.texture;
 
     //Show all of our ocean grid elements again
     for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
