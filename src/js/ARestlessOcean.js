@@ -8,7 +8,10 @@ ARestlessOcean = {
     Ocean: {}
   },
   Renderers: {},
-  LUTlibraries: {}
+  LUTlibraries: {},
+  //Render passes owned by OceanGrid (ocean-system/passes/*.js). Each pass module
+  //also self-creates this object defensively, so load order cannot bite.
+  Passes: {}
 };
 
 //── Backwards compatibility ────────────────────────────────────────────────────

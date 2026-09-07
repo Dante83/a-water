@@ -46,6 +46,9 @@ JS_FILE_NAMES = [
     'ocean-system/components/ocean-patch-geometry.js',
     'ocean-system/components/ocean-patch.js',
     'ocean-system/components/ocean-shadow-csm.js',
+    #Render passes extracted from ocean-grid.js (Phase 0). Loaded BEFORE the grid
+    #so its constructor can instantiate them; each is guarded there anyway.
+    'ocean-system/passes/caustic-projection-pass.js',
     'ocean-system/components/ocean-grid.js',
     'ocean-system/components/ocean-splash.js',
     'ocean-system/components/ocean-config/config-core.js',

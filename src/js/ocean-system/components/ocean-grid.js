@@ -294,22 +294,12 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     }
   );
 
-  //── Underwater caustic projection ────────────────────────────────────────
-  //The water shader paints caustics onto the refracted seabed when the camera
-  //is ABOVE water; submerged, the seabed is seen directly and never passes
-  //through the water shader. To put caustics on it without touching the (often
-  //imported, unknown) seabed materials, project them with a SpotLight cookie —
-  //the one THREE light type whose `.map` is cast onto whatever it lights, on
-  //any material, no shader surgery. SpotLight.map projects a single "slide"
-  //across the cone and ignores texture repeat/offset, so the tiling AND the
-  //animation are baked into the slide here: a small RT re-rendered each
-  //submerged frame. Each slide texel is unprojected through the projector's
-  //own shadow camera onto the water-surface plane and the pattern is
-  //evaluated in WORLD XZ — so the cast caustics are world-anchored by
-  //construction and the projector itself glides continuously with the camera.
-  //(This replaced the earlier integer-tile XZ snapping: the snap kept the
-  //PATTERN world-stable but made the cone envelope, decay vignette and the
-  //spot shadow POV hop one tile at a time as the camera swam.)
+  //── Underwater caustic projection — KNOBS ────────────────────────────────
+  //The projector itself (slide RT, SpotLight, per-frame update) lives in
+  //ARestlessOcean.Passes.CausticProjectionPass; read its header for why a
+  //SpotLight cookie is the mechanism. These knobs stay on the grid so the
+  //existing window.oceanGrid.causticLight* console tuning keeps working, and
+  //because causticsStrength is also consumed by the water shader uniforms.
   //4096 over the 25 m-radius cone = 82 px/m: the texture web's filaments
   //are ~2.6 cm at the 3.33 m period (the 8 px blur of the 1024 px texture),
   //so they need >~75 px/m to stay above a pixel in the slide. Shrinking the
@@ -336,141 +326,18 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //the lit disc still fit comfortably inside 25 m.
   this.causticLightConeRadius = 25.0;
   this.causticLightIntensity = 6.0;       //MAIN KNOB — caustic brightness on the seabed
-  this._causticProjectionTarget = new THREE.WebGLRenderTarget(
-    this.causticProjectionResolution, this.causticProjectionResolution,
-    {
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
-      format: THREE.RGBAFormat,
-      type: THREE.UnsignedByteType,
-      depthBuffer: false,
-      stencilBuffer: false
-    }
-  );
-  this._causticProjectionScene = new THREE.Scene();
-  this._causticProjectionCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-  this._causticProjectionMaterial = new THREE.ShaderMaterial({
-    uniforms: {
-      causticMap: {value: null},
-      uTime: {value: 0.0},
-      //Inverse view-projection of the projector's shadow camera — the SAME
-      //camera the cookie projects through, so slide texel ↔ world mapping is
-      //exact by construction. Filled per frame in _updateCausticProjection.
-      uInvVP: {value: new THREE.Matrix4()},
-      uSurfaceY: {value: 0.0},
-      uPeriod: {value: this.causticTexturePeriod}
-    },
-    vertexShader: [
-      'varying vec2 vUv;',
-      'void main(){',
-      '  vUv = uv;',
-      '  gl_Position = vec4(position.xy, 0.0, 1.0);',
-      '}'
-    ].join('\n'),
-    //Mirrors causticShader() in water-shader.glsl: two non-parallel scrolling
-    //samples min'd together, then a smoothstep contrast curve. The pattern is
-    //sampled in world XZ / uPeriod, the same parameterisation the water
-    //shader uses (0.1 * pSurfaceHit.xz), so size, drift speed AND phase line
-    //up across the waterline. The three chromatically-offset taps give
-    //caustic light its R/B dispersion — the foci of different wavelengths
-    //land slightly apart (matches the +/-0.005 caustic-UV offset the water
-    //shader's causticShader uses).
-    fragmentShader: [
-      'uniform sampler2D causticMap;',
-      'uniform float uTime;',
-      'uniform mat4 uInvVP;',
-      'uniform float uSurfaceY;',
-      'uniform float uPeriod;',
-      'varying vec2 vUv;',
-      'float caustic(vec2 uv, float t){',
-      '  vec2 uv1 = uv + vec2(0.8, 0.1) * t;',
-      '  vec2 uv2 = uv - vec2(0.2, 0.7) * t;',
-      '  float a = texture2D(causticMap, uv1).r;',
-      '  float b = texture2D(causticMap, uv2).g;',
-      //LO/HI are solved by make-caustic-map.py against the generated caustic
-      //texture (must match CAUSTIC_THRESHOLD_LO/HI in water-shader.glsl).
-      '  return smoothstep(0.0, 1.0, min(a, b));',
-      '}',
-      'void main(){',
-      //Unproject this slide texel through the projector camera and intersect
-      //the water-surface plane: the pattern is evaluated where the cookie ray
-      //pierces the surface, so it stays world-anchored while the projector
-      //moves, and the keystone of a tilted cone is handled exactly.
-      '  vec2 ndc = vUv * 2.0 - 1.0;',
-      '  vec4 pNear = uInvVP * vec4(ndc, -1.0, 1.0);',
-      '  vec4 pFar  = uInvVP * vec4(ndc,  1.0, 1.0);',
-      '  vec3 ro = pNear.xyz / pNear.w;',
-      '  vec3 rd = normalize(pFar.xyz / pFar.w - ro);',
-      //rd.y is always negative (the projector looks down); the min() guards
-      //the degenerate near-horizontal case rather than dividing by ~0.
-      '  float s = (uSurfaceY - ro.y) / min(rd.y, -0.001);',
-      '  vec2 uv = (ro.xz + rd.xz * s) / uPeriod;',
-      '  float t = uTime / 8.0;',
-      '  float r = caustic(uv + vec2(0.005), t);',
-      '  float g = caustic(uv,               t);',
-      '  float b = caustic(uv - vec2(0.005), t);',
-      '  gl_FragColor = vec4(r, g, b, 1.0);',
-      '}'
-    ].join('\n'),
-    depthTest: false,
-    depthWrite: false,
-    toneMapped: false
-  });
-  this._causticProjectionScene.add(new THREE.Mesh(
-    new THREE.PlaneGeometry(2.0, 2.0), this._causticProjectionMaterial
-  ));
 
-  //The projector. distance 0 → no hard cutoff. decay 2 (inverse-square) gives
-  //a soft depth falloff: fragments farther from the projector (= deeper, since
-  //the projector sits above the surface and tracks the camera XZ) receive
-  //less light, approximating the Beer-Lambert attenuation of sunlight on its
-  //way down to the seabed. The runtime compensates intensity by
-  //pow(causticLightHeight, decay) so surface-level brightness matches what
-  //the old decay-0 cast produced — only the depth gradient is new.
-  //castShadow ON — the scene sun shadow only darkens the seabed's DIFFUSE
-  //term; this cookie light is additive, so without its own occlusion the web
-  //lands on seabed inside an island/hull sun shadow. The water surface
-  //cannot block the cone: ocean patches, the underwater curtain and the
-  //horizon skirt all set castShadow = false, so only real scene casters
-  //(terrain, hulls, lighthouse) register in the spot's shadow map.
-  //castShadow stays PERMANENTLY true: toggling it at the waterline would
-  //change NUM_SPOT_LIGHT_SHADOWS and recompile every lit material on each
-  //crossing — the same churn the intensity-instead-of-visible rule below
-  //avoids. The idle cost above water is one depth pass over whatever sits in
-  //the cone; _updateCausticProjection parks the projector far below the world
-  //while surfaced so that pass frustum-culls to zero draws.
-  //Kept permanently in the scene with intensity driven to 0 above water:
-  //toggling light.visible would change the visible-light count and recompile
-  //every lit material on each waterline crossing. (SpotLight.map updates its
-  //projection matrix on its own — WebGLLights calls shadow.updateMatrices
-  //when a map is present.)
-  this.causticSpotLight = new THREE.SpotLight(0xffffff, 0.0);
-  this.causticSpotLight.decay = 2.0;
-  this.causticSpotLight.distance = 0.0;
-  //Low penumbra: THREE's spot falloff starts at angle*(1-penumbra), so a high
-  //value vignettes most of the 60m cone — at 0.8 full brightness reached only
-  //a ~12m ground radius and the visible seabed sat in the falloff ramp. 0.25
-  //keeps full strength to ~45m; the remaining edge lands beyond underwater
-  //visibility (Jerlov 1C ~13m) so no hard cone ring shows.
-  this.causticSpotLight.penumbra = 0.25;
-  this.causticSpotLight.angle = Math.atan(this.causticLightConeRadius / this.causticLightHeight);
-  this.causticSpotLight.castShadow = true;
-  this.causticSpotLight.shadow.mapSize.set(2048, 2048);
-  //Tight depth range for perspective shadow precision at the receiver band:
-  //the projector sits causticLightHeight (400 m) up the refracted sun ray, so
-  //the seabed lives ~400-460 m from it and above-water casters (island peaks,
-  //lighthouse) no closer than ~200 m. near=100/far=600 brackets both with
-  //margin. light.distance stays 0 so SpotLightShadow.updateMatrices keeps our
-  //far. normalBias 1.5 matches what the scene sun needed on the same imported
-  //terrain (islands.html acne fix).
-  this.causticSpotLight.shadow.camera.near = 100.0;
-  this.causticSpotLight.shadow.camera.far = 600.0;
-  this.causticSpotLight.shadow.normalBias = 1.5;
-  //The slide pass reads this camera's projectionMatrixInverse before THREE's
-  //own shadow pass has ever run updateMatrices — keep it valid from frame 0.
-  this.causticSpotLight.shadow.camera.updateProjectionMatrix();
-  this.causticSpotLight.map = this._causticProjectionTarget.texture;
-  this._causticLightAdded = false;
+  //The projector pass itself. Guarded like OceanShadowCSM / OceanSplash so a
+  //missing script tag degrades to "no underwater caustics" rather than throwing.
+  if(ARestlessOcean.Passes && ARestlessOcean.Passes.CausticProjectionPass){
+    this.causticProjectionPass = new ARestlessOcean.Passes.CausticProjectionPass(this);
+    this.causticProjectionPass.init();
+    //Back-compat alias — the projector was `oceanGrid.causticSpotLight` in 0.2.0.
+    this.causticSpotLight = this.causticProjectionPass.light;
+  } else {
+    this.causticProjectionPass = null;
+    this.causticSpotLight = null;
+  }
 
   //── Underwater fog (via A-Starry-Sky's fog reservation hook) ──────────────
   //Geometry seen DIRECTLY underwater (the seabed) is drawn by its own
@@ -508,9 +375,6 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //instead of crashing when running without a-starry-sky.
   this._uwMurkCamDepthScratch = new THREE.Vector3(0.02, 0.06, 0.08);
   this._uwSunDirScratch = new THREE.Vector3();
-  //Refracted (in-water) sun direction for the tilted caustic projector. Reused
-  //per frame to avoid alloc. See _updateCausticProjection.
-  this._causticRefrScratch = new THREE.Vector3();
   //Ambient (downwelling) hemisphere light discovered standalone — fills the
   //inscatter ambient term that normally comes from a-starry-sky's y-axis
   //hemispherical. Found in the per-frame light scan; null until then.
@@ -2059,130 +1923,6 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     if(curtain){ curtain.visible = curtainWasVisible; }
   };
 
-  //Refresh the underwater caustic projector. Positions the SpotLight high
-  //above the camera down the refracted sun ray (a near-parallel cast so
-  //caustic cell size barely changes with seabed depth), re-renders the
-  //animated caustic slide through the projector's own shadow camera (world-
-  //anchored — see the constructor block), and crossfades its intensity
-  //through the waterline via underwaterFactor. The projector tracks the
-  //camera XZ continuously; world anchoring lives in the slide content, so no
-  //snapping and no envelope/shadow jumps. Skipped entirely above water.
-  this._updateCausticProjection = function(time, waterSurfaceY, underwaterFactor){
-    const light = self.causticSpotLight;
-    //Scene isn't available at construction — add the projector + its target
-    //once, on the first tick that has a scene.
-    if(!self._causticLightAdded && self.scene){
-      self.scene.add(light);
-      self.scene.add(light.target);
-      self._causticLightAdded = true;
-    }
-    //Above water, or the caustic texture hasn't loaded yet: drive intensity to
-    //zero (not light.visible — see the constructor note) and skip the RT cost.
-    //castShadow stays true (constructor note), so the spot's shadow depth pass
-    //still runs while surfaced — park the projector far below the world so
-    //that pass frustum-culls every caster and costs nothing. The y-check makes
-    //the park a one-time move per surfacing, not a per-frame write.
-    if(!self.causticMap || underwaterFactor <= 0.001){
-      light.intensity = 0.0;
-      if(light.position.y > -9000.0){
-        light.position.set(0.0, -10000.0, 0.0);
-        light.target.position.set(0.0, -10400.0, 0.0);
-        light.target.updateMatrixWorld();
-      }
-      return;
-    }
-
-    //Surface anchor: the camera XZ, unsnapped — the slide pass below bakes
-    //world anchoring into the pattern itself, so the projector (and with it
-    //the cone envelope, decay vignette and shadow POV) moves smoothly.
-    const anchorX = self.globalCameraPosition.x;
-    const anchorZ = self.globalCameraPosition.z;
-
-    //Sun travel direction (from the brightest directional light toward the
-    //scene — downward when the sun is up). Drives BOTH the projector tilt below
-    //and the colour/brightness. cosZ is the same geometric "how much sun
-    //overhead" factor the underwater inscatter uses (water-shader.glsl :1391),
-    //so caustic falloff at low sun matches the rest of the underwater lighting
-    //stack; without it a sun 1° above the horizon would cast full strength.
-    let sunMult = 1.0;
-    let haveSun = false;
-    const sunDir = self._uwSunDirScratch;
-    if(self.brightestDirectionalLight){
-      const ml = self.brightestDirectionalLight;
-      light.color.copy(ml.color);
-      sunDir.set(ml.position.x, ml.position.y, ml.position.z)
-        .sub(ml.target.position).negate().normalize();
-      const cosZ = Math.max(-sunDir.y, 0.0);
-      //Schlick air->water transmission (same as the murk dir term above) —
-      //at grazing sun most light reflects OFF the surface and never enters
-      //the water, so caustics must die toward sunset with the rest of the
-      //underwater light, not linger at cosZ strength.
-      const oneMinusCosZ = 1.0 - cosZ;
-      const fresAW = 0.02037 + (1.0 - 0.02037)
-                   * (oneMinusCosZ*oneMinusCosZ*oneMinusCosZ*oneMinusCosZ*oneMinusCosZ);
-      sunMult = ml.intensity * cosZ * (1.0 - fresAW);
-      haveSun = cosZ > 0.0;
-    }
-
-    //Tilt the projector along the sun ray REFRACTED into the water (Snell,
-    //air→water n=1/1.33 at a flat +Y surface) instead of casting straight down,
-    //so the caustic web rakes across the seabed at the true sun angle. refr is
-    //the in-water travel direction — still downward, just leaned toward the
-    //anti-solar azimuth. It collapses to (0,-1,0) at solar zenith, so this is a
-    //pure superset of the old straight-down cast. Total internal reflection
-    //can't occur air→water, but k<0 is guarded anyway; we also fall back to
-    //straight down when the sun is at/below the horizon (projector is off via
-    //sunMult→0 there regardless).
-    const refr = self._causticRefrScratch;
-    if(haveSun){
-      const eta = 1.0 / 1.33;
-      const nDotI = sunDir.y;                       //dot((0,1,0), sunDir)
-      const k = 1.0 - eta * eta * (1.0 - nDotI * nDotI);
-      if(k >= 0.0){
-        const scale = eta * nDotI + Math.sqrt(k);   //R = eta*I - scale*N
-        refr.set(eta * sunDir.x, eta * sunDir.y - scale, eta * sunDir.z).normalize();
-      } else {
-        refr.set(0.0, -1.0, 0.0);
-      }
-    } else {
-      refr.set(0.0, -1.0, 0.0);
-    }
-    //Place the projector one causticLightHeight UP the ray from the surface
-    //anchor and the target down-ray; (target − position) ∝ refr ⇒ the cone axis
-    //is the refracted sun ray, and a surface-level fragment stays exactly
-    //causticLightHeight from the projector (keeps decayCompensation valid).
-    const h = self.causticLightHeight;
-    light.position.set(anchorX - refr.x * h, waterSurfaceY - refr.y * h, anchorZ - refr.z * h);
-    light.target.position.set(anchorX + refr.x * 100.0, waterSurfaceY + refr.y * 100.0, anchorZ + refr.z * 100.0);
-    light.target.updateMatrixWorld();
-    light.angle = Math.atan(self.causticLightConeRadius / self.causticLightHeight);
-    //Compensate for the projector's inverse-square decay so the surface-level
-    //caustic brightness is invariant to `causticLightHeight`. A fragment at
-    //y = surfaceY sits `causticLightHeight` metres from the projector; that
-    //gives a `1 / height^decay` attenuation we cancel here. Fragments deeper
-    //than the surface still attenuate (their distance to the projector is
-    //larger), producing the depth falloff this decay was added for.
-    const decayCompensation = Math.pow(self.causticLightHeight, light.decay);
-    light.intensity = self.causticLightIntensity * self.causticsStrength
-                    * underwaterFactor * sunMult * decayCompensation;
-
-    //Re-render the animated caustic slide LAST, through the projector pose
-    //set above. shadow.updateMatrices is the same call WebGLLights makes when
-    //it projects the cookie, so the camera we unproject the slide through is
-    //bit-identical to the one that casts it back out.
-    light.updateWorldMatrix(true, false);
-    light.shadow.updateMatrices(light);
-    const shadowCam = light.shadow.camera;
-    const mat = self._causticProjectionMaterial;
-    mat.uniforms.causticMap.value = self.causticMap;
-    mat.uniforms.uTime.value = time * 0.001;
-    mat.uniforms.uSurfaceY.value = waterSurfaceY;
-    mat.uniforms.uInvVP.value.copy(shadowCam.matrixWorld).multiply(shadowCam.projectionMatrixInverse);
-    const prevRT = self.renderer.getRenderTarget();
-    self.renderer.setRenderTarget(self._causticProjectionTarget);
-    self.renderer.render(self._causticProjectionScene, self._causticProjectionCamera);
-    self.renderer.setRenderTarget(prevRT);
-  };
 
   //Fill A-Starry-Sky's reserved underwater-fog slot. Its `advanced` atmospheric
   //perspective globally patches THREE.ShaderChunk.fog_fragment / fog_vertex and
@@ -2886,7 +2626,17 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     }
 
     //Underwater caustic projector — caustics on the directly-viewed seabed.
-    self._updateCausticProjection(time, waterSurfaceY, underwaterFactor);
+    if(self.causticProjectionPass){
+      self.causticProjectionPass.tick({
+        time: time,
+        waterSurfaceY: waterSurfaceY,
+        underwaterFactor: underwaterFactor,
+        causticMap: self.causticMap,
+        cameraX: self.globalCameraPosition.x,
+        cameraZ: self.globalCameraPosition.z,
+        sunLight: self.brightestDirectionalLight
+      });
+    }
 
     //Underwater fog. Fill A-Starry-Sky's reserved fog-shader slot once it is
     //available, then swap scene.fog between A-Starry-Sky's atmospheric fog
