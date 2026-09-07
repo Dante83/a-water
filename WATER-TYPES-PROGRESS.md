@@ -131,13 +131,12 @@ uniform slots are scarce in this shader.
 
 ### ⚠️ Outstanding — needs Dante
 
-1. **`create-shader.py` must be re-run** from `src/python/`. B2 edited
-   `water-shader.glsl` and `water-shader-template.txt`; the generated
-   `water-shader.js` is stale.
-   Until then the build is **safe but inert** — the stale shader has neither the
-   `$foam_ortho_half_width` tokens nor the substitution code, so the old
-   hardcoded 2048/250 stay in effect and nothing breaks. Both halves take effect
-   together on regen.
+1. ~~`create-shader.py` re-run~~ — **done**. A `create-shader.py` watcher was
+   already running and regenerated `water-shader.js` from the B2 edits on its
+   own. Verified: the emitted GLSL substitutes to exactly `2048.0` / `250.0`
+   (the old hardcoded values, so no behavioural change), no `$token` is left
+   unsubstituted, and the min-build GLSL strip keeps both const declarations,
+   both usage sites and the `ATMOSPHERE_FUNCTIONS_INJECTION_POINT` marker.
 2. **Browser verification.** There is no test suite; this is the only real check.
    Per-pass, on `examples/personal-ocean/islands.html`:
 
