@@ -467,6 +467,17 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
   //Initialize all shader LUTs for future ocean viewing
   //Initialize our ocean variables and all associated shaders.
+  //WaterField — the per-texel water field every later phase reads. In Phase 1a
+  //it is filled with the same answers 0.2.0 assumed (global plane + foam-ortho
+  //depth), so nothing changes visually; Phase 1b swaps the fill for a real
+  //a-faraway-land tile decode. See the pass header.
+  if(ARestlessOcean.Passes && ARestlessOcean.Passes.WaterFieldPass){
+    this.waterFieldPass = new ARestlessOcean.Passes.WaterFieldPass(this);
+    this.waterFieldPass.init();
+  } else {
+    this.waterFieldPass = null;
+  }
+
   this.oceanHeightBandLibrary = new ARestlessOcean.LUTlibraries.OceanHeightBandLibrary(this);
   this.oceanHeightComposer = new ARestlessOcean.LUTlibraries.OceanHeightComposer(this);
 
@@ -1073,6 +1084,21 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       //whether or not the pass re-rendered this frame.
       this.foamRenderMap = self.terrainOrthoPass.foamRenderTarget.texture;
       this.exclusionMap = self.terrainOrthoPass.exclusionRenderTarget.texture;
+    }
+
+    //Refresh the water field. Cheap: each cascade re-fills only when its own
+    //snapped centre moves, so the coarse rings are nearly always skipped. Runs
+    //after the terrain ortho above because the standalone fill reads its output.
+    if(self.waterFieldPass && self.terrainOrthoPass){
+      self.waterFieldPass.tick({
+        cameraX: self.globalCameraPosition.x,
+        cameraZ: self.globalCameraPosition.z,
+        seaLevel: self.heightOffset,
+        waterType: self.data.water_type | 0,
+        foamMap: self.terrainOrthoPass.foamRenderTarget.texture,
+        foamCameraXZ: self.terrainOrthoPass.foamCameraXZ,
+        foamHalfWidth: ARestlessOcean.Passes.TerrainOrthoPass.FOAM_ORTHO_HALF_WIDTH
+      });
     }
 
     //Show all of our ocean grid elements again

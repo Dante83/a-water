@@ -281,6 +281,41 @@ ARestlessOcean.installOceanDebugControls = function(grid){
       window.setAtmDistanceScale = grid.setAtmDistanceScale;
       //Direct handle on the grid instance for console probes (RT readback etc.).
       window.oceanGrid = self;
+
+      //── WaterField probes (Phase 1) ───────────────────────────────────────
+      //probeWaterField()      -> field under the camera
+      //probeWaterField(x, z)  -> field at a world position
+      //The field is invisible by design in Phase 1a (it holds the same answers
+      //0.2.0 already assumed), so this is how you confirm it is alive and
+      //carrying sane values rather than zeros.
+      window.probeWaterField = function(x, z){
+        const f = grid.waterFieldPass;
+        if(!f){ console.log('[waterField] pass not loaded'); return; }
+        const px = (x === undefined) ? grid.globalCameraPosition.x : x;
+        const pz = (z === undefined) ? grid.globalCameraPosition.z : z;
+        f.probeAt(px, pz).then(function(r){
+          if(!r){ console.log('[waterField] no cascade covers', px.toFixed(1), pz.toFixed(1)); return; }
+          console.log('[waterField] at', px.toFixed(1), pz.toFixed(1),
+            '| cascade', r.cascade,
+            '| level', r.level.toFixed(2),
+            '| depth', r.depth.toFixed(2),
+            '| flow', r.flowX.toFixed(2), r.flowZ.toFixed(2),
+            '| expect level ==', grid.heightOffset, '(height_offset) in Phase 1a');
+        });
+      };
+      //Dump each cascade's world footprint — confirms they follow the camera
+      //and stay snapped to their own texel grid.
+      window.dumpWaterField = function(){
+        const f = grid.waterFieldPass;
+        if(!f){ console.log('[waterField] pass not loaded'); return; }
+        for(let i = 0; i < f.cascades.length; i++){
+          const c = f.cascades[i];
+          console.log('[waterField] cascade ' + i,
+            'half', c.halfWidth + ' m',
+            'texel', c.texel.toFixed(2) + ' m',
+            'centre', c.centerX === undefined ? 'NEVER FILLED' : (c.centerX.toFixed(1) + ', ' + c.centerZ.toFixed(1)));
+        }
+      };
       //Splash particles: debug tint (0 normal, 1 tint-by-type), master toggle, and
       //a direct handle on the OceanSplash instance for live-tuning its plain-JS
       //knobs (e.g. oceanSplash.crestSpawnChance = 0.2).
