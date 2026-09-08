@@ -72,12 +72,21 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.init = function(){
     //floats, so interpolating them is meaningful. Blending level across a
     //shoreline is benign (dry texels still carry the plane) and blending depth
     //toward 0 at the shore is exactly the soft edge we want.
+    //
+    //⚠️ FloatType, NOT HalfFloatType. `level` is an absolute world Y, and
+    //a-land worlds span thousands of metres (simple-islands' verticalRange is
+    //[-200, 4000]). Half-float carries a 10-bit mantissa, so near 4000 m its
+    //step is ~4 m — it would quantise the water surface to metres. Full float
+    //also lets the readback below share the Float32Array convention the rest of
+    //the codebase uses; a half-float target read into a Float32Array returns
+    //reinterpreted bits, which is how this was first caught.
+    //Cost: 512^2 * 16 B * 2 attachments * 3 cascades ~= 25 MB.
     const target = new THREE.WebGLRenderTarget(RES, RES, {
       count: 2,
       minFilter: THREE.LinearFilter,
       magFilter: THREE.LinearFilter,
       format: THREE.RGBAFormat,
-      type: THREE.HalfFloatType,
+      type: THREE.FloatType,
       depthBuffer: false,
       stencilBuffer: false,
       generateMipmaps: false
