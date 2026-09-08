@@ -160,7 +160,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.sampleFFTHeightAt = function(
   const res = composer.baseTextureWidth;
   const offsets = grid.oceanMaterial.uniforms.cascadeSpatialOffsets.value;
   const whm = composer.waveHeightMultiplier;
-  let h = grid.heightOffset;
+  let h = grid.waterLevelAt(x, z);
   for(let c = 0; c < composer.cascadeDisplacementTargets.length; c++){
     const patch = composer._cascadePatchSizes[c];
     let u = (x + offsets[c].x) / patch;
@@ -200,7 +200,9 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.updateHeightField = function(
     u.hfCascadeOffset.value[c].copy(offsets[c]);
   }
   u.hfWhm.value = composer.waveHeightMultiplier;
-  u.hfHeightOffset.value = grid.heightOffset;
+  //Field level at the region centre. Phase 1b turns this into a per-texel
+  //sample inside the bake shader, once level can vary across the region.
+  u.hfHeightOffset.value = grid.waterLevelAt(originX + HEIGHT_FIELD_SIZE * 0.5, originZ + HEIGHT_FIELD_SIZE * 0.5);
   u.hfRegionOrigin.value.set(originX, originZ);
   u.hfRegionSize.value = HEIGHT_FIELD_SIZE;
 
@@ -303,7 +305,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.probeWaterSurfaceY = function
   const composer = grid.oceanHeightComposer;
   const probeReady = composer && composer.cascadeDisplacementTextures && composer.cascadeDisplacementTextures[1];
   const canAsyncProbe = typeof this.renderer.readRenderTargetPixelsAsync === 'function';
-  if(this._probeWaterSurfaceY === undefined){ this._probeWaterSurfaceY = grid.heightOffset; }
+  if(this._probeWaterSurfaceY === undefined){ this._probeWaterSurfaceY = grid.waterLevelAt(grid.globalCameraPosition.x, grid.globalCameraPosition.z); }
   let waterSurfaceY = this._probeWaterSurfaceY;
 
   if(probeReady && canAsyncProbe){
@@ -329,7 +331,8 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.probeWaterSurfaceY = function
       }
       Promise.all(promises).then(function(){
         //.y (green) channel = vertical displacement, summed over both cascades.
-        self._probeWaterSurfaceY = grid.heightOffset + (self._probeBuf0[1] + self._probeBuf1[1]) * whm;
+        self._probeWaterSurfaceY = grid.waterLevelAt(grid.globalCameraPosition.x, grid.globalCameraPosition.z)
+          + (self._probeBuf0[1] + self._probeBuf1[1]) * whm;
         self._probePending = false;
       }).catch(function(){ self._probePending = false; });
     }
@@ -341,7 +344,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.probeWaterSurfaceY = function
     const res = composer.baseTextureWidth;
     const offsets = grid.oceanMaterial.uniforms.cascadeSpatialOffsets.value;
     const whm = composer.waveHeightMultiplier;
-    waterSurfaceY = grid.heightOffset;
+    waterSurfaceY = grid.waterLevelAt(grid.globalCameraPosition.x, grid.globalCameraPosition.z);
     for(let c = 0; c < 2; ++c){
       const patch = composer._cascadePatchSizes[c];
       let u = (grid.globalCameraPosition.x + offsets[c].x) / patch;

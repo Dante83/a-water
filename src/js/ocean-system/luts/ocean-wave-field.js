@@ -74,6 +74,12 @@ ARestlessOcean.OceanWaveField.prototype.rebuild = function(){
   //vertex shader's wave_scale_multiple; chop scales horizontal Gerstner
   //displacement like the shader's chop; heightOffset lifts the whole rest plane.
   this.heightOffset = (data.height_offset !== undefined) ? data.height_offset : 0.0;
+  //Water-level seam for the analytic twin (Phase 1a). Null => use the flat
+  //heightOffset above, which is exactly 0.2.0 behaviour. OceanGrid installs a
+  //provider pointing at its own waterLevelAt, so the CPU twin and the rendered
+  //surface cannot disagree about where the water is — if those drift, buoyancy
+  //floats objects at a different height than the water you can see.
+  this.levelProvider = null;
   this.waveHeightMultiplier = (data.wave_scale_multiple !== undefined) ? data.wave_scale_multiple : 1.5;
   this.chop = (data.chop !== undefined) ? data.chop : 1.0;
 
@@ -261,7 +267,7 @@ ARestlessOcean.OceanWaveField.prototype.sampleHeight = function(x, z, t){
     const c = comps[i];
     h += c.amp * Math.cos(c.kx * x + c.ky * z - c.omega * t + c.phase);
   }
-  return this.heightOffset + this.waveHeightMultiplier * h;
+  return this.levelAt(x, z) + this.waveHeightMultiplier * h;
 };
 
 //Full Gerstner displacement at world (x, z), t. out is a THREE.Vector3 (or any
@@ -279,7 +285,7 @@ ARestlessOcean.OceanWaveField.prototype.sampleDisplacement = function(x, z, t, o
     dz -= c.dirZ * s;
   }
   out.x = this.waveHeightMultiplier * this.chop * dx;
-  out.y = this.heightOffset + this.waveHeightMultiplier * dy;
+  out.y = this.levelAt(x, z) + this.waveHeightMultiplier * dy;
   out.z = this.waveHeightMultiplier * this.chop * dz;
   return out;
 };
@@ -355,3 +361,11 @@ ARestlessOcean.debugWaveAt = function(x, z){
   return {analytic: a, fft: f, diff: a - f};
 };
 //$DEBUG_END$
+
+//Rest water level at world (x, z) — the analytic twin's half of the water-level
+//seam. Falls back to the flat heightOffset when no provider is installed, which
+//is exactly 0.2.0 behaviour, so routing callers through this changes nothing
+//until Phase 1b gives the provider real data.
+ARestlessOcean.OceanWaveField.prototype.levelAt = function(x, z){
+  return this.levelProvider ? this.levelProvider(x, z) : this.heightOffset;
+};

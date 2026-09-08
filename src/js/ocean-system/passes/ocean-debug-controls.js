@@ -281,6 +281,95 @@ ARestlessOcean.installOceanDebugControls = function(grid){
       window.setAtmDistanceScale = grid.setAtmDistanceScale;
       //Direct handle on the grid instance for console probes (RT readback etc.).
       window.oceanGrid = self;
+
+      //── WaterField probes (Phase 1) ───────────────────────────────────────
+      //probeWaterField()      -> field under the camera
+      //probeWaterField(x, z)  -> field at a world position
+      //The field is invisible by design in Phase 1a (it holds the same answers
+      //0.2.0 already assumed), so this is how you confirm it is alive and
+      //carrying sane values rather than zeros.
+      window.probeWaterField = function(x, z){
+        const f = grid.waterFieldPass;
+        if(!f){ console.log('[waterField] pass not loaded'); return; }
+        const px = (x === undefined) ? grid.globalCameraPosition.x : x;
+        const pz = (z === undefined) ? grid.globalCameraPosition.z : z;
+        f.probeAt(px, pz).then(function(r){
+          if(!r){ console.log('[waterField] no cascade covers', px.toFixed(1), pz.toFixed(1)); return; }
+          console.log('[waterField] at', px.toFixed(1), pz.toFixed(1),
+            '| cascade', r.cascade,
+            '| level', r.level.toFixed(2),
+            '| depth', r.depth.toFixed(2),
+            '| flow', r.flowX.toFixed(2), r.flowZ.toFixed(2),
+            '| expect level ==', grid.heightOffset, '(height_offset) in Phase 1a');
+          //Same texel through the async PBO path, for comparison. If this
+          //disagrees with the sync read above, the PBO collision is real.
+          f.probeAt(px, pz, {async: true}).then(function(a){
+            if(a) console.log('[waterField]   async(PBO) read of the same texel:',
+              'level', a.level.toFixed(2), 'depth', a.depth.toFixed(2),
+              a.level === r.level ? '(agrees)' : '(DISAGREES -> PBO collision)');
+          });
+        });
+      };
+      //Grid-scan the field around the camera and summarise it. Answers the
+      //question a single probe cannot: is the depth channel actually alive, or
+      //is every texel falling through to the open-ocean default because the
+      //foam-ortho terrain read is broken?
+      window.scanWaterField = function(radius, n){
+        const f = grid.waterFieldPass;
+        if(!f){ console.log('[waterField] pass not loaded'); return; }
+        const R = radius || 400, N = n || 7;
+        const cx = grid.globalCameraPosition.x, cz = grid.globalCameraPosition.z;
+        const jobs = [];
+        for(let i = 0; i < N; i++){
+          for(let j = 0; j < N; j++){
+            const x = cx + (i / (N - 1) * 2 - 1) * R;
+            const z = cz + (j / (N - 1) * 2 - 1) * R;
+            jobs.push(f.probeAt(x, z).then(function(r){ return {x: x, z: z, r: r}; }));
+          }
+        }
+        Promise.all(jobs).then(function(all){
+          let terrain = 0, open = 0, uncovered = 0;
+          let dMin = Infinity, dMax = -Infinity, lMin = Infinity, lMax = -Infinity;
+          const OPEN = ARestlessOcean.Passes.WaterFieldPass.OPEN_OCEAN_DEPTH;
+          for(const a of all){
+            if(!a.r){ uncovered++; continue; }
+            if(a.r.depth === OPEN) open++; else terrain++;
+            dMin = Math.min(dMin, a.r.depth); dMax = Math.max(dMax, a.r.depth);
+            lMin = Math.min(lMin, a.r.level); lMax = Math.max(lMax, a.r.level);
+          }
+          console.log('[waterField scan] ' + N + 'x' + N + ' over +/-' + R + ' m around the camera');
+          console.log('  level   min ' + lMin.toFixed(2) + '  max ' + lMax.toFixed(2)
+            + (lMin === lMax ? '  (flat, as expected in Phase 1a)' : '  <- should be FLAT in Phase 1a'));
+          console.log('  depth   min ' + dMin.toFixed(2) + '  max ' + dMax.toFixed(2));
+          console.log('  texels: ' + terrain + ' saw terrain, ' + open + ' fell back to open-ocean ('
+            + OPEN + ' m), ' + uncovered + ' outside every cascade');
+          if(terrain === 0){
+            console.log('  ⚠ NO texel found terrain. Either you are far from land, or the '
+              + 'foam-ortho depth read is broken. Fly near an island and re-run.');
+          }
+        });
+      };
+
+      //Dump each cascade's world footprint — confirms they follow the camera
+      //and stay snapped to their own texel grid.
+      //Known-constant round trip through the field's MRT. Tells you whether the
+      //render-and-read pipeline works at all, independent of the fill maths.
+      window.testWaterField = function(){
+        const f = grid.waterFieldPass;
+        if(!f){ console.log('[waterField] pass not loaded'); return; }
+        f.selfTest().then(function(msg){ console.log('[waterField selfTest] ' + msg); });
+      };
+      window.dumpWaterField = function(){
+        const f = grid.waterFieldPass;
+        if(!f){ console.log('[waterField] pass not loaded'); return; }
+        for(let i = 0; i < f.cascades.length; i++){
+          const c = f.cascades[i];
+          console.log('[waterField] cascade ' + i,
+            'half', c.halfWidth + ' m',
+            'texel', c.texel.toFixed(2) + ' m',
+            'centre', c.centerX === undefined ? 'NEVER FILLED' : (c.centerX.toFixed(1) + ', ' + c.centerZ.toFixed(1)));
+        }
+      };
       //Splash particles: debug tint (0 normal, 1 tint-by-type), master toggle, and
       //a direct handle on the OceanSplash instance for live-tuning its plain-JS
       //knobs (e.g. oceanSplash.crestSpawnChance = 0.2).
