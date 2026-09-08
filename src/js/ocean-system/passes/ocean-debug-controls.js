@@ -301,6 +301,13 @@ ARestlessOcean.installOceanDebugControls = function(grid){
             '| depth', r.depth.toFixed(2),
             '| flow', r.flowX.toFixed(2), r.flowZ.toFixed(2),
             '| expect level ==', grid.heightOffset, '(height_offset) in Phase 1a');
+          //Same texel through the async PBO path, for comparison. If this
+          //disagrees with the sync read above, the PBO collision is real.
+          f.probeAt(px, pz, {async: true}).then(function(a){
+            if(a) console.log('[waterField]   async(PBO) read of the same texel:',
+              'level', a.level.toFixed(2), 'depth', a.depth.toFixed(2),
+              a.level === r.level ? '(agrees)' : '(DISAGREES -> PBO collision)');
+          });
         });
       };
       //Dump each cascade's world footprint — confirms they follow the camera

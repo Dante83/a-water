@@ -212,29 +212,44 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.cascadeIndexFor = function(x, z){
   return -1;
 };
 
-//Async single-texel readback of the field at a world position, for console
-//probing and (Phase 1b) the GPU-vs-getWaterAt parity check. Resolves to
-//{level, depth, flowX, flowZ, cascade} or null.
-ARestlessOcean.Passes.WaterFieldPass.prototype.probeAt = function(x, z){
+//Single-texel readback of the field at a world position, for console probing
+//and (Phase 1b) the GPU-vs-getWaterAt parity check.
+//
+//⚠️ SYNCHRONOUS BY DEFAULT, deliberately. This app already keeps three async
+//readbacks in flight (the local height field, the submersion probe's two
+//cascade texels, and the splash terrain readback). readRenderTargetPixelsAsync
+//works through a PIXEL_PACK_BUFFER, and overlapping PBO reads stomp each other
+//— the browser says so out loud ("readPixels: PIXEL_PACK_BUFFER must be null"),
+//and the result is a buffer full of whatever was there before. A probe that
+//lies is worse than no probe, so this one takes the synchronous stall. It is a
+//debug/verification path called by hand, not per frame.
+//
+//Pass {async: true} to use the PBO path anyway — useful only for demonstrating
+//the collision.
+//Returns {level, depth, flowX, flowZ, cascade} or null.
+ARestlessOcean.Passes.WaterFieldPass.prototype.probeAt = function(x, z, opts){
   const self = this;
   const i = this.cascadeIndexFor(x, z);
   if(i < 0) return Promise.resolve(null);
-  if(typeof this.renderer.readRenderTargetPixelsAsync !== 'function') return Promise.resolve(null);
   const c = this.cascades[i];
   const RES = ARestlessOcean.Passes.WaterFieldPass.RESOLUTION;
   const u = (x - c.centerX) / (2.0 * c.halfWidth) + 0.5;
   const v = (z - c.centerZ) / (2.0 * c.halfWidth) + 0.5;
   const px = Math.min(RES - 1, Math.max(0, Math.floor(u * RES)));
   const py = Math.min(RES - 1, Math.max(0, Math.floor(v * RES)));
-  this._probeBuf = this._probeBuf || new Float32Array(4);
-  //6-arg form, matching height-readback-pass.js. Reads attachment 0 (the
-  //level/depth/flow target), which is the one worth probing.
-  return this.renderer.readRenderTargetPixelsAsync(c.target, px, py, 1, 1, this._probeBuf)
-    .then(function(){
-      const b = self._probeBuf;
-      return {level: b[0], depth: b[1], flowX: b[2], flowZ: b[3], cascade: i};
-    })
-    .catch(function(){ return null; });
+  const pack = function(b){
+    return {level: b[0], depth: b[1], flowX: b[2], flowZ: b[3], cascade: i};
+  };
+
+  if(opts && opts.async){
+    this._probeBuf = this._probeBuf || new Float32Array(4);
+    return this.renderer.readRenderTargetPixelsAsync(c.target, px, py, 1, 1, this._probeBuf)
+      .then(function(){ return pack(self._probeBuf); })
+      .catch(function(){ return null; });
+  }
+  const buf = new Float32Array(4);
+  this.renderer.readRenderTargetPixels(c.target, px, py, 1, 1, buf);
+  return Promise.resolve(pack(buf));
 };
 
 //Pipeline self-test. Renders a KNOWN CONSTANT into cascade 0 and reads it
