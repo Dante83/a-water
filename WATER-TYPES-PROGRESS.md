@@ -8,6 +8,80 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
+## Phase 1a — the WaterField seam — **landed**
+
+Branch `phase-1-water-field`, 2026-09-07. Nine commits. **No visual change by
+design** — that is the acceptance criterion, not a shortcoming.
+
+### What shipped
+
+`passes/water-field-pass.js` — three world-anchored, camera-following cascades
+(256 / 1024 / 4096 m half-width at 512², **FloatType** MRT ×2):
+
+    RT0: level  depth  flow.x  flow.z
+    RT1: energy type   shoreSDF dryMask
+
+Each snaps to its own texel grid (1 / 4 / 16 m) and re-fills only when that
+snapped centre moves, so the coarse rings are skipped almost every frame.
+
+The fill is **standalone-only**: `level = height_offset`, `depth` from the
+existing foam ortho, `flow`/`energy` = 0. Exactly the 0.2.0 answers, which is
+what lets the seam be cut with zero visual diff before any a-land data exists.
+
+### The seam
+
+Consumers no longer read `height_offset`. They ask:
+
+- **CPU** — `oceanGrid.waterLevelAt(x, z)` / `waterDepthAt(x, z)`
+- **CPU twin** — `OceanWaveField.levelAt(x, z)` via an injected `levelProvider`
+- **GPU** — `waterFieldLevelAt(worldXZ, distanceToFragment)` in `water-shader.glsl`
+
+Routed: clipmap tile placement, horizon skirt, both ortho cameras, CSM pivot,
+reflection mirror plane, submersion probe, height-field bake, the analytic
+Gerstner twin, three `ocean-splash.js` sites, and the fragment shader's
+wave-height-above-rest plus two debug references.
+
+Phase 1b replaces two function **bodies**. No call site moves again.
+
+### Findings worth keeping
+
+- **The vertex shader never referenced the rest level.** Clipmap tile Y comes
+  from the instance matrix, which the CPU seam already covers. So the GPU seam
+  is fragment-only — no GLSL forked across two files, which is the mistake
+  `horizon-skirt.glsl` stands as the example of.
+- **`distanceToFragment` is taken now, unused, on purpose.** Clipmap cells double
+  per ring (0.25 m at ring 0, 100 m+ at the outer rings) and the test lake is only
+  ~72 m across. Without distance-based cascade selection, one far vertex landing
+  inside a small lake drags a whole cell to lake level — a 50 m spike on a
+  triangle wider than the lake. 1b fills in the body; the call sites are ready.
+- **Half-float is wrong for `level`.** It is an absolute world Y and a-land worlds
+  span thousands of metres; near 4000 m a half-float step is ~4 m. FloatType.
+- ⚠️ **`readRenderTargetPixelsAsync` collides with itself.** The app already runs
+  three async readbacks (height field, submersion probe, splash terrain) and the
+  browser says so — `readPixels: PIXEL_PACK_BUFFER must be null`, 24+ times a
+  session. A fourth overlapping read returns stale buffer contents. The field
+  probe is therefore **synchronous**. This is PRE-EXISTING and unreviewed: it may
+  be producing occasional wrong buoyancy samples or a mistimed air/water swap
+  today. Deferred by agreement, not dismissed.
+
+### Debug surface
+
+`probeWaterField(x, z)`, `scanWaterField(radius, n)`, `dumpWaterField()`,
+`testWaterField()`. The field is invisible at this step, so these are how it gets
+verified at all. `testWaterField()` — a known-constant round trip through the MRT
+— is what isolated the PBO collision from a suspected fill bug.
+
+### Next: Phase 1b
+
+`terrain-provider` prop, decode a-land's three tile stacks into the cascades, CPU
+mirror via `land-terrain.api.getWaterAt`, GPU-vs-CPU parity check. Acceptance is
+one observation: the lake at **-100** sitting 50 m above the ocean at **-150**.
+
+⚠️ `height_offset` here is 6 but `simple-islands`' `seaLevel` is **-150**. When
+the bridge lands the water plane will jump — that is correct, not a regression.
+
+---
+
 ## Phase 0 — Decompose `ocean-grid.js` — **landed**
 
 Branch `phase-0-decompose-ocean-grid`, 2026-09-07. Ten commits, two logical
