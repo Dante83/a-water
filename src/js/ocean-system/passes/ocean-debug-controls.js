@@ -310,6 +310,46 @@ ARestlessOcean.installOceanDebugControls = function(grid){
           });
         });
       };
+      //Grid-scan the field around the camera and summarise it. Answers the
+      //question a single probe cannot: is the depth channel actually alive, or
+      //is every texel falling through to the open-ocean default because the
+      //foam-ortho terrain read is broken?
+      window.scanWaterField = function(radius, n){
+        const f = grid.waterFieldPass;
+        if(!f){ console.log('[waterField] pass not loaded'); return; }
+        const R = radius || 400, N = n || 7;
+        const cx = grid.globalCameraPosition.x, cz = grid.globalCameraPosition.z;
+        const jobs = [];
+        for(let i = 0; i < N; i++){
+          for(let j = 0; j < N; j++){
+            const x = cx + (i / (N - 1) * 2 - 1) * R;
+            const z = cz + (j / (N - 1) * 2 - 1) * R;
+            jobs.push(f.probeAt(x, z).then(function(r){ return {x: x, z: z, r: r}; }));
+          }
+        }
+        Promise.all(jobs).then(function(all){
+          let terrain = 0, open = 0, uncovered = 0;
+          let dMin = Infinity, dMax = -Infinity, lMin = Infinity, lMax = -Infinity;
+          const OPEN = ARestlessOcean.Passes.WaterFieldPass.OPEN_OCEAN_DEPTH;
+          for(const a of all){
+            if(!a.r){ uncovered++; continue; }
+            if(a.r.depth === OPEN) open++; else terrain++;
+            dMin = Math.min(dMin, a.r.depth); dMax = Math.max(dMax, a.r.depth);
+            lMin = Math.min(lMin, a.r.level); lMax = Math.max(lMax, a.r.level);
+          }
+          console.log('[waterField scan] ' + N + 'x' + N + ' over +/-' + R + ' m around the camera');
+          console.log('  level   min ' + lMin.toFixed(2) + '  max ' + lMax.toFixed(2)
+            + (lMin === lMax ? '  (flat, as expected in Phase 1a)' : '  <- should be FLAT in Phase 1a'));
+          console.log('  depth   min ' + dMin.toFixed(2) + '  max ' + dMax.toFixed(2));
+          console.log('  texels: ' + terrain + ' saw terrain, ' + open + ' fell back to open-ocean ('
+            + OPEN + ' m), ' + uncovered + ' outside every cascade');
+          if(terrain === 0){
+            console.log('  ⚠ NO texel found terrain. Either you are far from land, or the '
+              + 'foam-ortho depth read is broken. Fly near an island and re-run.');
+          }
+        });
+      };
+
       //Dump each cascade's world footprint — confirms they follow the camera
       //and stay snapped to their own texel grid.
       //Known-constant round trip through the field's MRT. Tells you whether the
