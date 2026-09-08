@@ -237,6 +237,61 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.probeAt = function(x, z){
     .catch(function(){ return null; });
 };
 
+//Pipeline self-test. Renders a KNOWN CONSTANT into cascade 0 and reads it
+//straight back, which separates "the fill shader is wrong" from "the fill never
+//ran / we are reading uninitialised memory". Returns a Promise of a report
+//string. Debug-only; safe to call at any time (it refills the cascade after).
+ARestlessOcean.Passes.WaterFieldPass.prototype.selfTest = function(){
+  const self = this;
+  const c = this.cascades[0];
+  if(!c) return Promise.resolve('no cascade 0');
+  const mat = this._fillMaterial;
+  const prevRT = this.renderer.getRenderTarget();
+
+  //Swap in a constant-writing shader on a throwaway material so the real fill
+  //material is untouched.
+  const testMat = new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    uniforms: {},
+    vertexShader: mat.vertexShader,
+    fragmentShader: [
+      'precision highp float;',
+      'layout(location = 0) out vec4 gA;',
+      'layout(location = 1) out vec4 gB;',
+      'in vec2 vUv;',
+      'void main(){',
+      '  gA = vec4(11.0, 22.0, 33.0, 44.0);',
+      '  gB = vec4(55.0, 66.0, 77.0, 88.0);',
+      '}'
+    ].join('\n'),
+    depthTest: false,
+    depthWrite: false
+  });
+  const mesh = this._fillScene.children[0];
+  const realMat = mesh.material;
+  mesh.material = testMat;
+  this.renderer.setRenderTarget(c.target);
+  this.renderer.render(this._fillScene, this._fillCamera);
+  this.renderer.setRenderTarget(prevRT);
+  mesh.material = realMat;
+
+  const buf = new Float32Array(4);
+  return this.renderer.readRenderTargetPixelsAsync(c.target, 10, 10, 1, 1, buf)
+    .then(function(){
+      testMat.dispose();
+      //Force a refill of every cascade on the next tick.
+      for(let i = 0; i < self.cascades.length; ++i) self.cascades[i].centerX = undefined;
+      const got = Array.prototype.slice.call(buf).join(', ');
+      const pass = (buf[0] === 11 && buf[1] === 22 && buf[2] === 33 && buf[3] === 44);
+      return (pass ? 'PASS' : 'FAIL') + ' — wrote [11, 22, 33, 44], read back [' + got + ']'
+        + (pass ? '' : '  => the MRT write or the readback path is broken, not the fill logic');
+    })
+    .catch(function(e){
+      testMat.dispose();
+      return 'FAIL — readback threw: ' + e.message;
+    });
+};
+
 ARestlessOcean.Passes.WaterFieldPass.prototype.dispose = function(){
   for(let i = 0; i < this.cascades.length; ++i) this.cascades[i].target.dispose();
   this.cascades.length = 0;

@@ -305,6 +305,13 @@ ARestlessOcean.installOceanDebugControls = function(grid){
       };
       //Dump each cascade's world footprint — confirms they follow the camera
       //and stay snapped to their own texel grid.
+      //Known-constant round trip through the field's MRT. Tells you whether the
+      //render-and-read pipeline works at all, independent of the fill maths.
+      window.testWaterField = function(){
+        const f = grid.waterFieldPass;
+        if(!f){ console.log('[waterField] pass not loaded'); return; }
+        f.selfTest().then(function(msg){ console.log('[waterField selfTest] ' + msg); });
+      };
       window.dumpWaterField = function(){
         const f = grid.waterFieldPass;
         if(!f){ console.log('[waterField] pass not loaded'); return; }
