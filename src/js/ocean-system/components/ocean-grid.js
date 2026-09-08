@@ -500,9 +500,26 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     return ARestlessOcean.Passes.WaterFieldPass
       ? ARestlessOcean.Passes.WaterFieldPass.OPEN_OCEAN_DEPTH : 1000.0;
   };
+  //The analytic Gerstner twin is pointed at this same seam too — see
+  //_syncWaveFieldSeam below. It cannot be done here: ARestlessOcean.waveField
+  //does not exist until the band library is constructed a few lines down.
+  //
+  //Keeping the twin on the seam matters: if the CPU surface and the rendered
+  //surface disagree about the rest level, buoyancy floats objects at a
+  //different height than the water you can see.
+  this._syncWaveFieldSeam = function(){
+    const wf = ARestlessOcean.waveField;
+    //Self-healing rather than one-shot: regenerateH0() builds a NEW
+    //OceanWaveField on every wind change, which would silently drop the
+    //provider and send the twin back to a flat plane.
+    if(wf && wf.levelProvider !== self.waterLevelAt){
+      wf.levelProvider = self.waterLevelAt;
+    }
+  };
 
   this.oceanHeightBandLibrary = new ARestlessOcean.LUTlibraries.OceanHeightBandLibrary(this);
   this.oceanHeightComposer = new ARestlessOcean.LUTlibraries.OceanHeightComposer(this);
+  this._syncWaveFieldSeam();
 
   //Discover a-starry-sky's SkyDirector for atmospheric perspective LUTs.
   //Also retried from tick: a-starry-sky may initialize AFTER this component
@@ -1108,6 +1125,10 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       this.foamRenderMap = self.terrainOrthoPass.foamRenderTarget.texture;
       this.exclusionMap = self.terrainOrthoPass.exclusionRenderTarget.texture;
     }
+
+    //Re-assert the analytic twin's level provider (a wind change rebuilds the
+    //wave field and would otherwise drop it). Identity check, so it is free.
+    self._syncWaveFieldSeam();
 
     //Refresh the water field. Cheap: each cascade re-fills only when its own
     //snapped centre moves, so the coarse rings are nearly always skipped. Runs

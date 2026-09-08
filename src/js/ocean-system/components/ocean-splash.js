@@ -720,7 +720,7 @@ ARestlessOcean.OceanSplash.prototype._emitCrest = function(field, t, camX, camZ,
       //is unreliable — it cuts short-wave slopes — so it is demoted to a near-flat
       //reject below, not the gate that decides where mist lives.)
       const h0 = this._surfaceHeight(field, x, z, t);
-      if((h0 - field.heightOffset) < minHeight) continue;
+      if((h0 - field.levelAt(x, z)) < minHeight) continue;
       let rise = (this.useRenderedHeight && ARestlessOcean.sampleWaterRiseFFT)
         ? ARestlessOcean.sampleWaterRiseFFT(x, z) : null;
       if(rise === null){
@@ -847,7 +847,7 @@ ARestlessOcean.OceanSplash.prototype._emitShore = function(field, t, camX, camZ,
       if(d2 > nearR2 && Math.random() > this.shoreFarKeep) continue;
       const x = camX + gx;
       const z = camZ + gz;
-      const seaLevel = field.heightOffset;
+      const seaLevel = field.levelAt(x, z);
       //Two kinds of shore throw spray: a GENTLE BEACH (terrain that breaks the surface
       //near the rest waterline) and a VERTICAL CLIFF/WALL (a lighthouse base, harbour
       //wall, sea stack — solid that plunges through the waterline). The foam ortho is a
@@ -911,7 +911,7 @@ ARestlessOcean.OceanSplash.prototype._emitShore = function(field, t, camX, camZ,
       //height H. So a 3 m wave throws ~7-8 m/s and big storm waves really leap, while
       //gentle swell stays a low fizz — spray that scales with wave size. `rise` (the
       //timing gate) is the floor so a fast-rising small wave still pops.
-      const surge = Math.max(0.0, h0 - field.heightOffset);
+      const surge = Math.max(0.0, h0 - field.levelAt(x, z));
       const jet = this.shoreJetScale * Math.sqrt(2.0 * this.gravity * surge);
       const impactSpeed = Math.max(rise, jet);
       //Incoming water velocity for the reflection launch: the surge climbs the beach
