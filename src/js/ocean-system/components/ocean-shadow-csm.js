@@ -281,7 +281,11 @@ ARestlessOcean.OceanShadowCSM.prototype.render = function(renderer, mainCamera, 
   }
 
   const pivotX = this._cameraWorldPos.x;
-  const pivotY = this.oceanGrid.heightOffset;
+  //Routed through the water-level seam (Phase 1a). Standalone returns
+  //heightOffset, so this is unchanged today; Phase 1b makes it follow the field.
+  const pivotY = this.oceanGrid.waterLevelAt
+    ? this.oceanGrid.waterLevelAt(mainCamera.position.x, mainCamera.position.z)
+    : this.oceanGrid.heightOffset;
   const pivotZ = this._cameraWorldPos.z;
 
   this._lightForward.copy(sunDirection);

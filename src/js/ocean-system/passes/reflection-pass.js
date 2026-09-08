@@ -134,7 +134,7 @@ ARestlessOcean.Passes.ReflectionPass.prototype.renderUnderwaterReflection = func
   //of the mismatch under any swell.
   const h = (grid._lastWaterSurfaceY !== undefined)
     ? grid._lastWaterSurfaceY
-    : grid.heightOffset;
+    : grid.waterLevelAt(mainCamera.position.x, mainCamera.position.z);
   const reflCam = this._reflectionCamera;
   if(!this._reflScratch){
     this._reflScratch = {

@@ -478,6 +478,29 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     this.waterFieldPass = null;
   }
 
+  //═══════════════════════════════════════════════════════════════════════════
+  // THE WATER-LEVEL SEAM
+  //═══════════════════════════════════════════════════════════════════════════
+  //Every consumer that used to read `heightOffset` directly asks these instead.
+  //
+  //In Phase 1a they return exactly what those consumers computed before, so
+  //routing everything through them is provably a no-op — that is the whole
+  //point. Phase 1b replaces the BODIES with a real field lookup (a cached
+  //readback of waterFieldPass's cascades, or a-land's getWaterAt) and not one
+  //call site has to move again.
+  //
+  //Keep them cheap and synchronous: they are called per patch, per emitter and
+  //per frame. Whatever Phase 1b puts here must be a cache read, never a GPU
+  //stall — see the PBO contention note on WaterFieldPass.probeAt.
+  this.waterLevelAt = function(x, z){
+    return self.heightOffset;
+  };
+  //Water column depth (metres) at a world position; 0 means dry.
+  this.waterDepthAt = function(x, z){
+    return ARestlessOcean.Passes.WaterFieldPass
+      ? ARestlessOcean.Passes.WaterFieldPass.OPEN_OCEAN_DEPTH : 1000.0;
+  };
+
   this.oceanHeightBandLibrary = new ARestlessOcean.LUTlibraries.OceanHeightBandLibrary(this);
   this.oceanHeightComposer = new ARestlessOcean.LUTlibraries.OceanHeightComposer(this);
 
@@ -779,7 +802,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //Tile geometry spans [0, tileSize]; placing at gx*tileSize centers the 4×4 ring on the camera
     self.oceanPatches.push(new ARestlessOcean.OceanPatch(
       self,
-      new THREE.Vector3(gx * tileSize, self.heightOffset, gy * tileSize),
+      new THREE.Vector3(gx * tileSize, self.waterLevelAt(gx * tileSize, gy * tileSize), gy * tileSize),
       oceanPatchGeometryInstances[key],
       instanceIterations[key],
       k
@@ -1073,7 +1096,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         scene: scene,
         cameraX: self.globalCameraPosition.x,
         cameraZ: self.globalCameraPosition.z,
-        heightOffset: self.heightOffset,
+        heightOffset: self.waterLevelAt(self.globalCameraPosition.x, self.globalCameraPosition.z),
         onFoamRendered: function(rt, snapX, snapZ, halfWidth){
           if(self.oceanSplash){
             self.oceanSplash.requestTerrainReadback(rt, snapX, snapZ, halfWidth);
@@ -1121,7 +1144,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //crests. Async where supported; see HeightReadbackPass for why.
     let waterSurfaceY = self.heightReadbackPass
       ? self.heightReadbackPass.probeWaterSurfaceY()
-      : self.heightOffset;
+      : self.waterLevelAt(self.globalCameraPosition.x, self.globalCameraPosition.z);
 
     //Stash this frame's displaced surface height for next frame's reflection
     //mirror plane (the RT renders BEFORE this probe runs, so there's a
@@ -1602,7 +1625,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //in oceanGridInstanceKeys so it gets the same FFT cascade textures, light
     //state, atm LUTs, etc. that real ocean tiles get.
     if(self.horizonSkirtMesh){
-      self.horizonSkirtMesh.position.set(sceneCamera.position.x, self.heightOffset, sceneCamera.position.z);
+      self.horizonSkirtMesh.position.set(sceneCamera.position.x,
+        self.waterLevelAt(sceneCamera.position.x, sceneCamera.position.z), sceneCamera.position.z);
     }
 
 
