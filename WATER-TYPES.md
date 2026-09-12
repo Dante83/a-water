@@ -245,6 +245,16 @@ The single highest-leverage phase. Everything after it reads this.
   Kitaigorodskii depth function, with a representative depth per cascade from the field.
 - Mirror both in the CPU twin (`ocean-wave-field.js`), or buoyancy desyncs from the render.
 
+> **Amended 2026-09-12, while building it.** `h_0` is global, so a TMA factor there can
+> hold only one depth for the whole world (fly over the lake and the open-ocean swell
+> dies). The Kitaigorodskii factor moved into the per-cascade masks instead, evaluated
+> per vertex from the field's depth at each cascade's representative wavenumber, and
+> the "tarn reads as glass" half became a JONSWAP fetch ratio for inland water. One
+> mechanism (`ARestlessOcean.WaveMask`), not two. It changes amplitude, not phase
+> speed. `type`/`energy` are not used yet: `type` turned out to be a Jerlov index,
+> not a body kind, and `energy` belongs to the flowing families. See
+> `WATER-TYPES-PROGRESS.md` § Phase 2.
+
 *Files:* `water-vertex.glsl`, `water-shader.glsl`, `h_0-pass.glsl`,
 `ocean-height-band-library.js:37,373-415`, `ocean-wave-field.js`, `ocean-grid.js`.
 
