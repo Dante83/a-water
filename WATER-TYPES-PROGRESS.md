@@ -143,6 +143,8 @@ the **texel centre is 0.0000 m** in both level and depth. The decode was
 byte-exact all along. `compareAgainstLandTerrain` now asks a-land about the texel
 centre. (This was latent since 1b and had nothing to do with 1c.)
 
+**Re-run after the fix: 14 points compared, 0 mismatches.**
+
 **The refill timing read 0.00 ms and has been removed.** The browser clamps
 `performance.now()` too coarsely to time a few dozen draw submissions. It is now
 a refill count; judge the cost by frame rate with the shore field on vs off.
@@ -164,6 +166,10 @@ shore-break at the waterline. So the world is **not too steep for surf, but too
 steep for long rolling surf**: expect dumping shore-break in a narrow band, not
 lines of spilling breakers. Low-p10 slopes (1:25–1:30) exist locally, likely the
 channel and basin.
+
+That led to **Phase 3.0 in `WATER-TYPES.md`**: an investigation run into
+volume-conserving nearshore dynamics (run-up, backwash, cliff reflection with energy
+loss, what shipped games actually do) before Phase 3's breakers get built.
 
 ### Carry into Phase 2
 

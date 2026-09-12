@@ -248,6 +248,70 @@ The single highest-leverage phase. Everything after it reads this.
 *Files:* `water-vertex.glsl`, `water-shader.glsl`, `h_0-pass.glsl`,
 `ocean-height-band-library.js:37,373-415`, `ocean-wave-field.js`, `ocean-grid.js`.
 
+### Phase 3.0 — Investigation: nearshore wave dynamics *(research run, before building Phase 3)*
+
+Prompted by the first `surveyShore()` on simple-islands (2026-09-12, numbers in
+`WATER-TYPES-PROGRESS.md` § Phase 1c). The seabed sits at ~30° from a few metres out. At
+12 m/s that means mostly plunging shore-break in a ~10 m surf zone, and at steep faces a
+real share of the energy **reflects** instead of breaking. Phase 3 as written is
+parametric: breaker profiles swept along `shoreSDF`. That gives breaking. It does not
+give the other half of a real coast: water that runs up, drains back, piles into
+coves, and bounces off rock with some energy loss. The question is whether that other
+half needs a volume-conserving nearshore model, and if so, which one we can afford.
+
+**Families to evaluate** (a starting list, not a shortlist):
+
+1. **Parametric only.** Phase 3 as written: phase-locked breakers plus a swash sheet.
+   Cheapest, and trivially CPU-mirrored. No reflection, no run-up interaction with
+   terrain shape.
+2. **Local shallow-water / Boussinesq height-field sim** in a camera window over the
+   surf zone, forced at its offshore edge by the FFT field. Volume conservation,
+   run-up, backwash and reflection emerge from it. The hard parts are known: the moving
+   wet/dry front on 30° slopes at 1 m cells, CFL-limited timesteps, and absorbing the
+   offshore boundary so the sim does not reflect back into the FFT ocean.
+3. **Virtual-pipe SWE** (Mei, Decaudin & Hu 2007 lineage): volume-conserving by
+   construction, robust wet/dry, cheap on a GPU. Well proven in erosion tools, and
+   possibly the same machinery as the deferred live-river solver. Non-dispersive, so it
+   will not carry swell shape by itself.
+4. **Wave packets / Water Surface Wavelets** (Jeschke & Wojtan 2017; Jeschke et al.
+   2018): reflection, refraction and diffraction at coastlines without a full grid
+   solve. Already named under Deferred for ambient swell; evaluate it here for shores.
+5. **2D wave equation / iWave-class** (Tessendorf): the Phase 8 dynamic-waves sim with
+   reflective boundaries. Cheap reflection, reusable service, but no breaking and no
+   run-up.
+
+**Questions the run must answer:**
+
+- **What shipped games actually do** for surf, swash and cliff reflection, and at what
+  cost. Survey first, rather than assuming "the latest games simulate it". Many may
+  fake it convincingly, which is itself the answer.
+- **Hand-off.** How does a nearshore model take energy from the FFT ocean without
+  double-counting it? That means a blend band keyed on `shoreSDF` and depth, with the
+  FFT attenuated inside it. How does it hand energy back out as reflected waves?
+- **Reflection coefficient per shore texel.** Classic coastal engineering gives
+  reflection as a function of the same surf-similarity number `surveyShore()` already
+  computes (Battjes 1974: Kr ≈ 0.1·ξ², capped at 1; check the source). If so, 1c's ξ
+  map is directly a boundary condition, and cliffs vs beaches fall out of one field.
+- **CPU parity** (cross-cutting rule). A GPU sim breaks the analytic Gerstner twin
+  inside the surf zone. Is a readback window acceptable for buoyancy and splash, given
+  the known `readRenderTargetPixelsAsync` PBO collision?
+- **Foam and splash coupling.** Can the sim's convergence and velocity drive the foam
+  accumulation RT and `_emitShore` directly, replacing the Jacobian-only shore drive?
+- **Budget.** A cost per surf-zone window at 1 m cells in WebGL2, measured, not
+  estimated.
+
+**Deliverable:** `NEARSHORE-WAVES.md`, holding the game survey, a comparison of the
+families against the questions above, and a recommendation that either confirms Phase 3
+as written, amends it (e.g. parametric breakers plus a pipe-SWE swash layer with
+ξ-driven reflection), or splits out a new phase. Spike prototypes run in a scratch
+harness under headless Chrome (SwiftShader WebGL2, the real pass files loaded
+directly), which is how 1c was verified without a browser session.
+
+*Interacts with:* Phase 3 (may rewrite it), Phase 8's dynamic-waves sim (candidate shared
+service), the deferred live-river SWE (candidate shared solver), and a-faraway-land's
+beach-shaping tooling. That tooling is the cheaper lever if the answer is "rolling surf
+needs gentler bathymetry, not more simulation".
+
 ### Phase 3 — Shorelines that break
 
 Everything here reads `shoreSDF`, `shoreNormal` and `depth` from Phase 1.
@@ -472,7 +536,8 @@ editor and watching the water re-route. The baked river deliberately shares its 
 contract, so a live solver is a backend swap rather than a new feature.
 
 Particle-fluid microsims at waterfall lips and plunge pools. "Water Surface Wavelets"-class
-ambient swell that refracts and diffracts around coasts. Kelvin wakes. Underwater god rays.
+ambient swell that refracts and diffracts around coasts (the shoreline half of that
+question is now Phase 3.0's investigation). Kelvin wakes. Underwater god rays.
 
 The shared wind and weather bus — a-land's `getWindField()` is built and waiting, and its
 `WIND.md` says we are one of the two consumers it was written for. A small, high-charm phase
