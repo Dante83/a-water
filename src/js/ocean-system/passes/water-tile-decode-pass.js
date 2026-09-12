@@ -12,9 +12,24 @@
 //  - level: bilinear, but renormalised over WET corners ONLY (a dry corner
 //    is excluded from the level average entirely, not treated as level=0).
 //  - type: taken from the single highest-weight WET corner.
-//  - fully-dry or fully-zero-depth footprint: discard, leaving the
-//    standalone base layer (already rendered into this RT) untouched —
-//    the GPU equivalent of sampleTile returning null.
+//  - fully-dry or fully-zero-depth footprint: sampleTile returns null.
+//
+//PHASE 1c — A LOADED TILE IS AUTHORITATIVE, DRY INCLUDED
+//That null used to be a `discard`, which left the standalone base fill standing
+//under it: sea level plus foam-ortho depth. Anywhere a-land says "dry" but the
+//ground sits below sea level — a painted Dry Zone, a dammed bay — the fallback
+//plane flooded it, breaking rule 1 (the field is the only source of truth about
+//where water is). Now a dry answer is WRITTEN:
+//    level = uSeaLevel (the same value the base fill wrote, so the level blend
+//            across a shoreline is unchanged), depth = flow = energy = 0,
+//    type = uWaterType, dryMask = 1.
+//Whole tiles a-land answers as dry (absent from wetTiles, or 404) are drawn
+//with uForceDry = 1 and never fetched. Only tiles still LOADING are skipped, so
+//the fallback survives exactly where a-land has not answered yet.
+//
+//dryMask: 1 = the terrain provider says dry here; 0 = wet, or no provider
+//answer yet. `depth == 0` stays the universal discard — dryMask is what tells
+//"known dry" from "guessed".
 //
 //texelFetch (not texture()) is required on the four corner texels: NEAREST
 //filtering alone cannot give per-corner wetness testing, which this decode
@@ -52,7 +67,10 @@ ARestlessOcean.Passes.WaterTileDecodePass = function(oceanGrid){
       uNdcMin:     {value: new THREE.Vector2(-1, -1)},
       uNdcMax:     {value: new THREE.Vector2(1, 1)},
       uTileUvMin:  {value: new THREE.Vector2(0, 0)},
-      uTileUvMax:  {value: new THREE.Vector2(1, 1)}
+      uTileUvMax:  {value: new THREE.Vector2(1, 1)},
+      uSeaLevel:   {value: 0.0},
+      uWaterType:  {value: 0.0},
+      uForceDry:   {value: 0.0}
     },
     vertexShader: [
       'out vec2 vTileUv;',
@@ -72,11 +90,19 @@ ARestlessOcean.Passes.WaterTileDecodePass = function(oceanGrid){
       'in vec2 vTileUv;',
       'uniform sampler2D uLevelTex, uFlowTex, uClassTex;',
       'uniform float uTileRes, uMaxDepth, uVelocityRange, uVR0, uVScale;',
+      'uniform float uSeaLevel, uWaterType, uForceDry;',
+      '',
+      //The authoritative dry answer — see the file header (Phase 1c).
+      'void writeDry(){',
+      '  gLevelDepthFlow = vec4(uSeaLevel, 0.0, 0.0, 0.0);',
+      '  gClass = vec4(0.0, uWaterType, 0.0, 1.0);',
+      '}',
       '',
       'float depthFromByte(float b){ float t = b / 255.0; return t * t * uMaxDepth; }',
       'float velFrom16(float raw){ return (raw - 32768.0) / 32767.0 * uVelocityRange; }',
       '',
       'void main(){',
+      '  if(uForceDry > 0.5){ writeDry(); return; }',
       //Tile-local fractional coordinate, matching WaterReader.sampleTile's
       //fx/fy EXACTLY: fx = (worldX - tileOriginX)/tileSize*(t-1) === vTileUv.x*(t-1).
       '  vec2 fxy = vTileUv * vec2(uTileRes - 1.0);',
@@ -109,12 +135,13 @@ ARestlessOcean.Passes.WaterTileDecodePass = function(oceanGrid){
       '    }',
       '  }',
       '',
-      '  if(wetW <= 0.0) discard;',   //fully dry footprint — sampleTile returns null here
+      '  if(wetW <= 0.0){ writeDry(); return; }',   //fully dry footprint — sampleTile returns null here
       '  level /= wetW;',
-      '  if(!(depth > 0.0)) discard;',  //fully zero-depth footprint — sampleTile returns null here
+      '  if(!(depth > 0.0)){ writeDry(); return; }', //fully zero-depth footprint — sampleTile returns null here
       '',
       '  gLevelDepthFlow = vec4(level, depth, vx, vz);',
-      '  gClass = vec4(energy, kind, 0.0, 0.0);',   //shoreSDF/dryMask: Phase 1c
+      //shoreSDF (.b) is left 0 here; WaterFieldPass's compose pass derives it.
+      '  gClass = vec4(energy, kind, 0.0, 0.0);',
       '}'
     ].join('\n'),
     depthTest: false,
@@ -154,11 +181,12 @@ ARestlessOcean.Passes.WaterTileDecodePass.prototype._ensureDecoder = function(la
 };
 
 //Draws every tile intersecting cascade `c`'s world footprint, at the LOD
-//matching that cascade's texel density. Called
+//matching that cascade's texel density. `ctx` carries {seaLevel, waterType} for
+//the authoritative dry writes. Called
 //from WaterFieldPass.tick() immediately after that cascade's standalone
 //base fill, with `c.target` still the active render target — this pass
 //never sets/restores the render target itself.
-ARestlessOcean.Passes.WaterTileDecodePass.prototype.fillCascade = function(c, landDirector){
+ARestlessOcean.Passes.WaterTileDecodePass.prototype.fillCascade = function(c, landDirector, ctx){
   const decoder = this._ensureDecoder(landDirector);
   if(!decoder.available) return;
 
@@ -178,6 +206,8 @@ ARestlessOcean.Passes.WaterTileDecodePass.prototype.fillCascade = function(c, la
   u.uVelocityRange.value = velocityRange;
   u.uVR0.value = vr[0];
   u.uVScale.value = vr[1] - vr[0];
+  u.uSeaLevel.value = ctx ? ctx.seaLevel : 0.0;
+  u.uWaterType.value = ctx ? ctx.waterType : 0.0;
 
   //⚠ autoClear MUST be off for these draws. Each renderer.render() would
   //otherwise clear the whole cascade first, wiping the standalone base fill
@@ -189,7 +219,8 @@ ARestlessOcean.Passes.WaterTileDecodePass.prototype.fillCascade = function(c, la
 
   for(let i = 0; i < tiles.length; ++i){
     const t = tiles[i];
-    if(!t.entry) continue;   //still loading — appears on a later refill
+    //Still loading: skip, keeping the standalone fallback until it lands.
+    if(!t.entry && !t.dry) continue;
 
     const span = t.span;
     const tMinX = t.originX, tMaxX = t.originX + span;
@@ -198,10 +229,13 @@ ARestlessOcean.Passes.WaterTileDecodePass.prototype.fillCascade = function(c, la
     const clipMinZ = Math.max(tMinZ, minZ), clipMaxZ = Math.min(tMaxZ, maxZ);
     if(clipMinX >= clipMaxX || clipMinZ >= clipMaxZ) continue;   //no overlap
 
-    u.uLevelTex.value = t.entry.levelTex;
-    u.uFlowTex.value = t.entry.flowTex;
-    u.uClassTex.value = t.entry.clsTex;
-    u.uTileRes.value = t.entry.w;
+    u.uForceDry.value = t.dry ? 1.0 : 0.0;
+    if(!t.dry){
+      u.uLevelTex.value = t.entry.levelTex;
+      u.uFlowTex.value = t.entry.flowTex;
+      u.uClassTex.value = t.entry.clsTex;
+      u.uTileRes.value = t.entry.w;
+    }
 
     u.uNdcMin.value.set((clipMinX - c.centerX) / c.halfWidth, (clipMinZ - c.centerZ) / c.halfWidth);
     u.uNdcMax.value.set((clipMaxX - c.centerX) / c.halfWidth, (clipMaxZ - c.centerZ) / c.halfWidth);

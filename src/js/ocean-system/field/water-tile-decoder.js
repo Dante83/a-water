@@ -63,6 +63,11 @@ ARestlessOcean.WaterTileDecoder = function(landDirector, onTileLoaded){
   this.available = !!(src && this.sim && typeof fetch !== 'undefined');
   this.tileSize = src ? src.tileSize : 0;     //LOD-0 tile span in metres
   this.maxLod = src ? (src.maxLod || 0) : 0;
+  //World extent in metres (map.json bounds.size, origin at 0,0 like the tile
+  //grid). 0 = unknown, which leaves tilesIntersecting unclamped on that axis.
+  const size = mj && mj.bounds && mj.bounds.size;
+  this.worldSizeX = (size && size[0]) || 0;
+  this.worldSizeZ = (size && size[1]) || 0;
 
   //wetTiles index (lod -> [[x,y],...]) marks dry tiles without a 404 round
   //trip — same shortcut WaterReader takes, but kept per-LOD since we read
@@ -115,25 +120,38 @@ ARestlessOcean.WaterTileDecoder.prototype.getTile = function(lod, tileX, tileY){
   return entry;
 };
 
-//All non-known-dry tiles at `lod` intersecting a world-space AABB. Returns
-//[{tileX, tileY, originX, originZ, span, entry}], entry null while still
-//loading — the caller skips those, and onTileLoaded re-fills the cascade once
-//they land.
+//Every tile at `lod` intersecting a world-space AABB, clamped to the world's own
+//tile grid. Returns [{tileX, tileY, originX, originZ, span, entry, dry}]:
+//  dry: true    — a-land has ANSWERED "no water in this whole tile" (absent from
+//                 the wetTiles index, or its level tile 404'd). Phase 1c: the
+//                 caller writes an authoritative dry quad, so the standalone
+//                 fallback plane cannot flood a below-sea-level Dry Zone.
+//  entry: null  — still loading. Skipped; the standalone fallback survives until
+//                 onTileLoaded re-fills the cascade.
+//Tiles outside the world grid are not returned at all: beyond a-land's bounds
+//there is no answer to give, and the standalone ocean is the right one.
 ARestlessOcean.WaterTileDecoder.prototype.tilesIntersecting = function(minX, minZ, maxX, maxZ, lod){
   const out = [];
   if(!this.available) return out;
   const span = this.spanForLod(lod);
   const x0 = Math.max(0, Math.floor(minX / span));
-  const x1 = Math.floor(maxX / span);
   const y0 = Math.max(0, Math.floor(minZ / span));
-  const y1 = Math.floor(maxZ / span);
+  let x1 = Math.floor(maxX / span);
+  let y1 = Math.floor(maxZ / span);
+  if(this.worldSizeX > 0) x1 = Math.min(x1, Math.ceil(this.worldSizeX / span) - 1);
+  if(this.worldSizeZ > 0) y1 = Math.min(y1, Math.ceil(this.worldSizeZ / span) - 1);
   for(let ty = y0; ty <= y1; ++ty){
     for(let tx = x0; tx <= x1; ++tx){
-      if(this.isKnownDry(lod, tx, ty)) continue;
+      let entry = null;
+      let dry = this.isKnownDry(lod, tx, ty);
+      if(!dry){
+        entry = this.getTile(lod, tx, ty);
+        dry = (this._cache.get(lod + '_' + tx + '_' + ty) === 'dry');
+      }
       out.push({
         tileX: tx, tileY: ty,
         originX: tx * span, originZ: ty * span, span: span,
-        entry: this.getTile(lod, tx, ty)
+        entry: entry, dry: dry
       });
     }
   }
