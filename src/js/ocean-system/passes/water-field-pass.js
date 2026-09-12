@@ -15,6 +15,19 @@
 //`shoreNormal` is deliberately NOT stored — it is normalize(gradient(shoreSDF)),
 //cheaper to derive where it is sampled than to carry two more channels.
 //
+//PHASE 1c — shoreSDF AND dryMask
+//  shoreSDF  signed distance to the nearest wet/dry boundary, in METRES:
+//            positive over water, negative over land. Derived here by a jump
+//            flood over the finished (base + tile decode) depth channel — see
+//            _composeShoreField. ±2·halfWidth when the cascade has no shore in it.
+//  dryMask   1 = the terrain provider SAYS dry here; 0 = wet, or no provider
+//            answer yet (see water-tile-decode-pass.js).
+//
+//⚠ Each cascade only sees shores INSIDE ITS OWN FOOTPRINT. Near a cascade edge
+//the SDF overestimates (the true nearest shore may be just outside), so a
+//consumer must crossfade cascades exactly the way waterFieldLevelAt does rather
+//than trusting one cascade to its rim.
+//
 //THE THREE RULES (from the architecture doc, and they are load-bearing)
 //  1. The field is the ONLY source of truth about where water is. Nothing
 //     samples terrain directly ever again.
@@ -50,6 +63,17 @@ ARestlessOcean.Passes.WaterFieldPass = function(oceanGrid){
   this._fillMaterial = null;
   this._probeBuf = null;
   this._probePending = false;
+
+  //Phase 1c shore-field machinery — see _composeShoreField.
+  this._scratch = null;      //shared MRT the base fill + tile decode render into
+  this._jfaTargets = null;   //ping-pong seed targets
+  this._seedMaterial = null;
+  this._jfaMaterial = null;
+  this._composeMaterial = null;
+  this._blitMaterial = null;
+  this._readTarget = null;   //single-attachment copy target for RT1 readback
+  this.shoreFieldEnabled = true;
+  this.lastRefillMs = 0;     //CPU-side wall time of the last tick that refilled (debug)
 };
 
 //Cascade half-widths in metres, fine -> coarse. Cascade 0 carries shoreline
@@ -182,6 +206,215 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.init = function(){
   this._fillScene = new THREE.Scene();
   this._fillScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this._fillMaterial));
   this._fillCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+  this._initShoreField();
+};
+
+//── Phase 1c: the shore field ───────────────────────────────────────────────
+//
+//WHY A SCRATCH TARGET
+//shoreSDF is a function of the FINISHED depth channel — base fill and tile
+//decode both — so it cannot be written in the same draw that produces depth,
+//and a pass cannot read the target it writes. So the base fill and tile decode
+//render into one shared scratch MRT (refills are sequential, so one serves all
+//three cascades), the jump flood runs over its depth, and a compose pass writes
+//the finished cascade. c.target keeps its identity, so every texture reference
+//already handed out (water shader uniforms, a-land's setWaterField) stays valid.
+//
+//THE SEEDS ARE BOUNDARY POINTS, NOT TEXELS
+//A texel whose wetness differs from a 4-neighbour seeds the position HALF A
+//TEXEL toward that neighbour — the shoreline itself, which lies between the two
+//texel centres. Seeding the texel centre instead would make every distance one
+//texel short on one side or the other. Because both sides seed the SAME point,
+//one flood serves both the wet and the dry half; the sign comes from the texel's
+//own wetness.
+//
+//COST
+//Seed + 10 flood steps (256 … 1, plus one extra step of 1 — "JFA+1", which
+//mops up the rare wrong-seed texel) + compose = 12 fullscreen 512² draws per
+//refilled cascade. Cascade 0 refills once per metre of camera travel.
+ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
+  const RES = ARestlessOcean.Passes.WaterFieldPass.RESOLUTION;
+  const nearestFloat = function(count){
+    return new THREE.WebGLRenderTarget(RES, RES, {
+      count: count,
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+      format: THREE.RGBAFormat,
+      type: THREE.FloatType,
+      depthBuffer: false,
+      stencilBuffer: false,
+      generateMipmaps: false
+    });
+  };
+  this._scratch = nearestFloat(2);
+  this._jfaTargets = [nearestFloat(1), nearestFloat(1)];
+  this._readTarget = nearestFloat(1);
+
+  const vertexShader = this._fillMaterial.vertexShader;
+  const resDefine = 'const int RES = ' + RES + ';';
+
+  //Seed: boundary point (see header) in texel-index space, a = 1; else a = 0.
+  this._seedMaterial = new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    uniforms: {uDepthTex: {value: null}},
+    vertexShader: vertexShader,
+    fragmentShader: [
+      'precision highp float;',
+      resDefine,
+      'layout(location = 0) out vec4 oSeed;',
+      'uniform sampler2D uDepthTex;',
+      'float wetAt(ivec2 q){',
+      '  q = clamp(q, ivec2(0), ivec2(RES - 1));',   //the rim compares against itself: never a seed
+      '  return texelFetch(uDepthTex, q, 0).g > 0.0 ? 1.0 : 0.0;',
+      '}',
+      'void main(){',
+      '  ivec2 p = ivec2(gl_FragCoord.xy);',
+      '  float w = wetAt(p);',
+      '  vec2 dir = vec2(0.0);',
+      '  float n = 0.0;',
+      '  if(wetAt(p + ivec2(1, 0)) != w){ dir += vec2( 1.0, 0.0); n += 1.0; }',
+      '  if(wetAt(p - ivec2(1, 0)) != w){ dir += vec2(-1.0, 0.0); n += 1.0; }',
+      '  if(wetAt(p + ivec2(0, 1)) != w){ dir += vec2(0.0,  1.0); n += 1.0; }',
+      '  if(wetAt(p - ivec2(0, 1)) != w){ dir += vec2(0.0, -1.0); n += 1.0; }',
+      '  if(n < 0.5){ oSeed = vec4(0.0); return; }',
+      //Opposite neighbours cancel (a one-texel strip): the boundary is the texel itself.
+      '  oSeed = vec4(vec2(p) + 0.5 * dir, 0.0, 1.0);',
+      '}'
+    ].join('\n'),
+    depthTest: false,
+    depthWrite: false
+  });
+
+  this._jfaMaterial = new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    uniforms: {uSeedTex: {value: null}, uStep: {value: 1}},
+    vertexShader: vertexShader,
+    fragmentShader: [
+      'precision highp float;',
+      resDefine,
+      'layout(location = 0) out vec4 oSeed;',
+      'uniform sampler2D uSeedTex;',
+      'uniform int uStep;',
+      'void main(){',
+      '  ivec2 p = ivec2(gl_FragCoord.xy);',
+      '  vec2 pf = vec2(p);',
+      '  vec4 best = vec4(0.0);',
+      '  float bestD = 1e20;',
+      '  for(int dy = -1; dy <= 1; dy++){',
+      '    for(int dx = -1; dx <= 1; dx++){',
+      '      ivec2 q = p + ivec2(dx, dy) * uStep;',
+      '      if(q.x < 0 || q.y < 0 || q.x >= RES || q.y >= RES) continue;',
+      '      vec4 s = texelFetch(uSeedTex, q, 0);',
+      '      if(s.a < 0.5) continue;',
+      '      vec2 d = s.xy - pf;',
+      '      float dd = dot(d, d);',
+      '      if(dd < bestD){ bestD = dd; best = s; }',
+      '    }',
+      '  }',
+      '  oSeed = best;',
+      '}'
+    ].join('\n'),
+    depthTest: false,
+    depthWrite: false
+  });
+
+  this._composeMaterial = new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    uniforms: {
+      uFieldA: {value: null},
+      uFieldB: {value: null},
+      uSeedTex: {value: null},
+      uTexel: {value: 1.0},
+      uNoShore: {value: 1.0}
+    },
+    vertexShader: vertexShader,
+    fragmentShader: [
+      'precision highp float;',
+      'layout(location = 0) out vec4 gLevelDepthFlow;',
+      'layout(location = 1) out vec4 gClass;',
+      'uniform sampler2D uFieldA, uFieldB, uSeedTex;',
+      'uniform float uTexel, uNoShore;',
+      'void main(){',
+      '  ivec2 p = ivec2(gl_FragCoord.xy);',
+      '  vec4 a = texelFetch(uFieldA, p, 0);',
+      '  vec4 b = texelFetch(uFieldB, p, 0);',
+      '  vec4 s = texelFetch(uSeedTex, p, 0);',
+      '  float side = a.g > 0.0 ? 1.0 : -1.0;',
+      '  float dist = s.a > 0.5 ? distance(vec2(p), s.xy) * uTexel : uNoShore;',
+      '  gLevelDepthFlow = a;',
+      '  gClass = vec4(b.r, b.g, side * dist, b.a);',
+      '}'
+    ].join('\n'),
+    depthTest: false,
+    depthWrite: false
+  });
+
+  //Copies one attachment of an MRT into _readTarget. The three bundled with
+  //A-Frame 1.7 has no textureIndex argument on readRenderTargetPixels — it only
+  //ever reads COLOR_ATTACHMENT0 — so RT1 can only be read back through a copy.
+  this._blitMaterial = new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    uniforms: {uSrc: {value: null}},
+    vertexShader: vertexShader,
+    fragmentShader: [
+      'precision highp float;',
+      'layout(location = 0) out vec4 oColor;',
+      'uniform sampler2D uSrc;',
+      'void main(){ oColor = texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0); }'
+    ].join('\n'),
+    depthTest: false,
+    depthWrite: false
+  });
+};
+
+//Draw the shared fullscreen quad with `material` into `target`.
+ARestlessOcean.Passes.WaterFieldPass.prototype._drawQuad = function(material, target){
+  const mesh = this._fillScene.children[0];
+  const prevMat = mesh.material;
+  mesh.material = material;
+  this.renderer.setRenderTarget(target);
+  this.renderer.render(this._fillScene, this._fillCamera);
+  mesh.material = prevMat;
+};
+
+//Jump flood over the scratch field's depth, then write the finished cascade.
+ARestlessOcean.Passes.WaterFieldPass.prototype._composeShoreField = function(c){
+  const RES = ARestlessOcean.Passes.WaterFieldPass.RESOLUTION;
+  const depthTex = this._scratch.textures[0];
+  let read = 0;
+
+  if(this.shoreFieldEnabled){
+    this._seedMaterial.uniforms.uDepthTex.value = depthTex;
+    this._drawQuad(this._seedMaterial, this._jfaTargets[0]);
+
+    const steps = [];
+    for(let k = RES >> 1; k >= 1; k >>= 1) steps.push(k);
+    steps.push(1);   //JFA+1
+    const ju = this._jfaMaterial.uniforms;
+    for(let i = 0; i < steps.length; ++i){
+      ju.uSeedTex.value = this._jfaTargets[read].texture;
+      ju.uStep.value = steps[i];
+      this._drawQuad(this._jfaMaterial, this._jfaTargets[1 - read]);
+      read = 1 - read;
+    }
+  } else {
+    //Disabled (perf A/B): an empty seed target reads as "no shore anywhere".
+    const prevColor = this.renderer.getClearColor(new THREE.Color());
+    const prevAlpha = this.renderer.getClearAlpha();
+    this.renderer.setRenderTarget(this._jfaTargets[0]);
+    this.renderer.setClearColor(0x000000, 0.0);
+    this.renderer.clear(true, false, false);
+    this.renderer.setClearColor(prevColor, prevAlpha);
+  }
+
+  const cu = this._composeMaterial.uniforms;
+  cu.uFieldA.value = this._scratch.textures[0];
+  cu.uFieldB.value = this._scratch.textures[1];
+  cu.uSeedTex.value = this._jfaTargets[read].texture;
+  cu.uTexel.value = c.texel;
+  cu.uNoShore.value = 2.0 * c.halfWidth;
+  this._drawQuad(this._composeMaterial, c.target);
 };
 
 //Fixed-resolution cascades — independent of the drawing buffer.
@@ -192,6 +425,7 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.resize = function(){};
 ARestlessOcean.Passes.WaterFieldPass.prototype.tick = function(ctx){
   const u = this._fillMaterial.uniforms;
   const prevRT = this.renderer.getRenderTarget();
+  const t0 = (typeof performance !== 'undefined') ? performance.now() : 0;
   let filled = 0;
 
   //a-faraway-land initialises asynchronously (it fetches map.json), so it is
@@ -227,22 +461,32 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.tick = function(ctx){
     u.uFoamCameraXZ.value.copy(ctx.foamCameraXZ);
     u.uFoamHalfWidth.value = ctx.foamHalfWidth;
 
-    this.renderer.setRenderTarget(c.target);
+    //Into the shared scratch, not c.target — see _initShoreField's header.
+    this.renderer.setRenderTarget(this._scratch);
     this.renderer.render(this._fillScene, this._fillCamera);
 
     //Phase 1b: layer real a-land tile data on top of the standalone base
     //fill above, still writing into c.target. See WaterTileDecodePass's
     //header for why this must stay a *second* draw over the standalone
-    //answer rather than replacing it outright — texels outside a-land's
-    //wet footprint (or before it has loaded) keep the standalone fallback.
+    //answer rather than replacing it outright — texels a-land has not
+    //answered yet (still loading, or outside its world) keep the standalone
+    //fallback. Since Phase 1c a DRY answer is written, not skipped.
     if(terrainReady && this._tileDecodePass){
-      this._tileDecodePass.fillCascade(c, og._landDirector);
+      this._tileDecodePass.fillCascade(c, og._landDirector, ctx);
     }
+
+    //Phase 1c: jump-flood shoreSDF, then write the finished cascade.
+    this._composeShoreField(c);
 
     filled++;
   }
 
-  if(filled > 0) this.renderer.setRenderTarget(prevRT);
+  if(filled > 0){
+    this.renderer.setRenderTarget(prevRT);
+    //CPU wall time only — GL is async, so this under-reads GPU cost. Useful as
+    //a relative number (shoreFieldEnabled on/off), not an absolute one.
+    if(typeof performance !== 'undefined') this.lastRefillMs = performance.now() - t0;
+  }
 };
 
 //Force every cascade to re-fill on the next tick. Called when a-land tile data
@@ -292,8 +536,10 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.probeAt = function(x, z, opts){
   const v = (z - c.centerZ) / (2.0 * c.halfWidth) + 0.5;
   const px = Math.min(RES - 1, Math.max(0, Math.floor(u * RES)));
   const py = Math.min(RES - 1, Math.max(0, Math.floor(v * RES)));
-  const pack = function(b){
-    return {level: b[0], depth: b[1], flowX: b[2], flowZ: b[3], cascade: i};
+  const pack = function(b, k){
+    const out = {level: b[0], depth: b[1], flowX: b[2], flowZ: b[3], cascade: i};
+    if(k){ out.energy = k[0]; out.type = k[1]; out.shoreSDF = k[2]; out.dryMask = k[3]; }
+    return out;
   };
 
   if(opts && opts.async){
@@ -315,9 +561,44 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.probeAt = function(x, z, opts){
   const prevPack = canPack ? gl.getParameter(gl.PIXEL_PACK_BUFFER_BINDING) : null;
   if(prevPack) gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
   const buf = new Float32Array(4);
+  const cls = new Float32Array(4);
   this.renderer.readRenderTargetPixels(c.target, px, py, 1, 1, buf);
+  this._copyAttachment(c, 1);
+  this.renderer.readRenderTargetPixels(this._readTarget, px, py, 1, 1, cls);
   if(prevPack) gl.bindBuffer(gl.PIXEL_PACK_BUFFER, prevPack);
-  return Promise.resolve(pack(buf));
+  return Promise.resolve(pack(buf, cls));
+};
+
+//Copy attachment `index` of cascade `c` into _readTarget (see _blitMaterial).
+ARestlessOcean.Passes.WaterFieldPass.prototype._copyAttachment = function(c, index){
+  const prevRT = this.renderer.getRenderTarget();
+  this._blitMaterial.uniforms.uSrc.value = c.target.textures[index];
+  this._drawQuad(this._blitMaterial, this._readTarget);
+  this.renderer.setRenderTarget(prevRT);
+};
+
+//Synchronous full readback of one cascade, both attachments. Debug-only (the
+//shore survey and overlay): two 512² float reads stall the GPU. Same
+//PIXEL_PACK_BUFFER guard as probeAt, for the same reason.
+//Returns {a: Float32Array (level depth flowX flowZ), b: Float32Array (energy
+//type shoreSDF dryMask), res, centerX, centerZ, halfWidth, texel} or null.
+//Row 0 is the cascade's min-Z edge, column 0 its min-X edge.
+ARestlessOcean.Passes.WaterFieldPass.prototype.readCascade = function(index){
+  const c = this.cascades[index | 0];
+  if(!c || c.centerX === undefined) return null;
+  const RES = ARestlessOcean.Passes.WaterFieldPass.RESOLUTION;
+  const gl = this.renderer.getContext();
+  const canPack = (typeof WebGL2RenderingContext !== 'undefined') && (gl.PIXEL_PACK_BUFFER !== undefined);
+  const prevPack = canPack ? gl.getParameter(gl.PIXEL_PACK_BUFFER_BINDING) : null;
+  if(prevPack) gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+  const a = new Float32Array(RES * RES * 4);
+  const b = new Float32Array(RES * RES * 4);
+  this.renderer.readRenderTargetPixels(c.target, 0, 0, RES, RES, a);
+  this._copyAttachment(c, 1);
+  this.renderer.readRenderTargetPixels(this._readTarget, 0, 0, RES, RES, b);
+  if(prevPack) gl.bindBuffer(gl.PIXEL_PACK_BUFFER, prevPack);
+  return {a: a, b: b, res: RES, centerX: c.centerX, centerZ: c.centerZ,
+    halfWidth: c.halfWidth, texel: c.texel};
 };
 
 //Pipeline self-test. Renders a KNOWN CONSTANT into cascade 0 and reads it
@@ -403,5 +684,10 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.dispose = function(){
     this._fillScene.traverse(function(o){ if(o.isMesh && o.geometry) o.geometry.dispose(); });
   }
   if(this._fillMaterial) this._fillMaterial.dispose();
+  if(this._scratch) this._scratch.dispose();
+  if(this._jfaTargets){ this._jfaTargets[0].dispose(); this._jfaTargets[1].dispose(); }
+  if(this._readTarget) this._readTarget.dispose();
+  [this._seedMaterial, this._jfaMaterial, this._composeMaterial, this._blitMaterial]
+    .forEach(function(m){ if(m) m.dispose(); });
   if(this._tileDecodePass){ this._tileDecodePass.dispose(); this._tileDecodePass = null; }
 };
