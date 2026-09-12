@@ -86,6 +86,7 @@ ARestlessOcean.Passes.WaterFieldPass = function(oceanGrid){
   //shore field on. A count rather than a timing: GL is async, and browsers clamp
   //performance.now() coarsely enough that a CPU timing of the submit reads 0.00.
   this.refillCount = 0;
+  this.invalidationCount = 0;
 };
 
 //Cascade half-widths in metres, fine -> coarse. Cascade 0 carries shoreline
@@ -97,6 +98,65 @@ ARestlessOcean.Passes.WaterFieldPass.RESOLUTION = 512;
 //ortho's footprint). Open ocean: deep enough that every depth-driven term
 //saturates, without being infinite.
 ARestlessOcean.Passes.WaterFieldPass.OPEN_OCEAN_DEPTH = 1000.0;
+
+//GLSL ES 1.00 field lookup for small internal passes (the CPU height bake):
+//`vec4 waterFieldAt(vec2 worldXZ)` over the three RT0 cascades, finest ->
+//coarse with the 10% edge crossfade. The water vertex/fragment shaders and the
+//CSM caster carry hand copies (the create-shader pipeline cannot import).
+//bindUniforms fills the uniforms it declares.
+ARestlessOcean.Passes.WaterFieldPass.SAMPLE_GLSL = [
+  'uniform sampler2D waterFieldCascade0;',
+  'uniform sampler2D waterFieldCascade1;',
+  'uniform sampler2D waterFieldCascade2;',
+  'uniform vec2 waterFieldCascadeCenter[3];',
+  'uniform float waterFieldCascadeHalfWidth[3];',
+  'vec4 waterFieldCascadeSample(sampler2D tex, vec2 centre, float hw, vec2 worldXZ){',
+  '  return texture2D(tex, (worldXZ - centre) / (2.0 * hw) + 0.5);',
+  '}',
+  'vec4 waterFieldAt(vec2 worldXZ){',
+  '  vec2 d0 = abs(worldXZ - waterFieldCascadeCenter[0]);',
+  '  float hw0 = waterFieldCascadeHalfWidth[0];',
+  '  float m0 = max(d0.x, d0.y);',
+  '  if(m0 < hw0){',
+  '    vec4 f = waterFieldCascadeSample(waterFieldCascade0, waterFieldCascadeCenter[0], hw0, worldXZ);',
+  '    float e = smoothstep(hw0 * 0.9, hw0, m0);',
+  '    if(e > 0.0) f = mix(f, waterFieldCascadeSample(waterFieldCascade1, waterFieldCascadeCenter[1], waterFieldCascadeHalfWidth[1], worldXZ), e);',
+  '    return f;',
+  '  }',
+  '  vec2 d1 = abs(worldXZ - waterFieldCascadeCenter[1]);',
+  '  float hw1 = waterFieldCascadeHalfWidth[1];',
+  '  float m1 = max(d1.x, d1.y);',
+  '  if(m1 < hw1){',
+  '    vec4 f = waterFieldCascadeSample(waterFieldCascade1, waterFieldCascadeCenter[1], hw1, worldXZ);',
+  '    float e = smoothstep(hw1 * 0.9, hw1, m1);',
+  '    if(e > 0.0) f = mix(f, waterFieldCascadeSample(waterFieldCascade2, waterFieldCascadeCenter[2], waterFieldCascadeHalfWidth[2], worldXZ), e);',
+  '    return f;',
+  '  }',
+  '  return waterFieldCascadeSample(waterFieldCascade2, waterFieldCascadeCenter[2], waterFieldCascadeHalfWidth[2], worldXZ);',
+  '}'
+].join('\n');
+
+ARestlessOcean.Passes.WaterFieldPass.createSampleUniforms = function(){
+  return {
+    waterFieldCascade0: {value: null},
+    waterFieldCascade1: {value: null},
+    waterFieldCascade2: {value: null},
+    waterFieldCascadeCenter: {value: [new THREE.Vector2(), new THREE.Vector2(), new THREE.Vector2()]},
+    waterFieldCascadeHalfWidth: {value: ARestlessOcean.Passes.WaterFieldPass.CASCADE_HALF_WIDTHS.slice()}
+  };
+};
+
+//Point createSampleUniforms()-shaped uniforms at this pass's live cascades.
+ARestlessOcean.Passes.WaterFieldPass.prototype.bindUniforms = function(u){
+  if(this.cascades.length !== 3) return false;
+  for(let i = 0; i < 3; ++i){
+    const c = this.cascades[i];
+    u['waterFieldCascade' + i].value = c.target.textures[0];
+    u.waterFieldCascadeCenter.value[i].set(c.centerX || 0, c.centerZ || 0);
+    u.waterFieldCascadeHalfWidth.value[i] = c.halfWidth;
+  }
+  return true;
+};
 
 ARestlessOcean.Passes.WaterFieldPass.prototype.init = function(){
   const RES = ARestlessOcean.Passes.WaterFieldPass.RESOLUTION;
@@ -507,6 +567,9 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.tick = function(ctx){
 //so running it a few dozen times while tiles stream in is cheap.
 ARestlessOcean.Passes.WaterFieldPass.prototype.invalidate = function(){
   for(let i = 0; i < this.cascades.length; ++i) this.cascades[i].centerX = undefined;
+  //Bumped so CPU caches derived from the same sources (OceanGrid's shore
+  //distance cache for the wave masks) know to drop their answers too.
+  this.invalidationCount++;
 };
 
 //Pick the finest cascade that contains this world position, or -1.

@@ -68,6 +68,10 @@ ARestlessOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
   const g = 9.80665;
   let windSpeed = windVelocity.length();
   let fetch = data.jonswap_fetch || 100000.0;
+  //Kept for WaveMask (ocean-wave-field.js), which evaluates this same ω_p
+  //formula at a lake's shorter fetch.
+  this.windSpeed = windSpeed;
+  this.fetch = fetch;
   this.jonswapGamma = data.jonswap_gamma || 3.3;
   //ω_p, the peak angular frequency. The JONSWAP fetch formula 22·(g²/(U·F))^(1/3)
   //is calibrated for moderate-to-strong winds; at very low wind speeds it returns
@@ -402,6 +406,7 @@ ARestlessOcean.LUTlibraries.OceanHeightBandLibrary = function(parentOceanGrid){
 
     self.w = newW;
     self.omega_p = newOmega_p;
+    self.windSpeed = windSpeed;
 
     //Recompute per-cascade slope variances — depends on omega_p.
     self.cascadeRMSSlope = ARestlessOcean.LUTlibraries.OceanHeightBandLibrary.computeCascadeSlopeVariance(

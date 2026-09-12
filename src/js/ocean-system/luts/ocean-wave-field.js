@@ -80,6 +80,12 @@ ARestlessOcean.OceanWaveField.prototype.rebuild = function(){
   //surface cannot disagree about where the water is — if those drift, buoyancy
   //floats objects at a different height than the water you can see.
   this.levelProvider = null;
+  //Per-cascade amplitude seam (Phase 2). Null => every cascade at full weight,
+  //which is 0.2.0 behaviour. OceanGrid installs one that runs WaveMask.compute
+  //on the same field the vertex shader reads, so a float on a glassy lake does
+  //not keep bobbing on ocean swell. Signature: (x, z, out6) -> out6.
+  this.maskProvider = null;
+  this._maskScratch = [1, 1, 1, 1, 1, 1];
   this.waveHeightMultiplier = (data.wave_scale_multiple !== undefined) ? data.wave_scale_multiple : 1.5;
   this.chop = (data.chop !== undefined) ? data.chop : 1.0;
 
@@ -216,7 +222,8 @@ ARestlessOcean.OceanWaveField.buildGerstnerComponents = function(
         dirX: meanKx / kMag, dirZ: meanKy / kMag,
         omega: Math.sqrt(g * kMag),
         amp: amp,
-        phase: rng() * piTimes2
+        phase: rng() * piTimes2,
+        cascade: c
       });
       modelM0 += v;
     }
@@ -262,10 +269,11 @@ ARestlessOcean.OceanWaveField.buildGerstnerComponents = function(
 //sampleDisplacement when you need the full leaned position.
 ARestlessOcean.OceanWaveField.prototype.sampleHeight = function(x, z, t){
   const comps = this.components;
+  const mask = this._masksAt(x, z);
   let h = 0.0;
   for(let i = 0; i < comps.length; i++){
     const c = comps[i];
-    h += c.amp * Math.cos(c.kx * x + c.ky * z - c.omega * t + c.phase);
+    h += mask[c.cascade] * c.amp * Math.cos(c.kx * x + c.ky * z - c.omega * t + c.phase);
   }
   return this.levelAt(x, z) + this.waveHeightMultiplier * h;
 };
@@ -275,12 +283,14 @@ ARestlessOcean.OceanWaveField.prototype.sampleHeight = function(x, z, t){
 //height (incl. heightOffset). Useful for spray emitters, true-surface markers.
 ARestlessOcean.OceanWaveField.prototype.sampleDisplacement = function(x, z, t, out){
   const comps = this.components;
+  const mask = this._masksAt(x, z);
   let dx = 0.0, dy = 0.0, dz = 0.0;
   for(let i = 0; i < comps.length; i++){
     const c = comps[i];
     const arg = c.kx * x + c.ky * z - c.omega * t + c.phase;
-    dy += c.amp * Math.cos(arg);
-    const s = c.amp * Math.sin(arg);
+    const amp = mask[c.cascade] * c.amp;
+    dy += amp * Math.cos(arg);
+    const s = amp * Math.sin(arg);
     dx -= c.dirX * s;
     dz -= c.dirZ * s;
   }
@@ -369,3 +379,239 @@ ARestlessOcean.debugWaveAt = function(x, z){
 ARestlessOcean.OceanWaveField.prototype.levelAt = function(x, z){
   return this.levelProvider ? this.levelProvider(x, z) : this.heightOffset;
 };
+
+//Per-cascade weights at (x, z) from the mask seam, or all ones. Returns a
+//shared scratch array: read it before the next call.
+ARestlessOcean.OceanWaveField.prototype._masksAt = function(x, z){
+  const m = this._maskScratch;
+  if(this.maskProvider){
+    this.maskProvider(x, z, m);
+  } else {
+    for(let c = 0; c < 6; c++) m[c] = 1.0;
+  }
+  return m;
+};
+
+//=============================================================================
+// WaveMask — per-cascade wave amplitude from the WaterField (Phase 2).
+//=============================================================================
+//
+// The FFT spectrum is GLOBAL: one set of h_0 textures, evaluated once for the
+// whole world. So it cannot hold a per-place water depth or a per-lake fetch.
+// What can vary per place is how much of each cascade we keep. This is that
+// weight, one per cascade, from two pieces of spectral physics the ocean
+// spectrum itself already contains:
+//
+//  1. DEPTH (TMA). Bouws et al. 1985 multiply JONSWAP by Kitaigorodskii's
+//     depth function φ(ω_h), ω_h = ω·√(h/g). Under the deep-water dispersion
+//     the FFT uses (ω² = g·k) that is ω_h = √(k·h). φ scales ENERGY, so the
+//     amplitude weight is √φ:
+//        φ = ω_h²/2              ω_h ≤ 1
+//        φ = 1 − (2 − ω_h)²/2    1 < ω_h < 2
+//        φ = 1                   ω_h ≥ 2
+//
+//  2. FETCH (JONSWAP). A lake is the same spectrum with a short fetch. The
+//     ocean's peak is ω_p = max(22·(g²/(U·F))^(1/3), 0.86·g/U) (the band
+//     library's own formula), and the Pierson-Moskowitz low-frequency cutoff
+//     exp(−1.25·(ω_p/ω)⁴) = exp(−1.25·(k_p/k)²) is what removes waves longer
+//     than the peak. A body with a shorter fetch has a larger k_p; the
+//     amplitude ratio against the ocean's own cutoff is
+//        exp(−0.625·(k_p,local² − k_p,ocean²) / k²)   ≤ 1.
+//     Only INLAND water gets a fetch (level differs from sea level): the
+//     coast keeps the full ocean spectrum, because swell arrives from far
+//     beyond any local shoreline. The fetch itself is a PROXY, 2·shoreSDF:
+//     exact at the centre of a round lake, short near every rim (so a lake
+//     calms toward all of its shores, not only the upwind one). A real
+//     directional fetch is a-land contract's reserved class channel.
+//
+// Each cascade is a band of wavenumbers, and the weight is evaluated at ONE
+// representative k per cascade: the local spectral peak clamped into that band,
+// i.e. the wavenumber carrying most of the band's energy.
+//
+// What this does NOT do: shallow water also slows waves (ω² = g·k·tanh(k·h)),
+// and a height weight cannot change phase speed. Shoaling growth and breaking
+// are Phase 3. This is the equilibrium spectrum, not the surf zone.
+//
+// ONE SOURCE, THREE GPU CONSUMERS. `WaveMask.GLSL` is spliced into the water
+// vertex shader, the ocean CSM caster and the CPU height-field bake at the
+// `$wave_mask_functions` token, so the rendered surface, its shadow caster and
+// the readback can never weigh a cascade differently. `WaveMask.compute` is the
+// line-for-line JS mirror for the analytic twin and the submersion probe.
+//
+// Field sample convention (WaterFieldPass RT0): (level, depth, shoreSDF, dryMask).
+
+ARestlessOcean.WaveMask = {};
+
+ARestlessOcean.WaveMask.NUM_CASCADES = 6;
+//Depth used for "treat as deep": a guessed zero (standalone foam ortho under a
+//pier or boat deck) and texels at the terrain provider's depth cap.
+ARestlessOcean.WaveMask.DEEP = 1.0e6;
+//Inland = |level − sea level| ramps over this band (metres).
+ARestlessOcean.WaveMask.INLAND_START = 0.5;
+ARestlessOcean.WaveMask.INLAND_FULL = 2.0;
+//Shortest fetch the proxy will report (metres).
+ARestlessOcean.WaveMask.MIN_FETCH = 4.0;
+//A decoded depth at or above this fraction of the provider's maxDepth is the
+//encoding's saturation, not a shallow sea.
+ARestlessOcean.WaveMask.DEPTH_CAP_FRACTION = 0.98;
+
+ARestlessOcean.WaveMask.createUniforms = function(){
+  const bandK = [];
+  for(let c = 0; c < ARestlessOcean.WaveMask.NUM_CASCADES; ++c) bandK.push(new THREE.Vector2(0.0, 1.0e6));
+  return {
+    waveMaskEnabled:   {value: 1.0},
+    waveMaskPeakK:     {value: 1.0},        //k_p of the OCEAN spectrum, rad/m
+    waveMaskWindSpeed: {value: 0.0},        //|U|, m/s
+    waveMaskOceanFetch:{value: 100000.0},   //the band library's JONSWAP fetch, m
+    waveMaskSeaLevel:  {value: 0.0},
+    waveMaskDepthCap:  {value: 1.0e9},      //provider maxDepth; effectively none standalone
+    waveMaskBandK:     {value: bandK}       //per cascade (kLo, kHi), rad/m
+  };
+};
+
+//Copy wave-mask uniform VALUES from src into dst (both from createUniforms).
+ARestlessOcean.WaveMask.copyUniforms = function(dst, src){
+  dst.waveMaskEnabled.value = src.waveMaskEnabled.value;
+  dst.waveMaskPeakK.value = src.waveMaskPeakK.value;
+  dst.waveMaskWindSpeed.value = src.waveMaskWindSpeed.value;
+  dst.waveMaskOceanFetch.value = src.waveMaskOceanFetch.value;
+  dst.waveMaskSeaLevel.value = src.waveMaskSeaLevel.value;
+  dst.waveMaskDepthCap.value = src.waveMaskDepthCap.value;
+  for(let c = 0; c < ARestlessOcean.WaveMask.NUM_CASCADES; ++c){
+    dst.waveMaskBandK.value[c].copy(src.waveMaskBandK.value[c]);
+  }
+};
+
+//Push params (see paramsFrom) into a createUniforms() object.
+ARestlessOcean.WaveMask.writeUniforms = function(u, p){
+  u.waveMaskEnabled.value = p.enabled ? 1.0 : 0.0;
+  u.waveMaskPeakK.value = p.peakK;
+  u.waveMaskWindSpeed.value = p.windSpeed;
+  u.waveMaskOceanFetch.value = p.oceanFetch;
+  u.waveMaskSeaLevel.value = p.seaLevel;
+  u.waveMaskDepthCap.value = p.depthCap;
+  for(let c = 0; c < ARestlessOcean.WaveMask.NUM_CASCADES; ++c){
+    u.waveMaskBandK.value[c].set(p.bandKLo[c], p.bandKHi[c]);
+  }
+};
+
+//Per-cascade wavenumber band from the band library's centred-FFT sample band
+//[sampleLow, sampleHigh) on max(|nx|, |ny|): k = 2π·coord/L. DC is always culled
+//(coord ≥ 1) and coord never exceeds N/2.
+ARestlessOcean.WaveMask.bandFromLibrary = function(bandLibrary, outLo, outHi){
+  const n = ARestlessOcean.WaveMask.NUM_CASCADES;
+  for(let c = 0; c < n; ++c){
+    const L = bandLibrary.cascadePatchSizes[c];
+    const lo = Math.max(bandLibrary.cascadeSampleLow[c], 1.0);
+    const hi = Math.min(bandLibrary.cascadeSampleHigh[c], bandLibrary.N * 0.5);
+    outLo[c] = 2.0 * Math.PI * lo / L;
+    outHi[c] = 2.0 * Math.PI * hi / L;
+  }
+};
+
+//Peak wavenumber for wind speed U over fetch F, the band library's ω_p formula.
+ARestlessOcean.WaveMask.peakK = function(U, F){
+  const g = 9.80665;
+  if(!(U > 0.001)) return 1.0e6;
+  const omega = Math.max(22.0 * Math.pow(g * g / (U * Math.max(F, 1e-3)), 1.0 / 3.0), 0.86 * g / U);
+  return omega * omega / g;
+};
+
+ARestlessOcean.WaveMask.depthAmplitude = function(kh){
+  const wh = Math.sqrt(Math.max(kh, 0.0));
+  const phi = (wh <= 1.0) ? 0.5 * wh * wh : ((wh < 2.0) ? 1.0 - 0.5 * (2.0 - wh) * (2.0 - wh) : 1.0);
+  return Math.sqrt(phi);
+};
+
+//JS mirror of waveMaskCascades in GLSL below. out: array of 6 weights.
+ARestlessOcean.WaveMask.compute = function(out, level, depth, shoreSDF, dryMask, p){
+  const WM = ARestlessOcean.WaveMask;
+  const n = WM.NUM_CASCADES;
+  if(!p || !p.enabled){
+    for(let c = 0; c < n; ++c) out[c] = 1.0;
+    return out;
+  }
+  let h = depth;
+  if(h >= p.depthCap * WM.DEPTH_CAP_FRACTION || (h <= 0.0 && dryMask < 0.5)) h = WM.DEEP;
+  const t = Math.min(1.0, Math.max(0.0,
+    (Math.abs(level - p.seaLevel) - WM.INLAND_START) / (WM.INLAND_FULL - WM.INLAND_START)));
+  const inland = t * t * (3.0 - 2.0 * t);
+  const kpO = p.peakK;
+  let kpL = kpO;
+  if(inland > 0.0 && p.windSpeed > 0.001){
+    const fetch = Math.max(2.0 * shoreSDF, WM.MIN_FETCH);
+    const kpF = Math.max(kpO, WM.peakK(p.windSpeed, Math.min(fetch, p.oceanFetch)));
+    kpL = kpO + (kpF - kpO) * inland;
+  }
+  const wet = 1.0 - Math.min(1.0, Math.max(0.0, dryMask));
+  for(let c = 0; c < n; ++c){
+    const k = Math.min(p.bandKHi[c], Math.max(p.bandKLo[c], kpL));
+    const fetchAmp = Math.exp(-0.625 * (kpL * kpL - kpO * kpO) / (k * k));
+    out[c] = wet * fetchAmp * WM.depthAmplitude(k * h);
+  }
+  return out;
+};
+
+//Build the params object from the live ocean. seaLevel/depthCap come from the
+//grid (the terrain provider owns the cap).
+ARestlessOcean.WaveMask.paramsFrom = function(bandLibrary, seaLevel, depthCap, enabled, out){
+  const WM = ARestlessOcean.WaveMask;
+  out = out || {bandKLo: new Array(WM.NUM_CASCADES), bandKHi: new Array(WM.NUM_CASCADES)};
+  out.enabled = enabled !== false;
+  out.peakK = bandLibrary.omega_p * bandLibrary.omega_p / 9.80665;
+  out.windSpeed = bandLibrary.windSpeed || 0.0;
+  out.oceanFetch = bandLibrary.fetch || 100000.0;
+  out.seaLevel = seaLevel;
+  out.depthCap = depthCap;
+  WM.bandFromLibrary(bandLibrary, out.bandKLo, out.bandKHi);
+  return out;
+};
+
+//GLSL ES 1.00. Declares its own uniforms. Unrolled per cascade because the
+//water shaders never dynamically index a uniform array.
+ARestlessOcean.WaveMask.GLSL = [
+  '//── WaveMask (spliced from ocean-wave-field.js — edit it THERE) ──',
+  'uniform float waveMaskEnabled;',
+  'uniform float waveMaskPeakK;',
+  'uniform float waveMaskWindSpeed;',
+  'uniform float waveMaskOceanFetch;',
+  'uniform float waveMaskSeaLevel;',
+  'uniform float waveMaskDepthCap;',
+  'uniform vec2 waveMaskBandK[6];',
+  'float waveMaskPeakKFor(float U, float F){',
+  '  const float g = 9.80665;',
+  '  float omega = max(22.0 * pow(g * g / (U * max(F, 0.001)), 1.0 / 3.0), 0.86 * g / U);',
+  '  return omega * omega / g;',
+  '}',
+  'float waveMaskDepthAmplitude(float kh){',
+  '  float wh = sqrt(max(kh, 0.0));',
+  '  float phi = (wh <= 1.0) ? 0.5 * wh * wh : ((wh < 2.0) ? 1.0 - 0.5 * (2.0 - wh) * (2.0 - wh) : 1.0);',
+  '  return sqrt(phi);',
+  '}',
+  'float waveMaskOne(vec2 bandK, float kpL, float kpO, float h, float wet){',
+  '  float k = clamp(kpL, bandK.x, bandK.y);',
+  '  float fetchAmp = exp(-0.625 * (kpL * kpL - kpO * kpO) / (k * k));',
+  '  return wet * fetchAmp * waveMaskDepthAmplitude(k * h);',
+  '}',
+  '//field = (level, depth, shoreSDF, dryMask). Writes cascades 0-2 to a, 3-5 to b.',
+  'void waveMaskCascades(vec4 field, out vec3 a, out vec3 b){',
+  '  if(waveMaskEnabled < 0.5){ a = vec3(1.0); b = vec3(1.0); return; }',
+  '  float h = field.g;',
+  '  if(h >= waveMaskDepthCap * ' + ARestlessOcean.WaveMask.DEPTH_CAP_FRACTION.toFixed(4) + ' || (h <= 0.0 && field.a < 0.5)) h = ' + ARestlessOcean.WaveMask.DEEP.toFixed(1) + ';',
+  '  float inland = smoothstep(' + ARestlessOcean.WaveMask.INLAND_START.toFixed(4) + ', ' + ARestlessOcean.WaveMask.INLAND_FULL.toFixed(4) + ', abs(field.r - waveMaskSeaLevel));',
+  '  float kpO = waveMaskPeakK;',
+  '  float kpL = kpO;',
+  '  if(inland > 0.0 && waveMaskWindSpeed > 0.001){',
+  '    float fetch = max(2.0 * field.b, ' + ARestlessOcean.WaveMask.MIN_FETCH.toFixed(4) + ');',
+  '    float kpF = max(kpO, waveMaskPeakKFor(waveMaskWindSpeed, min(fetch, waveMaskOceanFetch)));',
+  '    kpL = mix(kpO, kpF, inland);',
+  '  }',
+  '  float wet = 1.0 - clamp(field.a, 0.0, 1.0);',
+  '  a = vec3(waveMaskOne(waveMaskBandK[0], kpL, kpO, h, wet),',
+  '           waveMaskOne(waveMaskBandK[1], kpL, kpO, h, wet),',
+  '           waveMaskOne(waveMaskBandK[2], kpL, kpO, h, wet));',
+  '  b = vec3(waveMaskOne(waveMaskBandK[3], kpL, kpO, h, wet),',
+  '           waveMaskOne(waveMaskBandK[4], kpL, kpO, h, wet),',
+  '           waveMaskOne(waveMaskBandK[5], kpL, kpO, h, wet));',
+  '}'
+].join('\n');

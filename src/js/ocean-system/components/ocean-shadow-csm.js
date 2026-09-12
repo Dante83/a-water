@@ -90,7 +90,24 @@ ARestlessOcean.OceanShadowCSM = function(oceanGrid, scene, configOverrides){
   this.numCascades = this.cascadeConfigs.length;
   this._waveMargin = 50.0;
 
-  this._shadowMatDef = ARestlessOcean.Materials.Ocean.oceanShadowMaterial;
+  //Phase 2: the generated caster material plus the WaterField and WaveMask
+  //uniforms, with ARestlessOcean.WaveMask.GLSL spliced in at its token — the
+  //same source the water vertex shader uses, so caster and receiver cannot
+  //weigh a cascade differently. See ocean-shadow-vertex.glsl.
+  const baseShadowMat = ARestlessOcean.Materials.Ocean.oceanShadowMaterial;
+  const shadowUniforms = ARestlessOcean.cloneUniforms(baseShadowMat.uniforms);
+  shadowUniforms.baseHeightOffset = {value: 0.0};
+  shadowUniforms.waterFieldCascade0 = {value: null};
+  shadowUniforms.waterFieldCascade1 = {value: null};
+  shadowUniforms.waterFieldCascade2 = {value: null};
+  shadowUniforms.waterFieldCascadeCenter = {value: [new THREE.Vector2(), new THREE.Vector2(), new THREE.Vector2()]};
+  shadowUniforms.waterFieldCascadeHalfWidth = {value: [256.0, 1024.0, 4096.0]};
+  Object.assign(shadowUniforms, ARestlessOcean.WaveMask.createUniforms());
+  this._shadowMatDef = {
+    uniforms: shadowUniforms,
+    vertexShader: baseShadowMat.vertexShader.replace('$wave_mask_functions', function(){ return ARestlessOcean.WaveMask.GLSL; }),
+    fragmentShader: baseShadowMat.fragmentShader
+  };
 
   //Build per-cascade resources: RGBA32F color target with depth renderbuffer
   //(depth used for caster z-test, never read back), linear filtering enabled
@@ -242,7 +259,7 @@ ARestlessOcean.OceanShadowCSM.prototype.setEvsmExpC = function(c){
 ARestlessOcean.OceanShadowCSM.prototype.addCaster = function(mesh, ringIndex){
   if(this.oceanMeshes.indexOf(mesh) !== -1) return;
   const shadowMat = new THREE.ShaderMaterial({
-    uniforms: THREE.UniformsUtils.clone(this._shadowMatDef.uniforms),
+    uniforms: ARestlessOcean.cloneUniforms(this._shadowMatDef.uniforms),
     vertexShader: this._shadowMatDef.vertexShader,
     fragmentShader: this._shadowMatDef.fragmentShader,
     side: THREE.DoubleSide
@@ -278,6 +295,16 @@ ARestlessOcean.OceanShadowCSM.prototype.render = function(renderer, mainCamera, 
     u.sizeOfOceanPatch.value = sharedOceanUniforms.sizeOfOceanPatch.value;
     u.chop.value = sharedOceanUniforms.chop.value;
     u.mainCameraPosition.value.copy(this._cameraWorldPos);
+    //Phase 2 — see the constructor note on _shadowMatDef.
+    u.baseHeightOffset.value = sharedOceanUniforms.baseHeightOffset.value;
+    u.waterFieldCascade0.value = sharedOceanUniforms.waterFieldCascade0.value;
+    u.waterFieldCascade1.value = sharedOceanUniforms.waterFieldCascade1.value;
+    u.waterFieldCascade2.value = sharedOceanUniforms.waterFieldCascade2.value;
+    for(let ci = 0; ci < 3; ci++){
+      u.waterFieldCascadeCenter.value[ci].copy(sharedOceanUniforms.waterFieldCascadeCenter.value[ci]);
+      u.waterFieldCascadeHalfWidth.value[ci] = sharedOceanUniforms.waterFieldCascadeHalfWidth.value[ci];
+    }
+    ARestlessOcean.WaveMask.copyUniforms(u, sharedOceanUniforms);
   }
 
   const pivotX = this._cameraWorldPos.x;

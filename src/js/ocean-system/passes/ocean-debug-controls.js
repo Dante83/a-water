@@ -531,6 +531,37 @@ ARestlessOcean.installOceanDebugControls = function(grid){
         f.invalidate();
       };
 
+      //── Wave masks (Phase 2) ──────────────────────────────────────────────
+      //setWaveMaskEnabled(false) -> every cascade at full weight everywhere
+      //  (the pre-Phase-2 ocean), on the GPU and the CPU twin alike. A/B it.
+      //probeWaveMask(x, z)       -> the CPU mirror's field sample and the six
+      //  cascade weights at a world position (camera if omitted), with the
+      //  representative wavelength each weight was evaluated at.
+      window.setWaveMaskEnabled = function(on){
+        grid.waveMaskEnabled = !!on;
+        console.log('[waveMask] ' + (grid.waveMaskEnabled ? 'ON' : 'OFF — full ocean spectrum everywhere'));
+      };
+      window.probeWaveMask = function(x, z){
+        const px = (x === undefined) ? grid.globalCameraPosition.x : x;
+        const pz = (z === undefined) ? grid.globalCameraPosition.z : z;
+        const p = grid.waveMaskParams();
+        if(!p){ console.log('[waveMask] band library not ready'); return; }
+        const s = grid.waterFieldSampleAt(px, pz);
+        const m = ARestlessOcean.WaveMask.compute([0, 0, 0, 0, 0, 0], s.level, s.depth, s.shoreSDF, s.dryMask, p);
+        const inland = Math.abs(s.level - p.seaLevel) > ARestlessOcean.WaveMask.INLAND_START;
+        console.log('[waveMask] at', px.toFixed(1), pz.toFixed(1),
+          '| level', s.level.toFixed(2), '| depth', s.depth.toFixed(2),
+          '| shore', inland ? s.shoreSDF.toFixed(1) + ' m' : '(ocean, unused)',
+          '| wind', p.windSpeed.toFixed(1), 'm/s | ocean peak λ', (2 * Math.PI / p.peakK).toFixed(1), 'm',
+          p.enabled ? '' : '| MASKS OFF');
+        const L = grid.oceanHeightBandLibrary.cascadePatchSizes;
+        for(let c = 0; c < 6; c++){
+          console.log('  C' + c + ' (L ' + L[c] + ' m, λ ' + (2 * Math.PI / p.bandKHi[c]).toFixed(2) + '–'
+            + (2 * Math.PI / p.bandKLo[c]).toFixed(1) + ' m): weight ' + m[c].toFixed(3));
+        }
+        return m;
+      };
+
       //── Shore field (Phase 1c) ────────────────────────────────────────────
       //showShoreField(cascade, mode, opts)  mode: 'sdf' | 'dry' | 'slope'
       //  Draws one cascade into a top-right canvas (clear of the shader's own
