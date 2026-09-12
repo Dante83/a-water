@@ -28,6 +28,29 @@
 //    a spherical shell into refraction depth, so the water shader's Snell-window
 //    seabed lookup would sample curtain colour instead of seabed
 //
+//THE GEOMETRY-ONLY TWIN (external ShaderMaterial terrain, e.g. a-faraway-land)
+//Skipping a ShaderMaterial outright is right for OUR shaders, but wrong for a
+//sibling system's terrain: a-land's ground is a GLSL3 ShaderMaterial, so it was
+//rendering into this MRT with its OWN program, which declares one output. The
+//normal and linear-depth attachments were then left undefined for every terrain
+//fragment — "Program has no frag output at location 1" — and the water shader
+//read that garbage as a seabed sitting at the camera. Result: terrain neither
+//refracted through nor reflected on the water.
+//
+//We cannot swap in the albedo shader above, because the geometry only EXISTS in
+//their vertex stage. The machinery that keeps their vertex stage and replaces
+//only the fragment stage now lives in ARestlessOcean.Passes.ForeignTerrainTwin
+//(this pass invented it; TerrainOrthoPass needed it too). Read that module's
+//header for the no-varyings rule and the reconstruction prologue.
+//
+//The twin reconstructs both geometry channels from gl_FragCoord alone. Albedo
+//is the one thing it cannot recover — their colour comes from splat
+//sampler2DArray blending inside the fragment stage we are replacing — so it
+//writes a neutral tone. Geometry is right, which is what refraction needs; true
+//terrain albedo needs a companion capture material on a-land's side, and this
+//pass prefers `userData.alandSurfaceCaptureMaterial` over its own twin whenever
+//a-land offers one.
+//
 //OceanGrid keeps `refractionGBufferTarget` as an alias onto this pass's
 //`.target`, so the per-instance uniform upload loop and ocean-splash.js need no
 //changes.
@@ -41,7 +64,13 @@ ARestlessOcean.Passes.RefractionGBufferPass = function(oceanGrid){
   this.target = null;
   //Cache keyed by source-material UUID; built lazily on first sight.
   this._materialCache = new Map();
+  //Geometry-only twins for external ShaderMaterial terrain — see the header.
+  //Built in init(), once the fragment stage exists.
+  this._geoTwins = null;
   this._swappedMeshes = [];
+  //Meshes hidden for the duration of this pass because we cannot capture them
+  //into the G-buffer correctly; restored immediately after the render.
+  this._hiddenMeshes = [];
   this._whitePixel = null;
   this._vertexShader = null;
   this._fragmentShader = null;
@@ -71,18 +100,48 @@ ARestlessOcean.Passes.RefractionGBufferPass.prototype.init = function(width, hei
   this._whitePixel = new THREE.DataTexture(whiteData, 1, 1, THREE.RGBAFormat, THREE.UnsignedByteType);
   this._whitePixel.needsUpdate = true;
 
+  //⚠ instanceMatrix is load-bearing for any InstancedMesh in the scene (a-land
+  //instances its vegetation and props). Without it every instance collapses
+  //onto the base transform, so the G-buffer shows one clump of geometry where
+  //a field of it should be. three.js declares the attribute and USE_INSTANCING
+  //for ShaderMaterial too, so this costs nothing when there is no instancing.
   this._vertexShader = [
     'out vec3 vWorldNormal;',
     'out float vViewZ;',
     'out vec2 vUv;',
     'void main(){',
-    '  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);',
+    '  #ifdef USE_INSTANCING',
+    '    mat4 instModel = modelMatrix * instanceMatrix;',
+    '    vec4 mvPosition = viewMatrix * instModel * vec4(position, 1.0);',
+    '    vWorldNormal = normalize(mat3(instModel) * normal);',
+    '  #else',
+    '    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);',
+    '    vWorldNormal = normalize(mat3(modelMatrix) * normal);',
+    '  #endif',
     '  vViewZ = -mvPosition.z;',
-    '  vWorldNormal = normalize(mat3(modelMatrix) * normal);',
     '  vUv = uv;',
     '  gl_Position = projectionMatrix * mvPosition;',
     '}'
   ].join('\n');
+
+  //Fragment stage for the geometry-only twin. Declares NO varyings on purpose
+  //(see ForeignTerrainTwin's header): it is paired with a foreign vertex shader
+  //whose varying names we do not know, and a fragment `in` with no matching
+  //vertex `out` is a link error, while the reverse is legal. Everything it needs
+  //comes from the reconstruction prologue the twin module splices in front.
+  if(ARestlessOcean.Passes.ForeignTerrainTwin){
+    this._geoTwins = new ARestlessOcean.Passes.ForeignTerrainTwin([
+      'layout(location = 0) out vec4 gAlbedo;',
+      'layout(location = 1) out vec4 gNormal;',
+      'layout(location = 2) out vec4 gLinearDepth;',
+      'void main(){',
+      '  vec3 viewPos = aroTwinViewPos();',
+      '  gAlbedo = vec4(gbAlbedo, 1.0);',
+      '  gNormal = vec4(aroTwinWorldNormal(viewPos), 1.0);',
+      '  gLinearDepth = vec4(-viewPos.z, 0.0, 0.0, 1.0);',
+      '}'
+    ].join('\n'));
+  }
 
   //Albedo path stores LINEAR values into the HalfFloat target. Source albedo
   //maps from GLTF (the island model) are sRGB-encoded, so decode here once.
@@ -137,6 +196,14 @@ ARestlessOcean.Passes.RefractionGBufferPass.prototype._buildMaterialFor = functi
   });
 };
 
+//Recognition + twin construction + the bounded cache all live in
+//ARestlessOcean.Passes.ForeignTerrainTwin now; see its header.
+ARestlessOcean.Passes.RefractionGBufferPass.prototype._isExternalTerrain = function(obj){
+  if(!this._geoTwins) return false;
+  return ARestlessOcean.Passes.ForeignTerrainTwin.isForeignTerrain(
+    obj, this.oceanGrid._landTerrainRoot);
+};
+
 ARestlessOcean.Passes.RefractionGBufferPass.prototype._resolveMaterial = function(srcMat){
   if(Array.isArray(srcMat)){
     const arr = new Array(srcMat.length);
@@ -166,21 +233,70 @@ ARestlessOcean.Passes.RefractionGBufferPass.prototype.tick = function(ctx){
   //non-ocean mesh's material to a cached G-buffer variant that reads that source
   //material's own .color / .map. Restored immediately after render.
   this._swappedMeshes.length = 0;
+  this._hiddenMeshes.length = 0;
   const curtainSkip = ctx.skipMesh;
   scene.traverse(function(obj){
     if(!obj.isMesh || !obj.visible || !obj.material) return;
-    //Skip ShaderMaterial sources — they're custom shaders (ocean, etc.)
-    //whose attribute usage we can't safely replace with our G-buffer shader.
-    if(obj.material.isShaderMaterial) return;
-    if(Array.isArray(obj.material) && obj.material.some(function(m){ return m.isShaderMaterial; })) return;
-    //Skip the underwater curtain: a 300 m BackSide sphere would write a
-    //spherical shell into refraction depth and the water shader's Snell-
-    //window seabed lookup would sample curtain colour instead of seabed.
-    if(obj === curtainSkip) return;
+    //Anything we cannot capture correctly is HIDDEN for this pass, not merely
+    //left alone. "Skip the swap" was never the same as "skip the mesh": the
+    //mesh still rendered, with a program that writes one output, into a
+    //three-attachment target. That is the "Program has no frag output at
+    //location 1" warning, and it left the normal and linear-depth attachments
+    //undefined while albedo's alpha still claimed "geometry here" — so the
+    //water shader confidently relit a seabed from garbage. Hiding makes the
+    //miss well-defined instead: alpha stays 0 and the water falls back to
+    //body colour, which is exactly what "we don't know what's back there"
+    //should look like.
+    if(obj.material.isShaderMaterial){
+      //A sibling system's terrain (a-land) can still be captured properly, via
+      //the geometry-only twin — see the header.
+      if(self._isExternalTerrain(obj)){
+        //PREFER THE SIBLING'S OWN CAPTURE MATERIAL when it offers one. a-land
+        //exposes `userData.alandSurfaceCaptureMaterial` beside its shadow-caster
+        //marker: same vertex stage, same uniforms, but a fragment stage that
+        //writes ITS resolved splat albedo and ITS shading normal into our three
+        //attachments. Our twin can only reconstruct geometry and has to invent a
+        //flat tone for albedo, which is why reflections of a-land used to have
+        //no grass or rock in them. Fall back to the twin when the sibling
+        //predates the hook.
+        const capture = obj.material.userData && obj.material.userData.alandSurfaceCaptureMaterial;
+        const geoMat = capture || self._geoTwins.resolve(obj.material);
+        self._swappedMeshes.push({ mesh: obj, original: obj.material });
+        obj.material = geoMat;
+        return;
+      }
+      obj.visible = false;
+      self._hiddenMeshes.push(obj);
+      return;
+    }
+    if(Array.isArray(obj.material) && obj.material.some(function(m){ return m.isShaderMaterial; })){
+      obj.visible = false;
+      self._hiddenMeshes.push(obj);
+      return;
+    }
+    //The underwater curtain: a 300 m BackSide sphere that must not write a
+    //spherical shell into refraction depth, or the water shader's Snell-window
+    //seabed lookup samples curtain colour instead of seabed. It has to be
+    //HIDDEN to achieve that — it is a MeshBasicMaterial, so merely leaving it
+    //unswapped still drew it (and still wrote its depth), which is the very
+    //thing this exclusion exists to prevent.
+    if(obj === curtainSkip){
+      obj.visible = false;
+      self._hiddenMeshes.push(obj);
+      return;
+    }
     const gBuf = self._resolveMaterial(obj.material);
     self._swappedMeshes.push({ mesh: obj, original: obj.material });
     obj.material = gBuf;
   });
+
+  //Feed the geometry-only twins this frame's camera. They reconstruct view
+  //position by unprojecting gl_FragCoord, so they need the inverse projection,
+  //the inverse view (to take the normal back to world space) and the target's
+  //pixel size. Cheap — there are only a handful of distinct twins.
+  if(this._geoTwins){
+    this._geoTwins.updateCamera(ctx.camera, this.target.width, this.target.height);
+  }
 
   const currentRefractionRT = this.renderer.getRenderTarget();
   //Suppress the scene backdrop for this pass. A-Frame's `background` component
@@ -195,19 +311,33 @@ ARestlessOcean.Passes.RefractionGBufferPass.prototype.tick = function(ctx){
   scene.background = null;
   this.renderer.getClearColor(this._clearColor);
   const _savedClearAlpha = this.renderer.getClearAlpha();
-  this.renderer.setClearColor(0x000000, 0.0);
-  this.renderer.setRenderTarget(this.target);
-  this.renderer.clear();
-  this.renderer.render(scene, ctx.camera);
-  this.renderer.setRenderTarget(currentRefractionRT);
-  this.renderer.setClearColor(this._clearColor, _savedClearAlpha);
-  scene.background = _savedBackground;
+  //⚠ try/finally, because this pass leaves the SCENE mutated while it renders:
+  //materials swapped out and meshes hidden. A throw between here and the
+  //restore (a shader that fails to compile, a bad uniform) would strand the
+  //scene in that state permanently — terrain invisible, materials replaced —
+  //and the symptom would look nothing like its cause. The restore must be
+  //unconditional.
+  try {
+    this.renderer.setClearColor(0x000000, 0.0);
+    this.renderer.setRenderTarget(this.target);
+    this.renderer.clear();
+    this.renderer.render(scene, ctx.camera);
+  } finally {
+    this.renderer.setRenderTarget(currentRefractionRT);
+    this.renderer.setClearColor(this._clearColor, _savedClearAlpha);
+    scene.background = _savedBackground;
 
-  for(let i = 0, n = this._swappedMeshes.length; i < n; ++i){
-    const entry = this._swappedMeshes[i];
-    entry.mesh.material = entry.original;
+    for(let i = 0, n = this._swappedMeshes.length; i < n; ++i){
+      const entry = this._swappedMeshes[i];
+      entry.mesh.material = entry.original;
+    }
+    this._swappedMeshes.length = 0;
+
+    for(let i = 0, n = this._hiddenMeshes.length; i < n; ++i){
+      this._hiddenMeshes[i].visible = true;
+    }
+    this._hiddenMeshes.length = 0;
   }
-  this._swappedMeshes.length = 0;
 };
 
 ARestlessOcean.Passes.RefractionGBufferPass.prototype.dispose = function(){
@@ -216,6 +346,7 @@ ARestlessOcean.Passes.RefractionGBufferPass.prototype.dispose = function(){
     else { mat.dispose(); }
   });
   this._materialCache.clear();
+  if(this._geoTwins) this._geoTwins.dispose();
   this._swappedMeshes.length = 0;
   if(this._whitePixel) this._whitePixel.dispose();
   if(this.target){

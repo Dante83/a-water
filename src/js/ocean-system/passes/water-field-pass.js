@@ -66,6 +66,24 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.init = function(){
   const RES = ARestlessOcean.Passes.WaterFieldPass.RESOLUTION;
   const halfWidths = ARestlessOcean.Passes.WaterFieldPass.CASCADE_HALF_WIDTHS;
 
+  //⚠ FILTERING A FLOAT TEXTURE NEEDS OES_texture_float_linear, AND THE FAILURE
+  //IS SILENT AND CATASTROPHIC. Without that extension a FloatType texture with
+  //LinearFilter is INCOMPLETE, and an incomplete texture samples as (0,0,0,1) —
+  //so waterFieldLevelAt reads level 0 instead of the sea level, the vertex
+  //shader's `level - baseHeightOffset` delta becomes +150 on a -150 m world,
+  //and the entire ocean surface lifts above every hilltop and floods the map.
+  //Nothing logs; readRenderTargetPixels still returns the correct -150, because
+  //a readback does not go through the sampler at all, so probes disagree with
+  //what the shader sees.
+  //
+  //So ask, and fall back to NEAREST. A cascade texel is 1 m at cascade 0, and
+  //point-sampling the level is a fine trade against not rendering at all — it
+  //costs the soft shoreline blend the LinearFilter note below describes.
+  const canFilterFloat = !!(this.renderer && this.renderer.extensions
+    && this.renderer.extensions.has('OES_texture_float_linear'));
+  const fieldFilter = canFilterFloat ? THREE.LinearFilter : THREE.NearestFilter;
+  this.floatLinearSupported = canFilterFloat;
+
   for(let i = 0; i < halfWidths.length; ++i){
     //LinearFilter is correct HERE even though the Phase 1b tile decode must use
     //NEAREST on its SOURCE tiles: by this point the values are already decoded
@@ -83,8 +101,8 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.init = function(){
     //Cost: 512^2 * 16 B * 2 attachments * 3 cascades ~= 25 MB.
     const target = new THREE.WebGLRenderTarget(RES, RES, {
       count: 2,
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
+      minFilter: fieldFilter,
+      magFilter: fieldFilter,
       format: THREE.RGBAFormat,
       type: THREE.FloatType,
       depthBuffer: false,
@@ -176,6 +194,21 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.tick = function(ctx){
   const prevRT = this.renderer.getRenderTarget();
   let filled = 0;
 
+  //a-faraway-land initialises asynchronously (it fetches map.json), so it is
+  //normally discovered several frames AFTER the cascades have already done
+  //their one and only standalone fill. Without this the tile decode would
+  //deadlock: fillCascade only runs inside the refill branch below, so a static
+  //camera would never build the decoder, never request a tile, and therefore
+  //never get the tile-arrival invalidate that would have triggered a refill.
+  //Building the decode pass the moment the director appears — and forcing one
+  //refill — is what kicks the first fetches off.
+  const og = this.oceanGrid;
+  const terrainReady = !!(og && og._terrainProvider === 'a-faraway-land' && og._landDirector);
+  if(terrainReady && !this._tileDecodePass && ARestlessOcean.Passes.WaterTileDecodePass){
+    this._tileDecodePass = new ARestlessOcean.Passes.WaterTileDecodePass(og);
+    this.invalidate();
+  }
+
   for(let i = 0; i < this.cascades.length; ++i){
     const c = this.cascades[i];
     //Snap the centre to this cascade's own texel grid so the sampled field does
@@ -196,10 +229,32 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.tick = function(ctx){
 
     this.renderer.setRenderTarget(c.target);
     this.renderer.render(this._fillScene, this._fillCamera);
+
+    //Phase 1b: layer real a-land tile data on top of the standalone base
+    //fill above, still writing into c.target. See WaterTileDecodePass's
+    //header for why this must stay a *second* draw over the standalone
+    //answer rather than replacing it outright — texels outside a-land's
+    //wet footprint (or before it has loaded) keep the standalone fallback.
+    if(terrainReady && this._tileDecodePass){
+      this._tileDecodePass.fillCascade(c, og._landDirector);
+    }
+
     filled++;
   }
 
   if(filled > 0) this.renderer.setRenderTarget(prevRT);
+};
+
+//Force every cascade to re-fill on the next tick. Called when a-land tile data
+//arrives (WaterTileDecodePass wires this to the decoder's onTileLoaded): the
+//cascades are texel-snap gated, so a cascade whose centre has not moved would
+//otherwise keep serving the fill it did before those tiles existed — and the
+//very first fill ALWAYS runs against an empty tile cache, so without this the
+//decoded water never reaches the field at all unless the camera happens to
+//move afterwards. A refill is three quad renders plus a handful of tile quads,
+//so running it a few dozen times while tiles stream in is cheap.
+ARestlessOcean.Passes.WaterFieldPass.prototype.invalidate = function(){
+  for(let i = 0; i < this.cascades.length; ++i) this.cascades[i].centerX = undefined;
 };
 
 //Pick the finest cascade that contains this world position, or -1.
@@ -247,8 +302,21 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.probeAt = function(x, z, opts){
       .then(function(){ return pack(self._probeBuf); })
       .catch(function(){ return null; });
   }
+  //⚠ Unbind any PIXEL_PACK_BUFFER first. This app keeps async readbacks in
+  //flight (local height field, submersion probe, splash terrain), and those go
+  //through a PBO. A synchronous readPixels while one is bound fails outright —
+  //"readPixels: PIXEL_PACK_BUFFER must be null" — and leaves the buffer holding
+  //whatever it held before, i.e. zeros. That makes this probe REPORT A FIELD
+  //FULL OF ZEROES while the cascade is perfectly fine, which is worse than not
+  //probing at all: it frames a healthy field as catastrophically broken.
+  //Restore the previous binding so the in-flight read is undisturbed.
+  const gl = this.renderer.getContext();
+  const canPack = (typeof WebGL2RenderingContext !== 'undefined') && (gl.PIXEL_PACK_BUFFER !== undefined);
+  const prevPack = canPack ? gl.getParameter(gl.PIXEL_PACK_BUFFER_BINDING) : null;
+  if(prevPack) gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
   const buf = new Float32Array(4);
   this.renderer.readRenderTargetPixels(c.target, px, py, 1, 1, buf);
+  if(prevPack) gl.bindBuffer(gl.PIXEL_PACK_BUFFER, prevPack);
   return Promise.resolve(pack(buf));
 };
 
@@ -307,6 +375,27 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.selfTest = function(){
     });
 };
 
+//Phase 1b parity check: compares the GPU cascade's decoded answer at a world
+//position against a-land's own getWaterAt (the CPU contract oracle) at the
+//SAME point. WATER-TYPES.md:449-451 treats this as a byte-for-byte
+//requirement, not "close enough" — any deltaLevel/deltaDepth beyond float32
+//rounding (~1 cm at these magnitudes) is a decode bug in
+//water-tile-decode-pass.js, not noise. Debug/console use only.
+ARestlessOcean.Passes.WaterFieldPass.prototype.compareAgainstLandTerrain = function(x, z){
+  const og = this.oceanGrid;
+  if(!og || !og._landTerrainApi) return Promise.resolve('no landTerrainApi discovered');
+  const cpu = og._landTerrainApi.getWaterAt(x, z);
+  return this.probeAt(x, z).then(function(gpu){
+    return {
+      x: x, z: z,
+      cpu: cpu,
+      gpu: gpu,
+      deltaLevel: (cpu && gpu) ? (gpu.level - cpu.level) : null,
+      deltaDepth: (cpu && gpu) ? (gpu.depth - cpu.depth) : null
+    };
+  });
+};
+
 ARestlessOcean.Passes.WaterFieldPass.prototype.dispose = function(){
   for(let i = 0; i < this.cascades.length; ++i) this.cascades[i].target.dispose();
   this.cascades.length = 0;
@@ -314,4 +403,5 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.dispose = function(){
     this._fillScene.traverse(function(o){ if(o.isMesh && o.geometry) o.geometry.dispose(); });
   }
   if(this._fillMaterial) this._fillMaterial.dispose();
+  if(this._tileDecodePass){ this._tileDecodePass.dispose(); this._tileDecodePass = null; }
 };

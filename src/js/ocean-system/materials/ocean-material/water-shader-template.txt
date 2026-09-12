@@ -65,10 +65,35 @@ ARestlessOcean.Materials.Ocean.waterMaterial = {
     //trades reflection reach for fill rate; 0 skips the march (sky-only) as an
     //A/B bottleneck check. Uploaded per-frame from ocean-grid.js self.ssrMaxSteps.
     ssrMaxSteps: {type: 'f', value: 48.0},
+    //How much ripple detail the SKY half of the SSR tracks. 0 = macroNormal
+    //(cascade 0, long swell only — a near-mirror), 1 = displacedNormal (all
+    //cascades, so the reflection breaks up with the ripples). The geometry
+    //raymarch always uses macroNormal regardless. Uploaded per-frame from
+    //ocean-grid.js self.ssrSkyNormalBlend; live A/B via window.setSsrSkyNormalBlend.
+    ssrSkyNormalBlend: {type: 'f', value: 1.0},
+    //Same knob for the GEOMETRY raymarch. 0 = macroNormal (the original), 1 =
+    //displacedNormal, so a reflected shoreline's silhouette breaks up with the
+    //ripples instead of sliding as one rigid shape. Kept separate from the sky
+    //blend: too much detail here scatters the march between neighbouring pixels,
+    //too little reads as a flat mirror. window.setSsrMarchNormalBlend.
+    ssrMarchNormalBlend: {type: 'f', value: 1.0},
     meteringSurveyTexture: {type: 't', value: null},
+    //1 only once a sky provider has actually handed us a metering survey.
+    //Sampling an unbound sampler2D is not an error — it silently returns black,
+    //which is how the standalone SSR sky fallback spent its whole life reflecting
+    //a black sky. See computeStandaloneSkyRadiance in water-shader.glsl.
+    meteringSurveyValid: {type: 'f', value: 0.0},
     sizeOfOceanPatch: {type: 'f', value: 1.0},
     ringIndex: {type: 'i', value: 0},
     baseHeightOffset: {type: 'f', value: 0.0},
+    //WaterField cascades (Phase 1b) — see water-shader.glsl's waterFieldLevelAt.
+    //Defaults match WaterFieldPass.CASCADE_HALF_WIDTHS; textures/centers are
+    //pushed per-frame from ocean-grid.js once WaterFieldPass has filled.
+    waterFieldCascade0: {type: 't', value: null},
+    waterFieldCascade1: {type: 't', value: null},
+    waterFieldCascade2: {type: 't', value: null},
+    waterFieldCascadeCenter: {value: [new THREE.Vector2(), new THREE.Vector2(), new THREE.Vector2()]},
+    waterFieldCascadeHalfWidth: {value: [256.0, 1024.0, 4096.0]},
     fogNear: {type: 'f', value: null},
     fogFar: {type: 'f', value: null},
     fogDensity: {type: 'f', value: null},

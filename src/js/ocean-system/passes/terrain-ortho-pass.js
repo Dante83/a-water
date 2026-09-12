@@ -7,7 +7,7 @@
 //WHY FOAM AND EXCLUSION LIVE IN ONE MODULE
 //WATER-TYPES.md Phase 0 lists these as two passes. In the code they are welded
 //together and splitting them would be a regression risk, not a tidy-up:
-//  - they share one `positionPassMaterial` (scene.overrideMaterial for both)
+//  - they share one `positionPassMaterial` (the swap target for both)
 //  - they share the saved render target / clear alpha captured before the block
 //  - they share the scene.background = null enter/exit dance, whose exact
 //    ordering fixed two shipped bugs (see the inline notes below)
@@ -32,6 +32,22 @@
 //ring straight to the seabed) or above it (under-discard -> water leaks into
 //the hull).
 //
+//WHY A PER-MESH SWAP RATHER THAN scene.overrideMaterial
+//It used to be an override, and for ordinary meshes the two are identical — the
+//position pass wants one material on everything. But an override replaces the
+//VERTEX stage too, and a sibling system's terrain may keep its entire geometry
+//there: a-land's CDLOD patches share one [0,1]x[0,1] grid at y = 0 and place
+//themselves from per-patch uniforms, so under an override every patch in the
+//world collapsed onto a single 1 m quad at the origin. The foam atlas therefore
+//saw NO a-land terrain at all — no shore foam, no shore splash emission, and
+//the WaterField's standalone base layer fell through to open-ocean depth
+//everywhere. Silently, because a missing capture reads exactly like open water.
+//
+//So: everything still gets `positionPassMaterial`, except foreign terrain,
+//which gets a twin of its own material (their vertex stage, our fragment stage)
+//from ARestlessOcean.Passes.ForeignTerrainTwin — the same machinery the
+//refraction G-buffer uses. Restored in a finally, like that pass.
+//
 //Residual keel-crease tris + a ~1px waterline edge remain: they are texel-
 //resolution limited over the 500 m ortho. Confirmed via a 2048^2 test (the tris
 //shrank with texel size). The sharp fix is a tighter ortho extent (fit-to-boat)
@@ -52,6 +68,9 @@ ARestlessOcean.Passes.TerrainOrthoPass = function(oceanGrid){
   this.foamCamera = null;
   this.exclusionCamera = null;
   this.positionPassMaterial = null;
+  //Twins for a sibling system's terrain, built in init(). See the header.
+  this._geoTwins = null;
+  this._swappedMeshes = [];
 
   //Snapped atlas centres, uploaded to the water shader as foamCameraXZ /
   //exclusionCameraXZ so it samples with the SAME origin we rendered from.
@@ -133,6 +152,51 @@ ARestlessOcean.Passes.TerrainOrthoPass.prototype.init = function(){
   //map — and worldMatrix would have pointed at whichever grid constructed last.
   this.positionPassMaterial.uniforms = ARestlessOcean.cloneUniforms(ARestlessOcean.Materials.Ocean.positionPassMaterial.uniforms);
   this.positionPassMaterial.uniforms.worldMatrix.value = grid.camera.matrixWorld;
+
+  //Foreign-terrain twin: their vertex stage, a fragment stage that writes the
+  //same thing positionPassMaterial does — world position in RGB, hence the .g
+  //channel carrying world-Y downstream, and .a = 1 marking "geometry here".
+  //It cannot read a vWorldPosition varying (the no-varyings rule — see the twin
+  //module's header), so it reconstructs world position from gl_FragCoord via the
+  //spliced prologue. That works for an orthographic camera exactly as it does
+  //for a perspective one.
+  if(ARestlessOcean.Passes.ForeignTerrainTwin){
+    this._geoTwins = new ARestlessOcean.Passes.ForeignTerrainTwin([
+      'layout(location = 0) out vec4 gPosition;',
+      'void main(){',
+      '  gPosition = vec4(aroTwinWorldPos(aroTwinViewPos()), 1.0);',
+      '}'
+    ].join('\n'));
+  }
+};
+
+//Swap every visible object onto the position-pass material for the duration of
+//the ortho renders, restoring in _restoreMaterials(). Foreign terrain gets its
+//twin instead; see the header for why it cannot take the shared material.
+//
+//No isMesh filter, deliberately: scene.overrideMaterial applied to Points and
+//Lines too, and this replaces it, so the set of things captured must not move.
+ARestlessOcean.Passes.TerrainOrthoPass.prototype._swapMaterials = function(scene){
+  const self = this;
+  const landRoot = this.oceanGrid._landTerrainRoot;
+  const twins = this._geoTwins;
+  this._swappedMeshes.length = 0;
+  scene.traverse(function(obj){
+    if(!obj.visible || !obj.material) return;
+    let replacement = self.positionPassMaterial;
+    if(twins && ARestlessOcean.Passes.ForeignTerrainTwin.isForeignTerrain(obj, landRoot)){
+      replacement = twins.resolve(obj.material);
+    }
+    self._swappedMeshes.push({ mesh: obj, original: obj.material });
+    obj.material = replacement;
+  });
+};
+
+ARestlessOcean.Passes.TerrainOrthoPass.prototype._restoreMaterials = function(){
+  for(let i = 0, n = this._swappedMeshes.length; i < n; ++i){
+    this._swappedMeshes[i].mesh.material = this._swappedMeshes[i].original;
+  }
+  this._swappedMeshes.length = 0;
 };
 
 //Fixed-size atlases — independent of the drawing buffer.
@@ -183,7 +247,7 @@ ARestlessOcean.Passes.TerrainOrthoPass.prototype.tick = function(ctx){
   const renderExcl = forceRefresh || this._lastExclSnapX !== exclSnapX || this._lastExclSnapZ !== exclSnapZ;
 
   if(renderFoam || renderExcl){
-    scene.overrideMaterial = this.positionPassMaterial;
+    this._swapMaterials(scene);
     renderer.setClearAlpha(0.0);
     //Null the backdrop for these top-down position passes too. With a
     //scene.background set, THREE's background quad stamps alpha 1 into the
@@ -193,10 +257,27 @@ ARestlessOcean.Passes.TerrainOrthoPass.prototype.tick = function(ctx){
     //gone, horizon — outside range — survived). Restored at the block's end.
     const _foamSavedBackground = scene.background;
     scene.background = null;
+    //⚠ try/finally, because this pass leaves the SCENE mutated while it renders:
+    //every object's material is swapped out. A throw between here and the
+    //restore (a shader that fails to compile, a bad uniform) would strand the
+    //whole scene painted with the position-pass material, permanently, and the
+    //symptom would look nothing like its cause. Same guard, same reason, as
+    //RefractionGBufferPass.tick.
+    try {
     if(renderFoam){
       this.foamCamera.position.set(foamSnapX, ctx.heightOffset + grid.foamCameraHeight, foamSnapZ);
       this.foamCamera.lookAt(foamSnapX, ctx.heightOffset - 1.0, foamSnapZ);
       this.foamCamera.updateProjectionMatrix();
+      //⚠ BEFORE the twins are fed, not after: they reconstruct world position by
+      //unprojecting through this camera, and matrixWorld is otherwise only
+      //refreshed inside renderer.render() — one frame too late, which would
+      //smear the whole capture by the camera's own snap delta.
+      this.foamCamera.updateMatrixWorld(true);
+      if(this._geoTwins){
+        this._geoTwins.updateCamera(this.foamCamera,
+                                    this.foamRenderTarget.width,
+                                    this.foamRenderTarget.height);
+      }
       renderer.setRenderTarget(this.foamRenderTarget);
       renderer.clear();
       renderer.render(scene, this.foamCamera);
@@ -214,6 +295,15 @@ ARestlessOcean.Passes.TerrainOrthoPass.prototype.tick = function(ctx){
       this.exclusionCamera.position.set(exclSnapX, ctx.heightOffset + grid.foamCameraHeight, exclSnapZ);
       this.exclusionCamera.lookAt(exclSnapX, ctx.heightOffset - 1.0, exclSnapZ);
       this.exclusionCamera.updateProjectionMatrix();
+      this.exclusionCamera.updateMatrixWorld(true);
+      //a-land terrain is not on layer 30, so no twin can be drawn by this
+      //camera — but keep them in step anyway rather than leaving them pointed at
+      //the foam camera, so a future layer-30 terrain does not silently smear.
+      if(this._geoTwins){
+        this._geoTwins.updateCamera(this.exclusionCamera,
+                                    this.exclusionRenderTarget.width,
+                                    this.exclusionRenderTarget.height);
+      }
       renderer.setRenderTarget(this.exclusionRenderTarget);
       renderer.clear();
       //Capture the boat hull DOUBLE-SIDED for this pass only. The boat is a
@@ -232,13 +322,16 @@ ARestlessOcean.Passes.TerrainOrthoPass.prototype.tick = function(ctx){
       this._lastExclSnapX = exclSnapX;
       this._lastExclSnapZ = exclSnapZ;
     }
-    //Restore our original materials + clear state (captured BEFORE zeroing —
-    //the old code captured alpha AFTER setClearAlpha(0) and so "restored" 0,
-    //leaking a 0 clear alpha into the rest of the frame).
-    scene.overrideMaterial = null;
-    renderer.setRenderTarget(currentRenderTarget);
-    renderer.setClearAlpha(prevClearAlpha);
-    scene.background = _foamSavedBackground;
+    } finally {
+      //Restore our original materials + clear state (captured BEFORE zeroing —
+      //the old code captured alpha AFTER setClearAlpha(0) and so "restored" 0,
+      //leaking a 0 clear alpha into the rest of the frame).
+      this._restoreMaterials();
+      this.positionPassMaterial.side = THREE.FrontSide;
+      renderer.setRenderTarget(currentRenderTarget);
+      renderer.setClearAlpha(prevClearAlpha);
+      scene.background = _foamSavedBackground;
+    }
     this._staleFrames = 0;
     this._everRendered = true;
   }
@@ -248,6 +341,7 @@ ARestlessOcean.Passes.TerrainOrthoPass.prototype.dispose = function(){
   if(this.foamCamera) this.scene.remove(this.foamCamera);
   if(this.exclusionCamera) this.scene.remove(this.exclusionCamera);
   if(this.positionPassMaterial) this.positionPassMaterial.dispose();
+  if(this._geoTwins) this._geoTwins.dispose();
   if(this.foamRenderTarget) this.foamRenderTarget.dispose();
   if(this.exclusionRenderTarget) this.exclusionRenderTarget.dispose();
   this.foamRenderTarget = null;

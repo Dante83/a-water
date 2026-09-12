@@ -20,23 +20,84 @@ varying vec4 vOceanShadowCoord3;
 const float FOAM_ORTHO_HALF_WIDTH = $foam_ortho_half_width;
 const float EXCLUSION_ORTHO_HALF_WIDTH = $exclusion_ortho_half_width;
 
+//WaterField cascades (Phase 1b) — RT0 of WaterFieldPass's three world-anchored
+//rings, fine -> coarse. Only the level channel (.r) is read here; depth/flow
+//live in the same textures for other consumers. Center/halfWidth mirror
+//WaterFieldPass.CASCADE_HALF_WIDTHS and are uploaded per-frame alongside the
+//textures since cascades re-centre as the camera moves.
+//
+//Declared HERE, before waterFieldLevelAt below, not down with the rest of
+//this shader's uniforms (baseHeightOffset etc.) — GLSL requires an identifier
+//to be declared before its first use in the same translation unit, and this
+//file's functions are defined near the top, above most of its uniform block.
+uniform sampler2D waterFieldCascade0;
+uniform sampler2D waterFieldCascade1;
+uniform sampler2D waterFieldCascade2;
+uniform vec2 waterFieldCascadeCenter[3];
+uniform float waterFieldCascadeHalfWidth[3];
+
 //── The water-level seam (WaterField, Phase 1) ─────────────────────────────
 //Rest water level at a world XZ. Every site that used to read
 //baseHeightOffset directly goes through this.
 //
-//Phase 1a returns the flat plane, so routing through it is provably a no-op.
-//Phase 1b replaces the BODY with a cascade lookup and no call site moves.
+//Phase 1b: samples WaterFieldPass's own cascades (RT0.r = level), the exact
+//textures water-tile-decode-pass.js fills. Selection is point-containment
+//first, finest -> coarsest - the SAME test WaterFieldPass.cascadeIndexFor
+//runs on the CPU side, so the GPU and CPU seams always agree on which
+//cascade "owns" a given world position.
 //
-//distanceToFragment is taken NOW, unused, on purpose. When the body becomes a
-//real lookup it must pick the field cascade by distance - exactly as the
-//displacement sum already fades cascades with
-//smoothstep(cascadePatchSizes[n] * K, 0.0, distanceToVertex). Without that, a
-//far clipmap ring (cells reach 100 m+, wider than a small lake) can land a
-//single vertex inside a lake and drag the whole cell up to lake level. Reading
-//a coarse cascade at distance averages small bodies back toward the ocean
-//plane, which is what you want - you cannot see them from there anyway.
+//distanceToFragment is a cheap early-out only (skip the cascade-0 containment
+//test when a fragment is clearly too far to be inside it), not the selection
+//key - point containment is. Kept as a parameter because the original Phase 1a
+//note is still the reason cascade 0 (1 m/texel, 512 m across) matters here: a
+//far clipmap ring's cells can be wider than a small lake, and reading a coarse
+//cascade there would smear the lake's ~50 m shore cliff across several texels.
+//Point containment already puts anything within 256 m of the camera - which
+//covers a lake this size - on cascade 0, so the cliff resolves within 1-2
+//texels instead.
+//
+//A smoothstep crossfade over the last 10% of a cascade's half-width avoids a
+//hard pop as a fragment crosses from one cascade into the next-coarser one.
+//Unrolled rather than a loop over the uniform arrays — this file never
+//dynamically indexes a uniform array (see cascadePatchSizes/cascadeSpatialOffsets
+//above, always literal-indexed), so this stays consistent with that and sidesteps
+//ES 1.00's constant-index-expression restriction on sampler arrays entirely.
+float sampleWaterFieldCascade0(vec2 worldXZ){
+  vec2 uv = (worldXZ - waterFieldCascadeCenter[0]) / (2.0 * waterFieldCascadeHalfWidth[0]) + 0.5;
+  return texture2D(waterFieldCascade0, uv).r;
+}
+float sampleWaterFieldCascade1(vec2 worldXZ){
+  vec2 uv = (worldXZ - waterFieldCascadeCenter[1]) / (2.0 * waterFieldCascadeHalfWidth[1]) + 0.5;
+  return texture2D(waterFieldCascade1, uv).r;
+}
+float sampleWaterFieldCascade2(vec2 worldXZ){
+  vec2 uv = (worldXZ - waterFieldCascadeCenter[2]) / (2.0 * waterFieldCascadeHalfWidth[2]) + 0.5;
+  return texture2D(waterFieldCascade2, uv).r;
+}
+
 float waterFieldLevelAt(vec2 worldXZ, float distanceToFragment){
-  return baseHeightOffset;
+  vec2 d0 = abs(worldXZ - waterFieldCascadeCenter[0]);
+  float hw0 = waterFieldCascadeHalfWidth[0];
+  float m0 = max(d0.x, d0.y);
+  if(m0 < hw0){
+    float level = sampleWaterFieldCascade0(worldXZ);
+    float edgeT = smoothstep(hw0 * 0.9, hw0, m0);
+    if(edgeT > 0.0) level = mix(level, sampleWaterFieldCascade1(worldXZ), edgeT);
+    return level;
+  }
+  vec2 d1 = abs(worldXZ - waterFieldCascadeCenter[1]);
+  float hw1 = waterFieldCascadeHalfWidth[1];
+  float m1 = max(d1.x, d1.y);
+  if(m1 < hw1){
+    float level = sampleWaterFieldCascade1(worldXZ);
+    float edgeT = smoothstep(hw1 * 0.9, hw1, m1);
+    if(edgeT > 0.0) level = mix(level, sampleWaterFieldCascade2(worldXZ), edgeT);
+    return level;
+  }
+  //Inside cascade 2, or beyond every cascade — clamp to the coarsest rather
+  //than falling back to the flat plane, so the seam never has a hard
+  //discontinuity at the edge of the field's reach.
+  return sampleWaterFieldCascade2(worldXZ);
 }
 
 //uniform vec3 cameraDirection;
@@ -77,7 +138,26 @@ uniform mat4 ssrProjectionMatrix;
 //cost; this lets us trade reflection reach for fill rate, or set 0 to skip the
 //march entirely (sky-only) as an A/B bottleneck check.
 uniform float ssrMaxSteps;
+//How much ripple detail the SKY reflection tracks. 0 = reflect off macroNormal
+//(cascade 0 only — long swell, the original behaviour, a near-mirror), 1 = off
+//displacedNormal (every cascade, so the reflection breaks up with the ripples).
+//The geometry raymarch is NOT affected; it always uses macroNormal. Live-tunable
+//via window.setSsrSkyNormalBlend for A/B.
+uniform float ssrSkyNormalBlend;
+//The same knob for the GEOMETRY raymarch. 0 = reflect off macroNormal (cascade 0
+//only), which is what this pass did for its whole life; 1 = off displacedNormal,
+//so a reflected shoreline's silhouette breaks up with the ripples instead of
+//sliding around as one rigid shape. Separate from ssrSkyNormalBlend because the
+//two have opposite failure modes and want isolating: too much detail here
+//scatters the march between neighbouring pixels, too little leaves the reflection
+//looking like a flat mirror. Live-tunable via window.setSsrMarchNormalBlend.
+uniform float ssrMarchNormalBlend;
 uniform sampler2D meteringSurveyTexture;
+//0 until a sky provider actually hands one over. Sampling an unbound sampler2D
+//is not an error in GL — three binds a default empty texture and it returns
+//black — so without this flag the miss is invisible. See
+//computeStandaloneSkyRadiance.
+uniform float meteringSurveyValid;
 
 #if($caustics_enabled)
   uniform sampler2D causticMap;
@@ -576,23 +656,84 @@ float getOceanShadow(vec4 shadowCoord0, vec4 shadowCoord1, vec4 shadowCoord2, ve
   vec3 computeSkyRadiance(vec3 worldDir);
 #endif
 
+//── The standalone sky ─────────────────────────────────────────────────────
+//What the SSR miss-path reflects when there is no sky provider in the scene.
+//
+//The two paths that existed both need a-starry-sky: computeSkyRadiance wants its
+//atmosphere LUTs, and the atmosphere-off fallback samples `meteringSurveyTexture`,
+//which ocean-grid.js only ever assigns from `skyDirector`. With no sky provider
+//that sampler stays unbound, GL quietly returns black for every fetch, and the
+//water reflects a black sky — CONSTANT black, so the reflection carried no
+//directional information at all and the surface read as a flat mirror no matter
+//what the waves did. That is the whole "reflections do not bend with the wave
+//vertices" symptom: not the ray direction (macroNormal is fine), the thing being sampled.
+//
+//So synthesise a sky from the lights the scene DOES have. skyAmbientColor is the
+//hemispheric fill a-water already reads (from a-starry-sky, or from the scene's
+//own HemisphereLight in standalone), so treat it as the hemisphere's mean and
+//spread a horizon→zenith gradient around it; add the sun as a tight lobe so a
+//glint still lands in the right place. Crude next to a real atmosphere, but it
+//VARIES WITH DIRECTION, which is the entire job here.
+vec3 computeStandaloneSkyRadiance(vec3 worldDir){
+  //pow < 1 keeps most of the gradient near the horizon, where a reflection ray
+  //off water actually spends its time — a linear ramp puts all the change
+  //overhead where the water never looks.
+  float up = pow(clamp(worldDir.y, 0.0, 1.0), 0.55);
+  vec3 horizon = skyAmbientColor * 0.75;
+  vec3 zenith  = skyAmbientColor * 1.35;
+  vec3 sky = mix(horizon, zenith, up);
+  //⚠ NO SUN DISK HERE, DELIBERATELY. An earlier version added one, and it was
+  //wrong twice over. The sun's reflection off this water is ALREADY produced, by
+  //the Crest-style Phong lobe below (`specular`, pow(specRdotL, specFallOff)),
+  //which composites alongside this reflection rather than through it — so a disk
+  //in here is a SECOND sun, double-counted. Worse, it is a second sun of the
+  //wrong shape: this function is evaluated on a direction reflected off the
+  //SMOOTH normal, so it renders as one round mirror blob sitting on top of the
+  //real, ripple-broken glitter path instead of joining it. If the sun ever needs
+  //to appear in the sky reflection itself, it belongs on the same normal the
+  //Phong lobe uses, not here.
+  //Rays aimed below the horizon are looking into the water, not the sky. Fading
+  //toward the horizon colour rather than returning the zenith keeps the grazing
+  //band continuous where the SSR march runs out of steps.
+  sky = mix(horizon, sky, smoothstep(-0.15, 0.02, worldDir.y));
+  return sky;
+}
+
 //Screen-space reflection using the refraction color+depth buffer (already rendered
 //from the main camera with water hidden — zero extra render passes).
 //Exponential stepping covers nearby geometry detail AND distant sky.
 //Sky fallback: LUT-based atmosphere (when enabled) or metering survey fisheye.
 //Returns LINEAR radiance — caller must NOT apply sRGBToLinear to the result.
 //Geometry hits come from the sRGB refraction buffer and are converted here.
-vec3 screenSpaceReflection(vec3 worldPos, vec3 reflectDir){
+//TWO DIRECTIONS, NOT ONE.
+//  marchDir — the ray the depth-buffer raymarch follows. Wants the SMOOTH normal:
+//             per-pixel normal jitter makes neighbouring fragments march into
+//             different depth footprints and the geometry reflection breaks into
+//             noise. This is why the SSR ray was put on macroNormal originally,
+//             and that reasoning still holds.
+//  skyDir   — the direction the sky is sampled along on a MISS. Wants the exact
+//             opposite: sub-metre ripple detail is the entire reason a real sea
+//             surface glitters rather than mirroring. Sharing one direction meant
+//             the sky reflection only ever tracked the long swell, which reads as
+//             a reflection that barely moves while the water under it ripples.
+//Callers that want the old single-direction behaviour pass the same vector twice.
+vec3 screenSpaceReflection(vec3 worldPos, vec3 marchDir, vec3 skyDir){
+  vec3 reflectDir  = skyDir;      //every sky lookup below reads this
   vec3 viewPos     = (ssrViewMatrix * vec4(worldPos,    1.0)).xyz;
-  vec3 viewReflect = normalize(mat3(ssrViewMatrix) * reflectDir);
+  vec3 viewReflect = normalize(mat3(ssrViewMatrix) * marchDir);
 
   //Sky fallback: use LUT-based sky radiance when atmosphere is enabled for correct horizon
   //colors; fall back to metering survey fisheye for the no-atmosphere build path.
   #if($atmospheric_perspective_enabled)
     vec3 skyColor = computeSkyRadiance(reflectDir);
   #else
+    //A sky provider can still be present with atmospheric perspective switched
+    //off, in which case its metering survey is the better source — it is a real
+    //render of the real sky. Only fall back when nothing bound one.
     vec2 skyUV = clamp(reflectDir.xz * 0.5 + 0.5, 0.01, 0.99);
-    vec3 skyColor = texture2D(meteringSurveyTexture, skyUV).rgb;
+    vec3 skyColor = (meteringSurveyValid > 0.5)
+                  ? texture2D(meteringSurveyTexture, skyUV).rgb
+                  : computeStandaloneSkyRadiance(reflectDir);
   #endif
 
   //Note: a procedural sun-disk/halo addition was attempted here to fill the
@@ -763,9 +904,18 @@ vec4 linearTosRGB(vec4 value ) {
 }
 
 //Including this because someone removed this in a future versio of THREE. Why?!
+//
+//Guarded because UnderwaterFogChunk declares the same operator, and with
+//atmospheric perspective OFF this shader includes that chunk — two bodies in
+//one translation unit, which failed to link the moment scene.fog turned on
+//(going underwater). Whichever lands first wins; the chunk carries the
+//matching guard.
+#ifndef ARO_AES_TONEMAP
+#define ARO_AES_TONEMAP
 vec3 MyAESFilmicToneMapping(vec3 color) {
   return clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), 0.0, 1.0);
 }
+#endif
 
 //Fresnel reflectance at air->water interface (for light entering the water from above)
 //Schlick approximation with n_water = 1.33 — uses the file-level r0 constant.
@@ -1088,6 +1238,30 @@ SOFTWARE.
 
     return color + fogSun + fogMoon;
   }
+#endif
+
+//═══════════════════════════════════════════════════════════════════════════
+// THE UNDERWATER CEILING IS NOT PART OF ATMOSPHERIC PERSPECTIVE
+//═══════════════════════════════════════════════════════════════════════════
+//It used to live inside the `#if($atmospheric_perspective_enabled)` block that
+//just closed, purely because it was written next to the sky-radiance helpers.
+//The cost of that accident: `atmosphereReady` in ocean-grid.js is
+//`atmosphericPerspectiveEnabled && atmosphereFunctionsGLSL`, and the GLSL only
+//ever comes from a-starry-sky — so EVERY scene without a sky provider compiled
+//a water shader with no underwater branch at all. A submerged camera then ran
+//the above-water pipeline, where `cosTheta` (the Schlick dot against the
+//force-upward `displacedNormal`) clamps to 0 on every ceiling fragment, pinning
+//`fresnelFactor` at its horizon ceiling — so the surface rendered as a pure SSR
+//mirror of the seabed. That is what standalone/a-faraway-land scenes were
+//showing underwater.
+//
+//Nothing here needs the atmosphere: `fresnelWaterToAir`,
+//`underwaterInscatterSurface` and `applyUnderwaterFog` are all declared above
+//this point and outside the gate, and the two RT samplers it reads
+//(`underwaterReflectionTexture`, `aboveWaterTransmissionTexture`) are declared
+//with the rest of the uniforms. Keep it that way — anything added below that
+//reaches for `computeSkyRadiance` or `applyAtmosphericPerspective` puts the
+//standalone path straight back into the same hole.
 
   //Appearance of the water surface seen from below — the "ceiling". The view
   //ray travels up through the water column and strikes the underside of the
@@ -1197,7 +1371,6 @@ SOFTWARE.
     //$DEBUG_END$
     return applyUnderwaterFog(ceiling, camToFragDist * UW_DIST_SCALE, viewDirCeiling);
   }
-#endif
 
 void main(){
   //Shadow factor — once per fragment. 1.0 = fully lit, 0.0 = fully shadowed.
@@ -1509,11 +1682,47 @@ void main(){
   //ray-march against the refraction depth buffer (already rendered this frame, free).
   //Correctly samples sky/atmosphere at the horizon — no planar camera terrain capture.
   vec3 worldIncidentDir = normalize(worldPosition.xyz - cameraPosition);
-  //Use macroNormal (cascade 0 only, ~2m/texel) for SSR ray direction — avoids the
-  //high-frequency per-pixel noise that displacedNormal causes in reflection lookups.
-  vec3 ssrReflectDir    = reflect(worldIncidentDir, macroNormal);
+  //BOTH SSR DIRECTIONS COME OFF A BLEND, and both default to full wave detail.
+  //
+  //This pass spent its whole life reflecting off `macroNormal` — cascade 0 only,
+  //i.e. the long swell with every ripple filtered out. The comment that used to
+  //sit here justified it as avoiding "high-frequency per-pixel noise", and that
+  //concern is real for the MARCH (see below) — but it was written before the
+  //blue-noise step jitter and the soft convergence/silhouette gates went in, and
+  //it was applied to the sky lookup too, where it has no upside at all. The
+  //visible cost was a reflection that behaves like a mirror on a flat plane: a
+  //reflected shoreline whose silhouette slides around as one rigid shape while
+  //the water under it is visibly rippling.
+  //
+  //The two directions are kept separate because their failure modes are
+  //opposite. Too much detail in the MARCH scatters neighbouring fragments into
+  //different depth footprints and the geometry reflection breaks into noise or
+  //stripes. Too little in EITHER is the flat mirror. Blend each independently
+  //(window.setSsrMarchNormalBlend / setSsrSkyNormalBlend) — 0 on both reproduces
+  //the original behaviour exactly for an A/B.
+  //
+  //displacedNormal rather than specNormal only because specNormal is not built
+  //until much further down this function. specNormal is the better target — its
+  //cascade-5 wide-eps low-pass exists precisely to kill far-field sparkle — and
+  //moving the SSR call below it is the fix if the horizon reads noisy, in
+  //preference to dialing these back down.
+  vec3 ssrMarchNormal   = normalize(mix(macroNormal, displacedNormal, ssrMarchNormalBlend));
+  vec3 ssrReflectDir    = reflect(worldIncidentDir, ssrMarchNormal);
+  vec3 ssrSkyNormal     = normalize(mix(macroNormal, displacedNormal, ssrSkyNormalBlend));
+  vec3 ssrSkyDir        = reflect(worldIncidentDir, ssrSkyNormal);
   //screenSpaceReflection() always returns LINEAR values (see function comment).
-  vec3 reflectedLight   = screenSpaceReflection(worldPosition.xyz, ssrReflectDir);
+  //
+  //SKIPPED WHEN SUBMERGED. Everything this feeds is overwritten wholesale by
+  //computeUnderwaterCeiling below, so the 48-step march is pure waste on every
+  //underwater frame. It is also the thing a submerged camera used to actually
+  //SEE while the ceiling model was gated off behind atmospheric perspective:
+  //the above-water Fresnel pins at its horizon ceiling below the surface (see
+  //cosTheta), which made totalLight almost purely this term — a screen-space
+  //mirror of the seabed, marched from under it. `underwaterFactor` is a uniform,
+  //so this branch is fully coherent across the draw.
+  vec3 reflectedLight   = (underwaterFactor >= 0.5)
+                        ? vec3(0.0)
+                        : screenSpaceReflection(worldPosition.xyz, ssrReflectDir, ssrSkyDir);
 
   //Screen-space refraction
   //Distort UVs based on FFT normal only — same reason as reflection: avoids visible normal map tiling
@@ -1678,7 +1887,16 @@ void main(){
   //Karis "Real Shading in Unreal Engine 4" environment BRDF — the grazing
   //Fresnel ceiling becomes max(1-α, F0) instead of 1.0. Standard Schlick
   //is the α=0 limit; α=1 collapses to flat F0 (no grazing peak at all).
-  float cosTheta = clamp(dot(displacedNormal, -normalizedViewVector), 0.0, 1.0);
+  //displacedNormal is force-flipped UPWARD twice on the way here (the two
+  //`if(displacedNormal.y < 0.0)` guards), which is right for a viewer in air and
+  //degenerate for one under the surface: the dot then goes negative on every
+  //ceiling fragment and clamps to 0, pinning fresnelFactor at horizonCeiling
+  //(≈1) across the whole view. Face the normal at whoever is looking so the term
+  //stays meaningful on both sides. The real underwater reflectance is still
+  //fresnelWaterToAir inside the ceiling model — this keeps the above-water curve
+  //honest for debug mode 12 and for fresnelT, which would otherwise read 0.
+  vec3 fresnelNormal = faceforward(displacedNormal, normalizedViewVector, displacedNormal);
+  float cosTheta = clamp(dot(fresnelNormal, -normalizedViewVector), 0.0, 1.0);
   float horizonCeiling = max(1.0 - alphaRough, r0);
   float fresnelFactor = r0 + (horizonCeiling - r0) * pow(1.0 - cosTheta, 5.0);
 
@@ -2144,29 +2362,37 @@ void main(){
     float dbgFoamAmount = 0.0;
   #endif
 
+  //Modes 50-55 are the ceiling bisection taps — they need the ceiling built, so
+  //keep computing it for them (it short-circuits to the requested stage inside
+  //the function). Every other non-zero debug mode clobbers gl_FragColor below,
+  //so skip both post-lighting steps then.
+  bool runPostLighting = (oceanShadowDebugMode == 0 ||
+                          (oceanShadowDebugMode >= 50 && oceanShadowDebugMode <= 55));
+
+  //THE UNDERWATER CEILING IS UNGATED — see the banner above
+  //computeUnderwaterCeiling. Gating this on $atmospheric_perspective_enabled is
+  //what left every scene without a sky provider with no underwater water at all.
+  //
+  //Camera is below the surface: this fragment is the underside of the water (the
+  //"ceiling"). Replace the above-water lighting wholesale with the water→air
+  //ceiling model — screen-space refraction (rippled transmission) + Fresnel/TIR
+  //planar reflection + foam, fogged by the water column. ocean-grid.js flips the
+  //mesh to BackSide on the same gate, so only ceiling fragments land here.
+  if(runPostLighting && underwaterFactor >= 0.5){
+    totalLight = computeUnderwaterCeiling(worldPosition.xyz, displacedNormal,
+                                          dbgFoamColor, dbgFoamBlend,
+                                          screenUV,
+                                          distanceToWorldPosition);
+  }
+
   #if($atmospheric_perspective_enabled)
+    //Above water: Mie+Rayleigh atmospheric perspective. THIS is the part that
+    //genuinely needs a-starry-sky's LUTs, and the only part still gated.
     //Atmospheric perspective is the most expensive post-lighting step (multiple
-    //3D LUT samples). Any non-zero debug mode clobbers gl_FragColor below, so
-    //skip it then — keeps debug captures snappy on dense ocean scenes.
-    //Modes 50-55 are the ceiling bisection taps — they need the ceiling built,
-    //so keep computing it for them (it short-circuits to the requested stage
-    //inside the function). Everything else stays gated to mode 0.
-    if(oceanShadowDebugMode == 0 || (oceanShadowDebugMode >= 50 && oceanShadowDebugMode <= 55)){
-      if(underwaterFactor > 0.5){
-        //Camera is below the surface: this fragment is the underside of the
-        //water (the "ceiling"). Replace the above-water lighting wholesale
-        //with the water→air ceiling model — screen-space refraction
-        //(rippled transmission) + Fresnel/TIR planar reflection + foam,
-        //fogged by the water column. ocean-grid.js flips the mesh to
-        //BackSide on the same gate, so only ceiling fragments land here.
-        totalLight = computeUnderwaterCeiling(worldPosition.xyz, displacedNormal,
-                                              dbgFoamColor, dbgFoamBlend,
-                                              screenUV,
-                                              distanceToWorldPosition);
-      } else if(oceanShadowDebugMode == 0){
-        //Above water: Mie+Rayleigh atmospheric perspective.
-        totalLight = applyAtmosphericPerspective(totalLight, worldPosition.xyz);
-      }
+    //3D LUT samples), so it stays on mode 0 alone — the 50-55 taps are ceiling
+    //taps and never reach here.
+    if(oceanShadowDebugMode == 0 && underwaterFactor < 0.5){
+      totalLight = applyAtmosphericPerspective(totalLight, worldPosition.xyz);
     }
   #endif
 
@@ -2361,6 +2587,68 @@ void main(){
   else if(oceanShadowDebugMode == 18){
     gl_FragColor = vec4(displacedNormal * 0.5 + 0.5, 1.0);
   }
+  //Mode 29: SHORE-FOAM GATE BREAKDOWN. One look tells you which half of the
+  //shore-foam chain is failing, because there are two independent halves and they
+  //fail identically (no foam) from the outside:
+  //  BLACK   = outside the foam ortho footprint entirely. Expected far from the
+  //            camera; if it is black AT the shore, the ortho half-width or the
+  //            snapped centre is wrong.
+  //  RED     = inside the footprint, but the capture mask is 0 — the ortho saw no
+  //            terrain at this texel. THIS IS THE CAPTURE HALF. Solid red along a
+  //            visible coastline means the terrain never reached the atlas (for a
+  //            sibling system's ground: the geometry-only twin, or the camera's
+  //            near plane sitting BELOW the shoreline it is meant to capture).
+  //  GREEN   = shoreProximity — terrain captured, and this is how close the water
+  //            surface is to it (bright green = within ~0.5 m, gone by ~4 m).
+  //  BLUE    = the drive term, turbulence*2.5 + fftFoamAmount*0.5. THIS IS THE
+  //            WAVE-ACTION HALF. Green with no blue = the shore was found and the
+  //            water simply is not breaking there (calm wind, no chop).
+  //So: red at the shore → capture. Green but never cyan → drive. Cyan → the gate
+  //is passing and the problem is downstream in the foam blend (modes 31-33).
+  //⚠ foamRenderMap only exists under $foam_enabled, so the body is gated with it.
+  else if(oceanShadowDebugMode == 29){
+  #if($foam_enabled)
+    vec2 fp = 0.5 * (((worldPosition.xz - foamCameraXZ) / vec2(FOAM_ORTHO_HALF_WIDTH)) + 1.0);
+    fp = vec2(fp.x, 1.0 - fp.y);
+    if(fp.x < 1.0 && fp.x > 0.0 && fp.y < 1.0 && fp.y > 0.0){
+      vec2 fhd = texture2D(foamRenderMap, fp).ga;
+      if(fhd.y > 0.5){
+        float wat = worldPosition.y - fhd.x;
+        float sFade = clamp((wat - 0.5) / 3.5, 0.0, 1.0);
+        float sProx = (1.0 - sFade) * (1.0 - sFade);
+        float drive = clamp(turbulence * 2.5 + fftFoamAmount * 0.5, 0.0, 1.0);
+        gl_FragColor = vec4(0.0, sProx, drive, 1.0);
+      } else {
+        gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0);
+      }
+    } else {
+      gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+    }
+  #else
+    //MAGENTA = the foam system is compiled out entirely, so none of the chain
+    //this mode inspects exists. Not a diagnosis, a wrong-question answer, which
+    //beats a black screen that reads like a real result.
+    gl_FragColor = vec4(0.6, 0.0, 0.6, 1.0);
+  #endif
+  }
+  //Mode 27: underwaterFactor as a continuous ramp — the value ITSELF, not the
+  //binary every other mode thresholds it into. Black = 0 (fully in air), white =
+  //1 (fully submerged), mid-grey = mid-crossfade. Read it when the surface model
+  //looks wrong at the waterline: the shader picks the ceiling at >= 0.5 and the
+  //CPU flips the mesh to BackSide on the same test, so a camera parked in the
+  //grey band is the one place those two can disagree. Tinted teal so a grey
+  //ocean does not read as a mid value.
+  else if(oceanShadowDebugMode == 27){
+    gl_FragColor = vec4(vec3(0.1, 1.0, 0.9) * underwaterFactor, 1.0);
+  }
+  //Mode 28: the CEILING normal — `n = -displacedNormal`, the one
+  //computeUnderwaterCeiling actually shades with, encoded like mode 18. Mode 18
+  //shows the force-upward normal and therefore can never show this, which made
+  //the two impossible to tell apart when the underwater Fresnel looked wrong.
+  //Submerged, this should be the photographic negative of mode 18.
+  else if(oceanShadowDebugMode == 28){
+    gl_FragColor = vec4((-displacedNormal) * 0.5 + 0.5, 1.0);
+  }
   //Mode 19: macroNormal (cascade 0 only) as RGB, same encoding as mode 18.
   //A/B against mode 18: at close range mode 18 should be visibly more
   //varied (cascade 1-5 detail on top of cascade 0); at far range the two
@@ -2524,7 +2812,7 @@ void main(){
   //a glance whether the camera is detected as submerged and which part of the
   //ceiling you are looking at — recomputes the same terms computeUnderwaterCeiling
   //uses, so it tracks the real path exactly.
-  //  DARK BLUE    = underwaterFactor <= 0.5 — camera NOT detected as submerged,
+  //  DARK BLUE    = underwaterFactor < 0.5 — camera NOT detected as submerged,
   //                 so the ceiling model never runs (a detection issue, not optics).
   //  RED          = total internal reflection — the TIR mirror, OUTSIDE the
   //                 window (looking too grazing; tilt back toward straight up).
@@ -2533,7 +2821,7 @@ void main(){
   //If the whole ceiling is one flat colour, you are seeing only that zone —
   //sweep the camera from straight-up to grazing and it should run green→red.
   else if(oceanShadowDebugMode == 35){
-    if(underwaterFactor <= 0.5){
+    if(underwaterFactor < 0.5){
       gl_FragColor = vec4(0.0, 0.0, 0.35, 1.0);
     } else {
       vec3 ceilN = -normalize(displacedNormal);
@@ -2541,7 +2829,12 @@ void main(){
       float ceilCosI = max(dot(-ceilV, ceilN), 0.0);
       float ceilRefl = fresnelWaterToAir(ceilCosI);
       vec3 ceilRefr = refract(ceilV, ceilN, 1.333);
-      bool ceilTIR = dot(ceilRefr, ceilRefr) < 0.25;
+      //0.0001, matching computeUnderwaterCeiling's own test. It used to be 0.25,
+      //which reported TIR for legitimately-transmitting near-critical rays —
+      //refract() returns exactly vec3(0) on TIR and a UNIT vector otherwise, so
+      //anything above zero-ish is a transmitting ray. The two disagreed exactly
+      //at the window rim, which is the one place you consult this mode about.
+      bool ceilTIR = dot(ceilRefr, ceilRefr) < 0.0001;
       vec3 tint = ceilTIR ? vec3(1.0, 0.0, 0.0)
                           : mix(vec3(0.0, 1.0, 0.0), vec3(1.0, 1.0, 0.0), ceilRefl);
       gl_FragColor = vec4(tint, 1.0);
@@ -2621,7 +2914,7 @@ void main(){
   //the HDR tonemap-domain split is confirmed (the RT is NoToneMapping/linear,
   //so its geometry is un-compressed HDR, unlike the post-tonemap direct seabed).
   else if(oceanShadowDebugMode == 42){
-    if(underwaterFactor <= 0.5){
+    if(underwaterFactor < 0.5){
       gl_FragColor = vec4(0.0, 0.0, 0.35, 1.0);
     } else {
       vec3 dbgCeilN = -normalize(displacedNormal);

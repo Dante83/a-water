@@ -73,6 +73,18 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //full reach. The SSR ray-march is the dominant per-pixel water cost; lower
   //trades reflection reach for fill rate, 0 = sky-only (bottleneck A/B test).
   this.ssrMaxSteps = 48;
+  //How much ripple detail the SKY half of the SSR follows (live-tunable via
+  //window.setSsrSkyNormalBlend). 0 reproduces the original macroNormal-only
+  //behaviour — a reflection that tracks only the long swell and reads as a
+  //mirror while the surface under it ripples. 1 = full detail. The geometry
+  //raymarch is unaffected either way; it needs the smooth normal or it marches
+  //into a different depth footprint per pixel and breaks up into noise.
+  this.ssrSkyNormalBlend = 1.0;
+  //...and the same for the geometry raymarch (window.setSsrMarchNormalBlend).
+  //Separate knob because the two fail in opposite directions: detail here can
+  //scatter the march into noise, while too little is the flat-mirror look. Set
+  //BOTH to 0 to get the pre-2026-09-11 reflection back exactly.
+  this.ssrMarchNormalBlend = 1.0;
   this.fresnelDistanceRoughness = data.fresnel_distance_roughness;
   this.surfaceRoughness = 0.08;
   //Crest-style sun-glint controls (see water-shader.glsl). Defaults reproduce
@@ -428,6 +440,56 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //also writes the standalone fog scaffold when no a-starry-sky is present to
   //provide the reservation slot. See its header for the THREE.Fog smuggle.
   this._skyProvider = this._resolveSkyProvider();
+
+  //── Terrain provider resolution (WATER-TYPES.md Phase 1b) ──────────────────
+  //Same posture as _resolveSkyProvider above: resolve off DOM/markup presence,
+  //not off some a-faraway-land-owned flag, because <a-land-terrain>'s map.json
+  //fetch is async and we need an answer before it has necessarily resolved.
+  this._resolveTerrainProvider = function(){
+    const declared = (self.data && typeof self.data.terrain_provider === 'string')
+      ? self.data.terrain_provider.toLowerCase() : 'auto';
+    if(declared === 'standalone' || declared === 'a-faraway-land'){
+      return declared;
+    }
+    const hasGlobal = (typeof ALand !== 'undefined');
+    const hasElement = (typeof document !== 'undefined') &&
+      !!document.querySelector('a-land-terrain');
+    return (hasGlobal || hasElement) ? 'a-faraway-land' : 'standalone';
+  };
+  this._terrainProvider = this._resolveTerrainProvider();
+  this._landTerrainApi = null;
+  this._landDirector = null;
+  //Scene-graph root of a-land's geometry. The refraction G-buffer uses it to
+  //tell a sibling system's terrain (which it must capture with a geometry-only
+  //twin) from our own ShaderMaterials (which it must keep skipping).
+  this._landTerrainRoot = null;
+
+  //Discover a-faraway-land's land-terrain component for the water-field seam.
+  //Retried from tick() exactly like _discoverSkyDirector below, for the same
+  //reason: DOM order between <a-land-terrain> and <a-restless-ocean> isn't
+  //guaranteed, and <a-land-terrain>'s own map.json fetch is async, so the
+  //component can exist in the DOM well before its director/api are ready.
+  this._discoverTerrainDirector = function(){
+    if(self._landTerrainApi) return true;
+    const el = document.querySelector('a-land-terrain');
+    const comp = el && el.components && el.components['land-terrain'];
+    //⚠ mapJson IS PART OF THE READINESS TEST, not a detail. a-land builds its
+    //director as soon as the component initialises and only THEN fetches
+    //map.json ("director initialized" logs before "map.json loaded"), so
+    //accepting a bare director hands the tile decoder a mapJson of undefined.
+    //It then latches available=false for the life of the session and silently
+    //never requests a single tile.
+    if(comp && comp.api && comp.director && comp.director.mapJson){
+      self._landTerrainApi = comp.api;
+      self._landDirector = comp.director;
+      self._landTerrainRoot = el.object3D || null;
+      return true;
+    }
+    return false;
+  };
+  if(this._terrainProvider === 'a-faraway-land'){
+    this._discoverTerrainDirector();
+  }
   if(ARestlessOcean.Passes && ARestlessOcean.Passes.UnderwaterFogChunk){
     this.underwaterFogChunk = new ARestlessOcean.Passes.UnderwaterFogChunk(this);
     this.underwaterFogChunk.init(this._skyProvider);
@@ -490,13 +552,26 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //call site has to move again.
   //
   //Keep them cheap and synchronous: they are called per patch, per emitter and
-  //per frame. Whatever Phase 1b puts here must be a cache read, never a GPU
-  //stall — see the PBO contention note on WaterFieldPass.probeAt.
+  //per frame. Phase 1b routes through a-land's own getWaterAt, which is a
+  //synchronous JS cache read (WaterReader's LRU) — NOT a GPU readback. Do not
+  //route this through WaterFieldPass.probeAt/readRenderTargetPixels; that is
+  //a debug/console path and stalls the GPU, which this comment has always
+  //forbidden at this call frequency.
   this.waterLevelAt = function(x, z){
+    if(self._terrainProvider === 'a-faraway-land' && self._landTerrainApi){
+      const w = self._landTerrainApi.getWaterAt(x, z);
+      //null: dry, or the tile hasn't warmed yet (a-land loads it in the
+      //background) — fall through to the standalone answer, never "nothing".
+      if(w) return w.level;
+    }
     return self.heightOffset;
   };
   //Water column depth (metres) at a world position; 0 means dry.
   this.waterDepthAt = function(x, z){
+    if(self._terrainProvider === 'a-faraway-land' && self._landTerrainApi){
+      const w = self._landTerrainApi.getWaterAt(x, z);
+      if(w) return w.depth;
+    }
     return ARestlessOcean.Passes.WaterFieldPass
       ? ARestlessOcean.Passes.WaterFieldPass.OPEN_OCEAN_DEPTH : 1000.0;
   };
@@ -1007,6 +1082,11 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       }
     }
 
+    //Late terrain discovery — same reasoning as sky discovery above.
+    if(self._terrainProvider === 'a-faraway-land' && !self._landTerrainApi){
+      self._discoverTerrainDirector();
+    }
+
     //Hide splash particles for the whole offscreen-pass block below (refraction
     //G-buffer, reflection, foam/exclusion orthos, CSM, caustics). They are
     //re-shown at the very end of tick so they appear only in the main render.
@@ -1037,6 +1117,13 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     if(self.camera !== self.parentComponent.el.sceneEl.camera){
       //Attach the scene camera if it does not exist yet
       self.camera = self.parentComponent.el.sceneEl.camera;
+      //⚠ AND RE-ENABLE OUR LAYER ON IT. Ocean meshes live on OCEAN_LAYER and off
+      //layer 0, so a camera that has not been told about that renders no water at
+      //all. The constructor enables it on whatever camera existed then; A-Frame
+      //swaps the scene camera on entering VR, on a <a-camera> being added late,
+      //and on look-controls rebuilding the rig — every one of which landed here
+      //with the new camera blind to the ocean.
+      self.camera.layers.enable(ARestlessOcean.OCEAN_LAYER);
     }
     const sceneCamera = self.camera;
     sceneCamera.getWorldPosition(self.globalCameraPosition);
@@ -1143,6 +1230,29 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         foamCameraXZ: self.terrainOrthoPass.foamCameraXZ,
         foamHalfWidth: ARestlessOcean.Passes.TerrainOrthoPass.FOAM_ORTHO_HALF_WIDTH
       });
+      //Publish the same field to a sibling terrain, by reference. It is how the
+      //underwater mirror pass cuts above-water ground out of its render: a-land
+      //carries no clipping chunks, so renderer.clippingPlanes never reached it,
+      //and a single clip PLANE would be the wrong shape anyway once a lake sits
+      //above an ocean. The clip itself stays disarmed until reflection-pass.js
+      //brackets its mirror render with setWaterClipEnabled — binding the field
+      //is not the same as switching it on, and the ordinary view must never be
+      //clipped. One call per frame for every patch at once.
+      if(self._terrainProvider === 'a-faraway-land'
+         && typeof ALand !== 'undefined' && ALand.runtime && ALand.runtime.TerrainMaterial
+         && ALand.runtime.TerrainMaterial.setWaterField
+         && self.waterFieldPass.cascades.length === 3){
+        const wfc = self.waterFieldPass.cascades;
+        ALand.runtime.TerrainMaterial.setWaterField({
+          cascades: [wfc[0].target.textures[0],
+                     wfc[1].target.textures[0],
+                     wfc[2].target.textures[0]],
+          centers: [{x: wfc[0].centerX || 0, y: wfc[0].centerZ || 0},
+                    {x: wfc[1].centerX || 0, y: wfc[1].centerZ || 0},
+                    {x: wfc[2].centerX || 0, y: wfc[2].centerZ || 0}],
+          halfWidths: [wfc[0].halfWidth, wfc[1].halfWidth, wfc[2].halfWidth]
+        });
+      }
     }
 
     //Show all of our ocean grid elements again
@@ -1353,12 +1463,84 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           self._uwReflSurfaceMurk.y * dDarkenY,
           self._uwReflSurfaceMurk.z * dDarkenZ
         );
-        self._oceanFog.near = -Math.max(waterSurfaceY, 0.001);   //< 0 selects ocean branch; |near| = waterline
+        //Waterline smuggled through fog.near. The SIGN is the ocean-branch gate
+        //(a-starry-sky's convention too), so the magnitude carries the height —
+        //and it must stay positive for the gate to hold.
+        //
+        //⚠ IT USED TO BE `-Math.max(waterSurfaceY, 0.001)`, WHICH SILENTLY
+        //DESTROYS ANY WATER LEVEL BELOW ZERO. A sea level of -150 clamped to
+        //0.001, so the shader placed the surface at y≈0 and computed
+        //uwCamDepth = uwSurfaceY - cameraPosition.y ≈ 151 m for a camera one
+        //metre under — full Beer-Lambert extinction over 151 m, i.e. a black
+        //screen in ankle-deep water, with the Snell's window in the wrong place
+        //to match. It hid for as long as it did only because every scene until
+        //now floated its water within a metre or two of y=0, where being
+        //clamped to zero is a small error rather than a catastrophic one.
+        //
+        //So bias the magnitude instead of clamping it — the same move fogFar
+        //already makes for its linear/sRGB flag (+10). Supports any surface
+        //above -SURFACE_Y_BIAS; float32 resolution at that magnitude is well
+        //under a millimetre, so the waterline loses nothing.
+        //A sibling terrain system gets the SAME fog, but through a typed channel
+        //rather than this smuggle. a-land's ground shader is its own — it inlines
+        //three's fog math instead of running whichever chunk is installed — so it
+        //never saw the ocean branch, and ran plain linear fog against our
+        //side-channel values instead: smoothstep(-9850, ~0.5, depth) saturates at
+        //every fragment, replacing the terrain wholesale with the murk colour and
+        //erasing its lighting (caustics included) after the fact. Handing it
+        //parameters keeps the MODEL here and the application there — nothing about
+        //how these numbers are derived crosses the boundary.
+        //
+        //⚠ IT MUST BE THE *FINISHED* MURK, NOT `_uwMurkScratch`. That vector is a
+        //PARAMETER, not a colour: the isotropic baseline `albedo·(E_sun+E_sky)/4π`
+        //at depth 0, which the fog chunk then finishes on the GPU by (a) re-weighting
+        //through the angular factor, (b) adding the isotropic multiple-scatter floor
+        //`uwMsRatio`, and (c) darkening by the CAMERA's depth. It is handed to the
+        //chunk raw because the chunk re-derives all three per fragment; handing the
+        //same vector to a sibling that uses it directly as "the colour a long path
+        //asymptotes to" under-shoots by roughly 2.5-3x before depth darkening even
+        //enters. That is a terrain that fades to near-black while the water it sits
+        //in fades to teal — the two visibly disagreeing at infinity.
+        //
+        //So evaluate the chunk's own `uwMurk` here, on the CPU, with the same three
+        //terms in the same order. The one thing that cannot be reproduced is the HG
+        //gaze term, which is per-fragment — but UW_MURK_GAZE_WEIGHT is 0.0 in BOTH
+        //shaders, which collapses `uwHGiso` to 1/4π and makes `uwAngFactor` the
+        //view-independent `2 - sunFrac`. ⚠ If that constant is ever raised, this
+        //stops being exact and the sibling needs the sun direction too.
+        if(self._landTerrainApi && typeof ALand !== 'undefined'
+           && ALand.runtime && ALand.runtime.TerrainMaterial
+           && ALand.runtime.TerrainMaterial.setOceanFog){
+          if(!self._uwLandMurk){ self._uwLandMurk = new THREE.Vector3(); }
+          const angFactor = 2.0 - sunFrac;          //4π·sunFrac·(1/4π) + 2·(1 - sunFrac)
+          const msRatioX = 4.0 * rInfA(albX) / Math.max(albX, 1e-4);
+          const msRatioY = 4.0 * rInfA(albY) / Math.max(albY, 1e-4);
+          const msRatioZ = 4.0 * rInfA(albZ) / Math.max(albZ, 1e-4);
+          self._uwLandMurk.set(
+            self._uwMurkScratch.x * (angFactor + msRatioX) * dDarkenX,
+            self._uwMurkScratch.y * (angFactor + msRatioY) * dDarkenY,
+            self._uwMurkScratch.z * (angFactor + msRatioZ) * dDarkenZ
+          );
+          ALand.runtime.TerrainMaterial.setOceanFog({
+            surfaceY: waterSurfaceY,
+            extinction: {x: extX, y: extY, z: extZ},
+            murk: self._uwLandMurk,
+            downwell: 1.0
+          });
+        }
+        const yBias = ARestlessOcean.Passes.UnderwaterFogChunk.SURFACE_Y_BIAS;
+        self._oceanFog.near = -Math.max(waterSurfaceY + yBias, 0.001);
         self._oceanFog.far = sunFrac;                            //> 0: sRGB-encoded output + |fogFar| = sunFrac
         self.scene.fog = self._oceanFog;
       } else if(self.scene.fog === self._oceanFog){
         //Surfaced (or chunk not injected): hand scene.fog back to A-Starry-Sky.
         self.scene.fog = (self._capturedSkyFog !== undefined) ? self._capturedSkyFog : null;
+        //...and stand the sibling terrain's underwater fog down with it, or the
+        //ground keeps its murk after we break the surface.
+        if(typeof ALand !== 'undefined' && ALand.runtime && ALand.runtime.TerrainMaterial
+           && ALand.runtime.TerrainMaterial.setOceanFog){
+          ALand.runtime.TerrainMaterial.setOceanFog(null);
+        }
       } else {
         //Above water: track whatever fog A-Starry-Sky currently wants mounted.
         self._capturedSkyFog = self.scene.fog;
@@ -1479,12 +1661,15 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           meterTex.needsUpdate = true;
         }
         uniformsRef.meteringSurveyTexture.value = meterTex;
+        uniformsRef.meteringSurveyValid.value = 1.0;
       }
       uniformsRef.causticMap.value = self.causticMap;
       uniformsRef.causticIntensityMultiplier.value = self.causticsStrength;
       uniformsRef.reflectionScale.value = self.reflectionScale;
       uniformsRef.reflectionDistanceFalloff.value = self.reflectionDistanceFalloff;
       uniformsRef.ssrMaxSteps.value = self.ssrMaxSteps;
+      uniformsRef.ssrSkyNormalBlend.value = self.ssrSkyNormalBlend;
+      uniformsRef.ssrMarchNormalBlend.value = self.ssrMarchNormalBlend;
       uniformsRef.fresnelDistanceRoughness.value = self.fresnelDistanceRoughness;
       uniformsRef.surfaceRoughness.value = self.surfaceRoughness;
       uniformsRef.specFresnelGate.value = self.specFresnelGate;
@@ -1498,6 +1683,18 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       uniformsRef.foamRenderMap.value = self.foamRenderMap;
       uniformsRef.exclusionMap.value = self.exclusionMap;
       uniformsRef.baseHeightOffset.value = self.heightOffset;
+      //WaterField cascades (Phase 1b) — see water-shader.glsl's waterFieldLevelAt.
+      if(self.waterFieldPass && self.waterFieldPass.cascades.length === 3){
+        const wfc = self.waterFieldPass.cascades;
+        uniformsRef.waterFieldCascade0.value = wfc[0].target.textures[0];
+        uniformsRef.waterFieldCascade1.value = wfc[1].target.textures[0];
+        uniformsRef.waterFieldCascade2.value = wfc[2].target.textures[0];
+        for(let ci = 0; ci < 3; ++ci){
+          uniformsRef.waterFieldCascadeCenter.value[ci].set(
+            wfc[ci].centerX || 0, wfc[ci].centerZ || 0);
+          uniformsRef.waterFieldCascadeHalfWidth.value[ci] = wfc[ci].halfWidth;
+        }
+      }
 
       // Update all directional lights for ambient scattering
       if(self.directionalLights.length > 0){

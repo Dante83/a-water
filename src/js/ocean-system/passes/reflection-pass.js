@@ -260,6 +260,34 @@ ARestlessOcean.Passes.ReflectionPass.prototype.renderUnderwaterReflection = func
   this.renderer.clippingPlanes = [this._reflClipPlane];
   this.renderer.localClippingEnabled = true;
 
+  //⚠ THE CLIP PLANE ABOVE DOES NOT REACH A SIBLING TERRAIN. Global clipping only
+  //applies to materials whose shaders carry three's clipping_planes chunks;
+  //a-land's terrain shader does not carry them and sets no `clipping` flag, so
+  //the entire island — everything above the waterline included — sailed straight
+  //into this RT and came back reflected on the underside of the water.
+  //
+  //It gets a clip of its own instead, and a better-shaped one: a per-fragment
+  //discard against the water-level FIELD rather than one plane, because a plane
+  //cannot describe a lake sitting fifty metres above the ocean it drains into —
+  //either the ocean floor gets cut away or dry lakeside stays in the mirror.
+  //ocean-grid.js binds the field every frame; this arms it for this render only.
+  //The ordinary view must never be clipped, hence the restore below.
+  const landMatClip = (typeof ALand !== 'undefined' && ALand.runtime && ALand.runtime.TerrainMaterial)
+    ? ALand.runtime.TerrainMaterial : null;
+  let prevLandWaterClip = false;
+  if(landMatClip && landMatClip.setWaterClipEnabled){
+    prevLandWaterClip = landMatClip.setWaterClipEnabled(true);
+  }
+  //This RT is linear HalfFloat with NoToneMapping (see below), and the ceiling
+  //composite applies MyAES once when it samples. Tell the sibling terrain, or its
+  //underwater branch sRGB-decodes a colour nothing encoded and tone-maps a second
+  //time. This is the typed twin of the `fogFar > 5.0` flag our own fog chunk reads
+  //out of the smuggle — same decision, without the smuggle.
+  let prevLandLinearOut = false;
+  if(landMatClip && landMatClip.setOceanFogLinearOutput){
+    prevLandLinearOut = landMatClip.setOceanFogLinearOutput(true);
+  }
+
   //Linear output (NoToneMapping) so the colour feeds straight into the
   //ceiling's linear composite without a tone-map / encode round-trip.
   this.renderer.toneMapping = THREE.NoToneMapping;
@@ -281,6 +309,12 @@ ARestlessOcean.Passes.ReflectionPass.prototype.renderUnderwaterReflection = func
 
   this.renderer.clippingPlanes = prevClippingPlanes;
   this.renderer.localClippingEnabled = prevLocalClipping;
+  if(landMatClip && landMatClip.setWaterClipEnabled){
+    landMatClip.setWaterClipEnabled(prevLandWaterClip);
+  }
+  if(landMatClip && landMatClip.setOceanFogLinearOutput){
+    landMatClip.setOceanFogLinearOutput(prevLandLinearOut);
+  }
   grid._oceanFog.far = prevFogFar;
   grid._oceanFog.color.setRGB(prevFogColorR, prevFogColorG, prevFogColorB);
   scene.fog = prevFog;
@@ -374,6 +408,18 @@ ARestlessOcean.Passes.ReflectionPass.prototype.renderAboveWaterTransmission = fu
   if(grid._capturedSkyFog !== undefined){
     scene.fog = grid._capturedSkyFog;
   }
+  //⚠ A SIBLING TERRAIN'S UNDERWATER FOG HAS TO COME OFF WITH scene.fog. This pass
+  //captures the world ABOVE the surface for the ceiling's Snell's window, so its
+  //ground is in air and must not be fogged as though it were submerged. a-land
+  //reads its own uniform rather than scene.fog (it inlines three's fog math), so
+  //the swap above does NOT reach it — leaving the window's terrain painted with
+  //underwater murk, which reads as a flat, missing window.
+  let prevLandOceanFog = false;
+  const landMat = (typeof ALand !== 'undefined' && ALand.runtime && ALand.runtime.TerrainMaterial)
+    ? ALand.runtime.TerrainMaterial : null;
+  if(landMat && landMat.setOceanFogEnabled){
+    prevLandOceanFog = landMat.setOceanFogEnabled(false);
+  }
 
   //Background swap — while submerged scene.background was set to the
   //murk colour; for this pass we want the captured above-water bg (the
@@ -397,6 +443,7 @@ ARestlessOcean.Passes.ReflectionPass.prototype.renderAboveWaterTransmission = fu
   this.renderer.render(scene, mainCamera);
 
   scene.fog = prevFog;
+  if(landMat && landMat.setOceanFogEnabled){ landMat.setOceanFogEnabled(prevLandOceanFog); }
   scene.background = prevBackground;
   this.renderer.setClearColor(s.clearColor, prevClearAlpha);
   this.renderer.toneMapping = prevToneMapping;

@@ -69,6 +69,12 @@ AFRAME.registerComponent('ocean-state', {
     //                   seabed murk works off a plain DirectionalLight +
     //                   HemisphereLight, no atmosphere dependency.
     'sky_provider': {type: 'string', default: 'auto'},
+    //terrain_provider: 'auto' | 'standalone' | 'a-faraway-land'. Symmetric to
+    //sky_provider above — see _resolveTerrainProvider in ocean-grid.js. When
+    //a-faraway-land is present, the WaterField seam (waterLevelAt/waterDepthAt)
+    //decodes real per-position level/depth from its tiles instead of the flat
+    //height_offset plane.
+    'terrain_provider': {type: 'string', default: 'auto'},
     'jonswap_gamma': {type: 'number', default: 3.3},
     'jonswap_fetch': {type: 'number', default: 100000.0},
     //Directional spreading turbulence: 0 = pure cos²(θ) (waves aligned to wind),

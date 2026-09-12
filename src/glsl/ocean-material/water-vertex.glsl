@@ -20,6 +20,65 @@ uniform float cascadePatchSizes[6];
 uniform vec2 cascadeSpatialOffsets[6];
 uniform float waveHeightMultiplier;
 uniform float chop;
+
+//WaterField cascades (Phase 1b) — see water-shader.glsl's waterFieldLevelAt
+//for the full explanation. Duplicated here rather than shared: vertex and
+//fragment are separate GLSL compilation units in three.js, and this file
+//already duplicates cascadeDisplacementTextures/cascadePatchSizes/
+//cascadeSpatialOffsets the same way, so this follows the existing pattern
+//rather than inventing a new one.
+//
+//THIS is the piece Phase 1b was missing at first: waterFieldLevelAt existed
+//and was correct, but nothing called it from here, so the actual REST
+//GEOMETRY of the ocean mesh never moved — only fragment-shader shading
+//terms (crest translucency, debug overlays) and camera-relative debug
+//queries (submersion probe, foam-ortho placement) ever read it. The mesh's
+//baked flat plane at baseHeightOffset was still what every vertex sat on,
+//so a lake at a different level never visibly raised.
+uniform float baseHeightOffset;
+uniform sampler2D waterFieldCascade0;
+uniform sampler2D waterFieldCascade1;
+uniform sampler2D waterFieldCascade2;
+uniform vec2 waterFieldCascadeCenter[3];
+uniform float waterFieldCascadeHalfWidth[3];
+
+float sampleWaterFieldCascade0(vec2 worldXZ){
+  vec2 uv = (worldXZ - waterFieldCascadeCenter[0]) / (2.0 * waterFieldCascadeHalfWidth[0]) + 0.5;
+  return texture2D(waterFieldCascade0, uv).r;
+}
+float sampleWaterFieldCascade1(vec2 worldXZ){
+  vec2 uv = (worldXZ - waterFieldCascadeCenter[1]) / (2.0 * waterFieldCascadeHalfWidth[1]) + 0.5;
+  return texture2D(waterFieldCascade1, uv).r;
+}
+float sampleWaterFieldCascade2(vec2 worldXZ){
+  vec2 uv = (worldXZ - waterFieldCascadeCenter[2]) / (2.0 * waterFieldCascadeHalfWidth[2]) + 0.5;
+  return texture2D(waterFieldCascade2, uv).r;
+}
+//Mirrors water-shader.glsl's waterFieldLevelAt exactly (point-containment,
+//finest -> coarse, smoothstep crossfade at cascade boundaries). Keep the two
+//in sync by hand if either changes — there is no shared-chunk mechanism in
+//this pipeline (see the comment above on why this is duplicated at all).
+float waterFieldLevelAt(vec2 worldXZ){
+  vec2 d0 = abs(worldXZ - waterFieldCascadeCenter[0]);
+  float hw0 = waterFieldCascadeHalfWidth[0];
+  float m0 = max(d0.x, d0.y);
+  if(m0 < hw0){
+    float level = sampleWaterFieldCascade0(worldXZ);
+    float edgeT = smoothstep(hw0 * 0.9, hw0, m0);
+    if(edgeT > 0.0) level = mix(level, sampleWaterFieldCascade1(worldXZ), edgeT);
+    return level;
+  }
+  vec2 d1 = abs(worldXZ - waterFieldCascadeCenter[1]);
+  float hw1 = waterFieldCascadeHalfWidth[1];
+  float m1 = max(d1.x, d1.y);
+  if(m1 < hw1){
+    float level = sampleWaterFieldCascade1(worldXZ);
+    float edgeT = smoothstep(hw1 * 0.9, hw1, m1);
+    if(edgeT > 0.0) level = mix(level, sampleWaterFieldCascade2(worldXZ), edgeT);
+    return level;
+  }
+  return sampleWaterFieldCascade2(worldXZ);
+}
 //Displacement-texture pixel resolution per side (RG=dh/dx,dh/dz storage).
 //Used here only to size the finite-difference epsilon for the per-vertex
 //normal estimate that drives normal-offset shadow bias.
@@ -75,6 +134,15 @@ void main() {
 
   offsetPosition += displacement;
 
+  //Phase 1b: shift this vertex's rest height from the mesh's baked flat
+  //plane (baseHeightOffset) to the real WaterField level at its position —
+  //a lake sitting above/below the surrounding ocean actually raises/lowers
+  //the geometry here, not just fragment shading. Sampled at the UNDISPLACED
+  //worldXZ (before `displacement` above), not vDisplacedPosition — sampling
+  //the wave-displaced position would make the shoreline crawl as waves move
+  //(see WATER-TYPES.md's FFT-displacement gotcha).
+  offsetPosition.y += (waterFieldLevelAt(worldXZ) - baseHeightOffset);
+
   //Set up our varyings
   vWorldXZ = worldPositionOfVertex.xz;
   vDisplacedPosition = offsetPosition;
@@ -119,6 +187,22 @@ void main() {
 
   //Add support for three.js fog
   #if(!$atmospheric_perspective_enabled)
+    //⚠ THE FOG CHUNK HERE IS OURS, NOT THREE'S. UnderwaterFogChunk replaces
+    //THREE.ShaderChunk.fog_vertex wholesale, and its body reads the two names
+    //three's original had in scope: `mvPosition` for view depth and
+    //`transformed` for the world position. This shader computes neither under
+    //those names, so without these the material fails to compile the instant
+    //anything sets scene.fog — which is precisely what going underwater does.
+    //Only reachable with atmospheric perspective OFF, because the other path
+    //excludes the fog chunks entirely, which is why it went unseen until a
+    //scene ran the standalone (no a-starry-sky) configuration underwater.
+    //`transformed` is pre-model so that the chunk's own
+    //`modelMatrix * vec4(transformed, 1.0)` lands on the same world position
+    //worldDisplacedPosition already computed above.
+    #ifdef USE_FOG
+      vec3 transformed = (instanceMatrix * vec4(offsetPosition, 1.0)).xyz;
+      vec4 mvPosition = viewMatrix * modelMatrix * vec4(transformed, 1.0);
+    #endif
     #include <fog_vertex>
   #endif
 

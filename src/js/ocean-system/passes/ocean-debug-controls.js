@@ -119,6 +119,23 @@ ARestlessOcean.installOceanDebugControls = function(grid){
     grid.setSsrMaxSteps = function(v){
       grid.ssrMaxSteps = +v;
     };
+    //How much ripple detail the SKY half of the SSR follows. 0 = the original
+    //macroNormal-only reflection (tracks the long swell only, reads as a mirror
+    //while the water ripples under it); 1 = full displacedNormal detail. The
+    //geometry raymarch always stays on macroNormal. A/B this against the horizon:
+    //if the far field sparkles, the cure is specNormal (cascade-5 low-passed),
+    //not a lower blend — see the note at the call site in water-shader.glsl.
+    grid.setSsrSkyNormalBlend = function(v){
+      grid.ssrSkyNormalBlend = +v;
+    };
+    //The same for the geometry raymarch — this is the one that governs whether a
+    //REFLECTED SHORELINE's silhouette breaks up with the waves or slides around as
+    //one rigid shape. 0 = the original macroNormal march. If turning this up makes
+    //the reflection noisy or stripey rather than merely detailed, that is the
+    //failure mode the original macroNormal choice was guarding against.
+    grid.setSsrMarchNormalBlend = function(v){
+      grid.ssrMarchNormalBlend = +v;
+    };
     grid.setReflectionDistanceFalloff = function(v){
       grid.reflectionDistanceFalloff = +v;
     };
@@ -270,6 +287,8 @@ ARestlessOcean.installOceanDebugControls = function(grid){
       window.setOceanEvsmLightBleedReduction = grid.setOceanEvsmLightBleedReduction;
       window.setReflectionScale = grid.setReflectionScale;
       window.setSsrMaxSteps = grid.setSsrMaxSteps;
+      window.setSsrSkyNormalBlend = grid.setSsrSkyNormalBlend;
+      window.setSsrMarchNormalBlend = grid.setSsrMarchNormalBlend;
       window.setReflectionDistanceFalloff = grid.setReflectionDistanceFalloff;
       window.setFresnelDistanceRoughness = grid.setFresnelDistanceRoughness;
       window.setSurfaceRoughness = grid.setSurfaceRoughness;
@@ -358,6 +377,135 @@ ARestlessOcean.installOceanDebugControls = function(grid){
         const f = grid.waterFieldPass;
         if(!f){ console.log('[waterField] pass not loaded'); return; }
         f.selfTest().then(function(msg){ console.log('[waterField selfTest] ' + msg); });
+      };
+      //Phase 1b: GPU cascade decode vs. a-land's own getWaterAt at the same
+      //world point. compareWaterField(x, z) prints one point's delta;
+      //testWaterFieldParity() sweeps a small grid and flags anything beyond
+      //float32 rounding — this must be byte-for-byte, not "close enough"
+      //(WATER-TYPES.md:449-451).
+      window.compareWaterField = function(x, z){
+        const f = grid.waterFieldPass;
+        if(!f){ console.log('[waterField] pass not loaded'); return; }
+        f.compareAgainstLandTerrain(x, z).then(function(r){
+          console.log('[waterField parity]', r);
+        });
+      };
+      window.testWaterFieldParity = function(radius, n){
+        const f = grid.waterFieldPass;
+        if(!f){ console.log('[waterField] pass not loaded'); return; }
+        if(!grid._landTerrainApi){ console.log('[waterField parity] no a-land terrain discovered'); return; }
+        const R = radius || 100, N = n || 5;
+        const cx = grid.globalCameraPosition.x, cz = grid.globalCameraPosition.z;
+        const jobs = [];
+        for(let i = 0; i < N; i++){
+          for(let j = 0; j < N; j++){
+            const x = cx + (i / (N - 1) * 2 - 1) * R;
+            const z = cz + (j / (N - 1) * 2 - 1) * R;
+            jobs.push(f.compareAgainstLandTerrain(x, z));
+          }
+        }
+        Promise.all(jobs).then(function(all){
+          let checked = 0, mismatches = 0;
+          for(const r of all){
+            if(r.deltaLevel === null) continue;
+            checked++;
+            if(Math.abs(r.deltaLevel) > 0.05 || Math.abs(r.deltaDepth) > 0.05){
+              mismatches++;
+              console.log('[waterField parity] MISMATCH at', r.x.toFixed(1), r.z.toFixed(1),
+                'deltaLevel', r.deltaLevel.toFixed(3), 'deltaDepth', r.deltaDepth.toFixed(3));
+            }
+          }
+          console.log('[waterField parity] ' + checked + ' points compared, ' + mismatches + ' mismatches'
+            + (checked === 0 ? ' (no wet points in range — try near the lake/ocean)' : ''));
+        });
+      };
+      //One-shot "why is the water wrong" dump. Covers the whole Phase 1b chain
+      //in one call: provider wiring, what the field holds, whether the SHADER
+      //can actually sample it, and the vertex delta that follows. The last two
+      //matter because probeAt reads the texel back directly and so cannot see a
+      //sampling failure — a float texture that is unfilterable on this GPU
+      //reads back fine and still samples as black in the shader.
+      window.diagnoseWaterField = function(x, z){
+        const f = grid.waterFieldPass;
+        const px = (x === undefined) ? grid.globalCameraPosition.x : x;
+        const pz = (z === undefined) ? grid.globalCameraPosition.z : z;
+        console.log('── WaterField diagnosis @', px.toFixed(1), pz.toFixed(1), '──');
+        console.log('terrain_provider   :', grid._terrainProvider);
+        console.log('landTerrainApi     :', grid._landTerrainApi ? 'found' : 'MISSING');
+        console.log('landDirector       :', grid._landDirector ? 'found' : 'MISSING');
+        console.log('landTerrainRoot    :', grid._landTerrainRoot ? 'found' : 'MISSING');
+        console.log('heightOffset       :', grid.heightOffset);
+        if(!f){ console.log('waterFieldPass     : MISSING'); return; }
+        console.log('OES_texture_float_linear:', f.floatLinearSupported,
+          f.floatLinearSupported ? '' : '  <- cascades fall back to NEAREST; before this fix they sampled BLACK');
+        for(let i = 0; i < f.cascades.length; ++i){
+          const c = f.cascades[i];
+          console.log('  cascade ' + i, 'half', c.halfWidth, 'centre',
+            c.centerX === undefined ? 'NEVER FILLED' : (c.centerX + ', ' + c.centerZ));
+        }
+        //Is the shader actually bound to the cascades? Find one ocean patch
+        //material and look at the uniforms the vertex shader reads.
+        let mat = null;
+        grid.scene.traverse(function(o){
+          if(!mat && o.isMesh && o.material && o.material.uniforms
+             && o.material.uniforms.waterFieldCascade0) mat = o.material;
+        });
+        if(!mat){
+          console.log('patch uniforms     : NO ocean material carries waterFieldCascade0'
+            + '  <- water-shader.js is stale, re-run create-shader.py');
+        } else {
+          const u = mat.uniforms;
+          console.log('patch uniforms     : cascade0 tex',
+            u.waterFieldCascade0.value ? 'bound' : 'NULL  <- never uploaded',
+            '| centre[0]', u.waterFieldCascadeCenter.value[0],
+            '| half[0]', u.waterFieldCascadeHalfWidth.value[0]);
+        }
+        const dec = f._tileDecodePass && f._tileDecodePass.decoder;
+        if(dec){
+          let ready = 0, loading = 0, dry = 0;
+          dec._cache.forEach(function(v){
+            if(v === 'loading') loading++; else if(v === 'dry') dry++; else ready++;
+          });
+          console.log('tile cache         :', ready, 'decoded,', loading, 'loading,', dry, 'dry');
+        } else {
+          console.log('tile decode pass   : NOT BUILT  <- a-land never reached the field');
+        }
+        //Submersion state: is the murk dark because we think we are far deeper
+        //than we are? Depth drives the camera-depth darkening, and view
+        //distance drives extinction — these two lines separate them.
+        const camY = grid.globalCameraPosition.y;
+        const surfY = grid.waterLevelAt(px, pz);
+        const probedY = grid._lastWaterSurfaceY;
+        console.log('camera Y           :', camY.toFixed(2));
+        console.log('surface Y here     :', surfY.toFixed(2),
+          '| last probed surface', probedY === undefined ? 'none yet' : probedY.toFixed(2));
+        console.log('submersion depth   :', (surfY - camY).toFixed(2), 'm',
+          (surfY - camY) > 0 ? '(underwater)' : '(above water)');
+        //Extinction scale: how far you can see before each channel is gone.
+        //1/absorption is the e-folding distance in metres.
+        //⚠ the Jerlov preset WINS over the explicit water_absorption vec3
+        //whenever water_type is non-zero, so report whichever actually applies.
+        const wt = grid.data.water_type | 0;
+        const preset = ARestlessOcean.JERLOV_PRESETS[wt];
+        const ab = preset ? preset.absorption : grid.data.water_absorption;
+        console.log('water_type         :', wt,
+          preset ? '(Jerlov preset — the explicit water_absorption vec3 is IGNORED)' : '(custom absorption)');
+        if(ab && ab.x){
+          console.log('e-fold distance    : R', (1 / ab.x).toFixed(1) + ' m,',
+            'G', (1 / ab.y).toFixed(1) + ' m,', 'B', (1 / ab.z).toFixed(1) + ' m',
+            ' <- past a few of these everything is black, whatever the depth');
+        }
+        const cpu = grid._landTerrainApi ? grid._landTerrainApi.getWaterAt(px, pz) : null;
+        console.log('CPU getWaterAt     :', cpu ? ('level ' + cpu.level.toFixed(2) + ', depth ' + cpu.depth.toFixed(2)) : 'null (dry / not loaded)');
+        f.probeAt(px, pz).then(function(r){
+          if(!r){ console.log('GPU probe          : no cascade covers this point'); return; }
+          console.log('GPU probe (texel)  : level', r.level.toFixed(2), 'depth', r.depth.toFixed(2), 'cascade', r.cascade);
+          const delta = r.level - grid.heightOffset;
+          console.log('vertex delta       :', delta.toFixed(2), 'm',
+            Math.abs(delta) > 50.0
+              ? '  <- ⚠ this is what moves the whole ocean surface; a large value here floods the world'
+              : '');
+        });
       };
       window.dumpWaterField = function(){
         const f = grid.waterFieldPass;

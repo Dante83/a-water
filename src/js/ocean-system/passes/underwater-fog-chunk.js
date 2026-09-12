@@ -51,6 +51,15 @@ ARestlessOcean.Passes.UnderwaterFogChunk = function(oceanGrid){
   this._sharedUwSunDir = null;
 };
 
+//Bias applied to the waterline riding in fog.near's magnitude, so that a sea
+//level BELOW y=0 survives the trip. fog.near's sign is the ocean-branch gate
+//and cannot carry data, and the previous encoding clamped the height positive,
+//which silently pinned every below-zero sea level to y≈0 — see the writer in
+//ocean-grid.js. Supports any surface above -SURFACE_Y_BIAS; at this magnitude
+//float32 still resolves well under a millimetre, so the waterline is exact for
+//any purpose the fog has. ⚠ Writer and reader must use this same constant.
+ARestlessOcean.Passes.UnderwaterFogChunk.SURFACE_Y_BIAS = 10000.0;
+
 //Install the standalone scaffold if this scene has no a-starry-sky to provide
 //the reservation slot. skyProvider is resolved by OceanGrid off DOM presence.
 ARestlessOcean.Passes.UnderwaterFogChunk.prototype.init = function(skyProvider){
@@ -124,10 +133,21 @@ ARestlessOcean.Passes.UnderwaterFogChunk.prototype.installStandaloneScaffold = f
     //path so underwater scene geometry matches the water surface and the
     //reflection (which both go through MyAES). a-starry-sky declares this itself
     //on its path, so this copy is standalone-only — the two scaffolds are never
-    //both installed, so there is no duplicate-symbol collision.
+    //both installed.
+    //
+    //⚠ BUT THE WATER SHADER IS A THIRD DECLARER. water-shader.glsl carries its
+    //own copy, and with atmospheric perspective OFF that shader also includes
+    //this chunk — so the standalone path put two bodies in one translation unit
+    //and the whole water material failed to link ("function already has a
+    //body") the moment scene.fog turned on, i.e. on going underwater. The guard
+    //makes whichever declaration lands first win; water-shader.glsl carries the
+    //matching pair.
+    '  #ifndef ARO_AES_TONEMAP',
+    '  #define ARO_AES_TONEMAP',
     '  vec3 MyAESFilmicToneMapping(vec3 color){',
     '    return clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), 0.0, 1.0);',
     '  }',
+    '  #endif',
     '#endif'
   ].join('\n');
   THREE.ShaderChunk.fog_fragment = [
@@ -289,7 +309,14 @@ ARestlessOcean.Passes.UnderwaterFogChunk.prototype.inject = function(){
     //then dark, matching the water colour. 1.0 = physically full attenuation;
     //lower toward 0 to keep deep geometry brighter/more visible (stylistic).
     'const float UW_DOWNWELL_STRENGTH = 1.0;',
-    'float uwSurfaceY = -fogNear;',
+    //Waterline, recovered from the fog.near smuggle. The sign is the ocean
+    //branch gate, so the height rides in the MAGNITUDE, biased by
+    //SURFACE_Y_BIAS — see the writer in ocean-grid.js for why a bias and not a
+    //clamp (a clamp silently flattened every below-zero sea level to y≈0, which
+    //made a one-metre dive read as a SURFACE_Y_BIAS-metre one and rendered
+    //black). Writer and reader share the constant below, so they cannot drift.
+    'float uwSurfaceY = -fogNear - ' +
+      ARestlessOcean.Passes.UnderwaterFogChunk.SURFACE_Y_BIAS.toFixed(1) + ';',
     //Path length is the true geometric distance through water (x the 1.0 scale
     //above). Direction-isotropic — a surface at the camera's own depth fogs the
     //same as one above or below it at the same range.

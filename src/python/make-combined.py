@@ -49,8 +49,11 @@ JS_FILE_NAMES = [
     #Render passes extracted from ocean-grid.js (Phase 0). Loaded BEFORE the grid
     #so its constructor can instantiate them; each is guarded there anyway.
     'ocean-system/passes/caustic-projection-pass.js',
+    'ocean-system/passes/foreign-terrain-twin.js',
     'ocean-system/passes/refraction-gbuffer-pass.js',
     'ocean-system/passes/terrain-ortho-pass.js',
+    'ocean-system/field/water-tile-decoder.js',
+    'ocean-system/passes/water-tile-decode-pass.js',
     'ocean-system/passes/water-field-pass.js',
     'ocean-system/passes/height-readback-pass.js',
     'ocean-system/passes/reflection-pass.js',
@@ -65,6 +68,7 @@ JS_FILE_NAMES = [
     'ocean-system/components/ocean-config/config-caustics.js',
     'ocean-system/components/ocean-config/config-reflection.js',
     'ocean-system/components/ocean-config/config-atmosphere.js',
+    'ocean-system/components/ocean-config/config-terrain.js',
     'ocean-system/components/ocean-config/config-shadow.js',
     'ocean-system/components/ocean-state.js',
     'ocean-system/components/a-restless-ocean.js',

@@ -8,6 +8,366 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
+## Phase 1b.5 — the a-faraway-land rendering seam — **written, not yet verified**
+
+2026-09-11, branch `multi-water-types`. Prompted by an underwater screenshot of
+`examples/demos/lake-ocean.html`: a choppy mirror of the terrain on the ceiling,
+a Fresnel that was clearly not a Fresnel, and reflections of a-land with no
+grass or rock in them. Five separate causes, four of them integration gaps.
+**Touches both repos** — a-land's changes are on its `multi-water-types` branch (`6db317b`).
+
+### 0. a-land's ocean-fog work only existed in the GENERATED file — fixed first
+
+`u_uwFogOn` appeared 3× in `a-faraway-land/src/js/runtime/shading/shaders.js`
+and **0×** in `src/glsl/terrain/terrain.frag`, whose own header says
+*"AUTO-GENERATED … Edit the .glsl sources, not this file."* The next
+`create-shader.py` run over there would have deleted the entire underwater-fog
+integration. Back-ported verbatim and diffed: every line of shader *code*
+round-trips exactly. The only differences are the four comment blocks, which
+were hand-written as JS comments and are now GLSL comments (the generator quotes
+every non-blank source line, comments included) — cosmetic, and correct.
+
+### 1. There was no underwater water without a sky provider — the screenshot
+
+`computeUnderwaterCeiling` and the `underwaterFactor` dispatch both lived inside
+`#if($atmospheric_perspective_enabled)`, purely because they were written next to
+the sky-radiance helpers. But `ocean-grid.js:616` computes
+`atmosphereReady = atmosphericPerspectiveEnabled && atmosphereFunctionsGLSL`, and
+that GLSL only ever comes from a-starry-sky — so **every scene without a sky
+provider compiled a water shader with no underwater branch at all.** A submerged
+camera ran the above-water pipeline, where `cosTheta` (the Schlick dot against a
+normal force-flipped upward twice) clamps to 0 on every ceiling fragment, pinning
+`fresnelFactor` at its horizon ceiling. `totalLight` became almost purely the SSR
+term: a screen-space mirror of the seabed, marched from underneath it. That is
+the whole screenshot — the "choppy ground reflection" was the SSR march, and the
+"messed up fresnel" was that clamp.
+
+Now: only `applyAtmosphericPerspective` is gated. The ceiling is unconditional,
+with a banner over it naming the trap. Verified by preprocessing the shader both
+ways — with atmosphere off the ceiling and its call site survive, sky radiance
+and AP are gone, and nothing is called that is not defined.
+
+Also here: SSR is skipped outright when submerged (its result was computed and
+then discarded on every underwater frame); the Fresnel normal is `faceforward`ed
+at the viewer so the term stays meaningful on both sides and debug mode 12 stops
+showing a white screen; and the shader's submersion test is now `>= 0.5` to match
+the CPU flip in `ocean-grid.js`, which it had disagreed with at exactly 0.5.
+
+### 2. The ortho bakes flattened a-land — no shore foam, no shore splash
+
+`terrain-ortho-pass.js` used `scene.overrideMaterial`, which replaces the VERTEX
+stage. a-land's patches share one `[0,1]²` grid at `y = 0` and place themselves
+from per-patch uniforms (`CDLODPatch.js:36-44`), so under an override every patch
+in the world collapsed onto a single 1 m quad at the origin — thousands of metres
+outside the foam ortho's own extent. The foam atlas saw **no a-land terrain at
+all**, silently, because a missing capture reads exactly like open water.
+
+The twin machinery the refraction G-buffer invented moved out into
+`passes/foreign-terrain-twin.js` (their vertex stage, our fragment stage, the
+no-varyings rule, the gl_FragCoord reconstruction prologue, the FIFO-capped
+cache, and the "is this foreign terrain" test). Both passes use it now. The ortho
+pass swaps per-mesh instead of overriding — everything still gets
+`positionPassMaterial`, foreign terrain gets a twin — inside a try/finally,
+because the scene is left mutated across the render.
+
+⚠ New file: registered in `make-combined.py`, both `islands.html`, and
+`lake-ocean.html`. Both `islands.html` are CRLF and gitignored; line endings were
+checked before and after.
+
+### 3. The mirror's clip plane never reached a-land
+
+`reflection-pass.js` cuts above-water geometry out of the TIR mirror with
+`renderer.clippingPlanes`, which only reaches materials carrying three's
+`clipping_planes` chunks. a-land's terrain shader carries none and sets no
+`clipping` flag, so the whole island — above the waterline included — landed in
+the mirror RT, which is exactly the artifact that block exists to prevent.
+
+Rather than add the clipping chunks, a-land got a **per-fragment clip against the
+water-level FIELD**, because a plane is the wrong shape: a lake at −100 above an
+ocean at −150 means one scalar either cuts submerged ocean floor away or leaves
+dry lakeside in the mirror. a-water publishes its three WaterField cascades by
+reference once a frame (`TerrainMaterial.setWaterField`), a-land samples them with
+the same finest-containing-cascade-plus-crossfade rule as `waterFieldLevelAt`, and
+`reflection-pass.js` arms the discard for the mirror render only
+(`setWaterClipEnabled`, returning the previous state exactly like
+`setOceanFogEnabled`). `renderer.clippingPlanes` stays for everything else.
+
+**The `// @inject:` registry was the nicer division and does not work here.** Only
+`ObjectMaterial` subscribes to `MaterialExtensions._notify`; terrain materials
+splice once at construction, so a sibling that loads after the first patches would
+reach only whichever patches the pool later recycled. Noted in both repos; fix that
+subscription and the GLSL could move back to a-water's side.
+
+### 4. a-land was a flat tan in the G-buffer — the missing grass and rock
+
+The geometry-only twin has to invent an albedo (`gbAlbedo = (0.5, 0.42, 0.32)`),
+because a-land's colour comes out of splat `sampler2DArray` blending inside the
+very fragment stage the twin replaces. SSR relights G-buffer hits, so every
+above-water reflection of a-land came back flat tan; so did the refracted seabed.
+
+a-land now carries a **surface-capture companion material**, built on exactly the
+same terms as its shadow-caster twin (`this.uniforms` by identity, same vertex
+source, same defines, same program cache key) with `ALAND_SURFACE_CAPTURE` added.
+Under that define `terrain.frag` returns early the moment `albedo` and `N` are
+final — before the PBR shading, the CSM lookups, the tone map and the fog — and
+writes a plain G-buffer: 0 = linear unlit albedo, 1 = world normal, 2 = linear
+view depth (carried exactly from `mvPosition` by a guarded varying, so skirt walls
+are right). Exposed as `userData.alandSurfaceCaptureMaterial`, disposed with the
+patch, and preferred by `refraction-gbuffer-pass.js` over its own twin whenever
+present. The twin stays as the fallback.
+
+### 5. The terrain and the water faded to different colours at infinity
+
+Spotted from a second screenshot, and it turned out to be a third thing entirely
+— **a-land is not missing the ocean fog. Its props have it right; only its ground
+had a simplified copy.** Three populations, two of which already agreed:
+
+| What | Fogged by | Model |
+| --- | --- | --- |
+| The water surface | `applyUnderwaterFog` + `underwaterInscatterSurface` | full, linear, pre-tonemap |
+| a-land's **props**, the seabed, the curtain, every `MeshStandardMaterial` | a-water's injected `THREE.ShaderChunk.fog_fragment` | full, linear round-trip |
+| a-land's **terrain ground** | its own inlined copy | the model minus three terms, in the wrong colour space |
+
+The ground has to inline it — it is GLSL3 and `fog_fragment` writes `gl_FragColor`,
+which it cannot `#include`. But the inlined copy diverged four ways:
+
+1. **`murk` was the wrong quantity.** `_uwMurkScratch` is a *parameter*, not a
+   colour: the isotropic baseline `albedo·(E_sun+E_sky)/4π` at depth 0, which the
+   fog chunk finishes on the GPU with an angular factor, a multiple-scatter floor
+   and camera-depth darkening. a-land was handed it labelled "the colour a long
+   path asymptotes to" and used it directly. At the demo's Jerlov 1C that is
+   **2.2–2.9× too dark before depth darkening even enters**, and the camera-depth
+   term alone is another ~0.17–0.43× at 5 m down, ~0.001–0.03× at 20 m.
+2. **It composited in display space against a linear constant.** The block runs
+   after `linearToOutputTexel`, so a linear murk of 0.02 was written raw into an
+   sRGB-encoded buffer — displaying at 0.02 where it should display at 0.152,
+   another **7.6×**. a-land's own `ALAND_STARRY_FOG` branch two lines below
+   already does the correct decode → composite → filmic → encode round-trip; the
+   ocean branch simply never did.
+3. **No tone map.** The chunk grades the fogged result through the same Narkowicz
+   ACES fit the water surface and a-starry-sky use. Terrain that grades
+   differently from the water it stands in is a seam at every shoreline.
+4. **No mirror-pass path split.** In the planar mirror the camera is above water
+   and its straight line to a fragment IS the bounce path, so only the
+   post-bounce leg belongs to the terrain — the water shader fogs the rest. a-land
+   fogged the whole length, double-counting the pre-bounce leg.
+
+Fixed on both sides, keeping the division intact. a-water now evaluates the
+chunk's own `uwMurk` on the CPU — `baseline · ((2 − sunFrac) + uwMsRatio) ·
+exp(−ext·camDepth)` — and hands over that. ⚠ The one term that cannot be
+reproduced CPU-side is the HG gaze factor, which is per-fragment; it is exact only
+because `UW_MURK_GAZE_WEIGHT` is `0.0` in both shaders, collapsing `uwAngFactor` to
+the view-independent `2 − sunFrac`. **Raising that constant breaks this** and the
+sibling would need the sun direction too; noted at both ends.
+
+a-land gained the round-trip (with *private* copies of the three grading helpers —
+the ocean branch is a runtime test on a uniform, so unlike the `ALAND_STARRY_FOG`
+branch its code compiles in scenes with three's stock fog chunk and no ocean at
+all, where borrowing `fogsRGBToLinear` would be a link failure), the path split,
+and a third typed setter `setOceanFogLinearOutput(on)` — the mirror RT is linear
+HalfFloat and must skip the grade, which is the typed twin of the `fogFar > 5.0`
+flag our own chunk reads out of the smuggle.
+
+### 6. The water reflected a black sky — "flat reflections"
+
+Reported as reflections that stay a perfect mirror instead of bending with the
+wave vertices. The ray direction was never the problem: `ssrReflectDir` comes off
+`macroNormal`, which is cascade-0 slope with no distance fade, and is fine.
+
+**The thing being sampled was constant.** `screenSpaceReflection`'s miss path has
+two branches and both need a sky provider. With atmospheric perspective on it
+calls `computeSkyRadiance` (a-starry-sky's LUTs); with it off it samples
+`meteringSurveyTexture` — which `ocean-grid.js:1641` only ever assigns from
+`self.skyDirector`. No sky provider, no assignment, and an unbound `sampler2D` is
+not an error in GL: three binds a default empty texture and every fetch returns
+black. So every SSR ray that missed geometry returned **the same black**
+regardless of `reflectDir`, which is exactly a mirror with no directional
+information in it. It also explains the far field reading dark navy under a pale
+blue sky — at grazing angles Fresnel weights that black reflection to ~1.
+
+The same shape of bug as item 1, one file over: a feature that silently needs
+a-starry-sky and degrades to a plausible-looking wrong answer without it.
+
+Fixed by giving the standalone path a sky worth reflecting —
+`computeStandaloneSkyRadiance`, built from the lights a-water already reads
+(`skyAmbientColor` as the hemispheric mean, spread into a horizon→zenith gradient
+weighted toward the horizon where a water reflection actually looks, plus a tight
+sun lobe so the glint lands). Crude beside a real atmosphere; the point is that it
+**varies with direction**. A new `meteringSurveyValid` uniform keeps the real
+metering survey preferred whenever a provider bound one, so the
+a-starry-sky-present-but-AP-off path is unchanged.
+
+### 6b. Two follow-ons from item 6, one of them self-inflicted
+
+**The sun disk I added to the standalone sky was wrong twice over — removed.**
+The water's sun reflection is already produced, by the Crest-style Phong lobe
+(`specular = brightestDirectionalLight * pow(specRdotL, specFallOff)`), which
+composites *alongside* the SSR reflection rather than through it. A disk inside
+`computeStandaloneSkyRadiance` was therefore a second, double-counted sun — and a
+second sun of the wrong shape, because that function is evaluated on a direction
+reflected off the SMOOTH normal. It rendered as one round mirror blob sitting on
+top of the real ripple-broken glitter path. Exactly what a screenshot of the sun
+track showed. The comment left behind says why nothing belongs there.
+
+**The sky reflection only ever tracked the long swell.** `ssrReflectDir` is
+`reflect(viewDir, macroNormal)`, and macroNormal is cascade-0-only — the big
+smooth swell. That is right for the *raymarch*: per-pixel normal jitter makes
+neighbouring fragments march into different depth footprints and the geometry
+reflection breaks into noise, which is why it was put there. It is wrong for the
+*sky miss*, where sub-metre ripple detail is the entire reason a sea surface
+glitters instead of mirroring. One direction was serving both.
+
+`screenSpaceReflection` now takes `marchDir` and `skyDir` separately. The march
+keeps macroNormal; the sky samples along a reflection off
+`mix(macroNormal, displacedNormal, ssrSkyNormalBlend)`, default 1.0, live-tunable
+via `window.setSsrSkyNormalBlend` so 0 reproduces the old behaviour exactly for an
+A/B. ⚠ If the far field sparkles, the cure is `specNormal` — whose cascade-5
+wide-eps low-pass exists precisely to stop that — not a lower blend. It is not
+used today only because it is built further down `main()` than the SSR call.
+
+### 6c. The other half of 6b — the MARCH normal
+
+Reported as a reflected silhouette that stays rigid while the water under it
+ripples, with the guess that SSR was working off the flat pre-displacement plane.
+Checked that first and it is not: `vDisplacedPosition = offsetPosition` in
+`water-vertex.glsl:148`, after all six cascades have been added, so the SSR ray's
+ORIGIN carries the full displacement. (Nor is it the horizon skirt — the skirt
+runs the same displaced `offsetPosition` and only pins `clipPos.z`.)
+
+The instinct was right about the effect though, and 6b only fixed half of it. That
+change split `screenSpaceReflection` into `marchDir` and `skyDir` and moved the
+SKY onto the detailed normal, but deliberately left the MARCH on `macroNormal` —
+quoting the original "avoids high-frequency per-pixel noise" comment. The march is
+exactly what decides where a reflected *shoreline* ends, so the half left behind
+was the half governing the reported symptom.
+
+`ssrMarchNormalBlend` now mirrors `ssrSkyNormalBlend`; both default to 1.0.
+They are separate knobs on purpose — the failure modes are opposite. Too much
+detail in the march scatters neighbouring fragments into different depth
+footprints (the noise the original comment guarded against, written before the
+blue-noise step jitter and the soft convergence/silhouette gates existed); too
+little in either is the flat-mirror look. **Setting both to 0 reproduces the
+pre-2026-09-11 reflection exactly.**
+
+### 7. Shoreline foam — diagnosed: the capture works, the scene has no wind
+
+**Resolved by mode 29: green, never cyan.** So item 2 did land — a-land's terrain
+reaches the foam atlas, the shore is found, and `shoreProximity` is correct. What
+is zero is the DRIVE term, and the reason is the scene, not the code:
+
+`lake-ocean.html` sets `<ocean-wind-x>0</ocean-wind-x>` / `<ocean-wind-y>0</ocean-wind-y>`.
+`ocean-grid.js:140-141` clamps that to 0.01 per axis (a guard against a degenerate
+spectrum), so the effective wind speed is ~0.014 m/s. `foamWindStart` is **10 m/s**,
+so `foamWindBias` is 0, and `fftFoamAmount = clamp((turbulence - 0.5) * 4, 0, 1)`
+needs `turbulence > 0.5` — a hard fold — to produce anything. The shore drive,
+`turbulence * 2.5 + fftFoamAmount * 0.5`, collapses to `turbulence * 2.5` on a sea
+with no energy in it. No wind, no breaking, no foam. Working as written.
+
+Note the shore term fires EARLIER than open-water whitecaps by design (×2.5 on
+turbulence against a 0.5 threshold), so any real wind should show shore foam before
+the open sea starts capping.
+
+Two things follow that are worth not confusing with a bug:
+
+- **The white specks on the open water in these screenshots are specular glint, not
+  foam.** At this wind `fftFoamAmount` is ~0 everywhere.
+- **There is no swash/run-up foam in the model at all.** Shore foam is keyed
+  entirely to wave-breaking — deliberately, per the comment at the block: *"gated
+  by wave action, not a static shallow-water belt"*. A real beach foams on a calm
+  day from run-up; this will not. That is Phase 3 ("shorelines that break")
+  territory, not a defect in what exists.
+
+Debug mode 29 stays — it is what settled this, and it will settle the next one.
+
+### 7b. The mode-29 instrument (kept)
+
+Item 2 was supposed to fix this and evidently did not, or not fully. The chain has
+two independent halves that fail identically from the outside — the ortho CAPTURE
+(did the terrain reach the atlas?) and the wave-action DRIVE
+(`turbulence*2.5 + fftFoamAmount*0.5`, and this demo runs at wind 0) — and every
+static check on the capture half passes: the twin writes `vec4(worldPos, 1.0)` so
+`.g` is world Y and `.a` is 1 exactly as `positionPassMaterial` did, the RT clears
+to alpha 0, a-land's patches are `frustumCulled = false` on layer 0, and the
+gl_FragCoord unprojection is correct for an orthographic camera (its inverse
+projection is affine, so the w-divide is a no-op).
+
+Guessing further without running it would be inventing a cause. **Debug mode 29**
+was added instead: it renders the gate itself, so one screenshot says which half
+is at fault — red at a visible shoreline is capture, green-without-blue is drive.
+See `DEBUG_MODES.md`.
+
+One known real limitation is already logged below under "Found while wiring this":
+the foam ortho's near plane sits at `heightOffset + foam_camera_height`, so in
+this demo it cannot see anything above y = −120 — the ocean shore at −150 is
+inside that window, but the lake shore at −100 is not.
+
+### Also
+
+- `camera.layers.enable(OCEAN_LAYER)` was constructor-only while the tick
+  re-reads `sceneEl.camera` every frame — a camera swap (VR, a late `<a-camera>`,
+  look-controls rebuilding the rig) left the new camera blind to the ocean.
+- `_isExternalTerrain`'s ancestry test caught everything under
+  `<a-land-terrain>`'s `object3D`, `ObjectInstancer`'s prop group included. The
+  marker test now comes first and the ancestry test is documented as the broader
+  fallback.
+- Debug mode 35's TIR threshold was `< 0.25` where production uses `< 0.0001`;
+  they disagreed at the window rim, which is the one place the mode is consulted.
+- New modes **27** (`underwaterFactor` as a continuous ramp — there was no way to
+  see the value, only the binary) and **28** (the ceiling normal `-displacedNormal`,
+  which mode 18 can never show). `DEBUG_MODES.md` updated.
+
+### ⚠ Outstanding — needs Dante
+
+1. **`create-shader.py` in BOTH repos.** a-water: `water-shader.glsl`. a-land:
+   `terrain.vert` + `terrain.frag`. Neither generated file has been touched here.
+   Pre-flighted by simulating both generators into a scratch file: both outputs
+   parse as JS, both shaders stay `#if`/`#endif` balanced, and a-water's
+   round-trips to byte-identical GLSL ignoring blank lines.
+2. **Browser verification** — nothing here has been run. The per-phase checks are
+   in the plan file; the short version is in § Verification below.
+3. **`ocean-grid.js:1048` ships `side = BackSide` underwater under a comment that
+   documents `DoubleSide` and records `BackSide` as the value that "turned the
+   ceiling invisible from below".** One of the two is stale. Deliberately not
+   touched — this needs whoever remembers which way round it went.
+
+### Found while wiring this, deliberately NOT fixed
+
+**The foam ortho's vertical window is still anchored to the one flat
+`heightOffset`, so the lake gets no shore foam even now.** Both ortho cameras sit
+at `heightOffset + foam_camera_height` with `near = 0.1`
+(`terrain-ortho-pass.js:118`). In `lake-ocean.html` that is y = −120 looking down,
+so the atlas captures y ∈ [−120, −650]: the ocean shore at −150 is inside it and
+will now appear (it never did before item 2), but the lake shore at −100 sits
+*above the near plane* and is still invisible to it.
+
+This is not an a-land problem and item 2 does not claim to fix it — it is exactly
+the assumption WATER-TYPES.md § "Single-ocean assumptions that must break" lists:
+`heightOffset` is one scalar consumed by both ortho cameras. Fixing it means
+deciding what a per-body ortho even means (one atlas per body? a camera that
+follows the local field?), which is Phase 2's call, not a side effect of this one.
+
+### Verification
+
+On `examples/demos/lake-ocean.html`, served over http:
+
+- **Dive.** The ceiling must be a Snell window with a TIR ring, not a mirror of
+  the ground. Walk `setOceanShadowDebug(50 … 55)`. Mode 12 must stop being white.
+  Mode 27 should ramp cleanly through the waterline; mode 28 should be mode 18's
+  negative.
+- **Mode 50** (raw mirror RT) must show only submerged terrain. Swim lake → ocean
+  across the ridge and check neither body's clip cuts into the other's floor.
+- **Surface, look at a shoreline.** The foam ring must appear around a-land's
+  coast — it never has. `compareWaterField(x, z)` / `testWaterFieldParity()` must
+  still agree with `getWaterAt`. Rotate on the spot: the snap gate must still
+  suppress re-renders.
+- **Reflections above water** must show grass and rock, not flat tan. Mode 11 too.
+- **Regressions.** `terrain-provider="standalone"` (or remove `<a-land-terrain>`)
+  → the ocean renders exactly as before, a flat plane at `ocean-height-offset`.
+  Then the same dive on `examples/personal-ocean/islands.html`, which *has*
+  a-starry-sky, to prove the atmosphere-on path is unchanged.
+
+---
+
 ## Phase 1a — the WaterField seam — **landed**
 
 Branch `phase-1-water-field`, 2026-09-07. Nine commits. **No visual change by
