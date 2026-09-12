@@ -9,8 +9,17 @@
 //one skirt Y, one clip plane. WaterField replaces the scalar with a FIELD:
 //camera-following, world-anchored cascade render targets carrying, per texel:
 //
-//    RT0:  level    depth     flow.x    flow.z
-//    RT1:  energy   type      shoreSDF  dryMask
+//    RT0:  level    depth     shoreSDF  dryMask     "where is water"
+//    RT1:  flow.x   flow.z    energy    type        "what is it doing"
+//
+//PHASE 2 RE-LAYOUT. Until Phase 2 RT0 carried flow and RT1 carried shoreSDF/
+//dryMask. The water material cannot bind a second set of three cascade
+//samplers: it already sits at ~31 texture units, which is the whole budget on
+//a 32-unit GPU (three counts units per PROGRAM, both stages together). The
+//surface needs level, depth, shore distance and dryness at every vertex and
+//fragment; flow is for the Phase 4 ribbons, which have their own material. So
+//everything the surface reads lives in RT0, and a-land's clip keeps reading
+//RT0.r unchanged.
 //
 //`shoreNormal` is deliberately NOT stored — it is normalize(gradient(shoreSDF)),
 //cheaper to derive where it is sampled than to carry two more channels.
@@ -168,8 +177,8 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.init = function(){
     //for why this is deliberately dumb in Phase 1a.
     fragmentShader: [
       'precision highp float;',
-      'layout(location = 0) out vec4 gLevelDepthFlow;',
-      'layout(location = 1) out vec4 gClass;',
+      'layout(location = 0) out vec4 gSurface;',
+      'layout(location = 1) out vec4 gMotion;',
       'in vec2 vUv;',
       'uniform vec2 uCascadeCenter;',
       'uniform float uCascadeHalfWidth;',
@@ -196,10 +205,11 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.init = function(){
       //not, we are over open water and keep the open-ocean depth.
       '    if(terrain.y > 0.5) depth = max(0.0, level - terrain.x);',
       '  }',
-      '  gLevelDepthFlow = vec4(level, depth, 0.0, 0.0);',
-      //energy 0 and dryMask 0: standalone has no turbulence field and no notion
-      //of a deliberately-dry basin. shoreSDF stays 0 until Phase 1c derives it.
-      '  gClass = vec4(0.0, uWaterType, 0.0, 0.0);',
+      //shoreSDF 0 (the compose pass derives it) and dryMask 0: standalone has
+      //no notion of a deliberately-dry basin.
+      '  gSurface = vec4(level, depth, 0.0, 0.0);',
+      //Still water, no turbulence field.
+      '  gMotion = vec4(0.0, 0.0, 0.0, uWaterType);',
       '}'
     ].join('\n'),
     depthTest: false,
@@ -334,8 +344,8 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
     vertexShader: vertexShader,
     fragmentShader: [
       'precision highp float;',
-      'layout(location = 0) out vec4 gLevelDepthFlow;',
-      'layout(location = 1) out vec4 gClass;',
+      'layout(location = 0) out vec4 gSurface;',
+      'layout(location = 1) out vec4 gMotion;',
       'uniform sampler2D uFieldA, uFieldB, uSeedTex;',
       'uniform float uTexel, uNoShore;',
       'void main(){',
@@ -345,8 +355,8 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
       '  vec4 s = texelFetch(uSeedTex, p, 0);',
       '  float side = a.g > 0.0 ? 1.0 : -1.0;',
       '  float dist = s.a > 0.5 ? distance(vec2(p), s.xy) * uTexel : uNoShore;',
-      '  gLevelDepthFlow = a;',
-      '  gClass = vec4(b.r, b.g, side * dist, b.a);',
+      '  gSurface = vec4(a.r, a.g, side * dist, a.a);',
+      '  gMotion = b;',
       '}'
     ].join('\n'),
     depthTest: false,
@@ -523,7 +533,8 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.cascadeIndexFor = function(x, z){
 //
 //Pass {async: true} to use the PBO path anyway — useful only for demonstrating
 //the collision.
-//Returns {level, depth, flowX, flowZ, cascade} or null.
+//Returns {level, depth, shoreSDF, dryMask, flowX, flowZ, energy, type, cascade,
+//texelX, texelZ} or null.
 ARestlessOcean.Passes.WaterFieldPass.prototype.probeAt = function(x, z, opts){
   const self = this;
   const i = this.cascadeIndexFor(x, z);
@@ -538,10 +549,10 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.probeAt = function(x, z, opts){
   //actually decoded at. Up to half a texel from (x, z); see compareAgainstLandTerrain.
   const texelX = c.centerX - c.halfWidth + (px + 0.5) * c.texel;
   const texelZ = c.centerZ - c.halfWidth + (py + 0.5) * c.texel;
-  const pack = function(b, k){
-    const out = {level: b[0], depth: b[1], flowX: b[2], flowZ: b[3], cascade: i,
+  const pack = function(s, m){
+    const out = {level: s[0], depth: s[1], shoreSDF: s[2], dryMask: s[3], cascade: i,
       texelX: texelX, texelZ: texelZ};
-    if(k){ out.energy = k[0]; out.type = k[1]; out.shoreSDF = k[2]; out.dryMask = k[3]; }
+    if(m){ out.flowX = m[0]; out.flowZ = m[1]; out.energy = m[2]; out.type = m[3]; }
     return out;
   };
 
@@ -583,8 +594,8 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._copyAttachment = function(c, ind
 //Synchronous full readback of one cascade, both attachments. Debug-only (the
 //shore survey and overlay): two 512² float reads stall the GPU. Same
 //PIXEL_PACK_BUFFER guard as probeAt, for the same reason.
-//Returns {a: Float32Array (level depth flowX flowZ), b: Float32Array (energy
-//type shoreSDF dryMask), res, centerX, centerZ, halfWidth, texel} or null.
+//Returns {a: Float32Array (level depth shoreSDF dryMask), b: Float32Array (flowX
+//flowZ energy type), res, centerX, centerZ, halfWidth, texel} or null.
 //Row 0 is the cascade's min-Z edge, column 0 its min-X edge.
 ARestlessOcean.Passes.WaterFieldPass.prototype.readCascade = function(index){
   const c = this.cascades[index | 0];

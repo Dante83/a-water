@@ -587,14 +587,14 @@ ARestlessOcean.installOceanDebugControls = function(grid){
       //⚠ a-land depth saturates at simulation.maxDepth; texels at the cap only
       //bound the slope from below, and are counted as `saturated`.
       const collectShoreSlopes = function(field, maxDepth){
-        const res = field.res, a = field.a, b = field.b;
+        const res = field.res, a = field.a;
         const rimTexels = Math.ceil(SHORE_RIM_MARGIN / field.texel);
         const out = [];
         let saturated = 0;
         for(let row = rimTexels; row < res - rimTexels; ++row){
           for(let col = rimTexels; col < res - rimTexels; ++col){
             const o = (row * res + col) * 4;
-            const depth = a[o + 1], sdf = b[o + 2];
+            const depth = a[o + 1], sdf = a[o + 2];
             if(!(depth > 0.0) || sdf <= 0.0 || sdf > SHORE_BAND_MAX) continue;
             if(maxDepth && depth >= maxDepth * 0.98) saturated++;
             out.push({sdf: sdf, depth: depth, tanB: depth / Math.max(sdf, 0.5 * field.texel)});
@@ -714,7 +714,7 @@ ARestlessOcean.installOceanDebugControls = function(grid){
             for(let col = 0; col < res; ++col){
               //Row 0 of the readback is the cascade's min-Z edge — drawn at the top, so -Z is up.
               const o = (row * res + col) * 4;
-              const depth = field.a[o + 1], sdf = field.b[o + 2], dry = field.b[o + 3];
+              const depth = field.a[o + 1], sdf = field.a[o + 2], dry = field.a[o + 3];
               let r = 0, g = 0, bl = 0;
               if(mode === 'dry'){
                 if(depth > 0.0){ r = 40; g = 110; bl = 220; }
@@ -740,8 +740,8 @@ ARestlessOcean.installOceanDebugControls = function(grid){
                 //clean 1-px line. A modulo window instead aliases — texels whose
                 //distance lands exactly on k+0.5 (every axis-aligned run) miss it.
                 const band = Math.floor(sdf / isoStep);
-                const right = col < res - 1 ? field.b[o + 4 + 2] : sdf;
-                const down = row < res - 1 ? field.b[o + res * 4 + 2] : sdf;
+                const right = col < res - 1 ? field.a[o + 4 + 2] : sdf;
+                const down = row < res - 1 ? field.a[o + res * 4 + 2] : sdf;
                 if(Math.floor(right / isoStep) !== band || Math.floor(down / isoStep) !== band){ r = r * 0.55; g = g * 0.55; bl = bl * 0.55; }
                 if(Math.abs(sdf) <= field.texel){ r = 255; g = 255; bl = 255; }
               }
