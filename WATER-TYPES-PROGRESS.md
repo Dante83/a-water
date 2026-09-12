@@ -8,6 +8,135 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
+## Phase 1c — shore distance, authoritative dry, edit invalidation — **written, headless-verified, not yet browser-verified**
+
+2026-09-12, branch `phase-1c-shore-field` off `multi-water-types`. Closes out
+Phase 1: the two RT1 channels that had been hard-wired to 0 since 1a, plus the
+cache invalidation the plan promised. **No GLSL and no regen.** The water shader
+does not read RT1 yet; Phase 3 will be the first consumer.
+
+### What shipped
+
+**`shoreSDF`** (RT1.b): signed distance to the nearest wet/dry boundary in
+**metres**, positive over water and negative over land. It comes from a jump flood
+over each cascade's *finished* depth (base fill + tile decode):
+
+- The base fill and tile decode now render into one shared scratch MRT, and a
+  compose pass writes the cascade. `c.target` keeps its identity, so every texture
+  already handed out (water-shader uniforms, a-land's `setWaterField`) stays valid.
+- **Seeds are boundary points, not texels.** A texel whose wetness differs from a
+  4-neighbour seeds the point half a texel toward that neighbour, which is where
+  the shoreline actually is. Both sides seed the same point, so one flood serves
+  land and water, and the sign comes from the texel's own wetness. Seeding texel
+  centres would make every distance a texel short on one side.
+- Seed + 10 flood steps (256…1, plus JFA+1) + compose = 12 fullscreen 512² draws
+  per refilled cascade. When a cascade holds no shore at all, the value is
+  ±2·halfWidth.
+
+**`dryMask`** (RT1.a), which fixes a real bug. The decode pass used to
+`discard` dry footprints, leaving the standalone base fill underneath (sea level +
+foam-ortho depth). **Any texel a-land says is dry but whose ground sits below sea
+level was flooded by the fallback plane**: Dry Zones, dammed bays, whole known-dry
+tiles. A loaded tile is now authoritative, and dry is written:
+`level = sea level` (the same value the base fill wrote, so the level blend at a
+shoreline is unchanged), `depth = flow = energy = 0`, `dryMask = 1`. Tiles a-land
+answers as dry in full (absent from `wetTiles`, or 404) are drawn as a
+`uForceDry` quad without fetching. Only tiles still **loading** are skipped, and
+`tilesIntersecting` is now clamped to `map.json` `bounds.size`, so the ocean
+outside the world stays standalone.
+
+`dryMask` semantics: **1 = the provider says dry; 0 = wet, or no answer yet.**
+`depth == 0` is still the discard. `dryMask` is what separates known from guessed.
+
+**Edit invalidation.** a-land's `WorldAuthority` (`core/world-authority.js`)
+already fans out `tileInvalidate` for every brush stroke and layer replay. That
+*is* the tile-event source contract §3 promised, so there's no polling and no
+a-land change. `ocean-grid.js` subscribes when the director is discovered and
+forces the terrain ortho (`TerrainOrthoPass.invalidate()`, new) plus the field.
+This runs before the ortho tick, so the field refills against a fresh capture,
+throttled to 150 ms during a stroke with a trailing refresh 400 ms after the last
+event (a-land re-composites the edited height tiles over the next few frames). The
+decoder's water-tile cache is deliberately left alone, because baked water tiles
+don't change with a brush stroke.
+
+### Findings worth keeping
+
+- **A-Frame 1.7's three has no `textureIndex` on `readRenderTargetPixels`.** It
+  only reads COLOR_ATTACHMENT0, so RT1 can only be read back through a copy
+  (`_blitMaterial` → `_readTarget`). `probeAt` and `readCascade` both do that.
+- **three injects no `pc_fragColor` for `glslVersion: GLSL3`**, so declaring
+  `layout(location = 0) out` on a single-attachment material is safe. It was
+  checked in the minified bundle before relying on it.
+- Each cascade's SDF sees only shores **inside its own footprint**: near a cascade
+  rim it overestimates. Consumers must crossfade cascades as `waterFieldLevelAt`
+  does, and the survey ignores the outer 40 m.
+
+### Debug surface
+
+`probeWaterField` now prints `shoreSDF / dryMask / type / energy`.
+`dumpWaterField` prints the last refill CPU time. New:
+`setShoreFieldEnabled(b)` (perf A/B), `showShoreField(cascade, 'sdf'|'dry'|'slope')`
+/ `hideShoreField()` (top-right canvas overlay), and **`surveyShore({wind, cascade})`**.
+All are documented in `DEBUG_MODES.md` § "WaterField console helpers".
+
+**`surveyShore` exists to answer "is this world too steep for surf?"** It reports
+the mean nearshore slope `tanβ = depth / shoreSDF` in 0–5 / 5–20 / 20–40 m bands
+and the share of cliff shoreline (>10 m deep within 5 m). It then classifies the
+0–15 m band by Iribarren `ξ = tanβ / √(Hs/L0)` into Battjes' spilling / plunging /
+surging, and prints the breaker depth (`Hs/0.78`) and surf-zone width at the median
+slope. `Hs`/`Tp` use the live spectrum's own formulas, evaluated at the live wind
+**and** a reference 12 m/s: `lake-ocean.html` runs at wind 0, where every shore
+trivially "surges". A surf zone narrower than 2 texels is flagged, because Phase 3
+breakers could not resolve it. ⚠ a-land depth saturates at `simulation.maxDepth`,
+so texels at the cap only bound the slope from below, and the survey counts them.
+
+### Verified headless (real WebGL2, SwiftShader, the actual pass files)
+
+A scratch harness built a synthetic 1:10 island (shore radius 100 m) in a fake
+foam ortho, then a fake a-land tile pair: one wet tile, and one known-dry tile over
+ground *below* sea level.
+
+- All six new shaders compile, with no GL errors or warnings.
+- `shoreSDF` is within half a texel of analytic: 150 m out → 50.5, 0.5 m past the
+  shore → 0.5, island centre → −98.7, diagonal (180, 180) → 154.9 vs 154.6.
+  Coarse cascades agree at their own texel size.
+- Survey slope logic: mean `tanβ` over 5–40 m = **0.102** on the 0.1 beach.
+- Decode: wet tile → level −140.00, depth 3.99, type 1, dryMask 0. **Known-dry
+  tile over below-sea-level ground → depth 0, dryMask 1**, where the old discard
+  would have left 5 m of fallback water.
+- `installOceanDebugControls` on a stub grid. `surveyShore()` on the 1:10 island:
+  slope bands 0.110 / 0.103 / 0.102. At the 12 m/s reference it gives Hs 4.41 m,
+  Tp 6.6 s, **95% spilling**, and a surf zone of ~54 m (hand calculation: ξ ≈ 0.39,
+  ~56 m). The live near-zero wind prints "calm, no breakers" instead of a
+  meaningless classification. All three `showShoreField` modes were rendered and
+  inspected. The first isoline test (a modulo window) aliased into a visible axis
+  cross, because axis-aligned distances land exactly on k+0.5; it is now a
+  neighbour-crossing contour.
+
+### ⚠ Outstanding — needs Dante
+
+1. **Browser check on `lake-ocean.html`**, including the still-unverified 1b.5
+   list below. Short version: `showShoreField(0,'sdf')` should hug both the ocean
+   coast and the lake rim and not jump while panning; `showShoreField(0,'dry')`;
+   paint a stroke at a shoreline and watch the overlay update without moving the
+   camera; `testWaterFieldParity()` still agrees on wet points.
+2. **`surveyShore()` at a few coasts.** Its numbers decide what comes next: mostly
+   plunging/spilling with a surf zone of several metres → Phase 2 then 3; mostly
+   surging/cliff → beach-shaping tooling in a-faraway-land first.
+3. **Perf while flying:** `dumpWaterField()` refill time with
+   `setShoreFieldEnabled(true)` vs `false`. Cascade 0 refills once per metre.
+
+### Carry into Phase 2
+
+- **a-land depth caps at `maxDepth` (50 m here).** Standalone used 1000 m for open
+  ocean; inside the world the decode is authoritative and says 50. TMA must not
+  read that as a shallow sea (50 m already attenuates swell longer than ~100 m).
+  Likely fix: `max(decoded, standalone)` where the decoded depth is at the cap.
+- No CPU mirror of `shoreSDF` yet. The first CPU consumer (`_emitShore` in Phase
+  3) decides whether it's a readback or a CPU distance transform over tile data.
+
+---
+
 ## Phase 1b.5 — the a-faraway-land rendering seam — **written, not yet verified**
 
 2026-09-11, branch `multi-water-types`. Prompted by an underwater screenshot of
