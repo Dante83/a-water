@@ -319,7 +319,9 @@ ARestlessOcean.installOceanDebugControls = function(grid){
             '| level', r.level.toFixed(2),
             '| depth', r.depth.toFixed(2),
             '| flow', r.flowX.toFixed(2), r.flowZ.toFixed(2),
-            '| expect level ==', grid.heightOffset, '(height_offset) in Phase 1a');
+            '| shoreSDF', r.shoreSDF === undefined ? '?' : r.shoreSDF.toFixed(2) + ' m',
+            '| dryMask', r.dryMask,
+            '| type', r.type, '| energy', r.energy === undefined ? '?' : r.energy.toFixed(3));
           //Same texel through the async PBO path, for comparison. If this
           //disagrees with the sync read above, the PBO collision is real.
           f.probeAt(px, pz, {async: true}).then(function(a){
@@ -517,6 +519,247 @@ ARestlessOcean.installOceanDebugControls = function(grid){
             'texel', c.texel.toFixed(2) + ' m',
             'centre', c.centerX === undefined ? 'NEVER FILLED' : (c.centerX.toFixed(1) + ', ' + c.centerZ.toFixed(1)));
         }
+        console.log('[waterField] shore field', f.shoreFieldEnabled ? 'ON' : 'OFF',
+          '| last refill tick', f.lastRefillMs.toFixed(2) + ' ms CPU (GL is async — compare ON vs OFF, not absolute)');
+      };
+      //Perf A/B for the Phase 1c jump flood. Off = shoreSDF reads "no shore".
+      window.setShoreFieldEnabled = function(on){
+        const f = grid.waterFieldPass;
+        if(!f) return;
+        f.shoreFieldEnabled = !!on;
+        f.invalidate();
+      };
+
+      //── Shore field (Phase 1c) ────────────────────────────────────────────
+      //showShoreField(cascade, mode, opts)  mode: 'sdf' | 'dry' | 'slope'
+      //  Draws one cascade into a top-right canvas (clear of the shader's own
+      //  corner panels and top strip). -Z is UP, +X is right, the
+      //  camera is the white dot at the centre (the cascades follow it).
+      //  sdf   : blue = water, brown = land, darker = farther from the shore,
+      //          a thin line every 10 m, white on the shoreline itself.
+      //  dry   : blue = wet, red = a-land SAYS dry (dryMask 1), grey = dry by
+      //          fallback only (no provider answer), black = outside the world.
+      //  slope : the surveyShore() classes, per wet texel within 40 m of shore —
+      //          green spilling, yellow plunging, orange surging, red cliff.
+      //  opts.wind  reference wind (m/s) for 'slope' (default: live wind, or 12
+      //             when the live wind is too calm to make surf)
+      //  opts.live  re-draw every N ms (each draw is a synchronous 512² float
+      //             readback — a debug stall, not something to leave running)
+      //hideShoreField() removes it.
+      //
+      //surveyShore(opts) — "is this world too steep for surf?", with numbers.
+      //  Reads cascade 0 (1 m texels, ±256 m around the camera) unless
+      //  opts.cascade says otherwise, so FLY TO THE COAST YOU CARE ABOUT FIRST.
+      //  opts.wind adds an evaluation at that wind (default 12 m/s) beside the
+      //  live one. See _surveyShoreField below for the model and its caveats.
+      const SHORE_RIM_MARGIN = 40.0;   //metres ignored at a cascade rim (the SDF there cannot see past the edge)
+      const SHORE_BAND_MAX = 40.0;
+
+      //Sea state for a wind speed, from the SAME formulas the spectrum uses:
+      //Hs from ocean-wave-field.js's calibration, omega_p from
+      //ocean-height-band-library.js (fetch-limited JONSWAP, floored at PM).
+      const seaStateFor = function(windSpeed){
+        const g = 9.81;
+        const lib = grid.oceanHeightBandLibrary;
+        const gamma = (lib && lib.jonswapGamma) || 3.3;
+        const fetch = (grid.data && grid.data.jonswap_fetch) || 100000.0;
+        const U = Math.max(windSpeed, 0.001);
+        const Hs = 0.21 * U * U / g * Math.pow(gamma, 0.3);
+        const omegaP = Math.max(22.0 * Math.pow(g * g / (U * fetch), 1.0 / 3.0), 0.86 * g / U);
+        const Tp = 2.0 * Math.PI / omegaP;
+        const L0 = g * Tp * Tp / (2.0 * Math.PI);
+        return {wind: windSpeed, Hs: Hs, Tp: Tp, L0: L0, breakerDepth: Hs / 0.78};
+      };
+      const liveWindSpeed = function(){
+        const w = grid.windVelocity;
+        return w ? Math.sqrt(w.x * w.x + w.y * w.y) : 0.0;
+      };
+      //Iribarren (surf-similarity) number and the Battjes (1974) breaker bands.
+      const iribarren = function(tanB, sea){ return tanB / Math.sqrt(Math.max(sea.Hs, 1e-6) / sea.L0); };
+      const breakerClass = function(xi){ return xi < 0.5 ? 0 : (xi < 3.3 ? 1 : 2); };
+      const CLASS_NAMES = ['spilling', 'plunging', 'surging'];
+
+      //Per-texel nearshore slope for one cascade readback. A wet texel at
+      //shore distance d with water depth h gives the MEAN slope between it and
+      //the shoreline, tanβ = h / d — exactly the slope a wave crosses on its way
+      //in, which is what the breaker models want (not the local gradient).
+      //⚠ a-land depth saturates at simulation.maxDepth; texels at the cap only
+      //bound the slope from below, and are counted as `saturated`.
+      const collectShoreSlopes = function(field, maxDepth){
+        const res = field.res, a = field.a, b = field.b;
+        const rimTexels = Math.ceil(SHORE_RIM_MARGIN / field.texel);
+        const out = [];
+        let saturated = 0;
+        for(let row = rimTexels; row < res - rimTexels; ++row){
+          for(let col = rimTexels; col < res - rimTexels; ++col){
+            const o = (row * res + col) * 4;
+            const depth = a[o + 1], sdf = b[o + 2];
+            if(!(depth > 0.0) || sdf <= 0.0 || sdf > SHORE_BAND_MAX) continue;
+            if(maxDepth && depth >= maxDepth * 0.98) saturated++;
+            out.push({sdf: sdf, depth: depth, tanB: depth / Math.max(sdf, 0.5 * field.texel)});
+          }
+        }
+        return {samples: out, saturated: saturated};
+      };
+      const quantile = function(sorted, q){
+        if(sorted.length === 0) return NaN;
+        return sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
+      };
+      const landMaxDepth = function(){
+        const mj = grid._landDirector && grid._landDirector.mapJson;
+        return (mj && mj.simulation && mj.simulation.maxDepth) || 0;
+      };
+
+      window.surveyShore = function(opts){
+        opts = opts || {};
+        const f = grid.waterFieldPass;
+        if(!f){ console.log('[surveyShore] pass not loaded'); return; }
+        if(!f.shoreFieldEnabled){ console.log('[surveyShore] shore field is OFF — setShoreFieldEnabled(true) and wait a frame'); return; }
+        const ci = opts.cascade | 0;
+        const field = f.readCascade(ci);
+        if(!field){ console.log('[surveyShore] cascade', ci, 'never filled'); return; }
+        const maxDepth = landMaxDepth();
+        const got = collectShoreSlopes(field, maxDepth);
+        const samples = got.samples;
+        const fmtSlope = function(t){
+          return isFinite(t) ? (t.toFixed(3) + ' (1:' + (1 / Math.max(t, 1e-6)).toFixed(1) + ', ' + (Math.atan(t) * 180 / Math.PI).toFixed(1) + '°)') : 'n/a';
+        };
+        console.log('── surveyShore — cascade ' + ci + ' (' + field.texel.toFixed(2) + ' m texels, ±'
+          + (field.halfWidth - SHORE_RIM_MARGIN) + ' m around ' + field.centerX.toFixed(0) + ', ' + field.centerZ.toFixed(0) + ') ──');
+        if(samples.length === 0){
+          console.log('No wet texels within ' + SHORE_BAND_MAX + ' m of a shore here. Fly to a coastline and re-run.');
+          return;
+        }
+        //Slope by distance band.
+        const bands = [[0, 5], [5, 20], [20, 40]];
+        for(const band of bands){
+          const t = samples.filter(function(s){ return s.sdf > band[0] && s.sdf <= band[1]; })
+            .map(function(s){ return s.tanB; }).sort(function(x, y){ return x - y; });
+          console.log('  ' + (band[0] + '–' + band[1] + ' m').padEnd(9) + ' offshore: n=' + String(t.length).padEnd(6)
+            + ' p10 ' + fmtSlope(quantile(t, 0.1)) + '   median ' + fmtSlope(quantile(t, 0.5)) + '   p90 ' + fmtSlope(quantile(t, 0.9)));
+        }
+        //"Cliff": already more than 10 m deep within 5 m of the shoreline.
+        const near = samples.filter(function(s){ return s.sdf <= 5.0; });
+        const cliff = near.filter(function(s){ return s.depth > 10.0; }).length;
+        console.log('  cliff shoreline (>10 m deep within 5 m): ' + (near.length ? (100 * cliff / near.length).toFixed(1) : '0') + '%');
+        if(got.saturated > 0){
+          console.log('  ⚠ ' + got.saturated + ' texels sit at a-land\'s maxDepth cap (' + maxDepth + ' m) — their slope is a LOWER bound');
+        }
+
+        //Breakers, evaluated where waves actually break for this sea: the
+        //nearshore band 0 < d <= 15 m.
+        const breakBand = samples.filter(function(s){ return s.sdf <= 15.0; });
+        const tanMedian = quantile(breakBand.map(function(s){ return s.tanB; }).sort(function(x, y){ return x - y; }), 0.5);
+        const live = liveWindSpeed();
+        const refWind = opts.wind !== undefined ? +opts.wind : 12.0;
+        const winds = (Math.abs(refWind - live) < 0.5) ? [live] : [live, refWind];
+        for(const w of winds){
+          const sea = seaStateFor(w);
+          //Below ~5 cm there is no surf to classify, and ξ's √(Hs/L0) is
+          //numerically meaningless at a near-zero wind (Tp → 0).
+          if(sea.Hs < 0.05){
+            console.log('  @ wind ' + w.toFixed(1) + ' m/s' + (w === live ? ' (live)' : ' (reference)')
+              + ': Hs ' + sea.Hs.toFixed(3) + ' m — calm, no breakers to classify'
+              + (w === live ? '; read the reference line' : ''));
+            continue;
+          }
+          const counts = [0, 0, 0];
+          for(const smp of breakBand) counts[breakerClass(iribarren(smp.tanB, sea))]++;
+          const n = breakBand.length || 1;
+          const surfWidth = sea.breakerDepth / Math.max(tanMedian, 1e-6);
+          console.log('  @ wind ' + w.toFixed(1) + ' m/s' + (w === live ? ' (live)' : ' (reference)')
+            + ': Hs ' + sea.Hs.toFixed(2) + ' m, Tp ' + sea.Tp.toFixed(1) + ' s, L0 ' + sea.L0.toFixed(0) + ' m'
+            + ' → spilling ' + (100 * counts[0] / n).toFixed(0) + '%, plunging ' + (100 * counts[1] / n).toFixed(0)
+            + '%, surging ' + (100 * counts[2] / n).toFixed(0) + '%'
+            + ' | breaks in ' + sea.breakerDepth.toFixed(2) + ' m of water, surf zone ~' + surfWidth.toFixed(1) + ' m wide at the median slope'
+            + (surfWidth < 2.0 * field.texel ? '  ⚠ narrower than 2 texels — Phase 3 breakers could not resolve it' : ''));
+        }
+        console.log('  Model: Battjes breaker bands on ξ = tanβ/√(Hs/L0) (spilling <0.5, plunging <3.3, surging ≥3.3),'
+          + ' McCowan breaking at h = Hs/0.78, deep-water Hs/Tp from the live spectrum formulas.'
+          + ' Surging = waves slosh up the rock without breaking; that is the "too steep" answer.');
+      };
+
+      let shoreCanvas = null, shoreLiveTimer = null;
+      window.hideShoreField = function(){
+        if(shoreLiveTimer){ clearInterval(shoreLiveTimer); shoreLiveTimer = null; }
+        if(shoreCanvas && shoreCanvas.parentNode) shoreCanvas.parentNode.removeChild(shoreCanvas);
+        shoreCanvas = null;
+      };
+      window.showShoreField = function(cascade, mode, opts){
+        opts = opts || {};
+        const f = grid.waterFieldPass;
+        if(!f){ console.log('[showShoreField] pass not loaded'); return; }
+        const ci = cascade | 0;
+        mode = mode || 'sdf';
+        const draw = function(){
+          const field = f.readCascade(ci);
+          if(!field) return;
+          const res = field.res;
+          if(!shoreCanvas){
+            shoreCanvas = document.createElement('canvas');
+            shoreCanvas.style.cssText = 'position:fixed;right:12px;top:12px;width:384px;height:384px;'
+              + 'z-index:99999;border:1px solid #fff;image-rendering:pixelated;pointer-events:none;';
+            document.body.appendChild(shoreCanvas);
+          }
+          shoreCanvas.width = res; shoreCanvas.height = res;
+          const ctx2d = shoreCanvas.getContext('2d');
+          const img = ctx2d.createImageData(res, res);
+          const px = img.data;
+          const live = liveWindSpeed();
+          const sea = seaStateFor(opts.wind !== undefined ? +opts.wind : (live < 5.0 ? 12.0 : live));
+          const hasWorld = !!grid._landDirector;
+          const isoStep = 10.0;
+          for(let row = 0; row < res; ++row){
+            for(let col = 0; col < res; ++col){
+              //Row 0 of the readback is the cascade's min-Z edge — drawn at the top, so -Z is up.
+              const o = (row * res + col) * 4;
+              const depth = field.a[o + 1], sdf = field.b[o + 2], dry = field.b[o + 3];
+              let r = 0, g = 0, bl = 0;
+              if(mode === 'dry'){
+                if(depth > 0.0){ r = 40; g = 110; bl = 220; }
+                else if(dry > 0.5){ r = 200; g = 50; bl = 50; }
+                else if(hasWorld){ r = 110; g = 110; bl = 110; }
+              } else if(mode === 'slope'){
+                if(depth > 0.0 && sdf > 0.0 && sdf <= SHORE_BAND_MAX){
+                  const tanB = depth / Math.max(sdf, 0.5 * field.texel);
+                  if(sdf <= 5.0 && depth > 10.0){ r = 220; g = 30; bl = 30; }
+                  else {
+                    const k = breakerClass(iribarren(tanB, sea));
+                    if(k === 0){ r = 60; g = 200; bl = 90; }
+                    else if(k === 1){ r = 235; g = 215; bl = 60; }
+                    else { r = 240; g = 140; bl = 40; }
+                  }
+                } else if(depth > 0.0){ r = 20; g = 45; bl = 90; }
+                else { r = 60; g = 55; bl = 50; }
+              } else {
+                const t = Math.min(1.0, Math.abs(sdf) / 100.0);
+                if(sdf > 0.0){ r = 90 * (1 - t); g = 170 * (1 - t) + 30; bl = 255 * (1 - t) + 60; }
+                else { r = 190 * (1 - t) + 40; g = 140 * (1 - t) + 30; bl = 90 * (1 - t) + 20; }
+                //Contour where the iso band changes toward the +X or +Z neighbour: a
+                //clean 1-px line. A modulo window instead aliases — texels whose
+                //distance lands exactly on k+0.5 (every axis-aligned run) miss it.
+                const band = Math.floor(sdf / isoStep);
+                const right = col < res - 1 ? field.b[o + 4 + 2] : sdf;
+                const down = row < res - 1 ? field.b[o + res * 4 + 2] : sdf;
+                if(Math.floor(right / isoStep) !== band || Math.floor(down / isoStep) !== band){ r = r * 0.55; g = g * 0.55; bl = bl * 0.55; }
+                if(Math.abs(sdf) <= field.texel){ r = 255; g = 255; bl = 255; }
+              }
+              px[o] = r; px[o + 1] = g; px[o + 2] = bl; px[o + 3] = 255;
+            }
+          }
+          ctx2d.putImageData(img, 0, 0);
+          //Camera: the cascade is snapped around it, so it sits within a texel of the centre.
+          const camCol = (grid.globalCameraPosition.x - (field.centerX - field.halfWidth)) / field.texel;
+          const camRow = (grid.globalCameraPosition.z - (field.centerZ - field.halfWidth)) / field.texel;
+          ctx2d.fillStyle = '#fff';
+          ctx2d.beginPath(); ctx2d.arc(camCol, camRow, 4, 0, 2 * Math.PI); ctx2d.fill();
+          ctx2d.font = '14px monospace';
+          ctx2d.fillText('cascade ' + ci + ' ' + mode + ' | ' + field.texel.toFixed(0) + ' m/px | -Z up'
+            + (mode === 'slope' ? ' | wind ' + sea.wind.toFixed(0) + ' m/s' : ''), 6, 18);
+        };
+        draw();
+        if(shoreLiveTimer){ clearInterval(shoreLiveTimer); shoreLiveTimer = null; }
+        if(opts.live) shoreLiveTimer = setInterval(draw, Math.max(250, +opts.live));
       };
       //Splash particles: debug tint (0 normal, 1 tint-by-type), master toggle, and
       //a direct handle on the OceanSplash instance for live-tuning its plain-JS
