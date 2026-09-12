@@ -74,7 +74,7 @@ don't change with a brush stroke.
 ### Debug surface
 
 `probeWaterField` now prints `shoreSDF / dryMask / type / energy`.
-`dumpWaterField` prints the last refill CPU time. New:
+`dumpWaterField` prints the cumulative cascade refill count. New:
 `setShoreFieldEnabled(b)` (perf A/B), `showShoreField(cascade, 'sdf'|'dry'|'slope')`
 / `hideShoreField()` (top-right canvas overlay), and **`surveyShore({wind, cascade})`**.
 All are documented in `DEBUG_MODES.md` § "WaterField console helpers".
@@ -125,6 +125,45 @@ ground *below* sea level.
    surging/cliff → beach-shaping tooling in a-faraway-land first.
 3. **Perf while flying:** `dumpWaterField()` refill time with
    `setShoreFieldEnabled(true)` vs `false`. Cascade 0 refills once per metre.
+
+### Browser results, 2026-09-12 (`lake-ocean.html`)
+
+**`showShoreField(0,'sdf')` looks right**: clean contours around the coast, the
+channel and the small basin.
+
+**`testWaterFieldParity()` reported 12/15 mismatches, and the bug was in the
+test.** The mismatches had `deltaLevel` ≈ 0 and `deltaDepth` 0.05–0.15 m, larger
+where the seabed is steeper. `probeAt` point-samples the texel containing
+(x, z), whose value was decoded at its *centre*, up to half a texel away. The
+test asked `getWaterAt` about (x, z) itself, and on ~30° slopes half a texel is
+exactly that much depth. Proven headless against a-land's real
+`WaterReader.sampleTile` on a steep, sloping-surface tile over 400 random points:
+comparing against the query point differs by up to 0.41 m, and comparing against
+the **texel centre is 0.0000 m** in both level and depth. The decode was
+byte-exact all along. `compareAgainstLandTerrain` now asks a-land about the texel
+centre. (This was latent since 1b and had nothing to do with 1c.)
+
+**The refill timing read 0.00 ms and has been removed.** The browser clamps
+`performance.now()` too coarsely to time a few dozen draw submissions. It is now
+a refill count; judge the cost by frame rate with the shore field on vs off.
+
+**`surveyShore()` at two coasts near (1770, 2131) and (1833, 2374):**
+
+| band offshore | median slope | p90 |
+| --- | --- | --- |
+| 0–5 m | 0.24–0.42 (1:4 – 1:2.4) | ~0.6–0.8 |
+| 5–20 m | 0.56–0.65 (~30°) | 0.8–0.95 |
+| 20–40 m | 0.61–0.64 (~32°) | 0.7 |
+
+No cliff shoreline, but the seabed drops at roughly the angle of repose (~30°)
+from a few metres out: the island's above-water slopes simply continue
+underwater. Real sandy beaches are 1:10 to 1:50. At the 12 m/s reference sea
+(Hs 4.4 m) the shore is **64–78% plunging, 8–13% surging**, with a surf zone of
+~10–12 m. At the live 3 m/s (Hs 0.28 m) the surf zone is under a metre, which is
+shore-break at the waterline. So the world is **not too steep for surf, but too
+steep for long rolling surf**: expect dumping shore-break in a narrow band, not
+lines of spilling breakers. Low-p10 slopes (1:25–1:30) exist locally, likely the
+channel and basin.
 
 ### Carry into Phase 2
 

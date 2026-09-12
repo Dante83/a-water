@@ -73,7 +73,10 @@ ARestlessOcean.Passes.WaterFieldPass = function(oceanGrid){
   this._blitMaterial = null;
   this._readTarget = null;   //single-attachment copy target for RT1 readback
   this.shoreFieldEnabled = true;
-  this.lastRefillMs = 0;     //CPU-side wall time of the last tick that refilled (debug)
+  //Cumulative cascade refills (debug). Each is ~12 fullscreen 512² draws with the
+  //shore field on. A count rather than a timing: GL is async, and browsers clamp
+  //performance.now() coarsely enough that a CPU timing of the submit reads 0.00.
+  this.refillCount = 0;
 };
 
 //Cascade half-widths in metres, fine -> coarse. Cascade 0 carries shoreline
@@ -425,7 +428,6 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.resize = function(){};
 ARestlessOcean.Passes.WaterFieldPass.prototype.tick = function(ctx){
   const u = this._fillMaterial.uniforms;
   const prevRT = this.renderer.getRenderTarget();
-  const t0 = (typeof performance !== 'undefined') ? performance.now() : 0;
   let filled = 0;
 
   //a-faraway-land initialises asynchronously (it fetches map.json), so it is
@@ -479,14 +481,10 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.tick = function(ctx){
     this._composeShoreField(c);
 
     filled++;
+    this.refillCount++;
   }
 
-  if(filled > 0){
-    this.renderer.setRenderTarget(prevRT);
-    //CPU wall time only — GL is async, so this under-reads GPU cost. Useful as
-    //a relative number (shoreFieldEnabled on/off), not an absolute one.
-    if(typeof performance !== 'undefined') this.lastRefillMs = performance.now() - t0;
-  }
+  if(filled > 0) this.renderer.setRenderTarget(prevRT);
 };
 
 //Force every cascade to re-fill on the next tick. Called when a-land tile data
@@ -536,8 +534,13 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.probeAt = function(x, z, opts){
   const v = (z - c.centerZ) / (2.0 * c.halfWidth) + 0.5;
   const px = Math.min(RES - 1, Math.max(0, Math.floor(u * RES)));
   const py = Math.min(RES - 1, Math.max(0, Math.floor(v * RES)));
+  //World position of the texel CENTRE — the point this texel's value was
+  //actually decoded at. Up to half a texel from (x, z); see compareAgainstLandTerrain.
+  const texelX = c.centerX - c.halfWidth + (px + 0.5) * c.texel;
+  const texelZ = c.centerZ - c.halfWidth + (py + 0.5) * c.texel;
   const pack = function(b, k){
-    const out = {level: b[0], depth: b[1], flowX: b[2], flowZ: b[3], cascade: i};
+    const out = {level: b[0], depth: b[1], flowX: b[2], flowZ: b[3], cascade: i,
+      texelX: texelX, texelZ: texelZ};
     if(k){ out.energy = k[0]; out.type = k[1]; out.shoreSDF = k[2]; out.dryMask = k[3]; }
     return out;
   };
@@ -665,10 +668,16 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.selfTest = function(){
 ARestlessOcean.Passes.WaterFieldPass.prototype.compareAgainstLandTerrain = function(x, z){
   const og = this.oceanGrid;
   if(!og || !og._landTerrainApi) return Promise.resolve('no landTerrainApi discovered');
-  const cpu = og._landTerrainApi.getWaterAt(x, z);
+  //⚠ Ask a-land about the TEXEL CENTRE, not (x, z). probeAt point-samples the
+  //texel containing (x, z), whose value was decoded at its centre — up to half
+  //a texel away. On this world's ~30° underwater slopes that half texel alone is
+  //0.05–0.15 m of depth, which is exactly what the first run of this test
+  //reported as "mismatches" (level agreed to the millimetre; depth tracked slope).
   return this.probeAt(x, z).then(function(gpu){
+    const cpu = gpu ? og._landTerrainApi.getWaterAt(gpu.texelX, gpu.texelZ) : null;
     return {
       x: x, z: z,
+      texelX: gpu ? gpu.texelX : null, texelZ: gpu ? gpu.texelZ : null,
       cpu: cpu,
       gpu: gpu,
       deltaLevel: (cpu && gpu) ? (gpu.level - cpu.level) : null,

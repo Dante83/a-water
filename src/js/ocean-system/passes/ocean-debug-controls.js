@@ -413,7 +413,7 @@ ARestlessOcean.installOceanDebugControls = function(grid){
             checked++;
             if(Math.abs(r.deltaLevel) > 0.05 || Math.abs(r.deltaDepth) > 0.05){
               mismatches++;
-              console.log('[waterField parity] MISMATCH at', r.x.toFixed(1), r.z.toFixed(1),
+              console.log('[waterField parity] MISMATCH at texel centre', r.texelX.toFixed(2), r.texelZ.toFixed(2),
                 'deltaLevel', r.deltaLevel.toFixed(3), 'deltaDepth', r.deltaDepth.toFixed(3));
             }
           }
@@ -520,7 +520,8 @@ ARestlessOcean.installOceanDebugControls = function(grid){
             'centre', c.centerX === undefined ? 'NEVER FILLED' : (c.centerX.toFixed(1) + ', ' + c.centerZ.toFixed(1)));
         }
         console.log('[waterField] shore field', f.shoreFieldEnabled ? 'ON' : 'OFF',
-          '| last refill tick', f.lastRefillMs.toFixed(2) + ' ms CPU (GL is async — compare ON vs OFF, not absolute)');
+          '| cascade refills so far', f.refillCount,
+          '(~' + (f.shoreFieldEnabled ? 12 : 1) + ' fullscreen 512² draws each; judge cost by frame rate, ON vs OFF)');
       };
       //Perf A/B for the Phase 1c jump flood. Off = shoreSDF reads "no shore".
       window.setShoreFieldEnabled = function(on){
