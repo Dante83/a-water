@@ -202,6 +202,15 @@ ARestlessOcean.Passes.TerrainOrthoPass.prototype._restoreMaterials = function(){
 //Fixed-size atlases — independent of the drawing buffer.
 ARestlessOcean.Passes.TerrainOrthoPass.prototype.resize = function(){};
 
+//Force both atlases to re-render on the next tick, snap delta or not. Called
+//when a sibling terrain is edited (Phase 1c): the atlases capture STATIC
+//terrain, so without this a brush stroke would reach them only on the next
+//MAX_STALE_FRAMES refresh — after WaterFieldPass had already re-filled against
+//the stale capture.
+ARestlessOcean.Passes.TerrainOrthoPass.prototype.invalidate = function(){
+  this._staleFrames = ARestlessOcean.Passes.TerrainOrthoPass.MAX_STALE_FRAMES;
+};
+
 //ctx: {scene, cameraX, cameraZ, heightOffset, onFoamRendered}
 //onFoamRendered(renderTarget, snapX, snapZ, halfWidth) fires only on frames the
 //foam atlas actually re-rendered — ocean-splash.js uses it to pull the terrain

@@ -483,9 +483,57 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       self._landTerrainApi = comp.api;
       self._landDirector = comp.director;
       self._landTerrainRoot = el.object3D || null;
+      self._subscribeTerrainEdits(comp.director);
       return true;
     }
     return false;
+  };
+
+  //── Terrain edit invalidation (Phase 1c) ─────────────────────────────────
+  //a-land routes every world mutation through its WorldAuthority
+  //(core/world-authority.js) — brush strokes and layer replays both end in
+  //invalidateTile. That IS the tile-event source a-land-water-contract.md §3
+  //promised, so no polling and no a-land change.
+  //
+  //An edit changes the GROUND, which moves two things we cache: the foam ortho
+  //capture (the standalone depth) and every cascade's depth + shoreSDF. The
+  //baked water tiles on disk do NOT change with a brush stroke, so the
+  //decoder's tile cache is left alone — if a-land ever re-solves water live,
+  //that is the moment to drop it too.
+  //
+  //Throttled, because a stroke emits events every frame: at most one forced
+  //refresh per TERRAIN_EDIT_THROTTLE_MS while events arrive, plus one trailing
+  //refresh TERRAIN_EDIT_SETTLE_MS after the last, since a-land re-composites
+  //the edited height tiles over the next few frames and the first capture can
+  //land before they have.
+  this._terrainEditLastEventMs = 0;
+  this._terrainEditLastForceMs = 0;
+  this._terrainEditTrailingPending = false;
+  this._terrainEditUnsubscribe = null;
+  this._subscribeTerrainEdits = function(director){
+    if(self._terrainEditUnsubscribe) return;
+    const authority = director && director.worldAuthority;
+    if(!authority || typeof authority.subscribe !== 'function') return;
+    self._terrainEditUnsubscribe = authority.subscribe(function(event){
+      if(!event || (event.type !== 'tileInvalidate' && event.type !== 'heightChange')) return;
+      self._terrainEditLastEventMs = performance.now();
+      self._terrainEditTrailingPending = true;
+    });
+  };
+  this._consumeTerrainEdits = function(){
+    if(!self._terrainEditTrailingPending) return;
+    const now = performance.now();
+    const force = function(){
+      self._terrainEditLastForceMs = now;
+      if(self.terrainOrthoPass) self.terrainOrthoPass.invalidate();
+      if(self.waterFieldPass) self.waterFieldPass.invalidate();
+    };
+    if(now - self._terrainEditLastEventMs >= ARestlessOcean.OceanGrid.TERRAIN_EDIT_SETTLE_MS){
+      self._terrainEditTrailingPending = false;   //the trailing refresh
+      force();
+    } else if(now - self._terrainEditLastForceMs >= ARestlessOcean.OceanGrid.TERRAIN_EDIT_THROTTLE_MS){
+      force();                                     //mid-stroke, throttled
+    }
   };
   if(this._terrainProvider === 'a-faraway-land'){
     this._discoverTerrainDirector();
@@ -1086,6 +1134,10 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     if(self._terrainProvider === 'a-faraway-land' && !self._landTerrainApi){
       self._discoverTerrainDirector();
     }
+
+    //Terrain edits force the ortho + field refresh. Must run BEFORE the ortho
+    //tick below, so the field re-fills against the fresh capture this frame.
+    self._consumeTerrainEdits();
 
     //Hide splash particles for the whole offscreen-pass block below (refraction
     //G-buffer, reflection, foam/exclusion orthos, CSM, caustics). They are
@@ -1978,3 +2030,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     }
   };
 }
+
+//Phase 1c terrain-edit refresh pacing — see _subscribeTerrainEdits.
+ARestlessOcean.OceanGrid.TERRAIN_EDIT_THROTTLE_MS = 150;
+ARestlessOcean.OceanGrid.TERRAIN_EDIT_SETTLE_MS = 400;
