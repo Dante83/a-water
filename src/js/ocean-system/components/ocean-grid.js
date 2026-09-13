@@ -675,6 +675,15 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     return 1.0e9;
   };
 
+  //True only when the terrain provider has ANSWERED "no water here" — the CPU
+  //half of the field's dryMask. Loading tiles and standalone are never dry.
+  this.waterKnownDryAt = function(x, z){
+    if(self._terrainProvider !== 'a-faraway-land') return false;
+    const tdp = self.waterFieldPass && self.waterFieldPass._tileDecodePass;
+    const decoder = tdp && tdp.decoder;
+    return !!(decoder && decoder.answerAt(x, z) === 'dry');
+  };
+
   //CPU mirror of the GPU field texel (level, depth, shoreSDF, dryMask).
   //`out` is {level, depth, shoreSDF, dryMask}; returns it.
   this._fieldScratch = {level: 0, depth: 0, shoreSDF: 0, dryMask: 0};
@@ -698,9 +707,14 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         }
         return out;
       }
-      //null = dry OR not loaded. The GPU writes an authoritative dry, but no
-      //CPU consumer floats anything on dry land, so fall through to the
-      //standalone answer rather than zeroing the waves under a loading tile.
+      //null = dry OR not loaded. A known dry mirrors the GPU's authoritative
+      //dry (waves weigh 0); a loading tile falls through to the standalone
+      //answer, like the GPU's base fill does.
+      if(self.waterKnownDryAt(x, z)){
+        out.depth = 0.0;
+        out.dryMask = 1.0;
+        return out;
+      }
     }
     const splash = self.oceanSplash;
     if(splash && typeof splash.sampleTerrainHeight === 'function'){
@@ -1472,7 +1486,15 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //mirror plane (the RT renders BEFORE this probe runs, so there's a
     //one-frame lag — same pattern as `_wasUnderwater`).
     self._lastWaterSurfaceY = waterSurfaceY;
-    const cameraSubmersion = self.globalCameraPosition.y - waterSurfaceY;
+    //No water column over the camera, no underwater. waterLevelAt answers sea
+    //level wherever a-land says dry (getWaterAt cannot tell dry from loading),
+    //so dropping below that level inside a painted-dry basin flipped the whole
+    //underwater state machine: murk, fog, caustics, the flipped ocean, with no
+    //water anywhere in sight (reported 2026-09-12). Only a KNOWN dry opts out.
+    const cameraOverDry = self.waterKnownDryAt(self.globalCameraPosition.x, self.globalCameraPosition.z);
+    //Finite, not Infinity: cameraSubmersion is also uploaded as a uniform, and an
+    //infinite float in the shader turns into NaN the moment it meets a zero.
+    const cameraSubmersion = cameraOverDry ? 1.0e6 : self.globalCameraPosition.y - waterSurfaceY;
     //Smooth 0→1 underwater blend over a 1 m band centred on the surface so
     //bobbing through the waterline crossfades the fog instead of snapping.
     const uwHalfBand = 0.5;
