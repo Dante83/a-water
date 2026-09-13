@@ -8,7 +8,7 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
-## Phase 3a — shorelines that break — **steps 1–2 written, headless-verified; step 1 browser-checked, step 2 awaiting regen + browser** (2026-09-13)
+## Phase 3a — shorelines that break — **steps 1–2 landed on the branch, both browser-checked** (2026-09-13)
 
 Branch `phase-3a-breakers`, off `multi-water-types` at `9cfb079`. Step 1 is the
 breaker layer itself. Swash, the splash trigger and shallow colour are still to
@@ -173,7 +173,7 @@ distance, so the zone fills and drains as one sheet. Checked two ways:
 
 The band limit also went to 2 × the probed-slope reach (capped at 60 m), so a
 flatter upper beach no longer gets a cut line. GPU parity after the change:
-0.3 mm, 0 cover mismatches.
+0.3 mm, 0 cover mismatches. **Dante confirmed in the browser: "Much better!"**
 
 ### Next (3a steps 3–4)
 
