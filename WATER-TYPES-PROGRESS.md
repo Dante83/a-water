@@ -296,7 +296,7 @@ this **needs create-shader.py**.
     against the water. On this world the 5–10 m views dim only slightly (inscatter
     dominates), so the seabed is not erased. ⚠ Still worth checking in scenes with
     deeper, clearer water (islands.html, lake-ocean.html), which is where the old
-    fudge came from. Needs create-shader.py.
+    fudge came from. Needs create-shader.py. **Dante, after the regen: "Looking awesome" (2026-09-13).**
 - **Square foam outlines inland: not reproducible after tuning pass 2.**
   - *Test.* A GPU scan counted breaker foam > 0.3 on texels that the 4 m field
     calls land (isolated wet pockets). It covered 512 m windows over the oval,
