@@ -175,6 +175,36 @@ The band limit also went to 2 × the probed-slope reach (capped at 60 m), so a
 flatter upper beach no longer gets a cut line. GPU parity after the change:
 0.3 mm, 0 cover mismatches. **Dante confirmed in the browser: "Much better!"**
 
+### Tuning pass 1 — the submersion probe knows about breakers (written, headless-verified)
+
+- **Cause.** `probeWaterSurfaceY` summed only the rest level and cascades 0–1. In
+  a surf zone it therefore answered a surface without breakers or swash.
+  Everything downstream followed that wrong surface: the air/water swap, the
+  underwater fog plane, the caustic projector's surface Y and the mirror clip
+  plane.
+- **Fix** (`height-readback-pass.js`, `_renderBreakerProbe`). A 1×1 float pass
+  evaluates the very `shoreBreakerHeightAt` the water vertex calls, at the
+  camera, and it is read back async next to the two cascade texels. The draw
+  happens before any async read is issued (the three r173 PBO window). The
+  blocking fallback path gets it too. JS only, so no regen is needed.
+- **Measured headless** (oval east beach, 8 m/s × 1.5), over 15 s:
+
+  | Camera | Breaker term the probe now adds |
+  | --- | --- |
+  | x 1985 | −0.60 … +1.04 m |
+  | x 1965 (inner) | −0.25 … +0.38 m |
+  | x 2030 (outer) | −0.67 … +0.72 m |
+
+  Those ranges are exactly the old probe's error. With the camera held 0.2 m
+  above rest level at x 1985, the new probe goes underwater as crests wash over
+  (5 swaps and 194 underwater frames in 12 s). The old probe never did.
+- **Frames.** With the old probe, a trough under the camera left it "underwater"
+  above the water, showing a torn ceiling with sky through it. With the new
+  probe, the underside of the breaker crest reads correctly.
+- **To re-check in the browser:** breakers seen from underwater, and whether the
+  waterline twitch is gone. If the twitch remains, the next suspect is the
+  cascade-1 refill phase jump (see round 1).
+
 ### Next (3a steps 3–4)
 
 - **Splash.** The `_emitShore` breaker trigger, reading shoreSDF and Kr from the
