@@ -120,9 +120,52 @@ Weights at 12 m/s (C0 … C5), for a feel of what you should see:
 - There are six more exp/sqrt evaluations per ocean vertex, in the caster too. If the
   frame rate moves, compare it with the masks on and off.
 
+### Browser round 1, 2026-09-12 — three reports
+
+**1. Underwater state (murk, caustics) inside a painted-dry basin, below where
+sea level would be. FIXED.** `waterLevelAt` falls back to sea level whenever
+`getWaterAt` is null, and null means both "dry" and "not loaded". The new
+`WaterTileDecoder.answerAt(x, z)` separates `wet / dry / loading / none`. It
+mirrors `sampleTile`'s footprint test on the raw level bytes the decoder already
+keeps. The submersion probe forces "not submerged" over a known dry, with a finite
+sentinel because the value is also a uniform. The CPU wave-mask field uses the same
+answer for its dryMask.
+
+**2. Jagged lake edges, water stopping short of the bank. FIXED.** Fully-dry field
+texels stored sea level. Next to a lake at −100 the surface fell 50 m inside one
+texel, dove into the bank before the shoreline, and followed the texel staircase.
+The compose pass now gives each dry texel the level of the wet texel beside its
+jump-flood shore point. The surface runs flat past the shore, and the terrain's
+depth test cuts it exactly. Where two bodies meet, the level steps at the midline
+between them, under dry ground. It needs the shore field: with
+`setShoreFieldEnabled(false)` the old sea-level answer returns. Verified headless on
+a synthetic lake + sea: lake-side dry texels read −100, sea-side −150.
+
+**3. A ring of foam specks in the middle of the lake at mid distance. NOT a Phase 2
+bug; pre-existing, and not fixed yet.** Diagnosed on the real `lake-ocean.html`
+under headless SwiftShader, driven over DevTools Protocol:
+- The same speck band exists over the **open ocean**. It sits at mid distance only:
+  none near the camera, none far.
+- **It persists with `setWaveMaskEnabled(false)`**, so the masks are not causing it.
+- Mode 32 (`foamBlend`) shows the specks are foam.
+- It is **not** the splash particles (none alive).
+- It is **not** the dry or exclusion discard (both neutralised live, specks stay).
+- It is **not** terrain showing through (terrain hidden, specks stay white).
+- It is **not** NaN (every cascade mip level and the foam ortho are clean).
+- With the cascade textures forced to non-mipmapped filtering, the specks cover the
+  whole view, near to far. So it is the fold (Jacobian) foam on under-resolved small
+  cascades, and mipmapping only suppresses it outside a distance band.
+- On the lake at 3 m/s, WaveMask leaves only C5 (weight 0.54), so this band is the
+  only foam left to see.
+
+Still unexplained: why the band survives at mid distance, when box-filtered mips
+should only ever shrink the finite-difference slopes. Candidate fix, once that is
+understood: LOD-aware fold foam, where a cascade's chop derivative stops feeding
+`turbulence` once its texels are sub-pixel (normals keep it).
+
 ### ⚠ Outstanding — needs Dante
 
-1. **Run `create-shader.py`.** Without the regen, the old generated shader still
+1. **Run `create-shader.py`.** (Done 2026-09-12, committed.) Without the regen, the old generated shader still
    declares the `mat4` varyings and the old sampling, and the new JS would feed it
    uniforms it does not have.
 2. **`lake-ocean.html`, with some wind** (it runs at 0, where every weight is moot).
