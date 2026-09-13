@@ -205,6 +205,56 @@ flatter upper beach no longer gets a cut line. GPU parity after the change:
   waterline twitch is gone. If the twitch remains, the next suspect is the
   cascade-1 refill phase jump (see round 1).
 
+### Tuning pass 2 — walls of water around the steep island's rocks (written, headless-verified)
+
+**Report (browser round 3).** Near the steep island there were sheets and walls of
+water standing around rocks, and wash climbing the cliffs. A GPU scan of
+`shoreBreakerHeightAt` over a 384 m window found jumps of 2–3.5 m between 1 m
+neighbours. The oval beach had none: its largest step was 0.24 m per metre, which
+is a real wave front. Five causes, one fix each:
+
+1. **Uncapped run-up.** Stockdon on a rock face (tanβ → 1) gives R2 ≈ 10 m.
+   It is now capped at `SWASH_RUNUP_MAX_RATIO` 2 × H0. ⚠ The cap is from memory,
+   not a checked fit.
+2. **Hard gates before the tapers finished.**
+   - The swash depth taper ran to 1.155·R2 but was gated off at 3·Hs+1 or the
+     depth cap. It now completes by 0.8 of the nearest gate.
+   - Inland, the geometry now fades to 0 by the reach, matching the discard.
+   - Seaward it also fades by shore DISTANCE, so a shallow bar 30 m out is not
+     swash.
+   - The breaker hard-gated at a-land's depth cap, leaving a ring at the 10 m
+     contour. It now fades from 0.7 to 0.98 of the cap.
+3. **Shore normal from a 1 m one-sided difference.** Around rocks and along
+   medial axes of the jump-flooded field it flipped from texel to texel, and the
+   direction factor and the swash slope probe flipped with it.
+   - Fix: central differences on cascade 1 at ±4 m (`shoreBreakerSmoothGrad`,
+     which now returns ∇s and ∇h from the same four taps).
+   - The swash fades where |∇s| < 0.35–0.75, i.e. on medial axes with no single
+     shore.
+4. **Crest phase inconsistent over rough bathymetry.** θ = (s/h)·I assumes the
+   depth grows with distance. On a slope |∇θ| equals the dispersion k exactly
+   (the ratio measures 1.00–1.05 on clean slopes); beside a rock it reached 5.3.
+   The breaker now fades where |∇θ|/k is between 1.6 and 3.0, computed
+   analytically from the same ∇s and ∇h.
+5. **A flat swash sheet on steep faces.** It is a beach model (Stockdon's data
+   go up to tanβ ≈ 0.2). It now fades out between foreshore slopes of 0.15 and
+   0.35. Rock faces are left to 3b's reflection and to spray, or to a particle
+   or SPH layer if that is wanted later (Dante's note).
+
+**Result on the same 384 m strait window, three sample times:**
+
+| Measure | Before | After |
+| --- | --- | --- |
+| Tallest water | 4.86 m | 1.74 m |
+| Steps > 1 m | 196 | 0–4 |
+| Steps > 0.5 m | ~1,260 | 70–340 |
+
+The remaining ~1 m steps are breaker fronts in 3 m of water (plausible) and a
+few waterline texels. The oval beach is unchanged (0 steps > 0.5 m). Parity is
+unchanged: breaker 2.2 mm, swash 1.3 mm. Screenshots from above show foam around
+the rocks and no walls. `water-shader.glsl` changed (`bGrad` is now a vec4), so
+this **needs create-shader.py**.
+
 ### Next (3a steps 3–4)
 
 - **Splash.** The `_emitShore` breaker trigger, reading shoreSDF and Kr from the
