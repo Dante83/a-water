@@ -175,7 +175,7 @@ The band limit also went to 2 × the probed-slope reach (capped at 60 m), so a
 flatter upper beach no longer gets a cut line. GPU parity after the change:
 0.3 mm, 0 cover mismatches. **Dante confirmed in the browser: "Much better!"**
 
-### Tuning pass 1 — the submersion probe knows about breakers (written, headless-verified)
+### Tuning pass 1 — the submersion probe knows about breakers (browser-confirmed by Dante 2026-09-13)
 
 - **Cause.** `probeWaterSurfaceY` summed only the rest level and cascades 0–1. In
   a surf zone it therefore answered a surface without breakers or swash.
