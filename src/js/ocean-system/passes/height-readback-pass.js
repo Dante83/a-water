@@ -131,12 +131,36 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
     '  vec3 hfMaskB = vec3(1.0);',
     '  float level = hfHeightOffset;',
     '  float breaker = 0.0;',
-    //Phase 3a: the breakers ride in the same sum, so floats and splash see them.
-    //Fade 1: the bake covers ±256 m, well inside ShoreBreaker.FADE_NEAR.
-    fieldReady ? '  if(hfUseField > 0.5){ vec4 field = waterFieldAt(worldXZ); level = field.r; waveMaskCascades(field, hfMaskA, hfMaskB); breaker = shoreBreakerHeightAt(worldXZ, field, 1.0); }' : '',
+    '  float breakerSpray = 0.0;',
+    '  float breakerDir = 0.0;',
+    '  float breakerCrest = 0.0;',
+    //Phase 3a: the breakers and swash ride in the same sum, so floats and splash see
+    //them. Fade 1: the bake covers ±256 m, well inside ShoreBreaker.FADE_NEAR. This is
+    //shoreBreakerHeightAt unrolled, because the splash emitter also wants the breaker
+    //FOAM (it peaks on the breaking front), the shoreward direction and the crest.
+    //Readback layout: .r height, .g breaker foam, .b shoreward direction (atan2 of
+    //z, x; radians), .a breaker crest height above the level (no swash).
+    fieldReady ? [
+      '  if(hfUseField > 0.5){',
+      '    vec4 field = waterFieldAt(worldXZ);',
+      '    level = field.r;',
+      '    waveMaskCascades(field, hfMaskA, hfMaskB);',
+      '    bool breakerOn = shoreBreakerActive(field);',
+      '    bool swashOn = shoreSwashActive(field);',
+      '    if(breakerOn || swashOn){',
+      '      vec4 sGrad = shoreBreakerSmoothGrad(worldXZ);',
+      '      vec4 sPhase = shoreBreakerPhaseField(worldXZ);',
+      '      float sBrk; float sXi; float sReach; float sSwashFoam;',
+      '      if(breakerOn) breakerCrest = shoreBreakerEval(worldXZ, field, sPhase, sGrad, breakerSpray, sBrk, sXi);',
+      '      breaker = breakerCrest;',
+      '      if(swashOn) breaker += shoreSwashEval(worldXZ, field, sPhase, sGrad, sReach, sSwashFoam);',
+      '      breakerDir = atan(-sGrad.y, -sGrad.x);',
+      '    }',
+      '  }'
+    ].join('\n') : '',
     '  float dy = 0.0;',
     '  ' + hfSumLines,
-    '  gl_FragColor = vec4(level + dy * hfWhm + breaker, 0.0, 0.0, 1.0);',
+    '  gl_FragColor = vec4(level + dy * hfWhm + breaker, breakerSpray, breakerDir, breakerCrest);',
     '}'
   ].join('\n');
   const hfUniforms = {
@@ -296,6 +320,28 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.sampleSnapHeight = function(s
   const a = h00 + (h10 - h00) * tx;
   const b = h01 + (h11 - h01) * tx;
   return a + (b - a) * ty;
+};
+
+//Phase 3a: breaker state at world (x,z) from the CURRENT snapshot, nearest texel
+//(2 m). out = {spray, dirX, dirZ, crest}: spray is the breaker foam (it peaks on
+//the breaking front and decays within ~1/14 of a wave cycle behind it), (dirX,
+//dirZ) the unit shoreward direction, crest the breaker height above the rest
+//level (m). Returns null outside the snapshot or before it resolves.
+ARestlessOcean.Passes.HeightReadbackPass.prototype.sampleBreakerSpray = function(x, z, out){
+  const s = this._hfSnap;
+  if(!s) return null;
+  const uu = (x - s.originX) / s.size;
+  const vv = (z - s.originZ) / s.size;
+  if(uu < 0.0 || uu >= 1.0 || vv < 0.0 || vv >= 1.0) return null;
+  const col = Math.floor(uu * s.res), row = Math.floor(vv * s.res);
+  const i = (row * s.res + col) * 4;
+  out = out || {};
+  out.spray = s.data[i + 1];
+  const a = s.data[i + 2];
+  out.dirX = Math.cos(a);
+  out.dirZ = Math.sin(a);
+  out.crest = s.data[i + 3];
+  return out;
 };
 
 //Cheap bilinear lookup of the CURRENT field. Returns null outside the region or
@@ -498,6 +544,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.installGlobalAPI = function()
   ARestlessOcean.sampleWaterHeightFFTExact = function(x, z){ return self.sampleFFTHeightAt(x, z); };
   ARestlessOcean.sampleWaterRiseFFT = function(x, z){ return self.sampleRise(x, z); };
   ARestlessOcean.sampleWaterSlopeFFT = function(x, z){ return self.sampleSlope(x, z); };
+  ARestlessOcean.sampleBreakerSprayFFT = function(x, z, out){ return self.sampleBreakerSpray(x, z, out); };
 };
 
 ARestlessOcean.Passes.HeightReadbackPass.prototype.dispose = function(){

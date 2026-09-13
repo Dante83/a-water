@@ -314,7 +314,37 @@ this **needs create-shader.py**.
 - **Idea logged (Dante).** Nearby caustics driven by the actual rendered surface
   height instead of the scrolling texture, if cheap enough.
 
-### Next (3a steps 3–4)
+### Step 3 — breaker spray (written, headless-verified; JS only, no regen)
+
+- **Height bake channels** (`height-readback-pass.js`). The bake now unrolls
+  `shoreBreakerHeightAt` so it can also write:
+  - `.g`: breaker foam (~1 on the breaking front, gone within ~1/14 cycle behind it);
+  - `.b`: shoreward direction, atan2 of −∇s;
+  - `.a`: breaker crest above the level.
+
+  `.r` height is unchanged. `sampleBreakerSpray(x, z)` and the global
+  `ARestlessOcean.sampleBreakerSprayFFT` read them, nearest texel, from the
+  current snapshot.
+- **`OceanSplash._emitBreakers`** runs next to `_emitShore`.
+  - It scans the bake's 2 m grid within 120 m (camera-front bias, thinned beyond
+    50 m).
+  - Cells with breaker foam > 0.5 fire `emitImpact` along the crest line, leaning
+    shoreward, at a Torricelli jet on the crest (v = 1.2·√(2g·crest)).
+  - The count scales with how far the foam is above the threshold.
+  - Knobs: `breakerSprayEnabled`, `breakerCountScale` (0.15), `breakerJetScale`,
+    `breakerForward`, `breakerSprayThreshold`, `breakerScanRadius`,
+    `breakerSheetSpan`.
+- **Verified headless** (oval east beach):
+  - The bake shows 466 front texels and 7 240 foam texels, max crest 1.2 m.
+  - Mean live particles rise from 1.2–1.4 k to 3.7–3.8 k (max 5.2 k of the
+    24 k pool).
+  - With 8× the count, the spray sheets sit on the breaker lines in the surf zone
+    and blow onshore with the 8 m/s wind.
+- **Replaced by this:** the plan's "`.g`/`.b` = shoreSDF/Kr for `_emitShore`".
+  `_emitShore`'s terrain-contact sheet stays as it was. It already rides the
+  breakers and swash through the bake's `.r`.
+
+### Next (3a step 4)
 
 - **Splash.** The `_emitShore` breaker trigger, reading shoreSDF and Kr from the
   height bake's spare `.g`/`.b` channels.
