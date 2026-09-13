@@ -1434,7 +1434,13 @@ void main(){
   //dry: the cut sits a texel inland of the shoreline, under the terrain, rather
   //than half a texel seaward of it where it would show seabed. Not gated on
   //underwaterFactor: the ceiling has no water over dry land either.
-  if(waterFieldAt(worldPosition.xz).a > 0.999){
+  //
+  //Phase 3a swash: EXCEPT inside the band the run-up can reach. There the sheet
+  //is a flat surface at rest level plus the swash height, and where the beach is
+  //higher than the sheet the depth test hides it, which is what draws the moving
+  //waterline. shoreSwashCovers only pays extra taps within ~60 m of a shore.
+  vec4 dryTestField = waterFieldAt(worldPosition.xz);
+  if(dryTestField.a > 0.999 && !shoreSwashCovers(worldPosition.xz, dryTestField)){
     discard;
   }
   float distanceToWorldPosition = distance(worldPosition.xyz, cameraPosition.xyz);
@@ -1597,10 +1603,14 @@ void main(){
   float breakerFoam = 0.0;
   float breakerBreaking = 0.0;
   float breakerXi = 0.0;
+  float swashFoam = 0.0;
+  float swashReach = -1.0;
   vec2 breakerSlope = vec2(0.0);
   {
     vec4 bField = waterFieldAt(vWorldXZ);
-    if(shoreBreakerActive(bField)){
+    bool bBreakerOn = shoreBreakerActive(bField);
+    bool bSwashOn = shoreSwashActive(bField);
+    if(bBreakerOn || bSwashOn){
       const float BREAKER_EPS = 0.5;
       vec4 bFieldX = waterFieldAt(vWorldXZ + vec2(BREAKER_EPS, 0.0));
       vec4 bFieldZ = waterFieldAt(vWorldXZ + vec2(0.0, BREAKER_EPS));
@@ -1608,9 +1618,23 @@ void main(){
       float unusedFoam;
       float unusedBreaking;
       float unusedXi;
-      breakerEta = shoreBreakerEval(vWorldXZ, bField, shoreBreakerPhaseField(vWorldXZ), bGrad, breakerFoam, breakerBreaking, breakerXi);
-      float breakerEtaX = shoreBreakerEval(vWorldXZ + vec2(BREAKER_EPS, 0.0), bFieldX, shoreBreakerPhaseField(vWorldXZ + vec2(BREAKER_EPS, 0.0)), bGrad, unusedFoam, unusedBreaking, unusedXi);
-      float breakerEtaZ = shoreBreakerEval(vWorldXZ + vec2(0.0, BREAKER_EPS), bFieldZ, shoreBreakerPhaseField(vWorldXZ + vec2(0.0, BREAKER_EPS)), bGrad, unusedFoam, unusedBreaking, unusedXi);
+      float unusedReach;
+      vec4 bPhase = shoreBreakerPhaseField(vWorldXZ);
+      vec4 bPhaseX = shoreBreakerPhaseField(vWorldXZ + vec2(BREAKER_EPS, 0.0));
+      vec4 bPhaseZ = shoreBreakerPhaseField(vWorldXZ + vec2(0.0, BREAKER_EPS));
+      float breakerEtaX = 0.0;
+      float breakerEtaZ = 0.0;
+      if(bBreakerOn){
+        breakerEta = shoreBreakerEval(vWorldXZ, bField, bPhase, bGrad, breakerFoam, breakerBreaking, breakerXi);
+        breakerEtaX = shoreBreakerEval(vWorldXZ + vec2(BREAKER_EPS, 0.0), bFieldX, bPhaseX, bGrad, unusedFoam, unusedBreaking, unusedXi);
+        breakerEtaZ = shoreBreakerEval(vWorldXZ + vec2(0.0, BREAKER_EPS), bFieldZ, bPhaseZ, bGrad, unusedFoam, unusedBreaking, unusedXi);
+      }
+      //The swash sheet rides the same slope and normal path as the breaker.
+      if(bSwashOn){
+        breakerEta += shoreSwashEval(vWorldXZ, bField, bPhase, bGrad, swashReach, swashFoam);
+        breakerEtaX += shoreSwashEval(vWorldXZ + vec2(BREAKER_EPS, 0.0), bFieldX, bPhaseX, bGrad, unusedReach, unusedFoam);
+        breakerEtaZ += shoreSwashEval(vWorldXZ + vec2(0.0, BREAKER_EPS), bFieldZ, bPhaseZ, bGrad, unusedReach, unusedFoam);
+      }
       breakerSlope = vec2(breakerEtaX - breakerEta, breakerEtaZ - breakerEta) / BREAKER_EPS;
     }
   }
@@ -1726,9 +1750,18 @@ void main(){
     //dissipated fraction 1 - Kr^2 (see ShoreBreaker). Replaces the shoreFade
     //heuristic below whenever breakers are on; the heuristic stays as the
     //fallback for standalone scenes, where breakers are off.
-    foamAmount = max(foamAmount, breakerFoam);
+    foamAmount = max(foamAmount, max(breakerFoam, swashFoam));
     vec2 foamPosition = 0.5 * (((worldPosition.xz - foamCameraXZ) / vec2(FOAM_ORTHO_HALF_WIDTH)) + 1.0);
     foamPosition = vec2(foamPosition.x, 1.0 - foamPosition.y);
+    //Phase 3a swash: bubbles where the sheet is thin (the leading edge of the
+    //uprush and the draining film), measured against the foam ortho terrain.
+    if(shoreBreakerEnabled > 0.5 && swashReach > 0.0 && foamPosition.x < 1.0 && foamPosition.x > 0.0 && foamPosition.y < 1.0 && foamPosition.y > 0.0){
+      vec2 swashGround = texture2D(foamRenderMap, foamPosition).ga;
+      if(swashGround.y > 0.5){
+        float sheetThickness = worldPosition.y - swashGround.x;
+        foamAmount = max(foamAmount, 0.8 * shoreBreakerFoamGain * (1.0 - smoothstep(0.0, 0.25, sheetThickness)));
+      }
+    }
     if(shoreBreakerEnabled < 0.5 && foamPosition.x < 1.0 && foamPosition.x > 0.0 && foamPosition.y < 1.0 && foamPosition.y > 0.0){
       vec2 foamHeightData = texture2D(foamRenderMap, foamPosition).ga;
       if((foamHeightData.y > 0.5)){

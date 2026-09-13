@@ -8,7 +8,7 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
-## Phase 3a — shorelines that break — **step 1 written, headless-verified, awaiting regen + browser** (2026-09-13)
+## Phase 3a — shorelines that break — **steps 1–2 written, headless-verified; step 1 browser-checked, step 2 awaiting regen + browser** (2026-09-13)
 
 Branch `phase-3a-breakers`, off `multi-water-types` at `9cfb079`. Step 1 is the
 breaker layer itself. Swash, the splash trigger and shallow colour are still to
@@ -121,10 +121,46 @@ parked, none of them fixed yet:
   outlines in the shallows, source unknown (possibly a-land tiles or the foam
   ortho).
 
-### Next (3a steps 2–4)
+### Step 2 — swash (written, headless-verified, awaiting regen + browser)
 
-- **Swash.** A run-up sheet up the beach on breaker phase, with Stockdon 2006 R2
-  by ξ. This needs the dry discard relaxed in a band inland of the shoreline.
+- **`ShoreBreaker.evaluateSwash`** (JS) and **`shoreSwashEval`** (GLSL). The sheet
+  is flat, at rest level plus z(t), and is allowed over the dry band the run-up can
+  reach. Where the beach is higher than the sheet, the depth test hides it, so the
+  moving waterline needs no terrain lookup.
+  - **Run-up.** Stockdon et al. (2006) general form, for every ξ:
+    R2 = 1.1(η̄ + S/2), with H0 = Hs·√fDir (so lee beaches barely swash). The
+    foreshore slope β is read from cascade 1, 6 m offshore along the shore normal.
+  - **Motion, per wave.** z rises from η̄ − S/2 to R2 × waveFactor over the first
+    30% of the cycle (sin, decelerating), then drains under gravity (1 − x²).
+    It is timed off the breaker phase, so the arriving bore starts the uprush.
+  - **Seaward.** The swash fades out by the depth equal to the largest run-up.
+  - **Reach.** 1.155·R2/β + 2 m. Beyond it the dry discard applies as before.
+- **Geometry.** `shoreBreakerHeightAt` now returns breaker + swash, so the vertex,
+  CSM caster and height bake picked it up with no new call sites.
+- **Fragment changes.**
+  - The dry discard asks `shoreSwashCovers` first.
+  - The normals block adds the swash into the same finite-difference slope.
+  - Uprush bore foam comes from the eval. Thin-sheet foam (< 25 cm against the
+    foam-ortho terrain) marks the leading edge and the draining film.
+- **Parity.** 1024 points, 755 of them on land: maximum η error 0.4 mm, reach
+  within 0.1%, and 0 of 1024 disagree on which dry texels the sheet may cover.
+  Everything compiles, at 59–60 fps.
+- **Screenshots.** Tongues of water run up the oval beach with foamy thin edges,
+  and on the backwash the drawdown briefly bares sand in the inner surf zone.
+- **Headless-only terrain hole, now explained.** a-land's four cancelled LOD-1
+  height tiles (see island-sholes notes) are what leave the oval island as a hole.
+  Calling `heightStreamer.clearFailed()` after load streams them and the hole goes.
+
+**Tuning suspects for the browser pass:**
+- a faint line across the sand, possibly the reach cut where the sheet is still
+  above a flatter upper beach;
+- the milky wash from low angles;
+- sand patches during drawdown;
+- the square outlines Dante saw. Those are breaker foam fronts on isolated wet
+  texels just inland, moving with the wave.
+
+### Next (3a steps 3–4)
+
 - **Splash.** The `_emitShore` breaker trigger, reading shoreSDF and Kr from the
   height bake's spare `.g`/`.b` channels.
 - **Colour.** Shallow colour from the true water-column depth.
