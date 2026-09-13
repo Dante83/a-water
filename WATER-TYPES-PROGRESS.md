@@ -255,7 +255,7 @@ unchanged: breaker 2.2 mm, swash 1.3 mm. Screenshots from above show foam around
 the rocks and no walls. `water-shader.glsl` changed (`bGrad` is now a vec4), so
 this **needs create-shader.py**.
 
-### Tuning pass 3 — grey foam front, milky shallows, inland squares (investigated; nothing changed)
+### Tuning pass 3 — grey foam front, milky shallows, inland squares (seabed 1/π restored; squares not reproducible)
 
 - **Grey foam front and milky shallows share one cause: a lighting-unit fudge.**
   - *Not the foam amount.* Foam compositing is a soft ramp
@@ -276,7 +276,27 @@ this **needs create-shader.py**.
     should be clearly darker (lower albedo, surface Fresnel loss, absorption).
   - **Decision for Dante.** Put 1/π back on the seabed relight (physical, and
     consistent with foam), compensating the deep-water case another way. Or keep
-    the fudge and lift foam instead.
+    the fudge and lift foam instead. **Dante chose physical** ("I think we poked
+    it once before").
+  - **Done.** 1/π is now on the direct-sun term of both the seabed branch and
+    the above-water terrain-through-refraction branch. Sky ambient stays without
+    1/π, since a uniform sky of radiance L delivers E = πL. The 2026-05-16 history
+    is kept in the comment.
+  - **Headless before/after** (frozen breakers, tonemapped means):
+
+    | Region | Before | After |
+    | --- | --- | --- |
+    | Sand under shallow water | 156/205/194 | 111/164/162 |
+    | Dry sand (control) | 214/204/191 | unchanged |
+    | Beach view | 186/204/194 | 160/181/175 |
+    | Mid-depth view (~5 m) | 84/153/150 | 85/138/143 |
+    | Deep view (~10 m, the depth cap) | 84/146/146 | 86/137/143 |
+
+  - **Result.** The shallows are no longer milky, and foam and swash read white
+    against the water. On this world the 5–10 m views dim only slightly (inscatter
+    dominates), so the seabed is not erased. ⚠ Still worth checking in scenes with
+    deeper, clearer water (islands.html, lake-ocean.html), which is where the old
+    fudge came from. Needs create-shader.py.
 - **Square foam outlines inland: not reproducible after tuning pass 2.**
   - *Test.* A GPU scan counted breaker foam > 0.3 on texels that the 4 m field
     calls land (isolated wet pockets). It covered 512 m windows over the oval,

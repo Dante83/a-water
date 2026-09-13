@@ -2151,17 +2151,21 @@ void main(){
     #endif
 
     vec3 ambientUW = skyAmbientColor * waterAlbedo;
-    //Pragmatic seabed scale: no /pi here even though strict Lambertian
-    //convention would apply one (L = albedo * E * NdotL / pi). The /pi
-    //belongs on inscatterEquilibrium (see :1147) because THAT term was
-    //over-driving the surface; the seabed already barely beats the bright
-    //inscatter in clean ocean (rocks dim relative to equilibrium in G/B),
-    //so dividing it further erased it in mode 0 and made it visible only
-    //in shallow water during the 2026-05-16 mode-5 + x10 diagnostic. We
-    //accept the unit inconsistency between the two body terms: /pi where
-    //it dims an over-bright term, no /pi where doing so would erase a
-    //term that already reads as a small lift over equilibrium.
-    refractedLight *= (sunDown * NdotL_seabed * causticMod * seabedShadowFactor + ambientUW);
+    //Lambertian seabed: L = albedo * E * NdotL / pi for the direct sun, the
+    //same units the foam plate uses (INV_PI below). The sky ambient needs no
+    ///pi: a uniform sky of radiance L_sky delivers E = pi * L_sky, so the pi
+    //cancels.
+    //
+    //HISTORY. This used to carry no /pi on purpose ("pragmatic seabed scale",
+    //2026-05-16): dividing erased the seabed against the bright inscatter in
+    //clean deep water. Phase 3a, tuning pass 3 (2026-09-13), put it back. The
+    //shallows over a beach were lit pi times brighter than the foam next to
+    //them. Sand under a few centimetres of water measured as bright as dry sand
+    //(submerged sand should be clearly darker), and breaker foam read grey
+    //against milky shallows. If deep clear water loses its seabed again,
+    //compensate THERE (inscatter or extinction), not with a unit mismatch here.
+    const float SEABED_INV_PI = 0.31830988618;
+    refractedLight *= (SEABED_INV_PI * sunDown * NdotL_seabed * causticMod * seabedShadowFactor + ambientUW);
   }
   else if(!isFarPlane){
     //Above-water terrain visible through wave distortion / grazing-angle
@@ -2179,7 +2183,10 @@ void main(){
       vec4 terrainShadowCoord = sunShadowMatrix * vec4(pointXYZ, 1.0);
       terrainShadowFactor = getSunShadow(terrainShadowCoord);
     }
-    refractedLight *= (brightestDirectionalLight * NdotL_terrain * terrainShadowFactor + skyAmbientColor);
+    //Lambertian direct sun (/pi), same convention as the seabed branch above and
+    //the foam plate: Phase 3a tuning pass 3.
+    const float TERRAIN_INV_PI = 0.31830988618;
+    refractedLight *= (TERRAIN_INV_PI * brightestDirectionalLight * NdotL_terrain * terrainShadowFactor + skyAmbientColor);
   }
   //DEBUG snapshots (read by oceanShadowDebugMode 5..10 at bottom of shader).
   //dbgRawRefraction here is post-seabed-relight (since we already passed the
