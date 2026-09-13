@@ -402,8 +402,22 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
       uNoShore: {value: 1.0}
     },
     vertexShader: vertexShader,
+    //DRY TEXELS TAKE THE LEVEL OF THEIR NEAREST WATER. The base fill and the
+    //tile decode write a dry texel's level as sea level, and that is wrong next
+    //to any water that is not the sea: around a lake at -100 on a -150 world the
+    //surface dropped 50 m inside the one texel past the last wet one, so it dove
+    //into the bank before reaching the shoreline and the waterline followed the
+    //texel staircase (reported 2026-09-12, "jagged edges instead of the water
+    //going right up to the shoreline"). The flood already found each texel's
+    //nearest shore point, so read the level of the WET texel beside that point
+    //and the surface continues flat past the shore, where the terrain's own
+    //depth test cuts it exactly. Over land far from any lake this is still sea
+    //level. Where two bodies meet, the level steps at the medial axis between
+    //them, under dry ground, where the dry discard removes it anyway. Needs the
+    //shore field: with it disabled the old sea-level answer stands.
     fragmentShader: [
       'precision highp float;',
+      resDefine,
       'layout(location = 0) out vec4 gSurface;',
       'layout(location = 1) out vec4 gMotion;',
       'uniform sampler2D uFieldA, uFieldB, uSeedTex;',
@@ -415,7 +429,24 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
       '  vec4 s = texelFetch(uSeedTex, p, 0);',
       '  float side = a.g > 0.0 ? 1.0 : -1.0;',
       '  float dist = s.a > 0.5 ? distance(vec2(p), s.xy) * uTexel : uNoShore;',
-      '  gSurface = vec4(a.r, a.g, side * dist, a.a);',
+      '  float level = a.r;',
+      //The seed lies between a wet and a dry texel (or ON a one-texel strip), so
+      //the wet texel nearest to it is always inside its 3x3.
+      '  if(!(a.g > 0.0) && s.a > 0.5){',
+      '    ivec2 c = ivec2(floor(s.xy + 0.5));',
+      '    float bestD = 1e20;',
+      '    for(int dy = -1; dy <= 1; dy++){',
+      '      for(int dx = -1; dx <= 1; dx++){',
+      '        ivec2 q = clamp(c + ivec2(dx, dy), ivec2(0), ivec2(RES - 1));',
+      '        vec4 w = texelFetch(uFieldA, q, 0);',
+      '        if(!(w.g > 0.0)) continue;',
+      '        vec2 d = vec2(q) - s.xy;',
+      '        float dd = dot(d, d);',
+      '        if(dd < bestD){ bestD = dd; level = w.r; }',
+      '      }',
+      '    }',
+      '  }',
+      '  gSurface = vec4(level, a.g, side * dist, a.a);',
       '  gMotion = b;',
       '}'
     ].join('\n'),
