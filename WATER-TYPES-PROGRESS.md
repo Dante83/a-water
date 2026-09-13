@@ -344,6 +344,30 @@ this **needs create-shader.py**.
   `_emitShore`'s terrain-contact sheet stays as it was. It already rides the
   breakers and swash through the bake's `.r`.
 
+### Tuning pass 4 — white edge when rising; round sun blob on shore water (written; needs create-shader.py)
+
+- **Round sun blob (browser round 4), fixed.**
+  - *Cause.* WaveMask weighs a whole cascade by its longest wavelength, so in
+    centimetres of water C4/C5 go to ~0, and over dry texels the swash covers the
+    weights are exactly 0. The sheet was a perfect mirror, and the Phong sun lobe
+    (exponent 275, half-width ~4°, boost 7) drew a soft disc on it.
+  - *Fix* (fragment, normals only). C4/C5 get a 0.5 weight floor on the swash
+    sheet and fading out by 1.5 m depth, when breakers are on. Real swash and
+    shallows are never glassy: the short ripples and bore turbulence are local,
+    not depth-limited swell.
+  - *Headless* (frozen breakers, 3 times × 2 angles): every frame that showed
+    the blob now shows sparkle.
+- **White edge growing as the camera rises, changed but NOT reproduced headless.**
+  - *Suspected cause.* The thin-sheet foam compared the surface to the foam
+    ortho's terrain height (~4 m texels, follows the camera), and the old
+    `shoreFade` heuristic did the same, which is why Dante had seen a version
+    of it before.
+  - *Change.* The thin-sheet foam now measures thickness against the refraction
+    G-buffer's per-pixel ground point (along the refracted ray), placed after
+    `pointXYZ` is built.
+  - *Test.* The white edge did not appear in the before or after frames at
+    12 m and 30 m. **Dante to re-check.**
+
 ### Next (3a step 4)
 
 - **Splash.** The `_emitShore` breaker trigger, reading shoreSDF and Kr from the
