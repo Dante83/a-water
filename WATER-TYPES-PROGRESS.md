@@ -367,6 +367,31 @@ this **needs create-shader.py**.
     `pointXYZ` is built.
   - *Test.* The white edge did not appear in the before or after frames at
     12 m and 30 m. **Dante to re-check.**
+- **White edge — ROOT CAUSE FOUND, browser round 5: a one-frame camera lag in
+  the whole ocean.**
+  - *Dante's clue.* It appears only while the camera moves (worst when rising)
+    and clears when it stops.
+  - *Reproduced headless* by holding the real E key through CDP, so the page's
+    fly-controls moved the rig in its normal tick. With debug mode 5 (refraction),
+    the white band grew from 8 k to 38 k pixels while moving. The thin-sheet foam
+    and a-land's morph catch-up (`morphCatchupMs` → 1) were both ruled out.
+  - *Trace.* Each frame, the G-buffer's camera Y (`inverseViewMatrix`) equalled
+    the main render's camera Y from the frame BEFORE (12.25/12.47, 12.47/12.64, …).
+    The call trace per frame was `ocean-tick(G-buffer render) → fly-controls →
+    main render`.
+  - *Why.* A-Frame 1.7 `callComponentBehaviors` ticks by component type in
+    REGISTRATION order (`scene.componentOrder`), not DOM order, and ticks systems
+    after all components. `ocean-state` registers with the ocean scripts in
+    `<head>`, so any camera controller registered later ticks after it.
+  - *Fix* (`ocean-state.js`). An `ocean-state` SYSTEM now drives
+    `oceanGrid.tick(time)` for every registered ocean component. A system tick
+    runs after every component tick and before the render. The component
+    registers and unregisters itself.
+  - *Verified.* While moving, G-buffer camera Y == render camera Y on every
+    frame, and the climbing frames show no white band.
+  - *Side effect.* Components that read ocean state in their own tick
+    (`buoyant`, splash consumers) now see it from the previous frame's ocean tick.
+    The height snapshot is 15 Hz anyway. JS only, so no regen.
 
 ### Next (3a step 4)
 

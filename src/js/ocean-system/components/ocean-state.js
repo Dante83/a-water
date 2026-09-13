@@ -1,6 +1,35 @@
 //The party responsible for updating our view of the fluid system.
 //Config map declarations and parsing utilities live in ocean-config/ — one file
 //per group element (<ocean-water>, <ocean-foam>, …) for easy navigation.
+
+//WHY THE PER-FRAME WORK IS DRIVEN BY A SYSTEM, NOT THE COMPONENT'S TICK.
+//A-Frame 1.7 ticks components by component TYPE, in the order the types were
+//REGISTERED (scene.componentOrder), and it ticks systems after every component.
+//This file loads in <head> with the ocean scripts, so any camera controller
+//registered later (a page's inline fly-controls, a rig from another library)
+//ticked AFTER the ocean. Every frame the ocean then rendered its refraction
+//G-buffer and copied the view matrices before the camera moved, while the main
+//render used the moved camera: a one-frame lag that only shows in motion.
+//Vertical motion showed it worst. Near the waterline every depth comparison
+//shifted by the camera's step per frame, and the refraction lit a white band
+//along the shore whenever the camera rose, gone as soon as it stopped (Phase 3a
+//browser round 5; headless trace: G-buffer camera Y == last frame's render Y).
+//A system tick runs after all component ticks and before the render, so the
+//ocean always sees the camera the frame will be drawn with.
+AFRAME.registerSystem('ocean-state', {
+  init: function(){
+    this.oceans = [];
+  },
+  tick: function(time, timeDelta){
+    for(let i = 0; i < this.oceans.length; ++i){
+      const component = this.oceans[i];
+      if(component.oceanGrid && component.el.isPlaying){
+        component.oceanGrid.tick(time);
+      }
+    }
+  }
+});
+
 AFRAME.registerComponent('ocean-state', {
   oceanGrid: null,
   oceanRenderer: null,
@@ -117,9 +146,16 @@ AFRAME.registerComponent('ocean-state', {
     //Set up our ocean grid
     this.oceanGrid = new ARestlessOcean.OceanGrid(scene, renderer, camera, this);
 
-    //When we've finished loading, now we can commence ticking our grid
-    this.tick = function(time, timeDelta){
-      this.oceanGrid.tick(time);
+    //When we've finished loading, now we can commence ticking our grid. The
+    //ticking itself happens in the ocean-state SYSTEM (see the top of this file).
+    if(this.system && this.system.oceans.indexOf(this) < 0){
+      this.system.oceans.push(this);
+    }
+  },
+  remove: function(){
+    if(this.system){
+      const i = this.system.oceans.indexOf(this);
+      if(i >= 0) this.system.oceans.splice(i, 1);
     }
   },
   update: function(oldData){
@@ -130,7 +166,4 @@ AFRAME.registerComponent('ocean-state', {
       this.oceanGrid.oceanHeightBandLibrary.regenerateH0(this.data.wind_velocity);
     }
   },
-  tick: function(time, timeDelta){
-    //Do nothing to start :D
-  }
 });
