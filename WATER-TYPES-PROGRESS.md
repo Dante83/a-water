@@ -103,6 +103,24 @@ come (see *Next* below).
      `setShoreBreakersEnabled(false)`.
    - `waveHeightMultiplier` (1.5 in that scene) scales the breaker Hs as well.
 
+### Browser round 1 (2026-09-13, Dante)
+
+The breakers read well, including beside the steep island. Three touch-ups are
+parked, none of them fixed yet:
+- **Breakers invisible from underwater.** Suspect: the submersion probe
+  (`height-readback-pass.js`, camera probe) sums only cascades 0 and 1 times the
+  masks. It never adds the breaker, so in the surf zone the air/water swap is
+  decided against a surface that isn't the one being drawn.
+- **Twitchy surface near the waterline.** Two candidates:
+  1. The same probe mismatch, flipping the air/water state under passing crests.
+  2. Crest jumps when cascade 1 refills. The phase is (s/h)·I with θ ≈ 60 rad at
+     the shore, so a 1% change in the re-flooded shoreSDF moves a crest by
+     ~0.6 rad. Test: watch `waterFieldPass.refillCount` against the twitch.
+- **Screenshot oddities.** The scalloped grey band is the residual foam sheet
+  behind the front: a hard edge where `dFront` wraps. There are also two square
+  outlines in the shallows, source unknown (possibly a-land tiles or the foam
+  ortho).
+
 ### Next (3a steps 2–4)
 
 - **Swash.** A run-up sheet up the beach on breaker phase, with Stockdon 2006 R2
