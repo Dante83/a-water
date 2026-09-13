@@ -8,7 +8,7 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
-## Phase 2 — still water on the level field — **written, headless-verified, needs regen + browser**
+## Phase 2 — still water on the level field — **landed** (browser-verified 2026-09-12, merged)
 
 2026-09-12, branch `phase-2-still-water` off `multi-water-types`. **GLSL changed:
 run `create-shader.py` (regenerates `water-shader.js` and `ocean-shadow.js`).**

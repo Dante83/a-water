@@ -554,3 +554,19 @@ The shared wind and weather bus — a-land's `getWindField()` is built and waiti
 whenever it is wanted.
 
 And WebGPU, per decision 3.
+
+**A bug to come back for: the mid-distance fold-foam speck band** (found 2026-09-12 during
+the Phase 2 browser round). Fold foam appears as sparse white specks in a band around the
+camera: none near, none far. It exists on the open ocean with the wave masks off, so it
+predates Phase 2. A calm lake exposes it as a "ring", because C5 is the only foam source
+left there.
+
+Ruled out: splash particles, both discards, terrain showing through, NaN. Forcing the
+cascade textures to non-mipmapped filtering spreads the specks across the whole view, so
+it is the Jacobian on under-resolved small cascades, and mipmapping only suppresses it
+outside a distance band.
+
+Still open: why the band survives there at all, since box-filtered mips should only shrink
+the finite-difference slopes. Candidate fix, once the root cause is understood: LOD-aware
+fold foam, where a cascade whose texels are sub-pixel stops feeding `turbulence` but keeps
+feeding the normals. Evidence in `WATER-TYPES-PROGRESS.md` § Phase 2, browser round 1.
