@@ -3,8 +3,17 @@ precision highp float;
 varying vec2 vWorldXZ;
 varying vec3 vPosition;
 varying vec3 vDisplacedPosition;
-varying mat4 vInstanceMatrix;
-varying mat4 vModelMatrix;
+//World position of the displaced vertex. Replaces the two mat4 varyings
+//(vInstanceMatrix, vModelMatrix) the fragment used to rebuild it from: a mat4
+//varying costs 4 of the 16 varying slots GLSL ES 3.0 guarantees, the shader was
+//at exactly 16, and Phase 2 needed two more. The instance matrix is a pure
+//translation, so interpolating the product is identical to the old rebuild.
+varying vec3 vWorldPosition;
+//Phase 2: rest water level (.x) and the six per-cascade wave weights from
+//WaveMask, packed as (level, w0, w1, w2) and (w3, w4, w5). Computed once per
+//vertex so the fragment's normals and the geometry weigh cascades the same.
+varying vec4 vFieldLevelMaskA;
+varying vec3 vFieldMaskB;
 varying vec4 vSunShadowCoord;
 //Four ocean-CSM shadow coords, fine→coarse. Split into individual varyings
 //rather than an array so older GLSL ES drivers don't choke on varying arrays.
@@ -21,7 +30,7 @@ uniform vec2 cascadeSpatialOffsets[6];
 uniform float waveHeightMultiplier;
 uniform float chop;
 
-//WaterField cascades (Phase 1b) — see water-shader.glsl's waterFieldLevelAt
+//WaterField cascades (Phase 1b) — see water-shader.glsl's waterFieldAt
 //for the full explanation. Duplicated here rather than shared: vertex and
 //fragment are separate GLSL compilation units in three.js, and this file
 //already duplicates cascadeDisplacementTextures/cascadePatchSizes/
@@ -42,43 +51,52 @@ uniform sampler2D waterFieldCascade2;
 uniform vec2 waterFieldCascadeCenter[3];
 uniform float waterFieldCascadeHalfWidth[3];
 
-float sampleWaterFieldCascade0(vec2 worldXZ){
+//RT0 of each cascade: (level, depth, shoreSDF, dryMask) — see WaterFieldPass's
+//Phase 2 header.
+vec4 sampleWaterFieldCascade0(vec2 worldXZ){
   vec2 uv = (worldXZ - waterFieldCascadeCenter[0]) / (2.0 * waterFieldCascadeHalfWidth[0]) + 0.5;
-  return texture2D(waterFieldCascade0, uv).r;
+  return texture2D(waterFieldCascade0, uv);
 }
-float sampleWaterFieldCascade1(vec2 worldXZ){
+vec4 sampleWaterFieldCascade1(vec2 worldXZ){
   vec2 uv = (worldXZ - waterFieldCascadeCenter[1]) / (2.0 * waterFieldCascadeHalfWidth[1]) + 0.5;
-  return texture2D(waterFieldCascade1, uv).r;
+  return texture2D(waterFieldCascade1, uv);
 }
-float sampleWaterFieldCascade2(vec2 worldXZ){
+vec4 sampleWaterFieldCascade2(vec2 worldXZ){
   vec2 uv = (worldXZ - waterFieldCascadeCenter[2]) / (2.0 * waterFieldCascadeHalfWidth[2]) + 0.5;
-  return texture2D(waterFieldCascade2, uv).r;
+  return texture2D(waterFieldCascade2, uv);
 }
-//Mirrors water-shader.glsl's waterFieldLevelAt exactly (point-containment,
+//Mirrors water-shader.glsl's waterFieldAt exactly (point-containment,
 //finest -> coarse, smoothstep crossfade at cascade boundaries). Keep the two
 //in sync by hand if either changes — there is no shared-chunk mechanism in
 //this pipeline (see the comment above on why this is duplicated at all).
-float waterFieldLevelAt(vec2 worldXZ){
+vec4 waterFieldAt(vec2 worldXZ){
   vec2 d0 = abs(worldXZ - waterFieldCascadeCenter[0]);
   float hw0 = waterFieldCascadeHalfWidth[0];
   float m0 = max(d0.x, d0.y);
   if(m0 < hw0){
-    float level = sampleWaterFieldCascade0(worldXZ);
+    vec4 field = sampleWaterFieldCascade0(worldXZ);
     float edgeT = smoothstep(hw0 * 0.9, hw0, m0);
-    if(edgeT > 0.0) level = mix(level, sampleWaterFieldCascade1(worldXZ), edgeT);
-    return level;
+    if(edgeT > 0.0) field = mix(field, sampleWaterFieldCascade1(worldXZ), edgeT);
+    return field;
   }
   vec2 d1 = abs(worldXZ - waterFieldCascadeCenter[1]);
   float hw1 = waterFieldCascadeHalfWidth[1];
   float m1 = max(d1.x, d1.y);
   if(m1 < hw1){
-    float level = sampleWaterFieldCascade1(worldXZ);
+    vec4 field = sampleWaterFieldCascade1(worldXZ);
     float edgeT = smoothstep(hw1 * 0.9, hw1, m1);
-    if(edgeT > 0.0) level = mix(level, sampleWaterFieldCascade2(worldXZ), edgeT);
-    return level;
+    if(edgeT > 0.0) field = mix(field, sampleWaterFieldCascade2(worldXZ), edgeT);
+    return field;
   }
   return sampleWaterFieldCascade2(worldXZ);
 }
+
+//WaveMask uniforms + waveMaskCascades(field, out a, out b). The body is NOT in
+//this file: ocean-grid.js's buildVertexShader splices ARestlessOcean.WaveMask.GLSL
+//(ocean-wave-field.js) in at this token, the same source the ocean CSM caster
+//and the CPU height bake use. A bare token rather than a comment so the min
+//build's GLSL comment strip cannot eat it.
+$wave_mask_functions
 //Displacement-texture pixel resolution per side (RG=dh/dx,dh/dz storage).
 //Used here only to size the finite-difference epsilon for the per-vertex
 //normal estimate that drives normal-offset shadow bias.
@@ -121,13 +139,22 @@ void main() {
   //
   //Step ring-index gates were removed earlier — they showed as ridges at
   //clipmap ring boundaries. Per-cascade smooth fades take their place.
+  //Phase 2: the water field at this vertex, and from it one weight per cascade
+  //(depth-limited and fetch-limited spectrum, see WaveMask). Sampled at the
+  //UNDISPLACED worldXZ: a wave's amplitude must not depend on where that same
+  //wave has pushed the vertex, or it feeds back on itself.
+  vec4 field = waterFieldAt(worldXZ);
+  vec3 waveMaskA;
+  vec3 waveMaskB;
+  waveMaskCascades(field, waveMaskA, waveMaskB);
+
   vec3 displacement = vec3(0.0);
-  displacement += texture2D(cascadeDisplacementTextures[0], (worldXZ + cascadeSpatialOffsets[0]) / cascadePatchSizes[0]).xyz;
-  displacement += texture2D(cascadeDisplacementTextures[1], (worldXZ + cascadeSpatialOffsets[1]) / cascadePatchSizes[1]).xyz;
-  displacement += smoothstep(cascadePatchSizes[2] *  50.0, 0.0, distanceToVertex) * texture2D(cascadeDisplacementTextures[2], (worldXZ + cascadeSpatialOffsets[2]) / cascadePatchSizes[2]).xyz;
-  displacement += smoothstep(cascadePatchSizes[3] * 100.0, 0.0, distanceToVertex) * texture2D(cascadeDisplacementTextures[3], (worldXZ + cascadeSpatialOffsets[3]) / cascadePatchSizes[3]).xyz;
-  displacement += smoothstep(cascadePatchSizes[4] * 250.0, 0.0, distanceToVertex) * texture2D(cascadeDisplacementTextures[4], (worldXZ + cascadeSpatialOffsets[4]) / cascadePatchSizes[4]).xyz;
-  displacement += smoothstep(cascadePatchSizes[5] * 500.0, 0.0, distanceToVertex) * texture2D(cascadeDisplacementTextures[5], (worldXZ + cascadeSpatialOffsets[5]) / cascadePatchSizes[5]).xyz;
+  displacement += waveMaskA.x * texture2D(cascadeDisplacementTextures[0], (worldXZ + cascadeSpatialOffsets[0]) / cascadePatchSizes[0]).xyz;
+  displacement += waveMaskA.y * texture2D(cascadeDisplacementTextures[1], (worldXZ + cascadeSpatialOffsets[1]) / cascadePatchSizes[1]).xyz;
+  displacement += waveMaskA.z * smoothstep(cascadePatchSizes[2] *  50.0, 0.0, distanceToVertex) * texture2D(cascadeDisplacementTextures[2], (worldXZ + cascadeSpatialOffsets[2]) / cascadePatchSizes[2]).xyz;
+  displacement += waveMaskB.x * smoothstep(cascadePatchSizes[3] * 100.0, 0.0, distanceToVertex) * texture2D(cascadeDisplacementTextures[3], (worldXZ + cascadeSpatialOffsets[3]) / cascadePatchSizes[3]).xyz;
+  displacement += waveMaskB.y * smoothstep(cascadePatchSizes[4] * 250.0, 0.0, distanceToVertex) * texture2D(cascadeDisplacementTextures[4], (worldXZ + cascadeSpatialOffsets[4]) / cascadePatchSizes[4]).xyz;
+  displacement += waveMaskB.z * smoothstep(cascadePatchSizes[5] * 500.0, 0.0, distanceToVertex) * texture2D(cascadeDisplacementTextures[5], (worldXZ + cascadeSpatialOffsets[5]) / cascadePatchSizes[5]).xyz;
   displacement *= waveHeightMultiplier;
   displacement.x *= -chop;
   displacement.z *= -chop;
@@ -141,14 +168,14 @@ void main() {
   //worldXZ (before `displacement` above), not vDisplacedPosition — sampling
   //the wave-displaced position would make the shoreline crawl as waves move
   //(see WATER-TYPES.md's FFT-displacement gotcha).
-  offsetPosition.y += (waterFieldLevelAt(worldXZ) - baseHeightOffset);
+  offsetPosition.y += (field.r - baseHeightOffset);
 
   //Set up our varyings
   vWorldXZ = worldPositionOfVertex.xz;
   vDisplacedPosition = offsetPosition;
   vPosition = position;
-  vInstanceMatrix = instanceMatrix;
-  vModelMatrix = modelMatrix;
+  vFieldLevelMaskA = vec4(field.r, waveMaskA);
+  vFieldMaskB = waveMaskB;
 
   //Shadow coord — project the displaced world position into the sun's light-clip
   //space so the fragment shader can compare against the shadow depth texture.
@@ -156,6 +183,7 @@ void main() {
   //the ocean-only CSM cascades. The fragment shader walks the four fine→coarse
   //and uses the first cascade whose UVs fall inside [0,1].
   vec4 worldDisplacedPosition = modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);
+  vWorldPosition = worldDisplacedPosition.xyz;
   vSunShadowCoord = sunShadowMatrix * worldDisplacedPosition;
 
   //Normal-offset bias: estimate surface normal from cascade-0 displacement
@@ -175,8 +203,8 @@ void main() {
   float hR = texture2D(cascadeDisplacementTextures[0], ndUV + vec2( ndEps, 0.0)).y;
   float hB = texture2D(cascadeDisplacementTextures[0], ndUV + vec2( 0.0, -ndEps)).y;
   float hT = texture2D(cascadeDisplacementTextures[0], ndUV + vec2( 0.0,  ndEps)).y;
-  float dHdX = (hR - hL) / (2.0 * ndStep) * waveHeightMultiplier;
-  float dHdZ = (hT - hB) / (2.0 * ndStep) * waveHeightMultiplier;
+  float dHdX = waveMaskA.x * (hR - hL) / (2.0 * ndStep) * waveHeightMultiplier;
+  float dHdZ = waveMaskA.x * (hT - hB) / (2.0 * ndStep) * waveHeightMultiplier;
   vec3 normalOffsetN = normalize(vec3(-dHdX, 1.0, -dHdZ));
   vec4 shadowSamplePos = vec4(worldDisplacedPosition.xyz + normalOffsetN * oceanShadowNormalBias, 1.0);
 

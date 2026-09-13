@@ -120,6 +120,43 @@ ARestlessOcean.WaterTileDecoder.prototype.getTile = function(lod, tileX, tileY){
   return entry;
 };
 
+//Does a-land say there is water at this world point? The CPU half of the
+//field's dryMask, at LOD 0, for callers that must tell "dry" from "not loaded
+//yet", which getWaterAt cannot (it answers null for both). Returns:
+//  'wet'     — at least one wet corner with depth > 0 (sampleTile would answer)
+//  'dry'     — the tile is indexed dry / 404'd, or this footprint is dry in it
+//  'loading' — no answer yet (kicks the load, like getTile)
+//  'none'    — outside a-land's world; the standalone ocean is the answer
+//The footprint test mirrors WaterReader.sampleTile's null branches exactly.
+ARestlessOcean.WaterTileDecoder.prototype.answerAt = function(worldX, worldZ){
+  if(!this.available) return 'none';
+  const span = this.spanForLod(0);
+  if(worldX < 0 || worldZ < 0) return 'none';
+  if(this.worldSizeX > 0 && worldX >= this.worldSizeX) return 'none';
+  if(this.worldSizeZ > 0 && worldZ >= this.worldSizeZ) return 'none';
+  const tx = Math.floor(worldX / span), ty = Math.floor(worldZ / span);
+  if(this.isKnownDry(0, tx, ty)) return 'dry';
+  const entry = this.getTile(0, tx, ty);
+  if(!entry){
+    return (this._cache.get('0_' + tx + '_' + ty) === 'dry') ? 'dry' : 'loading';
+  }
+  const t = entry.w;
+  const L = entry.levelTex.image.data;
+  let fx = (worldX - tx * span) / span * (t - 1);
+  let fy = (worldZ - ty * span) / span * (t - 1);
+  fx = Math.min(t - 1, Math.max(0, fx));
+  fy = Math.min(t - 1, Math.max(0, fy));
+  const x0 = fx | 0, y0 = fy | 0;
+  const x1 = x0 < t - 1 ? x0 + 1 : x0, y1 = y0 < t - 1 ? y0 + 1 : y0;
+  const ax = fx - x0, az = fy - y0;
+  const idx = [y0 * t + x0, y0 * t + x1, y1 * t + x0, y1 * t + x1];
+  const wt = [(1 - ax) * (1 - az), ax * (1 - az), (1 - ax) * az, ax * az];
+  for(let k = 0; k < 4; ++k){
+    if(wt[k] > 0 && L[idx[k] * 4 + 3] > 0) return 'wet';
+  }
+  return 'dry';
+};
+
 //Every tile at `lod` intersecting a world-space AABB, clamped to the world's own
 //tile grid. Returns [{tileX, tileY, originX, originZ, span, entry, dry}]:
 //  dry: true    — a-land has ANSWERED "no water in this whole tile" (absent from

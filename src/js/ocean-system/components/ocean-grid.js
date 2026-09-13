@@ -638,6 +638,148 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     if(wf && wf.levelProvider !== self.waterLevelAt){
       wf.levelProvider = self.waterLevelAt;
     }
+    if(wf && wf.maskProvider !== self.waveMasksAt){
+      wf.maskProvider = self.waveMasksAt;
+    }
+  };
+
+  //═══════════════════════════════════════════════════════════════════════════
+  // THE WAVE-MASK SEAM (Phase 2)
+  //═══════════════════════════════════════════════════════════════════════════
+  //Per-cascade wave weights from the water field — see ARestlessOcean.WaveMask
+  //(ocean-wave-field.js) for the physics. The GPU evaluates it per vertex from
+  //WaterFieldPass's RT0; this is the CPU mirror for the analytic twin, the
+  //submersion probe and the debug readback, fed from the same sources the GPU
+  //field is filled from rather than from a readback of it:
+  //  a-faraway-land: getWaterAt (the contract oracle the GPU decode is verified
+  //    byte-exact against), with shoreSDF from a cached 8-ray search.
+  //  standalone:     the splash system's CPU copy of the foam ortho, which is
+  //    the texture the GPU base fill reads its depth from.
+  this.waveMaskEnabled = true;
+  this._waveMaskParams = null;
+  this.waveMaskParams = function(){
+    const lib = self.oceanHeightBandLibrary;
+    if(!lib) return null;
+    self._waveMaskParams = ARestlessOcean.WaveMask.paramsFrom(
+      lib, self.heightOffset, self._waterFieldDepthCap(), self.waveMaskEnabled, self._waveMaskParams);
+    return self._waveMaskParams;
+  };
+  //a-land saturates its depth encoding at simulation.maxDepth; standalone has
+  //no cap. WaveMask treats depth at the cap as deep (see its header).
+  this._waterFieldDepthCap = function(){
+    if(self._terrainProvider === 'a-faraway-land' && self._landDirector){
+      const mj = self._landDirector.mapJson;
+      const md = mj && mj.simulation && mj.simulation.maxDepth;
+      if(md > 0) return md;
+    }
+    return 1.0e9;
+  };
+
+  //True only when the terrain provider has ANSWERED "no water here" — the CPU
+  //half of the field's dryMask. Loading tiles and standalone are never dry.
+  this.waterKnownDryAt = function(x, z){
+    if(self._terrainProvider !== 'a-faraway-land') return false;
+    const tdp = self.waterFieldPass && self.waterFieldPass._tileDecodePass;
+    const decoder = tdp && tdp.decoder;
+    return !!(decoder && decoder.answerAt(x, z) === 'dry');
+  };
+
+  //CPU mirror of the GPU field texel (level, depth, shoreSDF, dryMask).
+  //`out` is {level, depth, shoreSDF, dryMask}; returns it.
+  this._fieldScratch = {level: 0, depth: 0, shoreSDF: 0, dryMask: 0};
+  this.waterFieldSampleAt = function(x, z, out){
+    out = out || {level: 0, depth: 0, shoreSDF: 0, dryMask: 0};
+    const OPEN = ARestlessOcean.Passes.WaterFieldPass
+      ? ARestlessOcean.Passes.WaterFieldPass.OPEN_OCEAN_DEPTH : 1000.0;
+    out.level = self.heightOffset;
+    out.depth = OPEN;
+    out.shoreSDF = 1.0e6;
+    out.dryMask = 0.0;
+    if(self._terrainProvider === 'a-faraway-land' && self._landTerrainApi){
+      const w = self._landTerrainApi.getWaterAt(x, z);
+      if(w){
+        out.level = w.level;
+        out.depth = w.depth;
+        //shoreSDF only matters to WaveMask for INLAND water; skip the search
+        //over the ocean, where the GPU's value is ignored too.
+        if(Math.abs(w.level - self.heightOffset) > ARestlessOcean.WaveMask.INLAND_START){
+          out.shoreSDF = self._cpuShoreDistance(x, z);
+        }
+        return out;
+      }
+      //null = dry OR not loaded. A known dry mirrors the GPU's authoritative
+      //dry (waves weigh 0); a loading tile falls through to the standalone
+      //answer, like the GPU's base fill does.
+      if(self.waterKnownDryAt(x, z)){
+        out.depth = 0.0;
+        out.dryMask = 1.0;
+        return out;
+      }
+    }
+    const splash = self.oceanSplash;
+    if(splash && typeof splash.sampleTerrainHeight === 'function'){
+      const ground = splash.sampleTerrainHeight(x, z);
+      if(ground !== null) out.depth = Math.max(0.0, out.level - ground);
+    }
+    return out;
+  };
+
+  //Distance to the nearest dry point (metres), for the inland fetch proxy.
+  //The GPU uses an exact jump-flood SDF; this marches 8 rays (doubling step,
+  //then a bisection) and takes the shortest, which overestimates by at most
+  //1/cos(22.5°) ≈ 8% between rays. The fetch proxy's k_p goes as F^(-2/3),
+  //so that is a ~5% shift in the local peak — below anything visible.
+  //Cached on a 2 m grid; cleared whenever the GPU field is invalidated (tile
+  //arrival, terrain edit), which is also when the answer can change.
+  this._shoreCache = new Map();
+  this._shoreCacheInvalidation = -1;
+  const SHORE_RAY_DIRS = [];
+  for(let r = 0; r < 8; r++){
+    SHORE_RAY_DIRS.push([Math.cos(r * Math.PI / 4), Math.sin(r * Math.PI / 4)]);
+  }
+  this._cpuShoreDistance = function(x, z){
+    const wfp = self.waterFieldPass;
+    const inval = wfp ? wfp.invalidationCount : 0;
+    if(inval !== self._shoreCacheInvalidation || self._shoreCache.size > 8192){
+      self._shoreCache.clear();
+      self._shoreCacheInvalidation = inval;
+    }
+    const CELL = 2.0;
+    const cx = Math.round(x / CELL), cz = Math.round(z / CELL);
+    const key = cx + ',' + cz;
+    const hit = self._shoreCache.get(key);
+    if(hit !== undefined) return hit;
+    const api = self._landTerrainApi;
+    const px = cx * CELL, pz = cz * CELL;
+    const MAX = 512.0;   //= cascade 0's "no shore in footprint" value (2·halfWidth)
+    let best = MAX;
+    for(let r = 0; r < 8; r++){
+      const dx = SHORE_RAY_DIRS[r][0], dz = SHORE_RAY_DIRS[r][1];
+      let wet = 0.0;
+      let s = 1.0;
+      while(s < best && !(api.getWaterAt(px + dx * s, pz + dz * s) === null)){
+        wet = s;
+        s *= 2.0;
+      }
+      if(s >= best) continue;
+      let dry = s;
+      for(let b = 0; b < 6; b++){
+        const mid = 0.5 * (wet + dry);
+        if(api.getWaterAt(px + dx * mid, pz + dz * mid) === null) dry = mid; else wet = mid;
+      }
+      best = Math.min(best, 0.5 * (wet + dry));
+    }
+    self._shoreCache.set(key, best);
+    return best;
+  };
+
+  //Per-cascade wave weights at (x, z) into out6. Installed on the analytic twin
+  //as its maskProvider (_syncWaveFieldSeam), and read by the submersion probe.
+  this.waveMasksAt = function(x, z, out6){
+    out6 = out6 || [1, 1, 1, 1, 1, 1];
+    const p = self._waveMaskParams || self.waveMaskParams();
+    const s = self.waterFieldSampleAt(x, z, self._fieldScratch);
+    return ARestlessOcean.WaveMask.compute(out6, s.level, s.depth, s.shoreSDF, s.dryMask, p);
   };
 
   this.oceanHeightBandLibrary = new ARestlessOcean.LUTlibraries.OceanHeightBandLibrary(this);
@@ -688,7 +830,10 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   function buildVertexShader(atmEnabled, skirt){
     return ARestlessOcean.Materials.Ocean.waterMaterial.vertexShader
       .replace(/\$atmospheric_perspective_enabled/g, atmEnabled ? '1' : '0')
-      .replace(/\$horizon_skirt/g, skirt ? '1' : '0');
+      .replace(/\$horizon_skirt/g, skirt ? '1' : '0')
+      //Phase 2: the shared WaveMask GLSL (ocean-wave-field.js). A function
+      //replacement, so a `$` in the GLSL could never be read as a pattern.
+      .replace('$wave_mask_functions', function(){ return ARestlessOcean.WaveMask.GLSL; });
   }
   const vertexShaderSource = buildVertexShader(atmosphereReady, false);
   this.oceanMaterial = new THREE.ShaderMaterial({
@@ -713,6 +858,10 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //a cross-body stomp with two. See ARestlessOcean.cloneUniforms for the array
   //deep-clone that UniformsUtils.clone does not do.
   this.oceanMaterial.uniforms = ARestlessOcean.cloneUniforms(ARestlessOcean.Materials.Ocean.waterMaterial.uniforms);
+  //Phase 2 WaveMask uniforms. Defined in ocean-wave-field.js next to the GLSL
+  //they feed, rather than in the template, so the three consumers (this
+  //material, the CSM caster, the height bake) share one declaration.
+  Object.assign(this.oceanMaterial.uniforms, ARestlessOcean.WaveMask.createUniforms());
   this.oceanMaterial.uniforms.sizeOfOceanPatch.value = this.patchSize;
 
   //Ocean-only cascaded shadow map, orchestrated by
@@ -939,10 +1088,14 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       uniformsRef.ringIndex.value = k;
       //sizeOfOceanPatch stays as base patchSize for consistent world-space normal-map UV scaling
     }
-    //Tile geometry spans [0, tileSize]; placing at gx*tileSize centers the 4×4 ring on the camera
+    //Tile geometry spans [0, tileSize]; placing at gx*tileSize centers the 4×4 ring on the camera.
+    //Y is the flat BASE plane (heightOffset), never the field: the vertex
+    //shader adds (field level − baseHeightOffset) per vertex, so a patch placed
+    //at waterLevelAt() would count the field twice wherever it differs from sea
+    //level at the patch origin.
     self.oceanPatches.push(new ARestlessOcean.OceanPatch(
       self,
-      new THREE.Vector3(gx * tileSize, self.waterLevelAt(gx * tileSize, gy * tileSize), gy * tileSize),
+      new THREE.Vector3(gx * tileSize, self.heightOffset, gy * tileSize),
       oceanPatchGeometryInstances[key],
       instanceIterations[key],
       k
@@ -1333,7 +1486,15 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //mirror plane (the RT renders BEFORE this probe runs, so there's a
     //one-frame lag — same pattern as `_wasUnderwater`).
     self._lastWaterSurfaceY = waterSurfaceY;
-    const cameraSubmersion = self.globalCameraPosition.y - waterSurfaceY;
+    //No water column over the camera, no underwater. waterLevelAt answers sea
+    //level wherever a-land says dry (getWaterAt cannot tell dry from loading),
+    //so dropping below that level inside a painted-dry basin flipped the whole
+    //underwater state machine: murk, fog, caustics, the flipped ocean, with no
+    //water anywhere in sight (reported 2026-09-12). Only a KNOWN dry opts out.
+    const cameraOverDry = self.waterKnownDryAt(self.globalCameraPosition.x, self.globalCameraPosition.z);
+    //Finite, not Infinity: cameraSubmersion is also uploaded as a uniform, and an
+    //infinite float in the shader turns into NaN the moment it meets a zero.
+    const cameraSubmersion = cameraOverDry ? 1.0e6 : self.globalCameraPosition.y - waterSurfaceY;
     //Smooth 0→1 underwater blend over a 1 m band centred on the surface so
     //bobbing through the waterline crossfades the fog instead of snapping.
     const uwHalfBand = 0.5;
@@ -1671,8 +1832,12 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       self._foamWindBias = f * self.foamWindBiasMax;
     }
 
+    //Phase 2 wave-mask parameters, once per frame (wind can change at runtime).
+    const waveMaskParams = self.waveMaskParams();
+
     for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
       const uniformsRef = oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms;
+      ARestlessOcean.WaveMask.writeUniforms(uniformsRef, waveMaskParams);
       for(let c = 0; c < 6; c++){
         uniformsRef.cascadeDisplacementTextures.value[c] = self.oceanHeightComposer.cascadeDisplacementTextures[c];
       }
@@ -1894,9 +2059,13 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //updates happen via the per-instance loop above — the skirt is registered
     //in oceanGridInstanceKeys so it gets the same FFT cascade textures, light
     //state, atm LUTs, etc. that real ocean tiles get.
+    //Phase 2: the BASE plane, like the clipmap patches — the shared vertex
+    //shader lifts each skirt vertex by (field level − baseHeightOffset), so
+    //placing the skirt at waterLevelAt(camera) counted a lake's height twice
+    //and floated a lake-level sheet out to the horizon.
     if(self.horizonSkirtMesh){
       self.horizonSkirtMesh.position.set(sceneCamera.position.x,
-        self.waterLevelAt(sceneCamera.position.x, sceneCamera.position.z), sceneCamera.position.z);
+        self.heightOffset, sceneCamera.position.z);
     }
 
 

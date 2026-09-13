@@ -23,6 +23,8 @@
 //    level = uSeaLevel (the same value the base fill wrote, so the level blend
 //            across a shoreline is unchanged), depth = flow = energy = 0,
 //    type = uWaterType, dryMask = 1.
+//(Output layout per WaterFieldPass's Phase 2 header: RT0 level/depth/shoreSDF/
+//dryMask, RT1 flow.x/flow.z/energy/type.)
 //Whole tiles a-land answers as dry (absent from wetTiles, or 404) are drawn
 //with uForceDry = 1 and never fetched. Only tiles still LOADING are skipped, so
 //the fallback survives exactly where a-land has not answered yet.
@@ -85,8 +87,8 @@ ARestlessOcean.Passes.WaterTileDecodePass = function(oceanGrid){
     ].join('\n'),
     fragmentShader: [
       'precision highp float;',
-      'layout(location = 0) out vec4 gLevelDepthFlow;',
-      'layout(location = 1) out vec4 gClass;',
+      'layout(location = 0) out vec4 gSurface;',
+      'layout(location = 1) out vec4 gMotion;',
       'in vec2 vTileUv;',
       'uniform sampler2D uLevelTex, uFlowTex, uClassTex;',
       'uniform float uTileRes, uMaxDepth, uVelocityRange, uVR0, uVScale;',
@@ -94,8 +96,8 @@ ARestlessOcean.Passes.WaterTileDecodePass = function(oceanGrid){
       '',
       //The authoritative dry answer — see the file header (Phase 1c).
       'void writeDry(){',
-      '  gLevelDepthFlow = vec4(uSeaLevel, 0.0, 0.0, 0.0);',
-      '  gClass = vec4(0.0, uWaterType, 0.0, 1.0);',
+      '  gSurface = vec4(uSeaLevel, 0.0, 0.0, 1.0);',
+      '  gMotion = vec4(0.0, 0.0, 0.0, uWaterType);',
       '}',
       '',
       'float depthFromByte(float b){ float t = b / 255.0; return t * t * uMaxDepth; }',
@@ -139,9 +141,9 @@ ARestlessOcean.Passes.WaterTileDecodePass = function(oceanGrid){
       '  level /= wetW;',
       '  if(!(depth > 0.0)){ writeDry(); return; }', //fully zero-depth footprint — sampleTile returns null here
       '',
-      '  gLevelDepthFlow = vec4(level, depth, vx, vz);',
       //shoreSDF (.b) is left 0 here; WaterFieldPass's compose pass derives it.
-      '  gClass = vec4(energy, kind, 0.0, 0.0);',
+      '  gSurface = vec4(level, depth, 0.0, 0.0);',
+      '  gMotion = vec4(vx, vz, energy, kind);',
       '}'
     ].join('\n'),
     depthTest: false,

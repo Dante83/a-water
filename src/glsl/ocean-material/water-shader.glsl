@@ -3,8 +3,11 @@ precision highp float;
 varying vec2 vWorldXZ;
 varying vec3 vPosition;
 varying vec3 vDisplacedPosition;
-varying mat4 vInstanceMatrix;
-varying mat4 vModelMatrix;
+//Displaced world position, plus the Phase 2 field level and per-cascade wave
+//weights. See water-vertex.glsl for why these replaced the two mat4 varyings.
+varying vec3 vWorldPosition;
+varying vec4 vFieldLevelMaskA;   //(rest level, w0, w1, w2)
+varying vec3 vFieldMaskB;        //(w3, w4, w5)
 varying vec4 vSunShadowCoord;
 varying vec4 vOceanShadowCoord0;
 varying vec4 vOceanShadowCoord1;
@@ -21,12 +24,13 @@ const float FOAM_ORTHO_HALF_WIDTH = $foam_ortho_half_width;
 const float EXCLUSION_ORTHO_HALF_WIDTH = $exclusion_ortho_half_width;
 
 //WaterField cascades (Phase 1b) — RT0 of WaterFieldPass's three world-anchored
-//rings, fine -> coarse. Only the level channel (.r) is read here; depth/flow
-//live in the same textures for other consumers. Center/halfWidth mirror
+//rings, fine -> coarse: (level, depth, shoreSDF, dryMask) since Phase 2. The
+//fragment reads dryMask for the dry discard; the rest level comes in on a
+//varying from the vertex stage. Center/halfWidth mirror
 //WaterFieldPass.CASCADE_HALF_WIDTHS and are uploaded per-frame alongside the
 //textures since cascades re-centre as the camera moves.
 //
-//Declared HERE, before waterFieldLevelAt below, not down with the rest of
+//Declared HERE, before waterFieldAt below, not down with the rest of
 //this shader's uniforms (baseHeightOffset etc.) — GLSL requires an identifier
 //to be declared before its first use in the same translation unit, and this
 //file's functions are defined near the top, above most of its uniform block.
@@ -36,19 +40,18 @@ uniform sampler2D waterFieldCascade2;
 uniform vec2 waterFieldCascadeCenter[3];
 uniform float waterFieldCascadeHalfWidth[3];
 
-//── The water-level seam (WaterField, Phase 1) ─────────────────────────────
-//Rest water level at a world XZ. Every site that used to read
-//baseHeightOffset directly goes through this.
+//── The water-field seam (WaterField, Phase 1) ─────────────────────────────
+//The field texel (level, depth, shoreSDF, dryMask) at a world XZ. Since Phase 2
+//the fragment only reads dryMask here; rest level arrives on vFieldLevelMaskA,
+//computed at the vertex (every site that used to read baseHeightOffset).
 //
-//Phase 1b: samples WaterFieldPass's own cascades (RT0.r = level), the exact
+//Phase 1b: samples WaterFieldPass's own cascades (RT0), the exact
 //textures water-tile-decode-pass.js fills. Selection is point-containment
 //first, finest -> coarsest - the SAME test WaterFieldPass.cascadeIndexFor
 //runs on the CPU side, so the GPU and CPU seams always agree on which
 //cascade "owns" a given world position.
 //
-//distanceToFragment is a cheap early-out only (skip the cascade-0 containment
-//test when a fragment is clearly too far to be inside it), not the selection
-//key - point containment is. Kept as a parameter because the original Phase 1a
+//Point containment, not distance, picks the cascade. The original Phase 1a
 //note is still the reason cascade 0 (1 m/texel, 512 m across) matters here: a
 //far clipmap ring's cells can be wider than a small lake, and reading a coarse
 //cascade there would smear the lake's ~50 m shore cliff across several texels.
@@ -62,37 +65,38 @@ uniform float waterFieldCascadeHalfWidth[3];
 //dynamically indexes a uniform array (see cascadePatchSizes/cascadeSpatialOffsets
 //above, always literal-indexed), so this stays consistent with that and sidesteps
 //ES 1.00's constant-index-expression restriction on sampler arrays entirely.
-float sampleWaterFieldCascade0(vec2 worldXZ){
+vec4 sampleWaterFieldCascade0(vec2 worldXZ){
   vec2 uv = (worldXZ - waterFieldCascadeCenter[0]) / (2.0 * waterFieldCascadeHalfWidth[0]) + 0.5;
-  return texture2D(waterFieldCascade0, uv).r;
+  return texture2D(waterFieldCascade0, uv);
 }
-float sampleWaterFieldCascade1(vec2 worldXZ){
+vec4 sampleWaterFieldCascade1(vec2 worldXZ){
   vec2 uv = (worldXZ - waterFieldCascadeCenter[1]) / (2.0 * waterFieldCascadeHalfWidth[1]) + 0.5;
-  return texture2D(waterFieldCascade1, uv).r;
+  return texture2D(waterFieldCascade1, uv);
 }
-float sampleWaterFieldCascade2(vec2 worldXZ){
+vec4 sampleWaterFieldCascade2(vec2 worldXZ){
   vec2 uv = (worldXZ - waterFieldCascadeCenter[2]) / (2.0 * waterFieldCascadeHalfWidth[2]) + 0.5;
-  return texture2D(waterFieldCascade2, uv).r;
+  return texture2D(waterFieldCascade2, uv);
 }
 
-float waterFieldLevelAt(vec2 worldXZ, float distanceToFragment){
+//Mirrors water-vertex.glsl's waterFieldAt exactly — keep the two in sync.
+vec4 waterFieldAt(vec2 worldXZ){
   vec2 d0 = abs(worldXZ - waterFieldCascadeCenter[0]);
   float hw0 = waterFieldCascadeHalfWidth[0];
   float m0 = max(d0.x, d0.y);
   if(m0 < hw0){
-    float level = sampleWaterFieldCascade0(worldXZ);
+    vec4 field = sampleWaterFieldCascade0(worldXZ);
     float edgeT = smoothstep(hw0 * 0.9, hw0, m0);
-    if(edgeT > 0.0) level = mix(level, sampleWaterFieldCascade1(worldXZ), edgeT);
-    return level;
+    if(edgeT > 0.0) field = mix(field, sampleWaterFieldCascade1(worldXZ), edgeT);
+    return field;
   }
   vec2 d1 = abs(worldXZ - waterFieldCascadeCenter[1]);
   float hw1 = waterFieldCascadeHalfWidth[1];
   float m1 = max(d1.x, d1.y);
   if(m1 < hw1){
-    float level = sampleWaterFieldCascade1(worldXZ);
+    vec4 field = sampleWaterFieldCascade1(worldXZ);
     float edgeT = smoothstep(hw1 * 0.9, hw1, m1);
-    if(edgeT > 0.0) level = mix(level, sampleWaterFieldCascade2(worldXZ), edgeT);
-    return level;
+    if(edgeT > 0.0) field = mix(field, sampleWaterFieldCascade2(worldXZ), edgeT);
+    return field;
   }
   //Inside cascade 2, or beyond every cascade — clamp to the coarsest rather
   //than falling back to the flat plane, so the seam never has a hard
@@ -1382,7 +1386,15 @@ void main(){
   //matches the actual geometry (vertex shader applies displacementFade; resampling here
   //would skip that, causing LOD tile edge divergence).
   vec3 offsetPosition = vDisplacedPosition;
-  vec4 worldPosition = vModelMatrix * vInstanceMatrix * vec4(offsetPosition, 1.0);
+  vec4 worldPosition = vec4(vWorldPosition, 1.0);
+  //Phase 2 per-cascade wave weights (WaveMask), interpolated from the vertex.
+  float waveMask0 = vFieldLevelMaskA.y;
+  float waveMask1 = vFieldLevelMaskA.z;
+  float waveMask2 = vFieldLevelMaskA.w;
+  float waveMask3 = vFieldMaskB.x;
+  float waveMask4 = vFieldMaskB.y;
+  float waveMask5 = vFieldMaskB.z;
+  float restWaterLevel = vFieldLevelMaskA.x;
   //Exclusion sample. The half-width comes from TerrainOrthoPass via the
   //const at the top of this file, so it can no longer drift from
   //exclusionCamera's ortho extent. The exclusion target
@@ -1405,6 +1417,19 @@ void main(){
     if((discardHeightData.y > 0.5) && worldPosition.y > discardHeight){
       discard;
     }
+  }
+  //Phase 2 dry discard: no water where the terrain provider SAYS dry. Sampled
+  //at the DISPLACED position, so the cut stays fixed in the world while chop
+  //slides the surface across it (sampling vWorldXZ would make the edge crawl).
+  //Only a KNOWN dry (dryMask, a-land's answer) discards. A standalone depth of
+  //0 is a guess from the foam ortho, which captures EVERYTHING above the water:
+  //a pier deck, a boat, an overhanging branch; discarding on it would cut holes
+  //under every dock. dryMask is linearly filtered, so > 0.999 means all taps are
+  //dry: the cut sits a texel inland of the shoreline, under the terrain, rather
+  //than half a texel seaward of it where it would show seabed. Not gated on
+  //underwaterFactor: the ceiling has no water over dry land either.
+  if(waterFieldAt(worldPosition.xz).a > 0.999){
+    discard;
   }
   float distanceToWorldPosition = distance(worldPosition.xyz, cameraPosition.xyz);
 
@@ -1449,8 +1474,8 @@ void main(){
     vec3 rawR = texture2D(cascadeDisplacementTextures[0], uv + vec2( eps,  0.0)).xyz;
     vec3 rawB = texture2D(cascadeDisplacementTextures[0], uv + vec2( 0.0, -eps)).xyz;
     vec3 rawT = texture2D(cascadeDisplacementTextures[0], uv + vec2( 0.0,  eps)).xyz;
-    rawDdx += (rawR - rawL) / (2.0 * worldStep);
-    rawDdz += (rawT - rawB) / (2.0 * worldStep);
+    rawDdx += waveMask0 * (rawR - rawL) / (2.0 * worldStep);
+    rawDdz += waveMask0 * (rawT - rawB) / (2.0 * worldStep);
     cascade0HeightSlope = vec2(rawDdx.y, rawDdz.y);
   }
   {
@@ -1461,8 +1486,8 @@ void main(){
     vec3 rawR = texture2D(cascadeDisplacementTextures[1], uv + vec2( eps,  0.0)).xyz;
     vec3 rawB = texture2D(cascadeDisplacementTextures[1], uv + vec2( 0.0, -eps)).xyz;
     vec3 rawT = texture2D(cascadeDisplacementTextures[1], uv + vec2( 0.0,  eps)).xyz;
-    rawDdx += (rawR - rawL) / (2.0 * worldStep);
-    rawDdz += (rawT - rawB) / (2.0 * worldStep);
+    rawDdx += waveMask1 * (rawR - rawL) / (2.0 * worldStep);
+    rawDdz += waveMask1 * (rawT - rawB) / (2.0 * worldStep);
   }
   //Cascades 2..5: per-cascade smoothstep distance fade. Wide ranges
   //(C2 ×50, C3 ×100, C4 ×250, C5 ×500) keep small-wavelength chop alive
@@ -1475,6 +1500,9 @@ void main(){
     float eps = 1.0 / patchDataSize;
     float worldStep = cascadePatchSizes[2] / patchDataSize;
     float fade = smoothstep(cascadePatchSizes[2] * 50.0, 0.0, distanceToWorldPosition);
+    //Phase 2: a masked cascade is ABSENT, not lost to distance, so the mask
+    //scales the resolved slope and the lost variance alike.
+    float waveMask = waveMask2;
     vec2 uv = (vWorldXZ + cascadeSpatialOffsets[2]) / cascadePatchSizes[2];
     vec3 rawL = texture2D(cascadeDisplacementTextures[2], uv + vec2(-eps,  0.0)).xyz;
     vec3 rawR = texture2D(cascadeDisplacementTextures[2], uv + vec2( eps,  0.0)).xyz;
@@ -1482,15 +1510,18 @@ void main(){
     vec3 rawT = texture2D(cascadeDisplacementTextures[2], uv + vec2( 0.0,  eps)).xyz;
     vec3 cDdx = (rawR - rawL) / (2.0 * worldStep);
     vec3 cDdz = (rawT - rawB) / (2.0 * worldStep);
-    rawDdx += fade * cDdx;
-    rawDdz += fade * cDdz;
-    float oneMinusFade = 1.0 - fade;
+    rawDdx += waveMask * fade * cDdx;
+    rawDdz += waveMask * fade * cDdz;
+    float oneMinusFade = waveMask * (1.0 - fade);
     lostSlopeVar += oneMinusFade * oneMinusFade * (cDdx.y * cDdx.y + cDdz.y * cDdz.y);
   }
   {
     float eps = 1.0 / patchDataSize;
     float worldStep = cascadePatchSizes[3] / patchDataSize;
     float fade = smoothstep(cascadePatchSizes[3] * 100.0, 0.0, distanceToWorldPosition);
+    //Phase 2: a masked cascade is ABSENT, not lost to distance, so the mask
+    //scales the resolved slope and the lost variance alike.
+    float waveMask = waveMask3;
     vec2 uv = (vWorldXZ + cascadeSpatialOffsets[3]) / cascadePatchSizes[3];
     vec3 rawL = texture2D(cascadeDisplacementTextures[3], uv + vec2(-eps,  0.0)).xyz;
     vec3 rawR = texture2D(cascadeDisplacementTextures[3], uv + vec2( eps,  0.0)).xyz;
@@ -1498,15 +1529,18 @@ void main(){
     vec3 rawT = texture2D(cascadeDisplacementTextures[3], uv + vec2( 0.0,  eps)).xyz;
     vec3 cDdx = (rawR - rawL) / (2.0 * worldStep);
     vec3 cDdz = (rawT - rawB) / (2.0 * worldStep);
-    rawDdx += fade * cDdx;
-    rawDdz += fade * cDdz;
-    float oneMinusFade = 1.0 - fade;
+    rawDdx += waveMask * fade * cDdx;
+    rawDdz += waveMask * fade * cDdz;
+    float oneMinusFade = waveMask * (1.0 - fade);
     lostSlopeVar += oneMinusFade * oneMinusFade * (cDdx.y * cDdx.y + cDdz.y * cDdz.y);
   }
   {
     float eps = 1.0 / patchDataSize;
     float worldStep = cascadePatchSizes[4] / patchDataSize;
     float fade = smoothstep(cascadePatchSizes[4] * 250.0, 0.0, distanceToWorldPosition);
+    //Phase 2: a masked cascade is ABSENT, not lost to distance, so the mask
+    //scales the resolved slope and the lost variance alike.
+    float waveMask = waveMask4;
     vec2 uv = (vWorldXZ + cascadeSpatialOffsets[4]) / cascadePatchSizes[4];
     vec3 rawL = texture2D(cascadeDisplacementTextures[4], uv + vec2(-eps,  0.0)).xyz;
     vec3 rawR = texture2D(cascadeDisplacementTextures[4], uv + vec2( eps,  0.0)).xyz;
@@ -1514,15 +1548,18 @@ void main(){
     vec3 rawT = texture2D(cascadeDisplacementTextures[4], uv + vec2( 0.0,  eps)).xyz;
     vec3 cDdx = (rawR - rawL) / (2.0 * worldStep);
     vec3 cDdz = (rawT - rawB) / (2.0 * worldStep);
-    rawDdx += fade * cDdx;
-    rawDdz += fade * cDdz;
-    float oneMinusFade = 1.0 - fade;
+    rawDdx += waveMask * fade * cDdx;
+    rawDdz += waveMask * fade * cDdz;
+    float oneMinusFade = waveMask * (1.0 - fade);
     lostSlopeVar += oneMinusFade * oneMinusFade * (cDdx.y * cDdx.y + cDdz.y * cDdz.y);
   }
   {
     float eps = 1.0 / patchDataSize;
     float worldStep = cascadePatchSizes[5] / patchDataSize;
     float fade = smoothstep(cascadePatchSizes[5] * 500.0, 0.0, distanceToWorldPosition);
+    //Phase 2: a masked cascade is ABSENT, not lost to distance, so the mask
+    //scales the resolved slope and the lost variance alike.
+    float waveMask = waveMask5;
     vec2 uv = (vWorldXZ + cascadeSpatialOffsets[5]) / cascadePatchSizes[5];
     vec3 rawL = texture2D(cascadeDisplacementTextures[5], uv + vec2(-eps,  0.0)).xyz;
     vec3 rawR = texture2D(cascadeDisplacementTextures[5], uv + vec2( eps,  0.0)).xyz;
@@ -1530,12 +1567,12 @@ void main(){
     vec3 rawT = texture2D(cascadeDisplacementTextures[5], uv + vec2( 0.0,  eps)).xyz;
     vec3 cDdx = (rawR - rawL) / (2.0 * worldStep);
     vec3 cDdz = (rawT - rawB) / (2.0 * worldStep);
-    rawDdx += fade * cDdx;
-    rawDdz += fade * cDdz;
+    rawDdx += waveMask * fade * cDdx;
+    rawDdz += waveMask * fade * cDdz;
     //Save cascade 5's height-slope contribution (with the same fade, pre
     //waveHeightMultiplier) so specNormal can swap it for a low-pass version.
-    c5NativeHeightSlope = vec2(fade * cDdx.y, fade * cDdz.y);
-    float oneMinusFade = 1.0 - fade;
+    c5NativeHeightSlope = vec2(waveMask * fade * cDdx.y, waveMask * fade * cDdz.y);
+    float oneMinusFade = waveMask * (1.0 - fade);
     lostSlopeVar += oneMinusFade * oneMinusFade * (cDdx.y * cDdx.y + cDdz.y * cDdz.y);
   }
   rawDdx *= waveHeightMultiplier;
@@ -1869,10 +1906,20 @@ void main(){
   //folded in by ~16 m. The displacement-fade ranges (×50…×500·L in the
   //vertex block) are intentionally longer — displacement itself is
   //still meaningful well past where individual wavelets are resolvable.
+  //Phase 2: slope variance scales with amplitude², so each cascade's σ² is
+  //weighted by its wave mask squared — a glassy tarn does not borrow the open
+  //ocean's horizon roughness.
+  float waveMaskSq[6];
+  waveMaskSq[0] = waveMask0 * waveMask0;
+  waveMaskSq[1] = waveMask1 * waveMask1;
+  waveMaskSq[2] = waveMask2 * waveMask2;
+  waveMaskSq[3] = waveMask3 * waveMask3;
+  waveMaskSq[4] = waveMask4 * waveMask4;
+  waveMaskSq[5] = waveMask5 * waveMask5;
   float alpha2 = 0.0;
   for(int c = 0; c < 6; c++){
     float lostFrac = smoothstep(0.5 * cascadePatchSizes[c], 4.0 * cascadePatchSizes[c], distanceToWorldPosition);
-    alpha2 += lostFrac * cascadeRMSSlope[c];
+    alpha2 += lostFrac * waveMaskSq[c] * cascadeRMSSlope[c];
   }
   //waveHeightMultiplier scales the displacement amplitude in the vertex
   //shader; slope scales linearly with amplitude so slope variance scales
@@ -2091,7 +2138,7 @@ void main(){
   //Additionally the body weight (1 - fresnelFactor) is applied at the
   //final composition step, so view-aligned grazing geometry never
   //double-counts a transmitted halo on top of a strong specular reflection.
-  float waveHeightAboveRest = max(0.0, worldPosition.y - waterFieldLevelAt(worldPosition.xz, distanceToWorldPosition));
+  float waveHeightAboveRest = max(0.0, worldPosition.y - restWaterLevel);
   float crestGate = smoothstep(SUB_SURFACE_HEIGHT_MIN,
                                SUB_SURFACE_HEIGHT_MIN + SUB_SURFACE_HEIGHT_RANGE,
                                waveHeightAboveRest);
@@ -2170,7 +2217,7 @@ void main(){
     float hB = texture2D(cascadeDisplacementTextures[5], uv5 + vec2( 0.0, -specEps)).y;
     float hT = texture2D(cascadeDisplacementTextures[5], uv5 + vec2( 0.0,  specEps)).y;
     c5FilteredHeightSlope = vec2(hR - hL, hT - hB) / (2.0 * specWorldStep);
-    c5FilteredHeightSlope *= fade5 * waveHeightMultiplier;
+    c5FilteredHeightSlope *= waveMask5 * fade5 * waveHeightMultiplier;
   }
   //Total height slope for spec = full displacedNormal slope minus cascade-5
   //native contribution plus cascade-5 filtered contribution. Same cross
@@ -2574,7 +2621,7 @@ void main(){
   //horizon, displacement is fine and the "flat" look is purely a normal
   //or shading-side problem (compare mode 18 next).
   else if(oceanShadowDebugMode == 17){
-    float h = (worldPosition.y - waterFieldLevelAt(worldPosition.xz, distanceToWorldPosition)) / 5.0;
+    float h = (worldPosition.y - restWaterLevel) / 5.0;
     gl_FragColor = vec4(vec3(clamp(h * 0.5 + 0.5, 0.0, 1.0)), 1.0);
   }
   //Mode 18: displacedNormal (all cascades, after distance fades) as RGB.
@@ -2861,7 +2908,7 @@ void main(){
     //       the all-cascade Jacobian, line ~1212) ×4 gain. MAGENTA = fold on a
     //       visible crest = correct whitecap placement. If RED is all-or-nothing,
     //       baseHeightOffset isn't the mean and we pick a better reference.
-    float crest = step(waterFieldLevelAt(worldPosition.xz, distanceToWorldPosition), worldPosition.y);
+    float crest = step(restWaterLevel, worldPosition.y);
     float fold  = clamp(turbulence * 4.0, 0.0, 1.0);
     gl_FragColor = vec4(crest, 0.0, fold, 1.0);
   }

@@ -8,6 +8,180 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
+## Phase 2 — still water on the level field — **landed** (browser-verified 2026-09-12, merged)
+
+2026-09-12, branch `phase-2-still-water` off `multi-water-types`. **GLSL changed:
+run `create-shader.py` (regenerates `water-shader.js` and `ocean-shadow.js`).**
+
+### What shipped
+
+**Per-cascade wave masks (`ARestlessOcean.WaveMask`, in `ocean-wave-field.js`).**
+One weight per FFT cascade, per place, from two pieces of the spectrum's own
+physics:
+
+- **Depth (TMA).** Kitaigorodskii's φ(ω_h), with ω_h = √(k·h) under the FFT's
+  deep-water dispersion. The weight is √φ, because φ scales energy.
+- **Fetch, inland only.** A lake is the same JONSWAP with a short fetch. Its peak
+  uses the band library's own ω_p formula at F, and the weight is the ratio of the
+  Pierson-Moskowitz low-frequency cutoffs, exp(−0.625·(k_p,lake² − k_p,ocean²)/k²).
+  "Inland" = |level − sea level| ramping over 0.5–2 m, so the coast keeps its swell.
+  **Fetch is a proxy: 2·shoreSDF.** Exact at a round lake's centre, short near every rim.
+- Each weight is evaluated at one wavenumber per cascade: the local spectral peak,
+  clamped into that cascade's band.
+- A depth at a-land's `maxDepth` cap counts as deep (the 1c carry item). A standalone
+  depth of exactly 0 also counts as deep, because it is a foam-ortho guess (a pier or
+  boat deck). A **known** dry (dryMask) weighs 0.
+
+`WaveMask.GLSL` is spliced in at a `$wave_mask_functions` token in three places:
+the water vertex shader, the ocean CSM caster and the CPU height bake.
+`WaveMask.compute` is the JS mirror. The token is a bare line, not a comment, so the
+min build's comment strip cannot eat it.
+
+Where the weights are applied:
+
+- **The water vertex shader** scales each cascade's displacement.
+- **The water fragment shader** receives the weights on varyings and scales each
+  cascade's slope, its lost-slope variance, the C5 spec low-pass and each cascade's
+  σ² in the Fresnel horizon clamp. A glassy lake does not borrow ocean roughness.
+- **The ocean CSM caster** now also applies the field level. That was missing since
+  1b. A masked receiver under an unmasked caster would read as fully shadowed.
+- **The CPU side** covers the analytic twin (`maskProvider`, components carry their
+  cascade), the submersion probe, the exact debug readback, and the local height bake.
+  The bake now reads level **per texel** from the field instead of once at the region
+  centre.
+
+**Dry discard.** `water-shader.glsl` discards where the field's dryMask > 0.999, sampled
+at the displaced position. It fires only on a **known** dry, not on `depth == 0`: in
+standalone, depth 0 is whatever the foam ortho saw above the water, and discarding on
+it would cut holes under every dock. The layer-30 exclusion mask stays for hulls.
+
+**One-plane assumptions removed.**
+- Clipmap patches and the horizon skirt are now placed at `heightOffset`. They used
+  `waterLevelAt(...)`, which counted the field twice, because the vertex shader already
+  adds `level − baseHeightOffset`. Over a lake, the skirt floated a lake-level sheet
+  out to the horizon.
+
+### Deviations from the plan, and why
+
+- **The TMA factor is not in `h_0-pass.glsl`.** That spectrum is global, so it could
+  hold only one depth. See the amendment in `WATER-TYPES.md`.
+- **`type`/`energy` do not drive the masks.** `type` is a Jerlov index (a-land
+  `waterTypes[]`), not lake/ocean/river. "Inland" comes from the level instead.
+- **The field channels were re-laid-out.** RT0 is now `level, depth, shoreSDF, dryMask`
+  and RT1 is `flow.x, flow.z, energy, type`. The water program already binds **28
+  active sampler units**, measured. A second trio of cascade samplers could break a
+  32-unit GPU (three counts both stages together). The surface needs level, depth,
+  shore distance and dryness, and flow belongs to the future ribbon material. a-land's
+  clip still reads RT0.r. `probeAt`, `readCascade`, `surveyShore` and `showShoreField`
+  were updated to match.
+- **The `mat4` varyings `vInstanceMatrix`/`vModelMatrix` were replaced by
+  `vWorldPosition`.** They used 8 of the 16 varying slots GLSL ES 3.0 guarantees, and
+  the shader was at exactly 16. The instance matrix is a pure translation, so the
+  result is identical.
+- **The CPU shoreSDF is an 8-ray march over `getWaterAt`**, cached on a 2 m grid and
+  cleared on `WaterFieldPass.invalidate`. It runs only for inland water. It
+  overestimates by ≤8% between rays, which shifts the fetch peak by ~5%.
+
+### Verified headless (SwiftShader WebGL2, A-Frame 1.7 / three r173, real files)
+
+- **GLSL vs JS WaveMask:** 216 field inputs × 6 cascades × winds 12/3/0 m/s.
+  Max difference **1.0e-5**.
+- **Water material** (shader regenerated into scratch the same way `create-shader.py`
+  does it): compiles and links. Active sampler units **28, same as HEAD**.
+- **CSM caster** compiles (9 units). **The tile decode** compiles. A forced-dry texel
+  reads RT0 `[-150, 0, 0, 1]`.
+- **Field re-layout** on a synthetic 1:10 island: depth and shoreSDF match analytic to
+  within half a texel (e.g. x=120: depth 2.057 vs 2.05, SDF 20.50 vs 20.50).
+- **End to end:** the height bake with unit displacement per cascade vs
+  `level + Σ WaveMask.compute` agrees to **≤ 1.1 cm**. The residual is bilinear at the
+  steepest shoreline gradient.
+
+Weights at 12 m/s (C0 … C5), for a feel of what you should see:
+
+| place | C0 | C1 | C2 | C3 | C4 | C5 |
+| --- | --- | --- | --- | --- | --- | --- |
+| ocean, 20 m | .35 | .70 | .89 | 1 | 1 | 1 |
+| ocean, 5 m | .18 | .35 | .48 | .70 | 1 | 1 |
+| ocean, 1 m | .08 | .16 | .21 | .31 | .63 | .99 |
+| lake, 36 m to shore | 0 | 0 | 0 | 0 | 0 | .54 |
+| lake, 400 m to shore | 0 | 0 | 0 | .005 | .54 | .72 |
+
+### Knobs, and the first tuning suspects
+
+- `setWaveMaskEnabled(false)` switches the whole thing off (GPU and CPU), for A/B.
+  `probeWaveMask(x, z)` prints the field sample and the six weights.
+- **Lakes may read too calm.** The fetch ratio uses the ocean's fixed α = 0.0081 and
+  ignores γ. Real young seas have a larger α (JONSWAP α ∝ (gF/U²)^−0.22) and are
+  steeper at their peak. That is why every lake whose peak lands inside a cascade gets
+  exactly exp(−0.625) ≈ 0.54 there. Adding α(F) is the physical lever.
+- **Nearshore may read flat before Phase 3.** TMA is the saturated spectrum. It has no
+  shoaling growth and no breakers.
+- The fetch proxy calms every lake rim, not only the upwind one.
+- There are six more exp/sqrt evaluations per ocean vertex, in the caster too. If the
+  frame rate moves, compare it with the masks on and off.
+
+### Browser round 1, 2026-09-12 — three reports
+
+**1. Underwater state (murk, caustics) inside a painted-dry basin, below where
+sea level would be. FIXED.** `waterLevelAt` falls back to sea level whenever
+`getWaterAt` is null, and null means both "dry" and "not loaded". The new
+`WaterTileDecoder.answerAt(x, z)` separates `wet / dry / loading / none`. It
+mirrors `sampleTile`'s footprint test on the raw level bytes the decoder already
+keeps. The submersion probe forces "not submerged" over a known dry, with a finite
+sentinel because the value is also a uniform. The CPU wave-mask field uses the same
+answer for its dryMask.
+
+**2. Jagged lake edges, water stopping short of the bank. FIXED.** Fully-dry field
+texels stored sea level. Next to a lake at −100 the surface fell 50 m inside one
+texel, dove into the bank before the shoreline, and followed the texel staircase.
+The compose pass now gives each dry texel the level of the wet texel beside its
+jump-flood shore point. The surface runs flat past the shore, and the terrain's
+depth test cuts it exactly. Where two bodies meet, the level steps at the midline
+between them, under dry ground. It needs the shore field: with
+`setShoreFieldEnabled(false)` the old sea-level answer returns. Verified headless on
+a synthetic lake + sea: lake-side dry texels read −100, sea-side −150.
+
+**3. A ring of foam specks in the middle of the lake at mid distance. NOT a Phase 2
+bug; pre-existing, and not fixed yet.** Diagnosed on the real `lake-ocean.html`
+under headless SwiftShader, driven over DevTools Protocol:
+- The same speck band exists over the **open ocean**. It sits at mid distance only:
+  none near the camera, none far.
+- **It persists with `setWaveMaskEnabled(false)`**, so the masks are not causing it.
+- Mode 32 (`foamBlend`) shows the specks are foam.
+- It is **not** the splash particles (none alive).
+- It is **not** the dry or exclusion discard (both neutralised live, specks stay).
+- It is **not** terrain showing through (terrain hidden, specks stay white).
+- It is **not** NaN (every cascade mip level and the foam ortho are clean).
+- With the cascade textures forced to non-mipmapped filtering, the specks cover the
+  whole view, near to far. So it is the fold (Jacobian) foam on under-resolved small
+  cascades, and mipmapping only suppresses it outside a distance band.
+- On the lake at 3 m/s, WaveMask leaves only C5 (weight 0.54), so this band is the
+  only foam left to see.
+
+Still unexplained: why the band survives at mid distance, when box-filtered mips
+should only ever shrink the finite-difference slopes. Candidate fix, once that is
+understood: LOD-aware fold foam, where a cascade's chop derivative stops feeding
+`turbulence` once its texels are sub-pixel (normals keep it).
+
+### ⚠ Outstanding — needs Dante
+
+1. **Run `create-shader.py`.** (Done 2026-09-12, committed.) Without the regen, the old generated shader still
+   declares the `mat4` varyings and the old sampling, and the new JS would feed it
+   uniforms it does not have.
+2. **`lake-ocean.html`, with some wind** (it runs at 0, where every weight is moot).
+   Check that:
+   - the lake is glassy while the coast keeps its swell;
+   - swell calms over shallow water near the beach;
+   - flipping `setWaveMaskEnabled` shows the difference;
+   - no dark shadow band along attenuated shore water (the caster fix);
+   - no lake-level sheet at the horizon when hovering over the lake (the skirt fix);
+   - no water left in known-dry basins.
+3. **The standalone islands demo:** docks and boats keep their water (no dry discard
+   there), and the coasts calm.
+4. **Floats:** a buoyant object on the lake should sit still, not bob on ocean swell.
+
+---
+
 ## Phase 1c — shore distance, authoritative dry, edit invalidation — **written, headless-verified, not yet browser-verified**
 
 2026-09-12, branch `phase-1c-shore-field` off `multi-water-types`. Closes out

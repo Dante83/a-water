@@ -9,8 +9,17 @@
 //one skirt Y, one clip plane. WaterField replaces the scalar with a FIELD:
 //camera-following, world-anchored cascade render targets carrying, per texel:
 //
-//    RT0:  level    depth     flow.x    flow.z
-//    RT1:  energy   type      shoreSDF  dryMask
+//    RT0:  level    depth     shoreSDF  dryMask     "where is water"
+//    RT1:  flow.x   flow.z    energy    type        "what is it doing"
+//
+//PHASE 2 RE-LAYOUT. Until Phase 2 RT0 carried flow and RT1 carried shoreSDF/
+//dryMask. The water material cannot bind a second set of three cascade
+//samplers: it already sits at ~31 texture units, which is the whole budget on
+//a 32-unit GPU (three counts units per PROGRAM, both stages together). The
+//surface needs level, depth, shore distance and dryness at every vertex and
+//fragment; flow is for the Phase 4 ribbons, which have their own material. So
+//everything the surface reads lives in RT0, and a-land's clip keeps reading
+//RT0.r unchanged.
 //
 //`shoreNormal` is deliberately NOT stored — it is normalize(gradient(shoreSDF)),
 //cheaper to derive where it is sampled than to carry two more channels.
@@ -77,6 +86,7 @@ ARestlessOcean.Passes.WaterFieldPass = function(oceanGrid){
   //shore field on. A count rather than a timing: GL is async, and browsers clamp
   //performance.now() coarsely enough that a CPU timing of the submit reads 0.00.
   this.refillCount = 0;
+  this.invalidationCount = 0;
 };
 
 //Cascade half-widths in metres, fine -> coarse. Cascade 0 carries shoreline
@@ -88,6 +98,65 @@ ARestlessOcean.Passes.WaterFieldPass.RESOLUTION = 512;
 //ortho's footprint). Open ocean: deep enough that every depth-driven term
 //saturates, without being infinite.
 ARestlessOcean.Passes.WaterFieldPass.OPEN_OCEAN_DEPTH = 1000.0;
+
+//GLSL ES 1.00 field lookup for small internal passes (the CPU height bake):
+//`vec4 waterFieldAt(vec2 worldXZ)` over the three RT0 cascades, finest ->
+//coarse with the 10% edge crossfade. The water vertex/fragment shaders and the
+//CSM caster carry hand copies (the create-shader pipeline cannot import).
+//bindUniforms fills the uniforms it declares.
+ARestlessOcean.Passes.WaterFieldPass.SAMPLE_GLSL = [
+  'uniform sampler2D waterFieldCascade0;',
+  'uniform sampler2D waterFieldCascade1;',
+  'uniform sampler2D waterFieldCascade2;',
+  'uniform vec2 waterFieldCascadeCenter[3];',
+  'uniform float waterFieldCascadeHalfWidth[3];',
+  'vec4 waterFieldCascadeSample(sampler2D tex, vec2 centre, float hw, vec2 worldXZ){',
+  '  return texture2D(tex, (worldXZ - centre) / (2.0 * hw) + 0.5);',
+  '}',
+  'vec4 waterFieldAt(vec2 worldXZ){',
+  '  vec2 d0 = abs(worldXZ - waterFieldCascadeCenter[0]);',
+  '  float hw0 = waterFieldCascadeHalfWidth[0];',
+  '  float m0 = max(d0.x, d0.y);',
+  '  if(m0 < hw0){',
+  '    vec4 f = waterFieldCascadeSample(waterFieldCascade0, waterFieldCascadeCenter[0], hw0, worldXZ);',
+  '    float e = smoothstep(hw0 * 0.9, hw0, m0);',
+  '    if(e > 0.0) f = mix(f, waterFieldCascadeSample(waterFieldCascade1, waterFieldCascadeCenter[1], waterFieldCascadeHalfWidth[1], worldXZ), e);',
+  '    return f;',
+  '  }',
+  '  vec2 d1 = abs(worldXZ - waterFieldCascadeCenter[1]);',
+  '  float hw1 = waterFieldCascadeHalfWidth[1];',
+  '  float m1 = max(d1.x, d1.y);',
+  '  if(m1 < hw1){',
+  '    vec4 f = waterFieldCascadeSample(waterFieldCascade1, waterFieldCascadeCenter[1], hw1, worldXZ);',
+  '    float e = smoothstep(hw1 * 0.9, hw1, m1);',
+  '    if(e > 0.0) f = mix(f, waterFieldCascadeSample(waterFieldCascade2, waterFieldCascadeCenter[2], waterFieldCascadeHalfWidth[2], worldXZ), e);',
+  '    return f;',
+  '  }',
+  '  return waterFieldCascadeSample(waterFieldCascade2, waterFieldCascadeCenter[2], waterFieldCascadeHalfWidth[2], worldXZ);',
+  '}'
+].join('\n');
+
+ARestlessOcean.Passes.WaterFieldPass.createSampleUniforms = function(){
+  return {
+    waterFieldCascade0: {value: null},
+    waterFieldCascade1: {value: null},
+    waterFieldCascade2: {value: null},
+    waterFieldCascadeCenter: {value: [new THREE.Vector2(), new THREE.Vector2(), new THREE.Vector2()]},
+    waterFieldCascadeHalfWidth: {value: ARestlessOcean.Passes.WaterFieldPass.CASCADE_HALF_WIDTHS.slice()}
+  };
+};
+
+//Point createSampleUniforms()-shaped uniforms at this pass's live cascades.
+ARestlessOcean.Passes.WaterFieldPass.prototype.bindUniforms = function(u){
+  if(this.cascades.length !== 3) return false;
+  for(let i = 0; i < 3; ++i){
+    const c = this.cascades[i];
+    u['waterFieldCascade' + i].value = c.target.textures[0];
+    u.waterFieldCascadeCenter.value[i].set(c.centerX || 0, c.centerZ || 0);
+    u.waterFieldCascadeHalfWidth.value[i] = c.halfWidth;
+  }
+  return true;
+};
 
 ARestlessOcean.Passes.WaterFieldPass.prototype.init = function(){
   const RES = ARestlessOcean.Passes.WaterFieldPass.RESOLUTION;
@@ -168,8 +237,8 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.init = function(){
     //for why this is deliberately dumb in Phase 1a.
     fragmentShader: [
       'precision highp float;',
-      'layout(location = 0) out vec4 gLevelDepthFlow;',
-      'layout(location = 1) out vec4 gClass;',
+      'layout(location = 0) out vec4 gSurface;',
+      'layout(location = 1) out vec4 gMotion;',
       'in vec2 vUv;',
       'uniform vec2 uCascadeCenter;',
       'uniform float uCascadeHalfWidth;',
@@ -196,10 +265,11 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.init = function(){
       //not, we are over open water and keep the open-ocean depth.
       '    if(terrain.y > 0.5) depth = max(0.0, level - terrain.x);',
       '  }',
-      '  gLevelDepthFlow = vec4(level, depth, 0.0, 0.0);',
-      //energy 0 and dryMask 0: standalone has no turbulence field and no notion
-      //of a deliberately-dry basin. shoreSDF stays 0 until Phase 1c derives it.
-      '  gClass = vec4(0.0, uWaterType, 0.0, 0.0);',
+      //shoreSDF 0 (the compose pass derives it) and dryMask 0: standalone has
+      //no notion of a deliberately-dry basin.
+      '  gSurface = vec4(level, depth, 0.0, 0.0);',
+      //Still water, no turbulence field.
+      '  gMotion = vec4(0.0, 0.0, 0.0, uWaterType);',
       '}'
     ].join('\n'),
     depthTest: false,
@@ -332,10 +402,24 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
       uNoShore: {value: 1.0}
     },
     vertexShader: vertexShader,
+    //DRY TEXELS TAKE THE LEVEL OF THEIR NEAREST WATER. The base fill and the
+    //tile decode write a dry texel's level as sea level, and that is wrong next
+    //to any water that is not the sea: around a lake at -100 on a -150 world the
+    //surface dropped 50 m inside the one texel past the last wet one, so it dove
+    //into the bank before reaching the shoreline and the waterline followed the
+    //texel staircase (reported 2026-09-12, "jagged edges instead of the water
+    //going right up to the shoreline"). The flood already found each texel's
+    //nearest shore point, so read the level of the WET texel beside that point
+    //and the surface continues flat past the shore, where the terrain's own
+    //depth test cuts it exactly. Over land far from any lake this is still sea
+    //level. Where two bodies meet, the level steps at the medial axis between
+    //them, under dry ground, where the dry discard removes it anyway. Needs the
+    //shore field: with it disabled the old sea-level answer stands.
     fragmentShader: [
       'precision highp float;',
-      'layout(location = 0) out vec4 gLevelDepthFlow;',
-      'layout(location = 1) out vec4 gClass;',
+      resDefine,
+      'layout(location = 0) out vec4 gSurface;',
+      'layout(location = 1) out vec4 gMotion;',
       'uniform sampler2D uFieldA, uFieldB, uSeedTex;',
       'uniform float uTexel, uNoShore;',
       'void main(){',
@@ -345,8 +429,25 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
       '  vec4 s = texelFetch(uSeedTex, p, 0);',
       '  float side = a.g > 0.0 ? 1.0 : -1.0;',
       '  float dist = s.a > 0.5 ? distance(vec2(p), s.xy) * uTexel : uNoShore;',
-      '  gLevelDepthFlow = a;',
-      '  gClass = vec4(b.r, b.g, side * dist, b.a);',
+      '  float level = a.r;',
+      //The seed lies between a wet and a dry texel (or ON a one-texel strip), so
+      //the wet texel nearest to it is always inside its 3x3.
+      '  if(!(a.g > 0.0) && s.a > 0.5){',
+      '    ivec2 c = ivec2(floor(s.xy + 0.5));',
+      '    float bestD = 1e20;',
+      '    for(int dy = -1; dy <= 1; dy++){',
+      '      for(int dx = -1; dx <= 1; dx++){',
+      '        ivec2 q = clamp(c + ivec2(dx, dy), ivec2(0), ivec2(RES - 1));',
+      '        vec4 w = texelFetch(uFieldA, q, 0);',
+      '        if(!(w.g > 0.0)) continue;',
+      '        vec2 d = vec2(q) - s.xy;',
+      '        float dd = dot(d, d);',
+      '        if(dd < bestD){ bestD = dd; level = w.r; }',
+      '      }',
+      '    }',
+      '  }',
+      '  gSurface = vec4(level, a.g, side * dist, a.a);',
+      '  gMotion = b;',
       '}'
     ].join('\n'),
     depthTest: false,
@@ -497,6 +598,9 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.tick = function(ctx){
 //so running it a few dozen times while tiles stream in is cheap.
 ARestlessOcean.Passes.WaterFieldPass.prototype.invalidate = function(){
   for(let i = 0; i < this.cascades.length; ++i) this.cascades[i].centerX = undefined;
+  //Bumped so CPU caches derived from the same sources (OceanGrid's shore
+  //distance cache for the wave masks) know to drop their answers too.
+  this.invalidationCount++;
 };
 
 //Pick the finest cascade that contains this world position, or -1.
@@ -523,7 +627,8 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.cascadeIndexFor = function(x, z){
 //
 //Pass {async: true} to use the PBO path anyway — useful only for demonstrating
 //the collision.
-//Returns {level, depth, flowX, flowZ, cascade} or null.
+//Returns {level, depth, shoreSDF, dryMask, flowX, flowZ, energy, type, cascade,
+//texelX, texelZ} or null.
 ARestlessOcean.Passes.WaterFieldPass.prototype.probeAt = function(x, z, opts){
   const self = this;
   const i = this.cascadeIndexFor(x, z);
@@ -538,10 +643,10 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.probeAt = function(x, z, opts){
   //actually decoded at. Up to half a texel from (x, z); see compareAgainstLandTerrain.
   const texelX = c.centerX - c.halfWidth + (px + 0.5) * c.texel;
   const texelZ = c.centerZ - c.halfWidth + (py + 0.5) * c.texel;
-  const pack = function(b, k){
-    const out = {level: b[0], depth: b[1], flowX: b[2], flowZ: b[3], cascade: i,
+  const pack = function(s, m){
+    const out = {level: s[0], depth: s[1], shoreSDF: s[2], dryMask: s[3], cascade: i,
       texelX: texelX, texelZ: texelZ};
-    if(k){ out.energy = k[0]; out.type = k[1]; out.shoreSDF = k[2]; out.dryMask = k[3]; }
+    if(m){ out.flowX = m[0]; out.flowZ = m[1]; out.energy = m[2]; out.type = m[3]; }
     return out;
   };
 
@@ -583,8 +688,8 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._copyAttachment = function(c, ind
 //Synchronous full readback of one cascade, both attachments. Debug-only (the
 //shore survey and overlay): two 512² float reads stall the GPU. Same
 //PIXEL_PACK_BUFFER guard as probeAt, for the same reason.
-//Returns {a: Float32Array (level depth flowX flowZ), b: Float32Array (energy
-//type shoreSDF dryMask), res, centerX, centerZ, halfWidth, texel} or null.
+//Returns {a: Float32Array (level depth shoreSDF dryMask), b: Float32Array (flowX
+//flowZ energy type), res, centerX, centerZ, halfWidth, texel} or null.
 //Row 0 is the cascade's min-Z edge, column 0 its min-X edge.
 ARestlessOcean.Passes.WaterFieldPass.prototype.readCascade = function(index){
   const c = this.cascades[index | 0];

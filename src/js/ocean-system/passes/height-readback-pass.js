@@ -93,10 +93,17 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
   const HEIGHT_FIELD_SIZE = this.HEIGHT_FIELD_SIZE;
   const HEIGHT_FIELD_RES = this.HEIGHT_FIELD_RES;
 
+  //Phase 2: each cascade is weighed by WaveMask and the rest level is read per
+  //texel from the water field — exactly what water-vertex.glsl does — so a
+  //float on a glassy lake does not ride ocean swell, and a region straddling a
+  //lake rim is not baked onto one plane.
+  const maskSwizzle = ['hfMaskA.x', 'hfMaskA.y', 'hfMaskA.z', 'hfMaskB.x', 'hfMaskB.y', 'hfMaskB.z'];
   let hfSumLines = '';
   for(let c = 0; c < HF_N; c++){
-    hfSumLines += 'dy += texture2D(hfCascadeTex[' + c + '], (worldXZ + hfCascadeOffset[' + c + ']) / hfCascadePatch[' + c + ']).y;\n';
+    const w = c < maskSwizzle.length ? maskSwizzle[c] + ' * ' : '';
+    hfSumLines += 'dy += ' + w + 'texture2D(hfCascadeTex[' + c + '], (worldXZ + hfCascadeOffset[' + c + ']) / hfCascadePatch[' + c + ']).y;\n';
   }
+  const fieldReady = !!(ARestlessOcean.Passes.WaterFieldPass && ARestlessOcean.WaveMask);
   const hfVert = 'varying vec2 vHfUv;\nvoid main(){ vHfUv = uv; gl_Position = vec4(position, 1.0); }';
   const hfFrag = [
     'precision highp float;',
@@ -106,25 +113,38 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
     'uniform float hfCascadePatch[' + HF_N + '];',
     'uniform float hfWhm;',
     'uniform float hfHeightOffset;',
+    'uniform float hfUseField;',
     'uniform vec2 hfRegionOrigin;',
     'uniform float hfRegionSize;',
+    fieldReady ? ARestlessOcean.Passes.WaterFieldPass.SAMPLE_GLSL : '',
+    fieldReady ? ARestlessOcean.WaveMask.GLSL : '',
     'void main(){',
     '  vec2 worldXZ = hfRegionOrigin + vHfUv * hfRegionSize;',
+    '  vec3 hfMaskA = vec3(1.0);',
+    '  vec3 hfMaskB = vec3(1.0);',
+    '  float level = hfHeightOffset;',
+    fieldReady ? '  if(hfUseField > 0.5){ vec4 field = waterFieldAt(worldXZ); level = field.r; waveMaskCascades(field, hfMaskA, hfMaskB); }' : '',
     '  float dy = 0.0;',
     '  ' + hfSumLines,
-    '  gl_FragColor = vec4(hfHeightOffset + dy * hfWhm, 0.0, 0.0, 1.0);',
+    '  gl_FragColor = vec4(level + dy * hfWhm, 0.0, 0.0, 1.0);',
     '}'
   ].join('\n');
+  const hfUniforms = {
+    hfCascadeTex: {value: new Array(HF_N).fill(null)},
+    hfCascadeOffset: {value: (function(){ const a = []; for(let i = 0; i < HF_N; i++) a.push(new THREE.Vector2()); return a; })()},
+    hfCascadePatch: {value: new Array(HF_N).fill(1.0)},
+    hfWhm: {value: 1.0},
+    hfHeightOffset: {value: 0.0},
+    hfUseField: {value: 0.0},
+    hfRegionOrigin: {value: new THREE.Vector2()},
+    hfRegionSize: {value: HEIGHT_FIELD_SIZE}
+  };
+  if(fieldReady){
+    Object.assign(hfUniforms, ARestlessOcean.Passes.WaterFieldPass.createSampleUniforms());
+    Object.assign(hfUniforms, ARestlessOcean.WaveMask.createUniforms());
+  }
   this._heightFieldMaterial = new THREE.ShaderMaterial({
-    uniforms: {
-      hfCascadeTex: {value: new Array(HF_N).fill(null)},
-      hfCascadeOffset: {value: (function(){ const a = []; for(let i = 0; i < HF_N; i++) a.push(new THREE.Vector2()); return a; })()},
-      hfCascadePatch: {value: new Array(HF_N).fill(1.0)},
-      hfWhm: {value: 1.0},
-      hfHeightOffset: {value: 0.0},
-      hfRegionOrigin: {value: new THREE.Vector2()},
-      hfRegionSize: {value: HEIGHT_FIELD_SIZE}
-    },
+    uniforms: hfUniforms,
     vertexShader: hfVert,
     fragmentShader: hfFrag,
     depthTest: false,
@@ -139,6 +159,8 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
     depthBuffer: false, stencilBuffer: false, generateMipmaps: false
   });
   this._hfN = HF_N;
+  this._hfFieldReady = fieldReady;
+  this._maskScratch = [1, 1, 1, 1, 1, 1];
 };
 
 //Fixed-size field RT — independent of the drawing buffer.
@@ -161,6 +183,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.sampleFFTHeightAt = function(
   const offsets = grid.oceanMaterial.uniforms.cascadeSpatialOffsets.value;
   const whm = composer.waveHeightMultiplier;
   let h = grid.waterLevelAt(x, z);
+  const mask = grid.waveMasksAt ? grid.waveMasksAt(x, z, this._maskScratch) : null;
   for(let c = 0; c < composer.cascadeDisplacementTargets.length; c++){
     const patch = composer._cascadePatchSizes[c];
     let u = (x + offsets[c].x) / patch;
@@ -169,7 +192,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.sampleFFTHeightAt = function(
     const px = Math.min(res - 1, Math.max(0, Math.floor(u * res)));
     const py = Math.min(res - 1, Math.max(0, Math.floor(v * res)));
     this.renderer.readRenderTargetPixels(composer.cascadeDisplacementTargets[c], px, py, 1, 1, buf);
-    h += buf[1] * whm; //.y (green) = vertical displacement.
+    h += (mask && c < 6 ? mask[c] : 1.0) * buf[1] * whm; //.y (green) = vertical displacement.
   }
   return h;
 };
@@ -200,9 +223,17 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.updateHeightField = function(
     u.hfCascadeOffset.value[c].copy(offsets[c]);
   }
   u.hfWhm.value = composer.waveHeightMultiplier;
-  //Field level at the region centre. Phase 1b turns this into a per-texel
-  //sample inside the bake shader, once level can vary across the region.
+  //Fallback level (region centre) for when the field is not bound; with the
+  //field bound the bake reads level per texel (Phase 2).
   u.hfHeightOffset.value = grid.waterLevelAt(originX + HEIGHT_FIELD_SIZE * 0.5, originZ + HEIGHT_FIELD_SIZE * 0.5);
+  u.hfUseField.value = 0.0;
+  if(this._hfFieldReady && grid.waterFieldPass && grid.waterFieldPass.bindUniforms(u)){
+    const p = grid.waveMaskParams ? grid.waveMaskParams() : null;
+    if(p){
+      ARestlessOcean.WaveMask.writeUniforms(u, p);
+      u.hfUseField.value = 1.0;
+    }
+  }
   u.hfRegionOrigin.value.set(originX, originZ);
   u.hfRegionSize.value = HEIGHT_FIELD_SIZE;
 
@@ -330,9 +361,12 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.probeWaterSurfaceY = function
         promises.push(this.renderer.readRenderTargetPixelsAsync(rt, px, py, 1, 1, bufs[c]));
       }
       Promise.all(promises).then(function(){
-        //.y (green) channel = vertical displacement, summed over both cascades.
-        self._probeWaterSurfaceY = grid.waterLevelAt(grid.globalCameraPosition.x, grid.globalCameraPosition.z)
-          + (self._probeBuf0[1] + self._probeBuf1[1]) * whm;
+        //.y (green) channel = vertical displacement, summed over both cascades,
+        //each weighed by its wave mask at the camera (Phase 2).
+        const gx = grid.globalCameraPosition.x, gz = grid.globalCameraPosition.z;
+        const m = grid.waveMasksAt ? grid.waveMasksAt(gx, gz, self._maskScratch) : [1, 1];
+        self._probeWaterSurfaceY = grid.waterLevelAt(gx, gz)
+          + (m[0] * self._probeBuf0[1] + m[1] * self._probeBuf1[1]) * whm;
         self._probePending = false;
       }).catch(function(){ self._probePending = false; });
     }
@@ -345,6 +379,8 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.probeWaterSurfaceY = function
     const offsets = grid.oceanMaterial.uniforms.cascadeSpatialOffsets.value;
     const whm = composer.waveHeightMultiplier;
     waterSurfaceY = grid.waterLevelAt(grid.globalCameraPosition.x, grid.globalCameraPosition.z);
+    const mask = grid.waveMasksAt
+      ? grid.waveMasksAt(grid.globalCameraPosition.x, grid.globalCameraPosition.z, this._maskScratch) : [1, 1];
     for(let c = 0; c < 2; ++c){
       const patch = composer._cascadePatchSizes[c];
       let u = (grid.globalCameraPosition.x + offsets[c].x) / patch;
@@ -355,7 +391,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.probeWaterSurfaceY = function
       const py = Math.min(res - 1, Math.max(0, Math.floor(v * res)));
       const rt = composer.cascadeDisplacementTargets[c];
       this.renderer.readRenderTargetPixels(rt, px, py, 1, 1, buf);
-      waterSurfaceY += buf[1] * whm;   //.y (green) channel = vertical displacement
+      waterSurfaceY += mask[c] * buf[1] * whm;   //.y (green) channel = vertical displacement
     }
     this._probeWaterSurfaceY = waterSurfaceY;
   }
