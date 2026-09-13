@@ -8,7 +8,7 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
-## Phase 3a — shorelines that break — **steps 1–2 landed on the branch, both browser-checked** (2026-09-13)
+## Phase 3a — shorelines that break — **landed, browser-checked, merged** (2026-09-13)
 
 Branch `phase-3a-breakers`, off `multi-water-types` at `9cfb079`. Step 1 is the
 breaker layer itself. Swash, the splash trigger and shallow colour are still to
@@ -393,7 +393,33 @@ this **needs create-shader.py**.
     (`buoyant`, splash consumers) now see it from the previous frame's ocean tick.
     The height snapshot is 15 Hz anyway. JS only, so no regen.
 
-### Next (3a step 4)
+### Closing 3a (2026-09-13)
+
+- **Shallow colour from true depth (the old step 4) is already in place.** The
+  unified distance-depth model's `verticalDepth` is the real surface-to-seabed
+  thickness from the refraction G-buffer. `shoreFade` survives only as the fallback
+  when breakers are off.
+- **Parked, not scheduled:**
+  - spray by breaker class (plunging splash-up; offshore wind stripping spray off
+    the crests);
+  - backwash foam and turbidity (sand patches during drawdown; rocky-bottom
+    particles);
+  - caustics from the rendered surface height nearby.
+- **Next: Phase 3b (shore reflection)**, in a new session. Start from
+  `NEARSHORE-WAVES.md` § 8 (3b) and § 5.4 (the reflection-only emitter spike, with
+  the harness in `research/nearshore-spike/`). Its first task is to verify oblique
+  incidence in 2D.
+- **Budgets and hooks 3b inherits from 3a:**
+  - The water program is at ~28/32 samplers, and 3b adds 1.
+  - Varyings are at 16/16, so 3b's normals must come from fragment finite
+    differences.
+  - The height bake's `.g`/`.b`/`.a` are now taken (breaker foam, shoreward
+    direction, crest). Put the reflected height into `.r` and find another
+    channel for Kr.
+  - `ShoreBreaker` already computes ξ, Kr (Battjes) and the smooth shore normal
+    (`shoreBreakerSmoothGrad`), and the ocean-state system tick ordering is fixed.
+
+### Next (3a step 4, superseded; see Closing 3a)
 
 - **Splash.** The `_emitShore` breaker trigger, reading shoreSDF and Kr from the
   height bake's spare `.g`/`.b` channels.
