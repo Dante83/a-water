@@ -97,6 +97,10 @@ vec4 waterFieldAt(vec2 worldXZ){
 //and the CPU height bake use. A bare token rather than a comment so the min
 //build's GLSL comment strip cannot eat it.
 $wave_mask_functions
+//Phase 3a ShoreBreaker uniforms + shoreBreakerEval / shoreBreakerHeightAt,
+//spliced the same way from ARestlessOcean.ShoreBreaker.GLSL (ocean-wave-field.js).
+//Must come after waterFieldAt, which the geometry helper calls.
+$shore_breaker_functions
 //Displacement-texture pixel resolution per side (RG=dh/dx,dh/dz storage).
 //Used here only to size the finite-difference epsilon for the per-vertex
 //normal estimate that drives normal-offset shadow bias.
@@ -160,6 +164,14 @@ void main() {
   displacement.z *= -chop;
 
   offsetPosition += displacement;
+
+  //Phase 3a: depth-limited breakers, phase-locked to the shore (ShoreBreaker).
+  //The coherent peak-frequency train that WaveMask took out of the long
+  //cascades as the water shoaled, put back shoaled, pitched forward and capped
+  //at breaking. Sampled at the UNDISPLACED worldXZ for the same reason as the
+  //field above. Faded with camera distance because clipmap cells outgrow the
+  //nearshore wavelength; the fragment carries it further as normals and foam.
+  offsetPosition.y += shoreBreakerHeightAt(worldXZ, field, shoreBreakerDistanceFade(worldPositionOfVertex.xyz));
 
   //Phase 1b: shift this vertex's rest height from the mesh's baked flat
   //plane (baseHeightOffset) to the real WaterField level at its position —

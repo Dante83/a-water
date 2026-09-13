@@ -103,9 +103,13 @@ ARestlessOcean.OceanShadowCSM = function(oceanGrid, scene, configOverrides){
   shadowUniforms.waterFieldCascadeCenter = {value: [new THREE.Vector2(), new THREE.Vector2(), new THREE.Vector2()]};
   shadowUniforms.waterFieldCascadeHalfWidth = {value: [256.0, 1024.0, 4096.0]};
   Object.assign(shadowUniforms, ARestlessOcean.WaveMask.createUniforms());
+  //Phase 3a: breakers lift the receiver, so they lift the caster.
+  Object.assign(shadowUniforms, ARestlessOcean.ShoreBreaker.createUniforms());
   this._shadowMatDef = {
     uniforms: shadowUniforms,
-    vertexShader: baseShadowMat.vertexShader.replace('$wave_mask_functions', function(){ return ARestlessOcean.WaveMask.GLSL; }),
+    vertexShader: baseShadowMat.vertexShader
+      .replace('$wave_mask_functions', function(){ return ARestlessOcean.WaveMask.GLSL; })
+      .replace('$shore_breaker_functions', function(){ return ARestlessOcean.ShoreBreaker.GLSL; }),
     fragmentShader: baseShadowMat.fragmentShader
   };
 
@@ -305,6 +309,7 @@ ARestlessOcean.OceanShadowCSM.prototype.render = function(renderer, mainCamera, 
       u.waterFieldCascadeHalfWidth.value[ci] = sharedOceanUniforms.waterFieldCascadeHalfWidth.value[ci];
     }
     ARestlessOcean.WaveMask.copyUniforms(u, sharedOceanUniforms);
+    ARestlessOcean.ShoreBreaker.copyUniforms(u, sharedOceanUniforms);
   }
 
   const pivotX = this._cameraWorldPos.x;

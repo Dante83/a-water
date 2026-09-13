@@ -118,15 +118,19 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
     'uniform float hfRegionSize;',
     fieldReady ? ARestlessOcean.Passes.WaterFieldPass.SAMPLE_GLSL : '',
     fieldReady ? ARestlessOcean.WaveMask.GLSL : '',
+    fieldReady ? ARestlessOcean.ShoreBreaker.GLSL : '',
     'void main(){',
     '  vec2 worldXZ = hfRegionOrigin + vHfUv * hfRegionSize;',
     '  vec3 hfMaskA = vec3(1.0);',
     '  vec3 hfMaskB = vec3(1.0);',
     '  float level = hfHeightOffset;',
-    fieldReady ? '  if(hfUseField > 0.5){ vec4 field = waterFieldAt(worldXZ); level = field.r; waveMaskCascades(field, hfMaskA, hfMaskB); }' : '',
+    '  float breaker = 0.0;',
+    //Phase 3a: the breakers ride in the same sum, so floats and splash see them.
+    //Fade 1: the bake covers ±256 m, well inside ShoreBreaker.FADE_NEAR.
+    fieldReady ? '  if(hfUseField > 0.5){ vec4 field = waterFieldAt(worldXZ); level = field.r; waveMaskCascades(field, hfMaskA, hfMaskB); breaker = shoreBreakerHeightAt(worldXZ, field, 1.0); }' : '',
     '  float dy = 0.0;',
     '  ' + hfSumLines,
-    '  gl_FragColor = vec4(level + dy * hfWhm, 0.0, 0.0, 1.0);',
+    '  gl_FragColor = vec4(level + dy * hfWhm + breaker, 0.0, 0.0, 1.0);',
     '}'
   ].join('\n');
   const hfUniforms = {
@@ -142,6 +146,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
   if(fieldReady){
     Object.assign(hfUniforms, ARestlessOcean.Passes.WaterFieldPass.createSampleUniforms());
     Object.assign(hfUniforms, ARestlessOcean.WaveMask.createUniforms());
+    Object.assign(hfUniforms, ARestlessOcean.ShoreBreaker.createUniforms());
   }
   this._heightFieldMaterial = new THREE.ShaderMaterial({
     uniforms: hfUniforms,
@@ -231,6 +236,8 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.updateHeightField = function(
     const p = grid.waveMaskParams ? grid.waveMaskParams() : null;
     if(p){
       ARestlessOcean.WaveMask.writeUniforms(u, p);
+      const sbp = grid._shoreBreakerParams;
+      if(sbp) ARestlessOcean.ShoreBreaker.writeUniforms(u, sbp);
       u.hfUseField.value = 1.0;
     }
   }

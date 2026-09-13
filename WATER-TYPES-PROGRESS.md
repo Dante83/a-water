@@ -8,6 +8,111 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
+## Phase 3a — shorelines that break — **step 1 written, headless-verified, awaiting regen + browser** (2026-09-13)
+
+Branch `phase-3a-breakers`, off `multi-water-types` at `9cfb079`. Step 1 is the
+breaker layer itself. Swash, the splash trigger and shallow colour are still to
+come (see *Next* below).
+
+### What shipped in step 1
+
+- **`ARestlessOcean.ShoreBreaker`**, in `ocean-wave-field.js` next to WaveMask. No
+  new script tags. It has the same structure as WaveMask: one JS-owned GLSL chunk
+  spliced at `$shore_breaker_functions`, plus a JS mirror (`evaluate`). The model,
+  in brief (the file header has the full derivation and sources):
+  - **Handoff.** The breaker carries √(1 − a²) of the peak, where a is WaveMask's
+    TMA amplitude, so deep water is untouched and nothing is double-counted.
+  - **Shoaling.** Eckart's wavenumber plus linear shoaling Ks.
+  - **Breaking.** McCowan's cap, H ≤ 0.78 h, applied per individual wave.
+  - **Direction.** A cos² directional spread against the shore normal (from
+    ∇shoreSDF). Lee shores get nothing.
+  - **Phase.** A closed-form shoreward travel time, ωT = (s/h)·I(k0h), with the
+    integral I fitted to under 0.9% error from shallow to deep water.
+  - **Shape.** Ruessink et al. 2012 (skewness and asymmetry from the Ursell
+    number) feeding Abreu et al. 2010's waveform. The B → r inversion was derived
+    numerically. The waveform is exactly zero-mean with a crest-to-trough range
+    of 2, so η = (H/2)·w.
+  - **Foam.** Foam trails the breaking front, scaled by 1 − Kr² (Battjes).
+- **Four consumers.** They are the water vertex (geometry, faded out by
+  400–1400 m), the water fragment (a finite-difference slope added into the
+  normals and macro normal, breaker foam and debug modes 60/61), the ocean CSM
+  caster, and the CPU height bake (so floats and splash ride the breakers).
+- **Foam.** When breakers are on, breaker foam replaces the old `shoreFade` /
+  `shoreBoost` heuristic. The heuristic remains as the fallback when they are off.
+- **Controls.** Knobs are on the grid (`shoreBreakersEnabled`,
+  `shoreBreakerFoamGain`, `shoreBreakerHeightScale`, `shoreBreakersStandalone`).
+  Console helpers are `setShoreBreakersEnabled`, `setShoreBreakerFoamGain`,
+  `setShoreBreakerHeightScale` and `probeShoreBreaker(x, z)`.
+
+### Deviations from the plan, and why
+
+- **Refraction is not done by bending the FFT sample direction.** Crests come out
+  shore-parallel by construction, because the breaker phase runs along shoreSDF
+  iso-contours. Bending the tile lookup would shear the FFT field. It is left
+  out, not deferred.
+- **The phase reads cascade 1 (4 m texels); amplitude reads cascade 0.** The
+  first headless render showed radial streaks through every crest. Crest
+  position integrates s/h, so 1 m noise in the jump-flooded distance and in the
+  depth becomes crest wobble. Amplitude and breaking stay on the 1 m field so the
+  waterline stays sharp.
+- **Off standalone by default.** There, shoreSDF is jump-flooded from the foam
+  ortho, which sees boats and docks as land, so a hull would grow a ring of
+  breakers. `shoreBreakersStandalone = true` overrides this for scenes with
+  nothing floating.
+- **Look choices, flagged as such in the code:**
+  - a per-wave height factor from smooth noise;
+  - a ~7-wave set envelope;
+  - ~90 m crest-bending phase noise;
+  - the foam trail length (`FOAM_TRAIL` 14) and the residual sheet
+    (`FOAM_RESIDUAL` 0.06).
+
+### Verified headless (RTX 4090 via ANGLE GL, island-sholes-ocean.html)
+
+- **Regen method.** The shaders were regenerated into scratch with
+  create-shader.py's own `ConvertGLSLToStringArray` and template substitution,
+  and served in place of the committed JS via CDP `Fetch`. As a control, the same
+  regen of the HEAD sources reproduces the committed `water-shader.js` byte for
+  byte.
+- **Compile and frame rate.** Every program compiles (`renderer.info.programs`
+  has no unrunnable diagnostics), at 60 fps.
+- **GPU vs JS parity.** 512 surf-zone points were evaluated by the real GLSL in
+  a scratch pass and compared with `ShoreBreaker.evaluate`, fed from the GPU
+  field readback. Maximum η error is 2.2 mm on waves up to ±0.97 m (mean 0.56 mm);
+  foam error is below 0.008. The JS hash runs in float32 (`Math.fround`) to get
+  there. `shoreBreakerHeightAt`, which includes its own shore-normal taps, agrees
+  equally well.
+- **1D transect (JS, 1:30 beach).** The wave is sinusoidal offshore. Through the
+  surf zone B rises to 0.86 and ψ falls to −85° (sawtooth). The mean stays at 0,
+  and breaking starts at h ≈ Hs·Ks/0.78: about 5 m at 12 m/s and 0.2 m at 3 m/s.
+- **Screenshots.** The oval island shows a surf band with foam along its windward
+  beach. Mode 60 shows the steep island plunging on its windward face and nothing
+  on its lee.
+- **Not a breaker bug.** The first run showed a background-blue hole over the oval
+  island in every mode, debug modes included. It was gone on the rerun: it was
+  a-land's terrain streaming, which fits the four LOD-1 tiles it cancels on load.
+
+### ⚠ Outstanding — needs Dante
+
+1. **Regen.** Run `create-shader.py`. `water-vertex.glsl`, `water-shader.glsl` and
+   `ocean-shadow-vertex.glsl` gained the token and the call sites.
+2. **Browser look** on `examples/demos/island-sholes-ocean.html` (8 m/s onshore).
+   First tuning suspects:
+   - The surf zone reads as a milky wash from low angles. Knobs:
+     `setShoreBreakerFoamGain`, `FOAM_RESIDUAL`.
+   - Crest lines are hard to see through the foam. A/B with
+     `setShoreBreakersEnabled(false)`.
+   - `waveHeightMultiplier` (1.5 in that scene) scales the breaker Hs as well.
+
+### Next (3a steps 2–4)
+
+- **Swash.** A run-up sheet up the beach on breaker phase, with Stockdon 2006 R2
+  by ξ. This needs the dry discard relaxed in a band inland of the shoreline.
+- **Splash.** The `_emitShore` breaker trigger, reading shoreSDF and Kr from the
+  height bake's spare `.g`/`.b` channels.
+- **Colour.** Shallow colour from the true water-column depth.
+
+---
+
 ## Phase 3.0 — nearshore wave dynamics investigation — **done** (research run, 2026-09-12)
 
 Branch `phase-3.0-nearshore`, off `multi-water-types` at `189b06a`. The deliverable is

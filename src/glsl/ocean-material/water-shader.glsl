@@ -104,6 +104,12 @@ vec4 waterFieldAt(vec2 worldXZ){
   return sampleWaterFieldCascade2(worldXZ);
 }
 
+//Phase 3a ShoreBreaker (uniforms, shoreBreakerEval, shoreBreakerActive): spliced
+//from ARestlessOcean.ShoreBreaker.GLSL in ocean-wave-field.js by ocean-grid.js,
+//the same chunk the vertex, the CSM caster and the height bake use. After
+//waterFieldAt, which it calls. Bare token so the min build cannot strip it.
+$shore_breaker_functions
+
 //uniform vec3 cameraDirection;
 uniform float sizeOfOceanPatch;
 uniform int ringIndex;
@@ -1580,6 +1586,42 @@ void main(){
   c5NativeHeightSlope *= waveHeightMultiplier;
   lostSlopeVar *= waveHeightMultiplier * waveHeightMultiplier;
 
+  //── Phase 3a: shore breakers (ShoreBreaker) ─────────────────────────────
+  //The vertex stage lifts the geometry; here the same function is evaluated at
+  //this fragment and at two half-metre neighbours for its slope, so the breaker
+  //faces light correctly and the foam lands on the breaking front. Not faded by
+  //distance like the geometry: normals and foam are per pixel, so a far coast
+  //still shows its white lines. One-sided differences reuse the three field taps
+  //for the shore normal as well.
+  float breakerEta = 0.0;
+  float breakerFoam = 0.0;
+  float breakerBreaking = 0.0;
+  float breakerXi = 0.0;
+  vec2 breakerSlope = vec2(0.0);
+  {
+    vec4 bField = waterFieldAt(vWorldXZ);
+    if(shoreBreakerActive(bField)){
+      const float BREAKER_EPS = 0.5;
+      vec4 bFieldX = waterFieldAt(vWorldXZ + vec2(BREAKER_EPS, 0.0));
+      vec4 bFieldZ = waterFieldAt(vWorldXZ + vec2(0.0, BREAKER_EPS));
+      vec2 bGrad = vec2(bFieldX.b - bField.b, bFieldZ.b - bField.b) / BREAKER_EPS;
+      float unusedFoam;
+      float unusedBreaking;
+      float unusedXi;
+      breakerEta = shoreBreakerEval(vWorldXZ, bField, shoreBreakerPhaseField(vWorldXZ), bGrad, breakerFoam, breakerBreaking, breakerXi);
+      float breakerEtaX = shoreBreakerEval(vWorldXZ + vec2(BREAKER_EPS, 0.0), bFieldX, shoreBreakerPhaseField(vWorldXZ + vec2(BREAKER_EPS, 0.0)), bGrad, unusedFoam, unusedBreaking, unusedXi);
+      float breakerEtaZ = shoreBreakerEval(vWorldXZ + vec2(0.0, BREAKER_EPS), bFieldZ, shoreBreakerPhaseField(vWorldXZ + vec2(0.0, BREAKER_EPS)), bGrad, unusedFoam, unusedBreaking, unusedXi);
+      breakerSlope = vec2(breakerEtaX - breakerEta, breakerEtaZ - breakerEta) / BREAKER_EPS;
+    }
+  }
+  rawDdx.y += breakerSlope.x;
+  rawDdz.y += breakerSlope.y;
+  //macroSlope below re-applies waveHeightMultiplier to cascade 0's slope; the
+  //breaker slope is already in metres per metre, so divide it back out. The
+  //breaker is the swell near a shore, which is exactly what the macro normal
+  //(specular orientation) is meant to follow.
+  cascade0HeightSlope += breakerSlope / max(waveHeightMultiplier, 0.0001);
+
   //Jacobian: detect surface folds — still used for inscatter modulation and normal blending
   vec2 foamDdx = -chop * rawDdx.xz;
   vec2 foamDdz = -chop * rawDdz.xz;
@@ -1680,9 +1722,14 @@ void main(){
     //turbulence boost is needed. The shore branch still adds its turbulence-
     //driven boost on top for the breaker-line near terrain.
     foamAmount = fftFoamAmount;
+    //Phase 3a: foam on the breaking front and the bore behind it, scaled by the
+    //dissipated fraction 1 - Kr^2 (see ShoreBreaker). Replaces the shoreFade
+    //heuristic below whenever breakers are on; the heuristic stays as the
+    //fallback for standalone scenes, where breakers are off.
+    foamAmount = max(foamAmount, breakerFoam);
     vec2 foamPosition = 0.5 * (((worldPosition.xz - foamCameraXZ) / vec2(FOAM_ORTHO_HALF_WIDTH)) + 1.0);
     foamPosition = vec2(foamPosition.x, 1.0 - foamPosition.y);
-    if(foamPosition.x < 1.0 && foamPosition.x > 0.0 && foamPosition.y < 1.0 && foamPosition.y > 0.0){
+    if(shoreBreakerEnabled < 0.5 && foamPosition.x < 1.0 && foamPosition.x > 0.0 && foamPosition.y < 1.0 && foamPosition.y > 0.0){
       vec2 foamHeightData = texture2D(foamRenderMap, foamPosition).ga;
       if((foamHeightData.y > 0.5)){
         //Shore-zone foam: gated by wave action, not a static shallow-water belt.
@@ -2978,6 +3025,23 @@ void main(){
       dbgCol.b *= (1.0 - dbgOver);
       gl_FragColor = vec4(clamp(dbgCol, 0.0, 1.0), 1.0);
     }
+  }
+
+  //Phase 3a ShoreBreaker debug views.
+  //Mode 60: breaker class by surf similarity xi (Battjes bands) where a breaker
+  //         exists: green spilling (xi < 0.5), yellow plunging (< 3.3), red
+  //         surging. Brighter where the wave is breaking right now; white = foam.
+  //         Dark blue = no breaker layer (deep water, land, lee of the wind).
+  //Mode 61: breaker height alone, grey = 0, white = +1 m, black = -1 m; red
+  //         where breaking.
+  else if(oceanShadowDebugMode == 60){
+    vec3 dbgCls = breakerXi < 0.5 ? vec3(0.15, 0.8, 0.3) : (breakerXi < 3.3 ? vec3(0.95, 0.8, 0.2) : vec3(0.9, 0.2, 0.2));
+    vec3 dbgCol = breakerXi > 0.0 ? dbgCls * (0.35 + 0.65 * breakerBreaking) : vec3(0.02, 0.05, 0.2);
+    gl_FragColor = vec4(mix(dbgCol, vec3(1.0), breakerFoam), 1.0);
+  }
+  else if(oceanShadowDebugMode == 61){
+    vec3 dbgCol = vec3(clamp(0.5 + 0.5 * breakerEta, 0.0, 1.0));
+    gl_FragColor = vec4(mix(dbgCol, vec3(1.0, 0.1, 0.1), 0.5 * breakerBreaking), 1.0);
   }
 
   //Debug overlays — only drawn when oceanShadowDebugMode is non-zero. Bottom-

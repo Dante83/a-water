@@ -531,6 +531,47 @@ ARestlessOcean.installOceanDebugControls = function(grid){
         f.invalidate();
       };
 
+      //── Shore breakers (Phase 3a) ─────────────────────────────────────────
+      //setShoreBreakersEnabled(false) -> no breaker layer (GPU geometry, normals,
+      //  foam, CSM caster and height bake together). A/B it.
+      //setShoreBreakerFoamGain(g) / setShoreBreakerHeightScale(s) -> live look
+      //  knobs (1 = the physical model). setOceanShadowDebug(60) shows breaker
+      //  class and foam, 61 the breaker height alone.
+      //probeShoreBreaker(x, z) -> the JS mirror at a world position (camera if
+      //  omitted), fed from the GPU field readback so it matches the shader.
+      window.setShoreBreakersEnabled = function(on){
+        grid.shoreBreakersEnabled = !!on;
+        console.log('[shoreBreaker] ' + (grid.shoreBreakersEnabled ? 'ON' : 'OFF'));
+      };
+      window.setShoreBreakerFoamGain = function(v){ grid.shoreBreakerFoamGain = +v; };
+      window.setShoreBreakerHeightScale = function(v){ grid.shoreBreakerHeightScale = +v; };
+      window.probeShoreBreaker = function(x, z){
+        const f = grid.waterFieldPass;
+        const p = grid._shoreBreakerParams;
+        if(!f || !p){ console.log('[shoreBreaker] not ready'); return; }
+        const px = (x === undefined) ? grid.globalCameraPosition.x : x;
+        const pz = (z === undefined) ? grid.globalCameraPosition.z : z;
+        const texelAt = function(field, wx, wz){
+          const col = Math.floor((wx - field.centerX + field.halfWidth) / field.texel);
+          const row = Math.floor((wz - field.centerZ + field.halfWidth) / field.texel);
+          if(col < 0 || row < 0 || col >= field.res || row >= field.res) return null;
+          const o = (row * field.res + col) * 4;
+          return {level: field.a[o], depth: field.a[o + 1], shoreSDF: field.a[o + 2], dryMask: field.a[o + 3]};
+        };
+        const f0 = f.readCascade(0), f1 = f.readCascade(1);
+        const s0 = f0 && texelAt(f0, px, pz), sx = f0 && texelAt(f0, px + 1, pz), sz = f0 && texelAt(f0, px, pz + 1);
+        const s1 = f1 && texelAt(f1, px, pz);
+        if(!s0 || !sx || !sz){ console.log('[shoreBreaker] outside cascade 0'); return; }
+        const o = ARestlessOcean.ShoreBreaker.evaluate(px, pz, s0, sx.shoreSDF - s0.shoreSDF, sz.shoreSDF - s0.shoreSDF, p, {}, s1 || s0);
+        const cls = o.xi < 0.5 ? 'spilling' : (o.xi < 3.3 ? 'plunging' : 'surging');
+        console.log('[shoreBreaker] at', px.toFixed(1), pz.toFixed(1), '| depth', s0.depth.toFixed(2), 'm, shore', s0.shoreSDF.toFixed(1), 'm',
+          '| deep Hs', p.Hs.toFixed(2), 'm, Tp', (2 * Math.PI / p.omega).toFixed(1), 's',
+          '| handoff W', o.W.toFixed(2), '| local H', o.H.toFixed(2), 'm', o.breaking > 0.5 ? '(BREAKING)' : '',
+          '| ξ', o.xi.toFixed(2), cls, '| Kr', o.Kr.toFixed(2), '| shape B', o.B.toFixed(2), 'ψ', (o.psi * 180 / Math.PI).toFixed(0) + '°',
+          '| η now', o.eta.toFixed(2), 'm, foam', o.foam.toFixed(2), p.enabled ? '' : '| BREAKERS OFF');
+        return o;
+      };
+
       //── Wave masks (Phase 2) ──────────────────────────────────────────────
       //setWaveMaskEnabled(false) -> every cascade at full weight everywhere
       //  (the pre-Phase-2 ocean), on the GPU and the CPU twin alike. A/B it.
