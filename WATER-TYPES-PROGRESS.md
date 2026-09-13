@@ -201,11 +201,11 @@ flatter upper beach no longer gets a cut line. GPU parity after the change:
 - **Frames.** With the old probe, a trough under the camera left it "underwater"
   above the water, showing a torn ceiling with sky through it. With the new
   probe, the underside of the breaker crest reads correctly.
-- **To re-check in the browser:** breakers seen from underwater, and whether the
-  waterline twitch is gone. If the twitch remains, the next suspect is the
-  cascade-1 refill phase jump (see round 1).
+- **Browser result.** Breakers are visible from underwater. After tuning pass 2,
+  Dante confirmed the waterline twitch is gone too, so the refill phase-jump
+  suspect was not needed.
 
-### Tuning pass 2 — walls of water around the steep island's rocks (written, headless-verified)
+### Tuning pass 2 — walls of water around the steep island's rocks (browser-confirmed by Dante 2026-09-13)
 
 **Report (browser round 3).** Near the steep island there were sheets and walls of
 water standing around rocks, and wash climbing the cliffs. A GPU scan of
