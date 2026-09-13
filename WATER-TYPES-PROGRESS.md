@@ -8,6 +8,425 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
+## Phase 3a — shorelines that break — **landed, browser-checked, merged** (2026-09-13)
+
+Branch `phase-3a-breakers`, off `multi-water-types` at `9cfb079`. Step 1 is the
+breaker layer itself. Swash, the splash trigger and shallow colour are still to
+come (see *Next* below).
+
+### What shipped in step 1
+
+- **`ARestlessOcean.ShoreBreaker`**, in `ocean-wave-field.js` next to WaveMask. No
+  new script tags. It has the same structure as WaveMask: one JS-owned GLSL chunk
+  spliced at `$shore_breaker_functions`, plus a JS mirror (`evaluate`). The model,
+  in brief (the file header has the full derivation and sources):
+  - **Handoff.** The breaker carries √(1 − a²) of the peak, where a is WaveMask's
+    TMA amplitude, so deep water is untouched and nothing is double-counted.
+  - **Shoaling.** Eckart's wavenumber plus linear shoaling Ks.
+  - **Breaking.** McCowan's cap, H ≤ 0.78 h, applied per individual wave.
+  - **Direction.** A cos² directional spread against the shore normal (from
+    ∇shoreSDF). Lee shores get nothing.
+  - **Phase.** A closed-form shoreward travel time, ωT = (s/h)·I(k0h), with the
+    integral I fitted to under 0.9% error from shallow to deep water.
+  - **Shape.** Ruessink et al. 2012 (skewness and asymmetry from the Ursell
+    number) feeding Abreu et al. 2010's waveform. The B → r inversion was derived
+    numerically. The waveform is exactly zero-mean with a crest-to-trough range
+    of 2, so η = (H/2)·w.
+  - **Foam.** Foam trails the breaking front, scaled by 1 − Kr² (Battjes).
+- **Four consumers.** They are the water vertex (geometry, faded out by
+  400–1400 m), the water fragment (a finite-difference slope added into the
+  normals and macro normal, breaker foam and debug modes 60/61), the ocean CSM
+  caster, and the CPU height bake (so floats and splash ride the breakers).
+- **Foam.** When breakers are on, breaker foam replaces the old `shoreFade` /
+  `shoreBoost` heuristic. The heuristic remains as the fallback when they are off.
+- **Controls.** Knobs are on the grid (`shoreBreakersEnabled`,
+  `shoreBreakerFoamGain`, `shoreBreakerHeightScale`, `shoreBreakersStandalone`).
+  Console helpers are `setShoreBreakersEnabled`, `setShoreBreakerFoamGain`,
+  `setShoreBreakerHeightScale` and `probeShoreBreaker(x, z)`.
+
+### Deviations from the plan, and why
+
+- **Refraction is not done by bending the FFT sample direction.** Crests come out
+  shore-parallel by construction, because the breaker phase runs along shoreSDF
+  iso-contours. Bending the tile lookup would shear the FFT field. It is left
+  out, not deferred.
+- **The phase reads cascade 1 (4 m texels); amplitude reads cascade 0.** The
+  first headless render showed radial streaks through every crest. Crest
+  position integrates s/h, so 1 m noise in the jump-flooded distance and in the
+  depth becomes crest wobble. Amplitude and breaking stay on the 1 m field so the
+  waterline stays sharp.
+- **Off standalone by default.** There, shoreSDF is jump-flooded from the foam
+  ortho, which sees boats and docks as land, so a hull would grow a ring of
+  breakers. `shoreBreakersStandalone = true` overrides this for scenes with
+  nothing floating.
+- **Look choices, flagged as such in the code:**
+  - a per-wave height factor from smooth noise;
+  - a ~7-wave set envelope;
+  - ~90 m crest-bending phase noise;
+  - the foam trail length (`FOAM_TRAIL` 14) and the residual sheet
+    (`FOAM_RESIDUAL` 0.06).
+
+### Verified headless (RTX 4090 via ANGLE GL, island-sholes-ocean.html)
+
+- **Regen method.** The shaders were regenerated into scratch with
+  create-shader.py's own `ConvertGLSLToStringArray` and template substitution,
+  and served in place of the committed JS via CDP `Fetch`. As a control, the same
+  regen of the HEAD sources reproduces the committed `water-shader.js` byte for
+  byte.
+- **Compile and frame rate.** Every program compiles (`renderer.info.programs`
+  has no unrunnable diagnostics), at 60 fps.
+- **GPU vs JS parity.** 512 surf-zone points were evaluated by the real GLSL in
+  a scratch pass and compared with `ShoreBreaker.evaluate`, fed from the GPU
+  field readback. Maximum η error is 2.2 mm on waves up to ±0.97 m (mean 0.56 mm);
+  foam error is below 0.008. The JS hash runs in float32 (`Math.fround`) to get
+  there. `shoreBreakerHeightAt`, which includes its own shore-normal taps, agrees
+  equally well.
+- **1D transect (JS, 1:30 beach).** The wave is sinusoidal offshore. Through the
+  surf zone B rises to 0.86 and ψ falls to −85° (sawtooth). The mean stays at 0,
+  and breaking starts at h ≈ Hs·Ks/0.78: about 5 m at 12 m/s and 0.2 m at 3 m/s.
+- **Screenshots.** The oval island shows a surf band with foam along its windward
+  beach. Mode 60 shows the steep island plunging on its windward face and nothing
+  on its lee.
+- **Not a breaker bug.** The first run showed a background-blue hole over the oval
+  island in every mode, debug modes included. It was gone on the rerun: it was
+  a-land's terrain streaming, which fits the four LOD-1 tiles it cancels on load.
+
+### ⚠ Outstanding — needs Dante
+
+1. **Regen.** Run `create-shader.py`. `water-vertex.glsl`, `water-shader.glsl` and
+   `ocean-shadow-vertex.glsl` gained the token and the call sites.
+2. **Browser look** on `examples/demos/island-sholes-ocean.html` (8 m/s onshore).
+   First tuning suspects:
+   - The surf zone reads as a milky wash from low angles. Knobs:
+     `setShoreBreakerFoamGain`, `FOAM_RESIDUAL`.
+   - Crest lines are hard to see through the foam. A/B with
+     `setShoreBreakersEnabled(false)`.
+   - `waveHeightMultiplier` (1.5 in that scene) scales the breaker Hs as well.
+
+### Browser round 1 (2026-09-13, Dante)
+
+The breakers read well, including beside the steep island. Three touch-ups are
+parked, none of them fixed yet:
+- **Breakers invisible from underwater.** Suspect: the submersion probe
+  (`height-readback-pass.js`, camera probe) sums only cascades 0 and 1 times the
+  masks. It never adds the breaker, so in the surf zone the air/water swap is
+  decided against a surface that isn't the one being drawn.
+- **Twitchy surface near the waterline.** Two candidates:
+  1. The same probe mismatch, flipping the air/water state under passing crests.
+  2. Crest jumps when cascade 1 refills. The phase is (s/h)·I with θ ≈ 60 rad at
+     the shore, so a 1% change in the re-flooded shoreSDF moves a crest by
+     ~0.6 rad. Test: watch `waterFieldPass.refillCount` against the twitch.
+- **Screenshot oddities.** The scalloped grey band is the residual foam sheet
+  behind the front: a hard edge where `dFront` wraps. There are also two square
+  outlines in the shallows, source unknown (possibly a-land tiles or the foam
+  ortho).
+
+### Step 2 — swash (written, headless-verified, awaiting regen + browser)
+
+- **`ShoreBreaker.evaluateSwash`** (JS) and **`shoreSwashEval`** (GLSL). The sheet
+  is flat, at rest level plus z(t), and is allowed over the dry band the run-up can
+  reach. Where the beach is higher than the sheet, the depth test hides it, so the
+  moving waterline needs no terrain lookup.
+  - **Run-up.** Stockdon et al. (2006) general form, for every ξ:
+    R2 = 1.1(η̄ + S/2), with H0 = Hs·√fDir (so lee beaches barely swash). The
+    foreshore slope β is read from cascade 1, 6 m offshore along the shore normal.
+  - **Motion, per wave.** z rises from η̄ − S/2 to R2 × waveFactor over the first
+    30% of the cycle (sin, decelerating), then drains under gravity (1 − x²).
+    It is timed off the breaker phase, so the arriving bore starts the uprush.
+  - **Seaward.** The swash fades out by the depth equal to the largest run-up.
+  - **Reach.** 1.155·R2/β + 2 m. Beyond it the dry discard applies as before.
+- **Geometry.** `shoreBreakerHeightAt` now returns breaker + swash, so the vertex,
+  CSM caster and height bake picked it up with no new call sites.
+- **Fragment changes.**
+  - The dry discard asks `shoreSwashCovers` first.
+  - The normals block adds the swash into the same finite-difference slope.
+  - Uprush bore foam comes from the eval. Thin-sheet foam (< 25 cm against the
+    foam-ortho terrain) marks the leading edge and the draining film.
+- **Parity.** 1024 points, 755 of them on land: maximum η error 0.4 mm, reach
+  within 0.1%, and 0 of 1024 disagree on which dry texels the sheet may cover.
+  Everything compiles, at 59–60 fps.
+- **Screenshots.** Tongues of water run up the oval beach with foamy thin edges,
+  and on the backwash the drawdown briefly bares sand in the inner surf zone.
+- **Headless-only terrain hole, now explained.** a-land's four cancelled LOD-1
+  height tiles (see island-sholes notes) are what leave the oval island as a hole.
+  Calling `heightStreamer.clearFailed()` after load streams them and the hole goes.
+
+**Tuning suspects for the browser pass:**
+- a faint line across the sand, possibly the reach cut where the sheet is still
+  above a flatter upper beach;
+- the milky wash from low angles;
+- sand patches during drawdown;
+- the square outlines Dante saw. Those are breaker foam fronts on isolated wet
+  texels just inland, moving with the wave.
+
+**Browser round 2 (Dante): creeping strips of sheet, fixed.** The swash was timed
+with the breaker's LOCAL phase, (s/h)·I, which changes quickly with distance near
+the shoreline. The sheet was therefore a set of short standing "waves": strips of
+water and sand parallel to the shore that crept up the beach at shallow-water
+speed and cut off the next uprush. The fix is to time the swash with the
+SHORELINE phase (ωt plus the alongshore noise), identical at every cross-shore
+distance, so the zone fills and drains as one sheet. Checked two ways:
+- **JS waterline simulation (1:28, 8 m/s × 1.5).** Each wave runs 8–15 m up the
+  sand in ~1.5 s, drains over ~4 s, then briefly sits below still water.
+- **Headless frame sequences** show one advancing and retreating waterline, with
+  no strips.
+
+The band limit also went to 2 × the probed-slope reach (capped at 60 m), so a
+flatter upper beach no longer gets a cut line. GPU parity after the change:
+0.3 mm, 0 cover mismatches. **Dante confirmed in the browser: "Much better!"**
+
+### Tuning pass 1 — the submersion probe knows about breakers (browser-confirmed by Dante 2026-09-13)
+
+- **Cause.** `probeWaterSurfaceY` summed only the rest level and cascades 0–1. In
+  a surf zone it therefore answered a surface without breakers or swash.
+  Everything downstream followed that wrong surface: the air/water swap, the
+  underwater fog plane, the caustic projector's surface Y and the mirror clip
+  plane.
+- **Fix** (`height-readback-pass.js`, `_renderBreakerProbe`). A 1×1 float pass
+  evaluates the very `shoreBreakerHeightAt` the water vertex calls, at the
+  camera, and it is read back async next to the two cascade texels. The draw
+  happens before any async read is issued (the three r173 PBO window). The
+  blocking fallback path gets it too. JS only, so no regen is needed.
+- **Measured headless** (oval east beach, 8 m/s × 1.5), over 15 s:
+
+  | Camera | Breaker term the probe now adds |
+  | --- | --- |
+  | x 1985 | −0.60 … +1.04 m |
+  | x 1965 (inner) | −0.25 … +0.38 m |
+  | x 2030 (outer) | −0.67 … +0.72 m |
+
+  Those ranges are exactly the old probe's error. With the camera held 0.2 m
+  above rest level at x 1985, the new probe goes underwater as crests wash over
+  (5 swaps and 194 underwater frames in 12 s). The old probe never did.
+- **Frames.** With the old probe, a trough under the camera left it "underwater"
+  above the water, showing a torn ceiling with sky through it. With the new
+  probe, the underside of the breaker crest reads correctly.
+- **Browser result.** Breakers are visible from underwater. After tuning pass 2,
+  Dante confirmed the waterline twitch is gone too, so the refill phase-jump
+  suspect was not needed.
+
+### Tuning pass 2 — walls of water around the steep island's rocks (browser-confirmed by Dante 2026-09-13)
+
+**Report (browser round 3).** Near the steep island there were sheets and walls of
+water standing around rocks, and wash climbing the cliffs. A GPU scan of
+`shoreBreakerHeightAt` over a 384 m window found jumps of 2–3.5 m between 1 m
+neighbours. The oval beach had none: its largest step was 0.24 m per metre, which
+is a real wave front. Five causes, one fix each:
+
+1. **Uncapped run-up.** Stockdon on a rock face (tanβ → 1) gives R2 ≈ 10 m.
+   It is now capped at `SWASH_RUNUP_MAX_RATIO` 2 × H0. ⚠ The cap is from memory,
+   not a checked fit.
+2. **Hard gates before the tapers finished.**
+   - The swash depth taper ran to 1.155·R2 but was gated off at 3·Hs+1 or the
+     depth cap. It now completes by 0.8 of the nearest gate.
+   - Inland, the geometry now fades to 0 by the reach, matching the discard.
+   - Seaward it also fades by shore DISTANCE, so a shallow bar 30 m out is not
+     swash.
+   - The breaker hard-gated at a-land's depth cap, leaving a ring at the 10 m
+     contour. It now fades from 0.7 to 0.98 of the cap.
+3. **Shore normal from a 1 m one-sided difference.** Around rocks and along
+   medial axes of the jump-flooded field it flipped from texel to texel, and the
+   direction factor and the swash slope probe flipped with it.
+   - Fix: central differences on cascade 1 at ±4 m (`shoreBreakerSmoothGrad`,
+     which now returns ∇s and ∇h from the same four taps).
+   - The swash fades where |∇s| < 0.35–0.75, i.e. on medial axes with no single
+     shore.
+4. **Crest phase inconsistent over rough bathymetry.** θ = (s/h)·I assumes the
+   depth grows with distance. On a slope |∇θ| equals the dispersion k exactly
+   (the ratio measures 1.00–1.05 on clean slopes); beside a rock it reached 5.3.
+   The breaker now fades where |∇θ|/k is between 1.6 and 3.0, computed
+   analytically from the same ∇s and ∇h.
+5. **A flat swash sheet on steep faces.** It is a beach model (Stockdon's data
+   go up to tanβ ≈ 0.2). It now fades out between foreshore slopes of 0.15 and
+   0.35. Rock faces are left to 3b's reflection and to spray, or to a particle
+   or SPH layer if that is wanted later (Dante's note).
+
+**Result on the same 384 m strait window, three sample times:**
+
+| Measure | Before | After |
+| --- | --- | --- |
+| Tallest water | 4.86 m | 1.74 m |
+| Steps > 1 m | 196 | 0–4 |
+| Steps > 0.5 m | ~1,260 | 70–340 |
+
+The remaining ~1 m steps are breaker fronts in 3 m of water (plausible) and a
+few waterline texels. The oval beach is unchanged (0 steps > 0.5 m). Parity is
+unchanged: breaker 2.2 mm, swash 1.3 mm. Screenshots from above show foam around
+the rocks and no walls. `water-shader.glsl` changed (`bGrad` is now a vec4), so
+this **needs create-shader.py**.
+
+### Tuning pass 3 — grey foam front, milky shallows, inland squares (seabed 1/π restored; squares not reproducible)
+
+- **Grey foam front and milky shallows share one cause: a lighting-unit fudge.**
+  - *Not the foam amount.* Foam compositing is a soft ramp
+    (`smoothstep(0.04, 0.5, foamAmount)`), and there is no hard threshold.
+  - *Not foam facing away from the sun.* A frozen-breaker A/B that lit breaker foam
+    about an upward normal changed nothing. That edit was reverted.
+  - *Not caustics.* With `causticsStrength = 0` the shallows are slightly
+    brighter (mean RGB 190/209/202 → 197/220/213), because caustics modulate
+    rather than add.
+  - *The real cause.* The seabed relight (`water-shader.glsl`, the
+    `refractedLight *= (sunDown * NdotL_seabed ...)` line) deliberately has no
+    1/π. The comment dates from 2026-05-16: dividing erased the seabed against
+    the inscatter in clean deep water. Foam is lit as energy-conserving Lambert
+    WITH 1/π, so sand seen through thin water is lit about π× brighter than foam.
+    The breaker foam reads grey against the shallows, and the shallows read milky.
+  - *Measured* (tonemapped, one frame): dry sand is 214/204/191; sand under
+    shallow water is 170/210/199, just as bright as dry sand. Wet, submerged sand
+    should be clearly darker (lower albedo, surface Fresnel loss, absorption).
+  - **Decision for Dante.** Put 1/π back on the seabed relight (physical, and
+    consistent with foam), compensating the deep-water case another way. Or keep
+    the fudge and lift foam instead. **Dante chose physical** ("I think we poked
+    it once before").
+  - **Done.** 1/π is now on the direct-sun term of both the seabed branch and
+    the above-water terrain-through-refraction branch. Sky ambient stays without
+    1/π, since a uniform sky of radiance L delivers E = πL. The 2026-05-16 history
+    is kept in the comment.
+  - **Headless before/after** (frozen breakers, tonemapped means):
+
+    | Region | Before | After |
+    | --- | --- | --- |
+    | Sand under shallow water | 156/205/194 | 111/164/162 |
+    | Dry sand (control) | 214/204/191 | unchanged |
+    | Beach view | 186/204/194 | 160/181/175 |
+    | Mid-depth view (~5 m) | 84/153/150 | 85/138/143 |
+    | Deep view (~10 m, the depth cap) | 84/146/146 | 86/137/143 |
+
+  - **Result.** The shallows are no longer milky, and foam and swash read white
+    against the water. On this world the 5–10 m views dim only slightly (inscatter
+    dominates), so the seabed is not erased. ⚠ Still worth checking in scenes with
+    deeper, clearer water (islands.html, lake-ocean.html), which is where the old
+    fudge came from. Needs create-shader.py. **Dante, after the regen: "Looking awesome" (2026-09-13).**
+- **Square foam outlines inland: not reproducible after tuning pass 2.**
+  - *Test.* A GPU scan counted breaker foam > 0.3 on texels that the 4 m field
+    calls land (isolated wet pockets). It covered 512 m windows over the oval,
+    steep and long islands, at 5 times each: 0 texels.
+  - *Beach control.* The same scan found 8–16 k foam texels along the real
+    shores.
+  - *Likely explanation.* The phase-consistency gate already removes pocket
+    breakers.
+  - *Status.* A pocket-fade guard was written and then reverted, because there
+    was nothing left for it to fix. Dante to re-check.
+- **Sand through the backwash.** Dante's reading: no foam rolls back with the
+  drawdown, so bare sand shows. A backwash foam/turbidity term is a candidate.
+  On rocky bottoms the particles would differ, which is a texture and shader
+  question.
+- **Idea logged (Dante).** Nearby caustics driven by the actual rendered surface
+  height instead of the scrolling texture, if cheap enough.
+
+### Step 3 — breaker spray (written, headless-verified; JS only, no regen)
+
+- **Height bake channels** (`height-readback-pass.js`). The bake now unrolls
+  `shoreBreakerHeightAt` so it can also write:
+  - `.g`: breaker foam (~1 on the breaking front, gone within ~1/14 cycle behind it);
+  - `.b`: shoreward direction, atan2 of −∇s;
+  - `.a`: breaker crest above the level.
+
+  `.r` height is unchanged. `sampleBreakerSpray(x, z)` and the global
+  `ARestlessOcean.sampleBreakerSprayFFT` read them, nearest texel, from the
+  current snapshot.
+- **`OceanSplash._emitBreakers`** runs next to `_emitShore`.
+  - It scans the bake's 2 m grid within 120 m (camera-front bias, thinned beyond
+    50 m).
+  - Cells with breaker foam > 0.5 fire `emitImpact` along the crest line, leaning
+    shoreward, at a Torricelli jet on the crest (v = 1.2·√(2g·crest)).
+  - The count scales with how far the foam is above the threshold.
+  - Knobs: `breakerSprayEnabled`, `breakerCountScale` (0.15), `breakerJetScale`,
+    `breakerForward`, `breakerSprayThreshold`, `breakerScanRadius`,
+    `breakerSheetSpan`.
+- **Verified headless** (oval east beach):
+  - The bake shows 466 front texels and 7 240 foam texels, max crest 1.2 m.
+  - Mean live particles rise from 1.2–1.4 k to 3.7–3.8 k (max 5.2 k of the
+    24 k pool).
+  - With 8× the count, the spray sheets sit on the breaker lines in the surf zone
+    and blow onshore with the 8 m/s wind.
+- **Replaced by this:** the plan's "`.g`/`.b` = shoreSDF/Kr for `_emitShore`".
+  `_emitShore`'s terrain-contact sheet stays as it was. It already rides the
+  breakers and swash through the bake's `.r`.
+
+### Tuning pass 4 — white edge when rising; round sun blob on shore water (written; needs create-shader.py)
+
+- **Round sun blob (browser round 4), fixed.**
+  - *Cause.* WaveMask weighs a whole cascade by its longest wavelength, so in
+    centimetres of water C4/C5 go to ~0, and over dry texels the swash covers the
+    weights are exactly 0. The sheet was a perfect mirror, and the Phong sun lobe
+    (exponent 275, half-width ~4°, boost 7) drew a soft disc on it.
+  - *Fix* (fragment, normals only). C4/C5 get a 0.5 weight floor on the swash
+    sheet and fading out by 1.5 m depth, when breakers are on. Real swash and
+    shallows are never glassy: the short ripples and bore turbulence are local,
+    not depth-limited swell.
+  - *Headless* (frozen breakers, 3 times × 2 angles): every frame that showed
+    the blob now shows sparkle.
+- **White edge growing as the camera rises, changed but NOT reproduced headless.**
+  - *Suspected cause.* The thin-sheet foam compared the surface to the foam
+    ortho's terrain height (~4 m texels, follows the camera), and the old
+    `shoreFade` heuristic did the same, which is why Dante had seen a version
+    of it before.
+  - *Change.* The thin-sheet foam now measures thickness against the refraction
+    G-buffer's per-pixel ground point (along the refracted ray), placed after
+    `pointXYZ` is built.
+  - *Test.* The white edge did not appear in the before or after frames at
+    12 m and 30 m. **Dante to re-check.**
+- **White edge — ROOT CAUSE FOUND, browser round 5: a one-frame camera lag in
+  the whole ocean.**
+  - *Dante's clue.* It appears only while the camera moves (worst when rising)
+    and clears when it stops.
+  - *Reproduced headless* by holding the real E key through CDP, so the page's
+    fly-controls moved the rig in its normal tick. With debug mode 5 (refraction),
+    the white band grew from 8 k to 38 k pixels while moving. The thin-sheet foam
+    and a-land's morph catch-up (`morphCatchupMs` → 1) were both ruled out.
+  - *Trace.* Each frame, the G-buffer's camera Y (`inverseViewMatrix`) equalled
+    the main render's camera Y from the frame BEFORE (12.25/12.47, 12.47/12.64, …).
+    The call trace per frame was `ocean-tick(G-buffer render) → fly-controls →
+    main render`.
+  - *Why.* A-Frame 1.7 `callComponentBehaviors` ticks by component type in
+    REGISTRATION order (`scene.componentOrder`), not DOM order, and ticks systems
+    after all components. `ocean-state` registers with the ocean scripts in
+    `<head>`, so any camera controller registered later ticks after it.
+  - *Fix* (`ocean-state.js`). An `ocean-state` SYSTEM now drives
+    `oceanGrid.tick(time)` for every registered ocean component. A system tick
+    runs after every component tick and before the render. The component
+    registers and unregisters itself.
+  - *Verified.* While moving, G-buffer camera Y == render camera Y on every
+    frame, and the climbing frames show no white band.
+  - *Side effect.* Components that read ocean state in their own tick
+    (`buoyant`, splash consumers) now see it from the previous frame's ocean tick.
+    The height snapshot is 15 Hz anyway. JS only, so no regen.
+
+### Closing 3a (2026-09-13)
+
+- **Shallow colour from true depth (the old step 4) is already in place.** The
+  unified distance-depth model's `verticalDepth` is the real surface-to-seabed
+  thickness from the refraction G-buffer. `shoreFade` survives only as the fallback
+  when breakers are off.
+- **Parked, not scheduled:**
+  - spray by breaker class (plunging splash-up; offshore wind stripping spray off
+    the crests);
+  - backwash foam and turbidity (sand patches during drawdown; rocky-bottom
+    particles);
+  - caustics from the rendered surface height nearby.
+- **Next: Phase 3b (shore reflection)**, in a new session. Start from
+  `NEARSHORE-WAVES.md` § 8 (3b) and § 5.4 (the reflection-only emitter spike, with
+  the harness in `research/nearshore-spike/`). Its first task is to verify oblique
+  incidence in 2D.
+- **Budgets and hooks 3b inherits from 3a:**
+  - The water program is at ~28/32 samplers, and 3b adds 1.
+  - Varyings are at 16/16, so 3b's normals must come from fragment finite
+    differences.
+  - The height bake's `.g`/`.b`/`.a` are now taken (breaker foam, shoreward
+    direction, crest). Put the reflected height into `.r` and find another
+    channel for Kr.
+  - `ShoreBreaker` already computes ξ, Kr (Battjes) and the smooth shore normal
+    (`shoreBreakerSmoothGrad`), and the ocean-state system tick ordering is fixed.
+
+### Next (3a step 4, superseded; see Closing 3a)
+
+- **Splash.** The `_emitShore` breaker trigger, reading shoreSDF and Kr from the
+  height bake's spare `.g`/`.b` channels.
+- **Colour.** Shallow colour from the true water-column depth.
+
+---
+
 ## Phase 3.0 — nearshore wave dynamics investigation — **done** (research run, 2026-09-12)
 
 Branch `phase-3.0-nearshore`, off `multi-water-types` at `189b06a`. The deliverable is

@@ -775,6 +775,42 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
   //Per-cascade wave weights at (x, z) into out6. Installed on the analytic twin
   //as its maskProvider (_syncWaveFieldSeam), and read by the submersion probe.
+  //═══════════════════════════════════════════════════════════════════════════
+  // SHORE BREAKERS (Phase 3a)
+  //═══════════════════════════════════════════════════════════════════════════
+  //Sea state for ARestlessOcean.ShoreBreaker, rebuilt once per frame and pushed
+  //to the water material, the CSM caster and the height bake alike.
+  //
+  //On only with a-faraway-land by default. Standalone, the field's shore
+  //distance is jump-flooded from the foam ortho's depth, and that capture sees
+  //boats, docks and anything else on the water as land: a hull would grow its
+  //own ring of breakers. `shoreBreakersStandalone = true` overrides it for
+  //scenes with no floating geometry.
+  this.shoreBreakersEnabled = true;
+  this.shoreBreakersStandalone = false;
+  this.shoreBreakerFoamGain = 1.0;
+  this.shoreBreakerHeightScale = 1.0;
+  this._shoreBreakerTime = 0.0;
+  this._shoreBreakerParams = null;
+  this.shoreBreakerParams = function(){
+    const lib = self.oceanHeightBandLibrary;
+    if(!lib) return null;
+    const cam = self.globalCameraPosition;
+    const composer = self.oceanHeightComposer;
+    self._shoreBreakerParams = ARestlessOcean.ShoreBreaker.paramsFrom(lib, {
+      enabled: self.shoreBreakersEnabled && (self._terrainProvider === 'a-faraway-land' || self.shoreBreakersStandalone),
+      windX: self.windVelocity.x, windZ: self.windVelocity.y,
+      time: self._shoreBreakerTime,
+      heightMultiplier: composer ? composer.waveHeightMultiplier : 1.0,
+      seaLevel: self.heightOffset,
+      depthCap: self._waterFieldDepthCap(),
+      cameraX: cam.x, cameraY: cam.y, cameraZ: cam.z,
+      foamGain: self.shoreBreakerFoamGain,
+      heightScale: self.shoreBreakerHeightScale
+    }, self._shoreBreakerParams);
+    return self._shoreBreakerParams;
+  };
+
   this.waveMasksAt = function(x, z, out6){
     out6 = out6 || [1, 1, 1, 1, 1, 1];
     const p = self._waveMaskParams || self.waveMaskParams();
@@ -833,12 +869,19 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       .replace(/\$horizon_skirt/g, skirt ? '1' : '0')
       //Phase 2: the shared WaveMask GLSL (ocean-wave-field.js). A function
       //replacement, so a `$` in the GLSL could never be read as a pattern.
-      .replace('$wave_mask_functions', function(){ return ARestlessOcean.WaveMask.GLSL; });
+      .replace('$wave_mask_functions', function(){ return ARestlessOcean.WaveMask.GLSL; })
+      //Phase 3a: the shared ShoreBreaker GLSL (ocean-wave-field.js).
+      .replace('$shore_breaker_functions', function(){ return ARestlessOcean.ShoreBreaker.GLSL; });
+  }
+  //The fragment carries the same ShoreBreaker splice (normals, foam, debug).
+  function buildFragmentShader(atmEnabled, atmFunctions){
+    return ARestlessOcean.Materials.Ocean.waterMaterial.fragmentShader(self.causticsEnabled, self.foamEnabled, atmEnabled, atmFunctions)
+      .replace('$shore_breaker_functions', function(){ return ARestlessOcean.ShoreBreaker.GLSL; });
   }
   const vertexShaderSource = buildVertexShader(atmosphereReady, false);
   this.oceanMaterial = new THREE.ShaderMaterial({
     vertexShader: vertexShaderSource,
-    fragmentShader: ARestlessOcean.Materials.Ocean.waterMaterial.fragmentShader(this.causticsEnabled, this.foamEnabled, atmosphereReady, this.atmosphereFunctionsGLSL),
+    fragmentShader: buildFragmentShader(atmosphereReady, this.atmosphereFunctionsGLSL),
     side: THREE.FrontSide,
     transparent: false,
     lights: false,
@@ -862,6 +905,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //they feed, rather than in the template, so the three consumers (this
   //material, the CSM caster, the height bake) share one declaration.
   Object.assign(this.oceanMaterial.uniforms, ARestlessOcean.WaveMask.createUniforms());
+  //Phase 3a ShoreBreaker uniforms, declared next to their GLSL for the same reason.
+  Object.assign(this.oceanMaterial.uniforms, ARestlessOcean.ShoreBreaker.createUniforms());
   this.oceanMaterial.uniforms.sizeOfOceanPatch.value = this.patchSize;
 
   //Ocean-only cascaded shadow map, orchestrated by
@@ -1834,10 +1879,14 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
     //Phase 2 wave-mask parameters, once per frame (wind can change at runtime).
     const waveMaskParams = self.waveMaskParams();
+    //Phase 3a breaker sea state, on the same clock as the water material's `t`.
+    self._shoreBreakerTime = time * 0.001;
+    const shoreBreakerParams = self.shoreBreakerParams();
 
     for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
       const uniformsRef = oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms;
       ARestlessOcean.WaveMask.writeUniforms(uniformsRef, waveMaskParams);
+      if(shoreBreakerParams) ARestlessOcean.ShoreBreaker.writeUniforms(uniformsRef, shoreBreakerParams);
       for(let c = 0; c < 6; c++){
         uniformsRef.cascadeDisplacementTextures.value[c] = self.oceanHeightComposer.cascadeDisplacementTextures[c];
       }
@@ -1997,9 +2046,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           if(!self.atmosphereFunctionsGLSL){
             self.atmosphereFunctionsGLSL = luts.atmosphereFunctionsString;
             //Recompile all cloned materials on each ocean patch instance
-            const newFragShader = ARestlessOcean.Materials.Ocean.waterMaterial.fragmentShader(
-              self.causticsEnabled, self.foamEnabled, true, self.atmosphereFunctionsGLSL
-            );
+            const newFragShader = buildFragmentShader(true, self.atmosphereFunctionsGLSL);
             //Build both vertex variants once via the shared helper so the
             //skirt z-clamp stays in lockstep with the regular ocean across
             //this AP-recompile path.

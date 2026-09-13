@@ -104,6 +104,12 @@ vec4 waterFieldAt(vec2 worldXZ){
   return sampleWaterFieldCascade2(worldXZ);
 }
 
+//Phase 3a ShoreBreaker (uniforms, shoreBreakerEval, shoreBreakerActive): spliced
+//from ARestlessOcean.ShoreBreaker.GLSL in ocean-wave-field.js by ocean-grid.js,
+//the same chunk the vertex, the CSM caster and the height bake use. After
+//waterFieldAt, which it calls. Bare token so the min build cannot strip it.
+$shore_breaker_functions
+
 //uniform vec3 cameraDirection;
 uniform float sizeOfOceanPatch;
 uniform int ringIndex;
@@ -1428,8 +1434,28 @@ void main(){
   //dry: the cut sits a texel inland of the shoreline, under the terrain, rather
   //than half a texel seaward of it where it would show seabed. Not gated on
   //underwaterFactor: the ceiling has no water over dry land either.
-  if(waterFieldAt(worldPosition.xz).a > 0.999){
+  //
+  //Phase 3a swash: EXCEPT inside the band the run-up can reach. There the sheet
+  //is a flat surface at rest level plus the swash height, and where the beach is
+  //higher than the sheet the depth test hides it, which is what draws the moving
+  //waterline. shoreSwashCovers only pays extra taps within ~60 m of a shore.
+  vec4 dryTestField = waterFieldAt(worldPosition.xz);
+  if(dryTestField.a > 0.999 && !shoreSwashCovers(worldPosition.xz, dryTestField)){
     discard;
+  }
+  //Phase 3a: a ripple floor for the two smallest cascades in very shallow water and
+  //on the swash sheet (normals only; the geometry is untouched).
+  //WaveMask weighs a whole cascade by its LONGEST wavelength, so in a few
+  //centimetres of water C4/C5 go to ~0. Over dry texels that the swash covers, the
+  //weights are exactly 0 (dry). The sheet was then a perfect mirror, and the wide
+  //Phong sun lobe drew a soft round blob on it (browser round 4). Real swash and
+  //shallow water are never glassy: the short ripples and the bore turbulence are
+  //local, not depth-limited swell.
+  if(shoreBreakerEnabled > 0.5){
+    const float SHALLOW_RIPPLE_FLOOR = 0.5;
+    float shallowRipple = SHALLOW_RIPPLE_FLOOR * (dryTestField.a > 0.5 ? 1.0 : 1.0 - smoothstep(0.3, 1.5, dryTestField.g));
+    waveMask4 = max(waveMask4, shallowRipple);
+    waveMask5 = max(waveMask5, shallowRipple);
   }
   float distanceToWorldPosition = distance(worldPosition.xyz, cameraPosition.xyz);
 
@@ -1580,6 +1606,62 @@ void main(){
   c5NativeHeightSlope *= waveHeightMultiplier;
   lostSlopeVar *= waveHeightMultiplier * waveHeightMultiplier;
 
+  //── Phase 3a: shore breakers (ShoreBreaker) ─────────────────────────────
+  //The vertex stage lifts the geometry; here the same function is evaluated at
+  //this fragment and at two half-metre neighbours for its slope, so the breaker
+  //faces light correctly and the foam lands on the breaking front. Not faded by
+  //distance like the geometry: normals and foam are per pixel, so a far coast
+  //still shows its white lines. One-sided differences reuse the three field taps
+  //for the shore normal as well.
+  float breakerEta = 0.0;
+  float breakerFoam = 0.0;
+  float breakerBreaking = 0.0;
+  float breakerXi = 0.0;
+  float swashFoam = 0.0;
+  float swashReach = -1.0;
+  vec2 breakerSlope = vec2(0.0);
+  {
+    vec4 bField = waterFieldAt(vWorldXZ);
+    bool bBreakerOn = shoreBreakerActive(bField);
+    bool bSwashOn = shoreSwashActive(bField);
+    if(bBreakerOn || bSwashOn){
+      const float BREAKER_EPS = 0.5;
+      vec4 bFieldX = waterFieldAt(vWorldXZ + vec2(BREAKER_EPS, 0.0));
+      vec4 bFieldZ = waterFieldAt(vWorldXZ + vec2(0.0, BREAKER_EPS));
+      //Shore normal from the smooth 4 m field (see ShoreBreaker.NORMAL_STEP).
+      //xy: shore-distance gradient (normal), zw: depth gradient (phase consistency).
+      vec4 bGrad = shoreBreakerSmoothGrad(vWorldXZ);
+      float unusedFoam;
+      float unusedBreaking;
+      float unusedXi;
+      float unusedReach;
+      vec4 bPhase = shoreBreakerPhaseField(vWorldXZ);
+      vec4 bPhaseX = shoreBreakerPhaseField(vWorldXZ + vec2(BREAKER_EPS, 0.0));
+      vec4 bPhaseZ = shoreBreakerPhaseField(vWorldXZ + vec2(0.0, BREAKER_EPS));
+      float breakerEtaX = 0.0;
+      float breakerEtaZ = 0.0;
+      if(bBreakerOn){
+        breakerEta = shoreBreakerEval(vWorldXZ, bField, bPhase, bGrad, breakerFoam, breakerBreaking, breakerXi);
+        breakerEtaX = shoreBreakerEval(vWorldXZ + vec2(BREAKER_EPS, 0.0), bFieldX, bPhaseX, bGrad, unusedFoam, unusedBreaking, unusedXi);
+        breakerEtaZ = shoreBreakerEval(vWorldXZ + vec2(0.0, BREAKER_EPS), bFieldZ, bPhaseZ, bGrad, unusedFoam, unusedBreaking, unusedXi);
+      }
+      //The swash sheet rides the same slope and normal path as the breaker.
+      if(bSwashOn){
+        breakerEta += shoreSwashEval(vWorldXZ, bField, bPhase, bGrad, swashReach, swashFoam);
+        breakerEtaX += shoreSwashEval(vWorldXZ + vec2(BREAKER_EPS, 0.0), bFieldX, bPhaseX, bGrad, unusedReach, unusedFoam);
+        breakerEtaZ += shoreSwashEval(vWorldXZ + vec2(0.0, BREAKER_EPS), bFieldZ, bPhaseZ, bGrad, unusedReach, unusedFoam);
+      }
+      breakerSlope = vec2(breakerEtaX - breakerEta, breakerEtaZ - breakerEta) / BREAKER_EPS;
+    }
+  }
+  rawDdx.y += breakerSlope.x;
+  rawDdz.y += breakerSlope.y;
+  //macroSlope below re-applies waveHeightMultiplier to cascade 0's slope; the
+  //breaker slope is already in metres per metre, so divide it back out. The
+  //breaker is the swell near a shore, which is exactly what the macro normal
+  //(specular orientation) is meant to follow.
+  cascade0HeightSlope += breakerSlope / max(waveHeightMultiplier, 0.0001);
+
   //Jacobian: detect surface folds — still used for inscatter modulation and normal blending
   vec2 foamDdx = -chop * rawDdx.xz;
   vec2 foamDdz = -chop * rawDdz.xz;
@@ -1680,9 +1762,14 @@ void main(){
     //turbulence boost is needed. The shore branch still adds its turbulence-
     //driven boost on top for the breaker-line near terrain.
     foamAmount = fftFoamAmount;
+    //Phase 3a: foam on the breaking front and the bore behind it, scaled by the
+    //dissipated fraction 1 - Kr^2 (see ShoreBreaker). Replaces the shoreFade
+    //heuristic below whenever breakers are on; the heuristic stays as the
+    //fallback for standalone scenes, where breakers are off.
+    foamAmount = max(foamAmount, max(breakerFoam, swashFoam));
     vec2 foamPosition = 0.5 * (((worldPosition.xz - foamCameraXZ) / vec2(FOAM_ORTHO_HALF_WIDTH)) + 1.0);
     foamPosition = vec2(foamPosition.x, 1.0 - foamPosition.y);
-    if(foamPosition.x < 1.0 && foamPosition.x > 0.0 && foamPosition.y < 1.0 && foamPosition.y > 0.0){
+    if(shoreBreakerEnabled < 0.5 && foamPosition.x < 1.0 && foamPosition.x > 0.0 && foamPosition.y < 1.0 && foamPosition.y > 0.0){
       vec2 foamHeightData = texture2D(foamRenderMap, foamPosition).ga;
       if((foamHeightData.y > 0.5)){
         //Shore-zone foam: gated by wave action, not a static shallow-water belt.
@@ -1797,6 +1884,20 @@ void main(){
   vec4 viewPos = inverseProjectionMatrix * clipPos;
   viewPos /= viewPos.w;
   vec3 pointXYZ = (inverseViewMatrix * viewPos).xyz;
+
+  //Phase 3a swash: bubbles where the sheet is thin (the leading edge of the uprush
+  //and the draining film). Thickness is measured against the refraction G-buffer's
+  //own ground point, per pixel. It used to use the foam ortho's terrain height,
+  //which is ~4 m per texel and follows the camera, so on a gentle beach the 25 cm
+  //band became metre-wide white steps that grew as the camera rose (browser
+  //round 4). Along the refracted ray rather than straight down, which is close
+  //enough on a sheet this thin.
+  #if($foam_enabled)
+    if(underwaterFactor < 0.5 && shoreBreakerEnabled > 0.5 && swashReach > 0.0 && refractionDepthLinear < cameraNearFar.y * 0.99){
+      float sheetThickness = worldPosition.y - pointXYZ.y;
+      foamAmount = max(foamAmount, 0.8 * shoreBreakerFoamGain * (1.0 - smoothstep(0.0, 0.25, sheetThickness)));
+    }
+  #endif
 
   //Unified distance-depth model — no isDeepWater branch.
   //  verticalDepth:   real water-column thickness (surface Y - seabed Y) when
@@ -2069,17 +2170,21 @@ void main(){
     #endif
 
     vec3 ambientUW = skyAmbientColor * waterAlbedo;
-    //Pragmatic seabed scale: no /pi here even though strict Lambertian
-    //convention would apply one (L = albedo * E * NdotL / pi). The /pi
-    //belongs on inscatterEquilibrium (see :1147) because THAT term was
-    //over-driving the surface; the seabed already barely beats the bright
-    //inscatter in clean ocean (rocks dim relative to equilibrium in G/B),
-    //so dividing it further erased it in mode 0 and made it visible only
-    //in shallow water during the 2026-05-16 mode-5 + x10 diagnostic. We
-    //accept the unit inconsistency between the two body terms: /pi where
-    //it dims an over-bright term, no /pi where doing so would erase a
-    //term that already reads as a small lift over equilibrium.
-    refractedLight *= (sunDown * NdotL_seabed * causticMod * seabedShadowFactor + ambientUW);
+    //Lambertian seabed: L = albedo * E * NdotL / pi for the direct sun, the
+    //same units the foam plate uses (INV_PI below). The sky ambient needs no
+    ///pi: a uniform sky of radiance L_sky delivers E = pi * L_sky, so the pi
+    //cancels.
+    //
+    //HISTORY. This used to carry no /pi on purpose ("pragmatic seabed scale",
+    //2026-05-16): dividing erased the seabed against the bright inscatter in
+    //clean deep water. Phase 3a, tuning pass 3 (2026-09-13), put it back. The
+    //shallows over a beach were lit pi times brighter than the foam next to
+    //them. Sand under a few centimetres of water measured as bright as dry sand
+    //(submerged sand should be clearly darker), and breaker foam read grey
+    //against milky shallows. If deep clear water loses its seabed again,
+    //compensate THERE (inscatter or extinction), not with a unit mismatch here.
+    const float SEABED_INV_PI = 0.31830988618;
+    refractedLight *= (SEABED_INV_PI * sunDown * NdotL_seabed * causticMod * seabedShadowFactor + ambientUW);
   }
   else if(!isFarPlane){
     //Above-water terrain visible through wave distortion / grazing-angle
@@ -2097,7 +2202,10 @@ void main(){
       vec4 terrainShadowCoord = sunShadowMatrix * vec4(pointXYZ, 1.0);
       terrainShadowFactor = getSunShadow(terrainShadowCoord);
     }
-    refractedLight *= (brightestDirectionalLight * NdotL_terrain * terrainShadowFactor + skyAmbientColor);
+    //Lambertian direct sun (/pi), same convention as the seabed branch above and
+    //the foam plate: Phase 3a tuning pass 3.
+    const float TERRAIN_INV_PI = 0.31830988618;
+    refractedLight *= (TERRAIN_INV_PI * brightestDirectionalLight * NdotL_terrain * terrainShadowFactor + skyAmbientColor);
   }
   //DEBUG snapshots (read by oceanShadowDebugMode 5..10 at bottom of shader).
   //dbgRawRefraction here is post-seabed-relight (since we already passed the
@@ -2978,6 +3086,23 @@ void main(){
       dbgCol.b *= (1.0 - dbgOver);
       gl_FragColor = vec4(clamp(dbgCol, 0.0, 1.0), 1.0);
     }
+  }
+
+  //Phase 3a ShoreBreaker debug views.
+  //Mode 60: breaker class by surf similarity xi (Battjes bands) where a breaker
+  //         exists: green spilling (xi < 0.5), yellow plunging (< 3.3), red
+  //         surging. Brighter where the wave is breaking right now; white = foam.
+  //         Dark blue = no breaker layer (deep water, land, lee of the wind).
+  //Mode 61: breaker height alone, grey = 0, white = +1 m, black = -1 m; red
+  //         where breaking.
+  else if(oceanShadowDebugMode == 60){
+    vec3 dbgCls = breakerXi < 0.5 ? vec3(0.15, 0.8, 0.3) : (breakerXi < 3.3 ? vec3(0.95, 0.8, 0.2) : vec3(0.9, 0.2, 0.2));
+    vec3 dbgCol = breakerXi > 0.0 ? dbgCls * (0.35 + 0.65 * breakerBreaking) : vec3(0.02, 0.05, 0.2);
+    gl_FragColor = vec4(mix(dbgCol, vec3(1.0), breakerFoam), 1.0);
+  }
+  else if(oceanShadowDebugMode == 61){
+    vec3 dbgCol = vec3(clamp(0.5 + 0.5 * breakerEta, 0.0, 1.0));
+    gl_FragColor = vec4(mix(dbgCol, vec3(1.0, 0.1, 0.1), 0.5 * breakerBreaking), 1.0);
   }
 
   //Debug overlays — only drawn when oceanShadowDebugMode is non-zero. Bottom-

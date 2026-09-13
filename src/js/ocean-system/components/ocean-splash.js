@@ -153,6 +153,20 @@ ARestlessOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
                                  //more dramatic spray off tall cliffs (the 2 m FFT
                                  //field SMOOTHS crest height, so the physical jet runs
                                  //a touch conservative — a small boost reads truer).
+  //Breaker spray (Phase 3a). Fired off the breaking FRONT of the shore breakers, read
+  //from the height bake's breaker-foam channel (ARestlessOcean.sampleBreakerSprayFFT),
+  //so the spray sits on the white line the water shader draws rather than wherever
+  //terrain happens to meet the waterline.
+  this.breakerSprayEnabled = true;
+  this.breakerScanRadius = 120.0;   //m around the camera.
+  this.breakerGridStep = 2.0;       //m: the bake's texel, so every texel is visited once.
+  this.breakerNearRadius = 50.0;    //m: inside this every firing cell counts; beyond it thinned.
+  this.breakerFarKeep = 0.3;        //prob a far cell is still considered.
+  this.breakerSprayThreshold = 0.5; //breaker foam needed: > ~0.5 is the front itself.
+  this.breakerCountScale = 0.15;    //particles-per-cell multiplier (like shoreCountScale). Live: window.oceanSplash.breakerCountScale.
+  this.breakerJetScale = 1.2;       //launch v = scale * sqrt(2 g crest). 1 = Torricelli on the crest.
+  this.breakerForward = 0.8;        //shoreward lean of the launch cone (0 = straight up, 1 = 45°).
+  this.breakerSheetSpan = 2.5;      //m: smear each cell's burst along the crest line.
   this.impactBurstPerSpeed = 6.0;//particles per m/s of impact speed (FUDGE).
   this.impactMinBurst = 4;
   this.impactMaxBurst = 60;
@@ -933,6 +947,46 @@ ARestlessOcean.OceanSplash.prototype._emitShore = function(field, t, camX, camZ,
   }
 };
 
+//Spray off the shore breakers' fronts (Phase 3a). Each 2 m cell of the rendered
+//height bake carries the breaker foam, which is ~1 right on the breaking front and
+//gone a few metres behind it, so thresholding it finds the lip of every breaking
+//wave. A firing cell launches a short sheet ALONG the crest (perpendicular to the
+//shoreward direction), leaning shoreward, at a Torricelli jet on the crest height:
+//a 1 m crest throws ~4.4 m/s. Bigger surf therefore throws taller spray, and the
+//emitImpact count already scales with that speed.
+ARestlessOcean.OceanSplash.prototype._emitBreakers = function(field, t, camX, camZ, fwdX, fwdZ){
+  if(!this.breakerSprayEnabled || !ARestlessOcean.sampleBreakerSprayFFT) return;
+  const step = this.breakerGridStep;
+  const r = this.breakerScanRadius;
+  const nearR2 = this.breakerNearRadius * this.breakerNearRadius;
+  const maxD2 = Math.min(r * r, this.maxEmitDistance * this.maxEmitDistance);
+  const thr = this.breakerSprayThreshold;
+  const b = this._breakerScratch || (this._breakerScratch = {spray: 0, dirX: 0, dirZ: 0, crest: 0});
+  //Snap the scan to the bake's texel grid (plus a sub-texel jitter) so cells do
+  //not alias against it and fire in a static lattice.
+  const ox = Math.floor(camX / step) * step + (Math.random() - 0.5) * step;
+  const oz = Math.floor(camZ / step) * step + (Math.random() - 0.5) * step;
+  for(let gx = -r; gx <= r; gx += step){
+    for(let gz = -r; gz <= r; gz += step){
+      const x = ox + gx, z = oz + gz;
+      const dx = x - camX, dz = z - camZ;
+      const d2 = dx * dx + dz * dz;
+      if(d2 > maxD2) continue;
+      const dist = Math.sqrt(d2);
+      if(dist > 1e-3 && (dx * fwdX + dz * fwdZ) / dist < this.shoreFrontBias) continue;
+      if(d2 > nearR2 && Math.random() > this.breakerFarKeep) continue;
+      if(!ARestlessOcean.sampleBreakerSprayFFT(x, z, b)) continue;
+      if(b.spray <= thr || b.crest <= 0.0) continue;
+      const strength = (b.spray - thr) / Math.max(1e-3, 1.0 - thr);
+      const h0 = this._surfaceHeight(field, x, z, t);
+      const jet = this.breakerJetScale * Math.sqrt(2.0 * this.gravity * b.crest);
+      const f = this.breakerForward;
+      this.emitImpact(x, h0 + 0.1, z, b.dirX * f, 1.0, b.dirZ * f, jet,
+        -b.dirZ, b.dirX, this.breakerSheetSpan, this.breakerCountScale * strength);
+    }
+  }
+};
+
 //$DEBUG_START$
 //Lazily build the debug surface-probe ball. It is a CHILD of the splash points
 //mesh (which sits at the origin and is never transformed), so it inherits that
@@ -1068,6 +1122,8 @@ ARestlessOcean.OceanSplash.prototype.tick = function(ctx){
     if(this.impactEnabled){
       this._emitShore(field, field.currentTimeSeconds, ctx.camX, ctx.camZ,
                       ctx.camFwdX || 0.0, ctx.camFwdZ || 1.0);
+      this._emitBreakers(field, field.currentTimeSeconds, ctx.camX, ctx.camZ,
+                         ctx.camFwdX || 0.0, ctx.camFwdZ || 1.0);
     }
   }
 

@@ -81,6 +81,12 @@ ARestlessOcean.Passes.HeightReadbackPass = function(oceanGrid){
   this._probePending = false;
   this._probeBuf0 = null;
   this._probeBuf1 = null;
+  //Phase 3a: a 1-texel GPU evaluation of the shore breaker + swash at the camera,
+  //read back with the two cascade texels (see _renderBreakerProbe).
+  this._breakerProbeBuf = null;
+  this._breakerProbeRT = null;
+  this._breakerProbeScene = null;
+  this._breakerProbeMaterial = null;
   this._surfaceProbeBuffer = null;
 };
 
@@ -118,15 +124,43 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
     'uniform float hfRegionSize;',
     fieldReady ? ARestlessOcean.Passes.WaterFieldPass.SAMPLE_GLSL : '',
     fieldReady ? ARestlessOcean.WaveMask.GLSL : '',
+    fieldReady ? ARestlessOcean.ShoreBreaker.GLSL : '',
     'void main(){',
     '  vec2 worldXZ = hfRegionOrigin + vHfUv * hfRegionSize;',
     '  vec3 hfMaskA = vec3(1.0);',
     '  vec3 hfMaskB = vec3(1.0);',
     '  float level = hfHeightOffset;',
-    fieldReady ? '  if(hfUseField > 0.5){ vec4 field = waterFieldAt(worldXZ); level = field.r; waveMaskCascades(field, hfMaskA, hfMaskB); }' : '',
+    '  float breaker = 0.0;',
+    '  float breakerSpray = 0.0;',
+    '  float breakerDir = 0.0;',
+    '  float breakerCrest = 0.0;',
+    //Phase 3a: the breakers and swash ride in the same sum, so floats and splash see
+    //them. Fade 1: the bake covers ±256 m, well inside ShoreBreaker.FADE_NEAR. This is
+    //shoreBreakerHeightAt unrolled, because the splash emitter also wants the breaker
+    //FOAM (it peaks on the breaking front), the shoreward direction and the crest.
+    //Readback layout: .r height, .g breaker foam, .b shoreward direction (atan2 of
+    //z, x; radians), .a breaker crest height above the level (no swash).
+    fieldReady ? [
+      '  if(hfUseField > 0.5){',
+      '    vec4 field = waterFieldAt(worldXZ);',
+      '    level = field.r;',
+      '    waveMaskCascades(field, hfMaskA, hfMaskB);',
+      '    bool breakerOn = shoreBreakerActive(field);',
+      '    bool swashOn = shoreSwashActive(field);',
+      '    if(breakerOn || swashOn){',
+      '      vec4 sGrad = shoreBreakerSmoothGrad(worldXZ);',
+      '      vec4 sPhase = shoreBreakerPhaseField(worldXZ);',
+      '      float sBrk; float sXi; float sReach; float sSwashFoam;',
+      '      if(breakerOn) breakerCrest = shoreBreakerEval(worldXZ, field, sPhase, sGrad, breakerSpray, sBrk, sXi);',
+      '      breaker = breakerCrest;',
+      '      if(swashOn) breaker += shoreSwashEval(worldXZ, field, sPhase, sGrad, sReach, sSwashFoam);',
+      '      breakerDir = atan(-sGrad.y, -sGrad.x);',
+      '    }',
+      '  }'
+    ].join('\n') : '',
     '  float dy = 0.0;',
     '  ' + hfSumLines,
-    '  gl_FragColor = vec4(level + dy * hfWhm, 0.0, 0.0, 1.0);',
+    '  gl_FragColor = vec4(level + dy * hfWhm + breaker, breakerSpray, breakerDir, breakerCrest);',
     '}'
   ].join('\n');
   const hfUniforms = {
@@ -142,6 +176,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
   if(fieldReady){
     Object.assign(hfUniforms, ARestlessOcean.Passes.WaterFieldPass.createSampleUniforms());
     Object.assign(hfUniforms, ARestlessOcean.WaveMask.createUniforms());
+    Object.assign(hfUniforms, ARestlessOcean.ShoreBreaker.createUniforms());
   }
   this._heightFieldMaterial = new THREE.ShaderMaterial({
     uniforms: hfUniforms,
@@ -231,6 +266,8 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.updateHeightField = function(
     const p = grid.waveMaskParams ? grid.waveMaskParams() : null;
     if(p){
       ARestlessOcean.WaveMask.writeUniforms(u, p);
+      const sbp = grid._shoreBreakerParams;
+      if(sbp) ARestlessOcean.ShoreBreaker.writeUniforms(u, sbp);
       u.hfUseField.value = 1.0;
     }
   }
@@ -285,6 +322,28 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.sampleSnapHeight = function(s
   return a + (b - a) * ty;
 };
 
+//Phase 3a: breaker state at world (x,z) from the CURRENT snapshot, nearest texel
+//(2 m). out = {spray, dirX, dirZ, crest}: spray is the breaker foam (it peaks on
+//the breaking front and decays within ~1/14 of a wave cycle behind it), (dirX,
+//dirZ) the unit shoreward direction, crest the breaker height above the rest
+//level (m). Returns null outside the snapshot or before it resolves.
+ARestlessOcean.Passes.HeightReadbackPass.prototype.sampleBreakerSpray = function(x, z, out){
+  const s = this._hfSnap;
+  if(!s) return null;
+  const uu = (x - s.originX) / s.size;
+  const vv = (z - s.originZ) / s.size;
+  if(uu < 0.0 || uu >= 1.0 || vv < 0.0 || vv >= 1.0) return null;
+  const col = Math.floor(uu * s.res), row = Math.floor(vv * s.res);
+  const i = (row * s.res + col) * 4;
+  out = out || {};
+  out.spray = s.data[i + 1];
+  const a = s.data[i + 2];
+  out.dirX = Math.cos(a);
+  out.dirZ = Math.sin(a);
+  out.crest = s.data[i + 3];
+  return out;
+};
+
 //Cheap bilinear lookup of the CURRENT field. Returns null outside the region or
 //before the first field resolves -> caller falls back to analytic.
 ARestlessOcean.Passes.HeightReadbackPass.prototype.sampleWaterHeightFieldCached = function(x, z){
@@ -327,6 +386,59 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.sampleSlope = function(x, z){
   return 1.0 - ny;
 };
 
+//── Breaker probe (Phase 3a) ───────────────────────────────────────────────
+//The submersion probe summed only the rest level and cascades 0-1, so inside a
+//surf zone it answered a surface up to a metre away from the one being drawn:
+//the air/water swap, the underwater fog plane, the caustic projector and the
+//mirror's clip plane all followed a surface without its breakers or swash
+//(Phase 3a browser round 1: "can't see the breakers from underwater", and a
+//twitchy waterline). This renders the SAME shoreBreakerHeightAt the water vertex
+//shader calls, at the camera, into a 1x1 float target, so the probe cannot
+//drift from the geometry. Fade 1: the camera is where the geometry fade is 1.
+//Returns false when there is nothing to evaluate (breakers off, no field).
+ARestlessOcean.Passes.HeightReadbackPass.prototype._renderBreakerProbe = function(){
+  const grid = this.oceanGrid;
+  const sbp = grid._shoreBreakerParams;
+  if(!this._hfFieldReady || !ARestlessOcean.ShoreBreaker || !sbp || !sbp.enabled) return false;
+  if(!grid.waterFieldPass) return false;
+  if(!this._breakerProbeMaterial){
+    const uniforms = Object.assign({probeXZ: {value: new THREE.Vector2()}},
+      ARestlessOcean.Passes.WaterFieldPass.createSampleUniforms(),
+      ARestlessOcean.ShoreBreaker.createUniforms());
+    this._breakerProbeMaterial = new THREE.ShaderMaterial({
+      uniforms: uniforms,
+      vertexShader: 'void main(){ gl_Position = vec4(position, 1.0); }',
+      fragmentShader: [
+        'precision highp float;',
+        'uniform vec2 probeXZ;',
+        ARestlessOcean.Passes.WaterFieldPass.SAMPLE_GLSL,
+        ARestlessOcean.ShoreBreaker.GLSL,
+        'void main(){',
+        '  gl_FragColor = vec4(shoreBreakerHeightAt(probeXZ, waterFieldAt(probeXZ), 1.0), 0.0, 0.0, 1.0);',
+        '}'
+      ].join('\n'),
+      depthTest: false,
+      depthWrite: false
+    });
+    this._breakerProbeScene = new THREE.Scene();
+    this._breakerProbeScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this._breakerProbeMaterial));
+    this._breakerProbeRT = new THREE.WebGLRenderTarget(1, 1, {
+      minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
+      format: THREE.RGBAFormat, type: THREE.FloatType,
+      depthBuffer: false, stencilBuffer: false, generateMipmaps: false
+    });
+  }
+  const u = this._breakerProbeMaterial.uniforms;
+  if(!grid.waterFieldPass.bindUniforms(u)) return false;
+  ARestlessOcean.ShoreBreaker.writeUniforms(u, sbp);
+  u.probeXZ.value.set(grid.globalCameraPosition.x, grid.globalCameraPosition.z);
+  const prevRT = this.renderer.getRenderTarget();
+  this.renderer.setRenderTarget(this._breakerProbeRT);
+  this.renderer.render(this._breakerProbeScene, this._heightFieldCamera);
+  this.renderer.setRenderTarget(prevRT);
+  return true;
+};
+
 //── Underwater submersion probe ────────────────────────────────────────────
 //Returns the wave-displaced water surface Y at the camera. See the module
 //header for the async-vs-blocking rationale.
@@ -349,6 +461,10 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.probeWaterSurfaceY = function
       const offsets = grid.oceanMaterial.uniforms.cascadeSpatialOffsets.value;
       const whm = composer.waveHeightMultiplier;
       const promises = [];
+      //Draw the breaker probe BEFORE issuing any async read: three r173 leaves the
+      //pixel-pack buffer bound across readRenderTargetPixelsAsync's await, so keep
+      //every draw of this pass ahead of the reads (NEARSHORE-WAVES.md § 5.7).
+      const breakerProbeDrawn = this._renderBreakerProbe();
       for(let c = 0; c < 2; ++c){
         const patch = composer._cascadePatchSizes[c];
         let u = (grid.globalCameraPosition.x + offsets[c].x) / patch;
@@ -360,13 +476,21 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.probeWaterSurfaceY = function
         const rt = composer.cascadeDisplacementTargets[c];
         promises.push(this.renderer.readRenderTargetPixelsAsync(rt, px, py, 1, 1, bufs[c]));
       }
+      //Phase 3a: breaker + swash at the camera, from the same GLSL as the geometry.
+      this._breakerProbeBuf = this._breakerProbeBuf || new Float32Array(4);
+      const breakerBuf = this._breakerProbeBuf;
+      breakerBuf[0] = 0.0;
+      if(breakerProbeDrawn){
+        promises.push(this.renderer.readRenderTargetPixelsAsync(this._breakerProbeRT, 0, 0, 1, 1, breakerBuf));
+      }
       Promise.all(promises).then(function(){
         //.y (green) channel = vertical displacement, summed over both cascades,
         //each weighed by its wave mask at the camera (Phase 2).
         const gx = grid.globalCameraPosition.x, gz = grid.globalCameraPosition.z;
         const m = grid.waveMasksAt ? grid.waveMasksAt(gx, gz, self._maskScratch) : [1, 1];
         self._probeWaterSurfaceY = grid.waterLevelAt(gx, gz)
-          + (m[0] * self._probeBuf0[1] + m[1] * self._probeBuf1[1]) * whm;
+          + (m[0] * self._probeBuf0[1] + m[1] * self._probeBuf1[1]) * whm
+          + breakerBuf[0];
         self._probePending = false;
       }).catch(function(){ self._probePending = false; });
     }
@@ -393,6 +517,10 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.probeWaterSurfaceY = function
       this.renderer.readRenderTargetPixels(rt, px, py, 1, 1, buf);
       waterSurfaceY += mask[c] * buf[1] * whm;   //.y (green) channel = vertical displacement
     }
+    if(this._renderBreakerProbe()){
+      this.renderer.readRenderTargetPixels(this._breakerProbeRT, 0, 0, 1, 1, buf);
+      waterSurfaceY += buf[0];
+    }
     this._probeWaterSurfaceY = waterSurfaceY;
   }
   return waterSurfaceY;
@@ -416,6 +544,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.installGlobalAPI = function()
   ARestlessOcean.sampleWaterHeightFFTExact = function(x, z){ return self.sampleFFTHeightAt(x, z); };
   ARestlessOcean.sampleWaterRiseFFT = function(x, z){ return self.sampleRise(x, z); };
   ARestlessOcean.sampleWaterSlopeFFT = function(x, z){ return self.sampleSlope(x, z); };
+  ARestlessOcean.sampleBreakerSprayFFT = function(x, z, out){ return self.sampleBreakerSpray(x, z, out); };
 };
 
 ARestlessOcean.Passes.HeightReadbackPass.prototype.dispose = function(){
@@ -426,6 +555,10 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.dispose = function(){
   }
   if(this._heightFieldMaterial) this._heightFieldMaterial.dispose();
   if(this._heightFieldRT) this._heightFieldRT.dispose();
+  if(this._breakerProbeMaterial) this._breakerProbeMaterial.dispose();
+  if(this._breakerProbeRT) this._breakerProbeRT.dispose();
+  this._breakerProbeMaterial = null;
+  this._breakerProbeRT = null;
   this._heightFieldRT = null;
   this._hfBufs = null;
   this._hfSnap = null;
