@@ -8,6 +8,70 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
+## Phase 3.0 — nearshore wave dynamics investigation — **done** (research run, 2026-09-12)
+
+Branch `phase-3.0-nearshore`, off `multi-water-types` at `189b06a`. The deliverable is
+[`NEARSHORE-WAVES.md`](./NEARSHORE-WAVES.md). Nothing under `src/` changed and there is
+no shader regen, so there is nothing to run.
+
+### What was produced
+
+- **`NEARSHORE-WAVES.md`** contains:
+  - the game survey (HFW, Fluid Flux, Crest 4/5, Sea of Thieves, Uncharted, UE5, wave cages, Celeris)
+  - the coastal formulas with sources (Battjes Kr, the breaker classes, Hunt and Stockdon run-up, the SWE validity table)
+  - the spike results
+  - the five-family matrix
+  - answers to all six questions
+  - the recommendation
+- **`WATER-TYPES.md`**:
+  - Phase 3.0 is marked done.
+  - Phase 3 is amended into **3a** (parametric, ξ-driven), **3b** (new shore-reflection layer) and **3c** (deferred swash SWE).
+  - The Phase 3 verification line covers reflection.
+- **`research/nearshore-spike/`** holds a scratch WebGL2 harness (`sim.html`) and a
+  headless-Chrome CDP driver (`run.mjs`). It is not bundled and not loaded by any page.
+  It is committed so every number in the doc can be re-run. Deviation: the plan said
+  scratchpad-only.
+
+### Findings worth keeping
+
+- **Classic Mei 2007 virtual pipes are depth-blind.** Their wave speed is √(g·dx), not
+  √(gh). The depth-weighted two-pipe variant loses 78% of a packet through its `max(0)`
+  clamp. A **signed flux per face** is the working primitive: exact speed, volume drift of
+  10⁻⁸.
+- **No solver reflects like Battjes by itself.**
+  - 1:20 beach: SWE 0.48, wave equation 1.0, Battjes 0.017.
+  - 30° shore: SWE 0.55–0.93, Battjes 0.76–1.
+  - A *graded* absorber brings the wave equation to 0.013. A uniform band is
+    non-monotonic because its edge reflects.
+- **The reflection-only emitter** (`Kr × incident` at the shore) matches the analytic
+  reflection to 0.8% RMS at 65 cells per wavelength. It needs ≥ ~30 cells per wavelength.
+- **Budget, Radeon iGPU (RADV):**
+  - wave equation: 0.07 / 0.24 / 0.82 ms per step at 256² / 512² / 1024²
+  - face SWE: 0.20 / 0.72 / 2.28 ms per step at the same sizes
+  - At dt 1/60 s and 1 m cells, stability holds to about 90 m depth.
+- **The `readRenderTargetPixelsAsync` "PBO collision" is a three r173 bug.** It keeps
+  `PIXEL_PACK_BUFFER` bound across its await, so any *sync* `readPixels` in that window
+  gets `INVALID_OPERATION`. Reproduced. A three-line wrapper fix is independent of
+  Phase 3.
+- **⚠ ANGLE GL-EGL over Mesa radeonsi samples RGBA32F at half-float precision.** The same
+  GPU through Vulkan is exact. Any float-state sim needs a startup self-test. Whether real
+  users or WaterField hit that path is not checked.
+
+### ⚠ Outstanding — needs Dante
+
+1. ~~Read `NEARSHORE-WAVES.md` § 8 and accept, or change, the 3a / 3b / 3c split.~~
+   **Accepted 2026-09-13.** 3c stays deferred. It gets built either here, if 3a's swash
+   sheet reads fake, or with the live rivers, whichever comes first.
+2. Decide whether a Dean-profile beach brush in a-faraway-land goes on its roadmap. It is
+   the only way this world gets rolling spilling surf, which needs about 1:8 or gentler
+   across the breaker band.
+   In the meantime Dante hand-built `a-faraway-project/island-sholes` as a gentle-beach
+   test world (1:20–1:55 near the shore). The 2026-09-13 rebuild has spilling, plunging
+   and surging shores within a few hundred metres of each other. The survey script is in
+   `island-sholes/survey/`, and the demo page is `examples/demos/island-sholes-ocean.html`.
+
+---
+
 ## Phase 2 — still water on the level field — **landed** (browser-verified 2026-09-12, merged)
 
 2026-09-12, branch `phase-2-still-water` off `multi-water-types`. **GLSL changed:
