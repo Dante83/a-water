@@ -1,0 +1,476 @@
+<html><body><pre id="out">running</pre><script>
+'use strict';
+// Phase 3.0 nearshore spike harness (NEARSHORE-WAVES.md). Raw WebGL2, no three.js.
+// Scratch research code: not bundled, not loaded by any page.
+// Modes: pipe  (Mei 2007 virtual pipes, A = dx^2 — depth-blind celerity)
+//        pipeD (two one-way pipes, depth-weighted — loses energy through the max(0) clamp)
+//        face  (signed flux per face, staggered SWE with a positivity limiter — the working one)
+//        wave  (2D linear wave equation, c^2 = g*h, Neumann at dry texels)
+// Tests: kr (1D channel reflection), scatter (reflection-only emitter), volume (closed basin),
+//        costGPU (timer-query cost per step), readback (sync vs PBO, three r173 hazard),
+//        precision (does an RGBA32F texture keep 32-bit precision when sampled?).
+// Run:   node run.mjs nvidia "test=kr&mode=face&slope=0.05&H=1"   (see NEARSHORE-WAVES.md)
+const Q = Object.fromEntries(new URLSearchParams(location.search));
+const num = (k, d) => (Q[k] !== undefined ? +Q[k] : d);
+const G = 9.81;
+
+const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
+const gl = canvas.getContext('webgl2', {antialias: false, depth: false, powerPreference: 'high-performance'});
+if(!gl.getExtension('EXT_color_buffer_float')) throw new Error('no EXT_color_buffer_float');
+const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+const RENDERER = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+
+function tex(w, h, data, fmt){
+  fmt = fmt || 'rgba';
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  if(fmt === 'r') gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, w, h, 0, gl.RED, gl.FLOAT, data || null);
+  else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, w, h, 0, gl.RGBA, gl.FLOAT, data || null);
+  for(const p of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER]) gl.texParameteri(gl.TEXTURE_2D, p, gl.NEAREST);
+  for(const p of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T]) gl.texParameteri(gl.TEXTURE_2D, p, gl.CLAMP_TO_EDGE);
+  return t;
+}
+function target(w, h, data){
+  const t = tex(w, h, data); const fb = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+  if(gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error('fbo');
+  return {t, fb};
+}
+function program(fs){
+  const vs = `#version 300 es
+  void main(){ vec2 p = vec2((gl_VertexID==1)?3.0:-1.0, (gl_VertexID==2)?3.0:-1.0); gl_Position = vec4(p,0,1); }`;
+  const mk = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s) + src); return s; };
+  const p = gl.createProgram(); gl.attachShader(p, mk(gl.VERTEX_SHADER, vs)); gl.attachShader(p, mk(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p); if(!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const u = {}; const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for(let i = 0; i < n; ++i){ const info = gl.getActiveUniform(p, i); u[info.name] = gl.getUniformLocation(p, info.name); }
+  return {p, u};
+}
+function draw(prog, fb, w, h, texes, unis){
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.viewport(0, 0, w, h); gl.useProgram(prog.p);
+  let unit = 0;
+  for(const k in texes){ gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, texes[k]); gl.uniform1i(prog.u[k], unit++); }
+  for(const k in unis){ const v = unis[k]; if(prog.u[k] === undefined) continue;
+    if(Array.isArray(v)) gl.uniform2f(prog.u[k], v[0], v[1]); else gl.uniform1f(prog.u[k], v); }
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+const COMMON = `#version 300 es
+precision highp float; precision highp int;
+uniform float dt, dx, g, swl, spongeW, spongeRate, spongeFar, absorbRamp, srcCol, srcEta, absorbDepth, absorbRate, manning, depthWeighted;
+uniform vec2 res;
+uniform sampler2D bed;
+out vec4 o;
+float B(ivec2 p){ return texelFetch(bed, clamp(p, ivec2(0), ivec2(res) - 1), 0).r; }
+bool inside(ivec2 p){ return all(greaterThanEqual(p, ivec2(0))) && all(lessThan(p, ivec2(res))); }
+// sponge: relaxation toward rest near x = 0 (the offshore boundary)
+float spongeK(ivec2 p){ float x = (float(p.x) + 0.5) * dx; float xr = (res.x - float(p.x) - 0.5) * dx;
+  float w = max(0.0, 1.0 - x / spongeW); if(spongeFar > 0.5) w = max(w, max(0.0, 1.0 - xr / spongeW));
+  return spongeW > 0.0 ? spongeRate * w * w : 0.0; }
+// absorption band: where still-water depth is below absorbDepth (the surf zone), damp at absorbRate
+float absorbK(ivec2 p){ float h = swl - B(p); if(absorbDepth <= 0.0 || h >= absorbDepth) return 0.0;
+  if(absorbRamp < 0.5) return absorbRate; float w = 1.0 - max(h, 0.0) / absorbDepth; return absorbRate * w * w; }
+`;
+
+// Pipe flux pass. state.r = water column depth d. flux rgba = to -x, +x, -y, +y.
+const FLUX = COMMON + `
+uniform sampler2D state, flux;
+float D(ivec2 p){ return texelFetch(state, p, 0).r; }
+void main(){
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  float di = D(p), bi = B(p), ei = bi + di;
+  vec4 f = texelFetch(flux, p, 0);
+  ivec2 nb[4] = ivec2[4](ivec2(-1,0), ivec2(1,0), ivec2(0,-1), ivec2(0,1));
+  vec4 nf;
+  for(int k = 0; k < 4; ++k){
+    ivec2 q = p + nb[k];
+    if(!inside(q)){ nf[k] = 0.0; continue; }
+    float bj = B(q), ej = bj + D(q);
+    float dEta = ei - ej;
+    // face depth by hydrostatic reconstruction: water above the higher bed, below the higher surface
+    float hFace = max(0.0, max(ei, ej) - max(bi, bj));
+    float A = depthWeighted > 0.5 ? dx * hFace : dx * dx;
+    float fk = f[k] + dt * g * A * dEta / dx;
+    // Manning bottom friction, semi-implicit
+    if(manning > 0.0 && hFace > 1e-4){
+      float u = abs(fk) / (dx * hFace);
+      fk /= 1.0 + dt * g * manning * manning * u / pow(max(hFace, 0.02), 4.0/3.0);
+    }
+    float damp = spongeK(p) + absorbK(p);
+    fk /= 1.0 + dt * damp;
+    nf[k] = max(0.0, fk);
+  }
+  float out_ = nf.r + nf.g + nf.b + nf.a;
+  float K = out_ > 0.0 ? min(1.0, di * dx * dx / (out_ * dt)) : 1.0;
+  o = nf * K;
+}`;
+const DEPTH = COMMON + `
+uniform sampler2D state, flux;
+vec4 F(ivec2 p){ return inside(p) ? texelFetch(flux, p, 0) : vec4(0.0); }
+void main(){
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  vec4 s = texelFetch(state, p, 0);
+  vec4 f = F(p);
+  float inflow = F(p + ivec2(-1,0)).g + F(p + ivec2(1,0)).r + F(p + ivec2(0,-1)).a + F(p + ivec2(0,1)).b;
+  float outflow = f.r + f.g + f.b + f.a;
+  float d = max(0.0, s.r + dt * (inflow - outflow) / (dx * dx));
+  // sponge relaxes the surface toward still water (volume is not conserved inside the sponge)
+  float k = spongeK(p);
+  if(k > 0.0){ float rest = max(0.0, swl - B(p)); d = mix(d, rest, 1.0 - 1.0 / (1.0 + dt * k)); }
+  o = vec4(d, s.gba);
+}`;
+// Linear wave equation. state.r = eta, state.g = deta/dt.
+const WAVE = COMMON + `
+uniform sampler2D state;
+void main(){
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  vec4 s = texelFetch(state, p, 0);
+  float h = swl - B(p);
+  if(h <= 0.0){ o = vec4(0.0); return; }
+  if(srcCol >= 0.0 && p.x >= int(srcCol)){ o = vec4(p.x == int(srcCol) ? srcEta : 0.0, 0.0, 0.0, 0.0); return; }
+  float c2 = g * h;
+  float lap = 0.0;
+  ivec2 nb[4] = ivec2[4](ivec2(-1,0), ivec2(1,0), ivec2(0,-1), ivec2(0,1));
+  for(int k = 0; k < 4; ++k){
+    ivec2 q = p + nb[k];
+    // dry or out-of-domain neighbour: mirror (Neumann, a rigid wall, full reflection without inversion)
+    float ej = (inside(q) && swl - B(q) > 0.0) ? texelFetch(state, q, 0).r : s.r;
+    lap += ej - s.r;
+  }
+  float v = s.g + dt * c2 * lap / (dx * dx);
+  float damp = spongeK(p) + absorbK(p);
+  v /= 1.0 + dt * damp;
+  float eta = s.r + dt * v;
+  eta /= 1.0 + dt * spongeK(p);
+  o = vec4(eta, v, 0.0, 0.0);
+}`;
+
+
+// Signed face flux (staggered SWE). flux.r = qx through the +x face of p, flux.g = qy through the +y face.
+// Units m^3/s. Pass 1: momentum (unlimited). Pass 2: positivity limiter. Pass 3: continuity.
+const FACE_MOM = COMMON + `
+uniform sampler2D state, flux;
+float E(ivec2 p){ return B(p) + texelFetch(state, p, 0).r; }
+float faceQ(ivec2 p, ivec2 q, float q0){
+  if(!inside(q)) return 0.0;
+  float bi = B(p), bj = B(q), ei = E(p), ej = E(q);
+  float hFace = max(0.0, max(ei, ej) - max(bi, bj));
+  if(hFace <= 1e-5) return 0.0;
+  float qn = q0 + dt * g * hFace * (ei - ej);        // per face width dx: dx * h * g * dEta/dx
+  if(manning > 0.0){
+    float u = abs(qn) / (dx * hFace);
+    qn /= 1.0 + dt * g * manning * manning * u / pow(max(hFace, 0.02), 4.0/3.0);
+  }
+  float damp = 0.5 * (spongeK(p) + spongeK(q)) + 0.5 * (absorbK(p) + absorbK(q));
+  return qn / (1.0 + dt * damp);
+}
+void main(){
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  vec4 f = texelFetch(flux, p, 0);
+  o = vec4(faceQ(p, p + ivec2(1,0), f.r), faceQ(p, p + ivec2(0,1), f.g), 0.0, 0.0);
+}`;
+const FACE_LIM = COMMON + `
+uniform sampler2D state, flux;
+vec2 Qf(ivec2 p){ return inside(p) ? texelFetch(flux, p, 0).rg : vec2(0.0); }
+float K(ivec2 p){
+  if(!inside(p)) return 1.0;
+  vec2 q = Qf(p), qxm = Qf(p - ivec2(1,0)), qym = Qf(p - ivec2(0,1));
+  float outflow = max(q.x, 0.0) + max(q.y, 0.0) + max(-qxm.x, 0.0) + max(-qym.y, 0.0);
+  float d = texelFetch(state, p, 0).r;
+  return outflow > 0.0 ? min(1.0, d * dx * dx / (outflow * dt)) : 1.0;
+}
+void main(){
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  vec2 q = Qf(p);
+  float qx = q.x * (q.x >= 0.0 ? K(p) : K(p + ivec2(1,0)));
+  float qy = q.y * (q.y >= 0.0 ? K(p) : K(p + ivec2(0,1)));
+  o = vec4(qx, qy, 0.0, 0.0);
+}`;
+const FACE_CONT = COMMON + `
+uniform sampler2D state, flux;
+vec2 Qf(ivec2 p){ return inside(p) ? texelFetch(flux, p, 0).rg : vec2(0.0); }
+void main(){
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  vec4 s = texelFetch(state, p, 0);
+  vec2 q = Qf(p);
+  float net = Qf(p - ivec2(1,0)).x - q.x + Qf(p - ivec2(0,1)).y - q.y;
+  float d = max(0.0, s.r + dt * net / (dx * dx));
+  float k = spongeK(p);
+  if(k > 0.0){ float rest = max(0.0, swl - B(p)); d = mix(d, rest, 1.0 - 1.0 / (1.0 + dt * k)); }
+  o = vec4(d, s.gba);
+}`;
+
+function makeSim(mode, nx, ny, bedArr, initState, initFlux, unis){
+  const bed = tex(nx, ny, bedArr, 'r');
+  const S = [target(nx, ny, initState), target(nx, ny, null)];
+  const F = mode === 'wave' ? null : [target(nx, ny, initFlux), target(nx, ny, null)];
+  const progs = mode === 'wave' ? {wave: program(WAVE)} : mode === 'face' ? {mom: program(FACE_MOM), lim: program(FACE_LIM), cont: program(FACE_CONT)} : {flux: program(FLUX), depth: program(DEPTH)};
+  const U = Object.assign({res: [nx, ny], g: G, depthWeighted: mode === 'pipeD' ? 1 : 0}, unis);
+  let si = 0, fi = 0;
+  return {
+    step(){
+      if(mode === 'face'){
+        draw(progs.mom, F[1 - fi].fb, nx, ny, {bed, state: S[si].t, flux: F[fi].t}, U); fi = 1 - fi;
+        draw(progs.lim, F[1 - fi].fb, nx, ny, {bed, state: S[si].t, flux: F[fi].t}, U); fi = 1 - fi;
+        draw(progs.cont, S[1 - si].fb, nx, ny, {bed, state: S[si].t, flux: F[fi].t}, U); si = 1 - si;
+      } else if(mode === 'wave'){
+        draw(progs.wave, S[1 - si].fb, nx, ny, {bed, state: S[si].t}, U); si = 1 - si;
+      } else {
+        draw(progs.flux, F[1 - fi].fb, nx, ny, {bed, state: S[si].t, flux: F[fi].t}, U); fi = 1 - fi;
+        draw(progs.depth, S[1 - si].fb, nx, ny, {bed, state: S[si].t, flux: F[fi].t}, U); si = 1 - si;
+      }
+    },
+    read(x, y, w, h){
+      gl.bindFramebuffer(gl.FRAMEBUFFER, S[si].fb);
+      const buf = new Float32Array(w * h * 4); gl.readPixels(x, y, w, h, gl.RGBA, gl.FLOAT, buf); return buf;
+    },
+    fence(){ gl.bindFramebuffer(gl.FRAMEBUFFER, S[si].fb); const b = new Float32Array(4); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, b); },
+    stateFB(){ return S[si].fb; },
+    U
+  };
+}
+
+// ── test: reflection coefficient in a 1D channel ─────────────────────────────
+// ── test: scattered-field reflection emitter ────────────────────────────────
+// The incident wave is NOT simulated (it is the FFT ocean's job). A wall at xw emits
+// Kr * eta_inc(xw, t) as a Dirichlet source; the sim carries only the reflected wave.
+// Compare with the analytic mirror image Kr * eta_inc(2xw - x, t).
+function testScatter(){
+  const dx = num('dx', 1), h0 = num('h0', 10), H = num('H', 1), T = num('T', 6.6), Kr = num('Kr', 0.5), dt = num('dt', 0.02), ny = 4;
+  const c = Math.sqrt(G * h0), L = c * T, k = 2 * Math.PI / L, Lp = 4 * L, spongeW = 150;
+  const xw = spongeW + 2 * Lp, x0 = xw - Lp;            // packet centre starts Lp before the wall
+  const nx = Math.ceil((xw + 5) / dx), iw = Math.floor(xw / dx), xwc = (iw + 0.5) * dx;
+  const env = s => Math.abs(s) < 1 ? 0.5 * (1 + Math.cos(Math.PI * s)) : 0;
+  const inc = (x, t) => { const xi = x - x0 - c * t; return (H / 2) * env(xi / (Lp / 2)) * Math.sin(k * xi); };
+  const bedArr = new Float32Array(nx * ny).fill(-h0), st = new Float32Array(nx * ny * 4);
+  const U = {dt, dx, swl: 0, spongeW, spongeRate: 2, spongeFar: 0, absorbRamp: 0, absorbDepth: 0, absorbRate: 0, manning: 0, srcCol: iw, srcEta: 0};
+  const sim = makeSim('wave', nx, ny, bedArr, st, null, U);
+  const gx = xw - num('gaugeBack', 200), gi = Math.floor(gx / dx), gxc = (gi + 0.5) * dx;
+  const tEnd = (Lp / 2 + Lp + 200) / c + 5; let err2 = 0, ref2 = 0; const steps = Math.ceil(tEnd / dt);
+  for(let n = 0; n < steps; ++n){
+    const t = (n + 1) * dt;
+    sim.U.srcEta = Kr * inc(xwc, t);   // source uses the incident at the NEW time level
+    sim.step();
+    if(n % 5) continue;
+    const eta = sim.read(gi, 1, 1, 1)[0];
+    const ana = Kr * inc(2 * xwc - gxc, t);
+    err2 += (eta - ana) ** 2; ref2 += ana * ana;
+  }
+  return {test: 'scatter', Kr, dx, dt, h0, T, relRmsError: +Math.sqrt(err2 / Math.max(ref2, 1e-12)).toFixed(4),
+    measuredKr: +(Kr * Math.sqrt((ref2 + err2 - 0) / Math.max(ref2, 1e-12))).toFixed(3)};
+}
+
+function testKr(){
+  const mode = Q.mode || 'pipeD';
+  const dx = num('dx', 1.0), h0 = num('h0', 10), tanB = num('slope', 0.577), H = num('H', 1.0), T = num('T', 6.6);
+  const periods = num('periods', 4), dt = num('dt', 0.02), ny = 4;
+  const manning = num('manning', 0.0), absorbDepth = num('absorbDepth', 0), absorbRate = num('absorbRate', 0);
+  const swl = 0.0;
+  const c = Math.sqrt(G * h0), L = c * T; // shallow-water wavelength in the flat section
+  const Lp = periods * L;
+  const spongeW = num('spongeW', 150);
+  const xPacket = spongeW + Lp / 2 + 20, xGauge = xPacket + Lp / 2 + num('gaugeGap', 150);
+  const xToe = xGauge + Lp / 2 + 50;
+  const xLandSWL = xToe + h0 / tanB;
+  const flat = Q.flat === '1';  // no slope: sponge-only reflection test (sponge mirrored at the far end)
+  const xEnd = flat ? xToe + spongeW + 50 : xLandSWL + Math.max(60, 3 * H / tanB);
+  const nx = Math.ceil(xEnd / dx);
+  const bedArr = new Float32Array(nx * ny), st = new Float32Array(nx * ny * 4), fl = new Float32Array(nx * ny * 4);
+  const bedAt = x => flat ? -h0 : (x < xToe ? -h0 : -h0 + (x - xToe) * tanB);
+  const k = 2 * Math.PI / L;
+  const env = x => { const s = (x - xPacket) / (Lp / 2); return Math.abs(s) < 1 ? 0.5 * (1 + Math.cos(Math.PI * s)) : 0; };
+  for(let i = 0; i < nx; ++i){
+    const x = (i + 0.5) * dx, b = bedAt(x);
+    const eta = (H / 2) * env(x) * Math.sin(k * (x - xPacket));
+    for(let j = 0; j < ny; ++j){
+      const o = j * nx + i; bedArr[o] = b;
+      if(mode === 'wave'){ st[o * 4] = eta; st[o * 4 + 1] = -c * (H / 2) * env(x) * k * Math.cos(k * (x - xPacket)) * -1; }
+      else {
+        const d = Math.max(0, swl + eta - b); st[o * 4] = d;
+        // right-going linear wave: u = eta * sqrt(g/h); flux on the +x pipe (or -x when negative), at the face
+        const xf = x + dx / 2, etaF = (H / 2) * env(xf) * Math.sin(k * (xf - xPacket));
+        const q = etaF * Math.sqrt(G / h0) * h0 * dx;  // m^3/s through a face of width dx
+        if(mode === 'face') fl[o * 4] = q;
+        else if(q > 0) fl[o * 4 + 1] = q; else fl[(o + 1 < (j + 1) * nx ? o + 1 : o) * 4] = -q;
+      }
+    }
+  }
+  // wave-eq initial velocity: right-going eta(x - ct) → deta/dt = -c * deta/dx
+  if(mode === 'wave'){
+    for(let i = 0; i < nx; ++i){ const x = (i + 0.5) * dx;
+      const detadx = (H / 2) * (env(x) * k * Math.cos(k * (x - xPacket)));
+      for(let j = 0; j < ny; ++j) st[(j * nx + i) * 4 + 1] = -c * detadx; }
+  }
+  const sim = makeSim(mode, nx, ny, bedArr, st, fl, {dt, dx, swl, spongeW, spongeRate: num('spongeRate', 2.0), spongeFar: flat ? 1 : 0, absorbRamp: num('ramp', 0), srcCol: -1, srcEta: 0, absorbDepth, absorbRate, manning});
+  // far-end sponge for the flat test is emulated by a very long domain instead
+  const gi = Math.floor(xGauge / dx);
+  const tInc0 = 0, tSplit = (xToe - xPacket) / c;
+  const tEnd = num('tExtra', 0) + (flat ? 2 * tSplit : tSplit) + (xToe - xGauge + Lp) / c + 2 * (xLandSWL - xToe) / Math.sqrt(G * h0 / 4) + 20;
+  const steps = Math.ceil(tEnd / dt), every = Math.max(1, Math.round(0.1 / dt));
+  let Einc = 0, Eref = 0, runup = -1e9, nan = false, tE = 0, peak = 0; const series = [];
+  const landI0 = Math.floor(xToe / dx);
+  for(let n = 0; n < steps; ++n){
+    sim.step();
+    if(n % every) continue;
+    const t = (n + 1) * dt;
+    const px = sim.read(gi, 1, 1, 1);
+    const eta = mode === 'wave' ? px[0] : px[0] + bedAt((gi + 0.5) * dx) - swl;
+    if(!isFinite(eta)){ nan = true; break; }
+    if(Q.dump && n % (every * 10) === 0) series.push(+eta.toFixed(3));
+    if(t < tSplit){ Einc += eta * eta; tE += t * eta * eta; peak = Math.max(peak, Math.abs(eta)); }
+    else Eref += eta * eta;
+    if(mode !== 'wave' && !flat && n % (every * 2) === 0){
+      const row = sim.read(landI0, 1, nx - landI0, 1);
+      for(let i = 0; i < nx - landI0; ++i){ const b = bedAt((landI0 + i + 0.5) * dx); if(row[i * 4] > 0.02 && b > swl) runup = Math.max(runup, b + row[i * 4] - swl); }
+    }
+  }
+  const xi0 = tanB / Math.sqrt(H / (G * T * T / (2 * Math.PI)));
+  const battjes = Math.min(1, 0.1 * xi0 * xi0);
+  return {test: 'kr', mode, dx, dt, h0, slope: tanB, H, T, manning, absorbDepth, absorbRate, flat, nx,
+    Kr: +Math.sqrt(Eref / Math.max(Einc, 1e-12)).toFixed(4), xi0: +xi0.toFixed(3), battjesKr: +battjes.toFixed(3),
+    runupAboveSWL: +runup.toFixed(3), huntRunup: +(H * xi0 + 0.2 * H).toFixed(2),
+    incidentPeak: +peak.toFixed(3), arrivalGauge_s: +(tE / Math.max(Einc, 1e-12)).toFixed(2), expectedArrival_s: +((xGauge - xPacket) / c).toFixed(2), nan, steps, series: Q.dump ? series : undefined};
+}
+
+// ── test: closed basin volume drift over a steep island ─────────────────────
+function testVolume(){
+  const mode = Q.mode || 'pipeD', n = num('n', 256), dx = num('dx', 1.0), dt = num('dt', 0.02), secs = num('secs', 120);
+  const {bedArr, st} = island(n, dx, num('H', 2.0));
+  const sim = makeSim(mode, n, n, bedArr, st, null, {dt, dx, swl: 0, spongeW: 0, spongeRate: 0, absorbDepth: 0, absorbRate: 0, manning: num('manning', 0.025)});
+  const sum = () => { const b = sim.read(0, 0, n, n); let s = 0, neg = 0, bad = 0; for(let i = 0; i < n * n; ++i){ const d = b[i * 4]; if(!isFinite(d)) bad++; else { s += d; if(d < 0) neg++; } } return {s, neg, bad}; };
+  const v0 = sum(); const steps = Math.round(secs / dt);
+  for(let i = 0; i < steps; ++i) sim.step();
+  const v1 = sum();
+  return {test: 'volume', mode, n, dx, dt, secs, relDrift: (v1.s - v0.s) / v0.s, volume0_m3: v0.s * dx * dx, nonFinite: v1.bad, negative: v1.neg};
+}
+// A 30-degree island in a 10 m sea with a wedge-shaped cove, plus a raised mound of water offshore.
+function island(n, dx, H){
+  const bedArr = new Float32Array(n * n), st = new Float32Array(n * n * 4);
+  const cx = n * dx / 2, cz = n * dx / 2, R = n * dx * 0.22;
+  for(let j = 0; j < n; ++j) for(let i = 0; i < n; ++i){
+    const x = (i + 0.5) * dx, z = (j + 0.5) * dx;
+    const r = Math.hypot(x - cx, z - cz), ang = Math.atan2(z - cz, x - cx);
+    const cove = Math.max(0, 1 - Math.abs(ang) / 0.35) * R * 0.5;   // a notch cut into the +x side
+    const b = Math.max(-10, Math.min(15, (R - cove - r) * 0.577));
+    const o = j * n + i; bedArr[o] = b;
+    const mound = H * Math.exp(-((x - n * dx * 0.85) ** 2 + (z - cz) ** 2) / (2 * 15 * 15));
+    st[o * 4] = Math.max(0, mound - b);
+  }
+  return {bedArr, st};
+}
+
+// ── test: GPU cost per step, square window ─────────────────────────────────
+function testCost(){
+  const mode = Q.mode || 'pipeD', n = num('n', 256), dx = num('dx', 1.0), dt = num('dt', 1 / 60);
+  const {bedArr, st} = island(n, dx, 2.0);
+  const sim = makeSim(mode, n, n, bedArr, st, null, {dt, dx, swl: 0, spongeW: 30, spongeRate: 2, absorbDepth: 2, absorbRate: 0.5, manning: 0.025});
+  for(let i = 0; i < 120; ++i) sim.step(); sim.fence();
+  const batches = num('batches', 20), per = num('per', 60), times = [];
+  for(let b = 0; b < batches; ++b){
+    const t0 = performance.now(); for(let i = 0; i < per; ++i) sim.step(); sim.fence(); times.push((performance.now() - t0) / per);
+  }
+  times.sort((a, b) => a - b);
+  return {test: 'cost', mode, n, drawsPerStep: mode === 'wave' ? 1 : mode === 'face' ? 3 : 2, msPerStep_median: +times[times.length >> 1].toFixed(4), msPerStep_min: +times[0].toFixed(4)};
+}
+
+async function testCostGPU(){
+  const mode = Q.mode || 'face', n = num('n', 256), dx = num('dx', 1.0), dt = num('dt', 1 / 60), per = num('per', 60);
+  const ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+  if(!ext) return {test: 'costGPU', error: 'no timer query'};
+  const {bedArr, st} = island(n, dx, 2.0);
+  const sim = makeSim(mode, n, n, bedArr, st, null, {dt, dx, swl: 0, spongeW: 30, spongeRate: 2, spongeFar: 0, absorbRamp: 1, absorbDepth: 2, absorbRate: 1, manning: 0.025, srcCol: -1, srcEta: 0});
+  const vol = () => { const b = sim.read(0, 0, n, n); let v = 0; for(let i = 0; i < n * n; ++i) v += b[i * 4]; return v; };
+  for(let i = 0; i < 60; ++i) sim.step(); sim.fence();
+  const probe = sim.read(Math.floor(n * 0.7), n >> 1, 1, 1)[0];
+  const samples = [], wall = [];
+  for(let b = 0; b < num('batches', 15); ++b){
+    const q = gl.createQuery(); const t0 = performance.now();
+    gl.beginQuery(ext.TIME_ELAPSED_EXT, q);
+    for(let i = 0; i < per; ++i) sim.step();
+    gl.endQuery(ext.TIME_ELAPSED_EXT);
+    sim.fence(); wall.push((performance.now() - t0) / per);
+    for(let tries = 0; tries < 2000; ++tries){
+      await new Promise(r => setTimeout(r, 2));
+      if(gl.getQueryParameter(q, gl.QUERY_RESULT_AVAILABLE)){
+        if(!gl.getParameter(ext.GPU_DISJOINT_EXT)) samples.push(gl.getQueryParameter(q, gl.QUERY_RESULT) / 1e6 / per);
+        break;
+      }
+    }
+    gl.deleteQuery(q);
+  }
+  const probe2 = sim.read(Math.floor(n * 0.7), n >> 1, 1, 1)[0];
+  const med = a => a.length ? +a.sort((x, y) => x - y)[a.length >> 1].toFixed(4) : null;
+  return {test: 'costGPU', mode, n, per, gpuMsPerStep: med(samples), wallMsPerStep: med(wall), nSamples: samples.length,
+    stateChanged: probe !== probe2, depthProbe: [probe, probe2]};
+}
+
+function testPrecision(){
+  const vals = new Float32Array([1234.5678, 10.000123, 0.00012345, 16777.216]);
+  const src = target(1, 1, vals);
+  const dst = target(1, 1, null);
+  const prog = program(COMMON + `
+uniform sampler2D state;
+void main(){ vec4 s = texelFetch(state, ivec2(0), 0); o = vec4(s.r + 0.0001, s.g + 0.000001, s.b * 1.001, s.a); }`);
+  const direct = new Float32Array(4); gl.bindFramebuffer(gl.FRAMEBUFFER, src.fb); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, direct);
+  draw(prog, dst.fb, 1, 1, {state: src.t}, {res: [1, 1]});
+  const rendered = new Float32Array(4); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, rendered);
+  // render a 2x2 target that ANGLE cannot trivially fold, and accumulate small increments
+  const acc = [target(4, 4, new Float32Array(64).fill(10)), target(4, 4, null)];
+  const inc = program(COMMON + `
+uniform sampler2D state;
+void main(){ o = texelFetch(state, ivec2(gl_FragCoord.xy), 0) + vec4(0.001); }`);
+  let a = 0; for(let i = 0; i < 1000; ++i){ draw(inc, acc[1 - a].fb, 4, 4, {state: acc[a].t}, {res: [4, 4]}); a = 1 - a; }
+  const accv = new Float32Array(4); gl.bindFramebuffer(gl.FRAMEBUFFER, acc[a].fb); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, accv);
+  return {test: 'precision', uploaded: Array.from(vals), readDirect: Array.from(direct), afterPass: Array.from(rendered),
+    expectedAfterPass: [1234.5679, 10.000124, 0.00012357, 16777.216], accumulate1000x0p001_from10: accv[0], expected: 11.0,
+    dither: gl.isEnabled(gl.DITHER)};
+}
+
+// ── test: readback, sync vs PBO, and the three r173 binding hazard ──────────
+async function testReadback(){
+  const out = {test: 'readback'};
+  const waitSync = sync => new Promise(res => { const poll = () => { const s = gl.clientWaitSync(sync, 0, 0); if(s === gl.TIMEOUT_EXPIRED) setTimeout(poll, 1); else res(); }; poll(); });
+  for(const n of [64, 128, 256]){
+    const rt = target(n, n, new Float32Array(n * n * 4).fill(1));
+    const buf = new Float32Array(n * n * 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, rt.fb);
+    const reps = 30; let syncMs = [], issueMs = [], copyMs = [], waitMs = [];
+    for(let r = 0; r < reps; ++r){
+      let t0 = performance.now(); gl.readPixels(0, 0, n, n, gl.RGBA, gl.FLOAT, buf); syncMs.push(performance.now() - t0);
+      const pbo = gl.createBuffer();
+      t0 = performance.now();
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbo); gl.bufferData(gl.PIXEL_PACK_BUFFER, buf.byteLength, gl.STREAM_READ);
+      gl.readPixels(0, 0, n, n, gl.RGBA, gl.FLOAT, 0);
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0); gl.flush();
+      issueMs.push(performance.now() - t0);
+      t0 = performance.now(); await waitSync(sync); waitMs.push(performance.now() - t0);
+      t0 = performance.now(); gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbo); gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, buf); gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      copyMs.push(performance.now() - t0); gl.deleteBuffer(pbo); gl.deleteSync(sync);
+    }
+    const med = a => +a.sort((x, y) => x - y)[a.length >> 1].toFixed(3);
+    out['n' + n] = {syncReadMs: med(syncMs), pboIssueMs: med(issueMs), pboWaitMs: med(waitMs), pboCopyMs: med(copyMs)};
+  }
+  // Hazard reproduction: three r173 leaves PIXEL_PACK_BUFFER bound across its await.
+  const rt = target(4, 4, null); gl.bindFramebuffer(gl.FRAMEBUFFER, rt.fb);
+  const pbo = gl.createBuffer(); gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbo); gl.bufferData(gl.PIXEL_PACK_BUFFER, 64, gl.STREAM_READ);
+  gl.readPixels(0, 0, 4, 4, gl.RGBA, gl.FLOAT, 0);
+  while(gl.getError()); // clear
+  let hazard;
+  try { gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, new Float32Array(4)); hazard = gl.getError(); } catch(e){ hazard = 'threw: ' + e.message; }
+  out.syncReadWhilePBOBound = hazard === gl.INVALID_OPERATION ? 'INVALID_OPERATION (reproduced)' : String(hazard);
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+  return out;
+}
+
+(async () => {
+  let r;
+  try {
+    const t = Q.test || 'kr';
+    r = t === 'precision' ? testPrecision() : t === 'costGPU' ? await testCostGPU() : t === 'kr' ? testKr() : t === 'scatter' ? testScatter() : t === 'volume' ? testVolume() : t === 'cost' ? testCost() : await testReadback();
+    r.renderer = RENDERER;
+  } catch(e){ r = {error: String(e && e.stack || e)}; }
+  window.__result = r;
+  document.getElementById('out').textContent = JSON.stringify(r);
+})();
+</script></body></html>

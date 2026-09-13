@@ -322,7 +322,36 @@ service), the deferred live-river SWE (candidate shared solver), and a-faraway-l
 beach-shaping tooling. That tooling is the cheaper lever if the answer is "rolling surf
 needs gentler bathymetry, not more simulation".
 
+> **Done 2026-09-12: see [`NEARSHORE-WAVES.md`](./NEARSHORE-WAVES.md).** Shipped games
+> sweep parametric breakers and do not reflect swell. A 1 m SWE window over-reflects
+> gentle beaches about 30×, gets run-up wrong both ways, and is only valid in the last
+> ~3 m of water. Classic Mei pipes are depth-blind. A reflection-only linear wave layer
+> emitting `Kr(ξ) × incident` matched the analytic reflection to 0.8%, at 0.24 ms per
+> step for 512² on an integrated GPU. Phase 3 is amended below into **3a / 3b / 3c**.
+
 ### Phase 3 — Shorelines that break
+
+> **Amended 2026-09-12 by Phase 3.0** ([`NEARSHORE-WAVES.md`](./NEARSHORE-WAVES.md) § 8).
+> Phase 3 splits into three parts:
+>
+> - **3a** is the list below, with the per-texel surf-similarity ξ₀ wired through:
+>   - Breaker class (spilling, plunging, surging) picks the profile.
+>   - The swash sheet's height comes from Stockdon 2006 by ξ, not a free parameter.
+>   - Breaker foam and spray scale with the dissipated fraction 1 − Kr².
+>   - `_emitShore` reads `shoreSDF` / Kr from spare channels of the existing 256² height
+>     readback. That readback becomes the first CPU mirror of `shoreSDF`.
+> - **3b (new) is shore reflection.** It is Phase 8's dynamic-waves sim, pulled forward:
+>   - A camera-following linear wave equation carries only the **reflected** wave.
+>   - Shore texels emit `Kr(ξ) × rendered FFT height` (Battjes: Kr ≈ 0.1ξ², ξ < 2.5).
+>   - A graded absorber sits in dissipative surf zones.
+>   - The wave speed is the dispersion-relation phase speed at Tp, and cells are about
+>     L/30.
+>   - The result is added to the vertex displacement, the CSM caster and the height
+>     readback, costing one sampler unit (28 → 29).
+>   - No incident energy is simulated, so nothing is double-counted.
+> - **3c (deferred) is a volume-conserving swash SWE.** Signed face flux, not Mei pipes. It
+>   gets built only if 3a's swash sheet reads fake, and it is the same solver the deferred
+>   live rivers need.
 
 Everything here reads `shoreSDF`, `shoreNormal` and `depth` from Phase 1.
 
@@ -527,7 +556,9 @@ Per phase, in the browser, against `examples/demos/islands.html` and a new
   ocean is visually unchanged from 0.2.0 with no provider present. That standalone
   regression is worth re-running every phase, not just this one.
 - **Phase 3** — breakers track the shoreline as the level changes; buoyancy and spray still
-  agree with the rendered surface inside the surf zone.
+  agree with the rendered surface inside the surf zone. For 3b, a steep shore at 12 m/s
+  shows outgoing crests at roughly half the incident height, a 1:20 beach shows
+  essentially none, and oblique incidence reflects at the mirror angle.
 - **Phase 5** — walk a river from source to sea. No visible transition at the
   ribbon-to-clipmap blend band, and no UV stretching in bends. That second one is the WPB
   acceptance test.
