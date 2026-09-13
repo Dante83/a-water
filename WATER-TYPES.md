@@ -352,6 +352,9 @@ needs gentler bathymetry, not more simulation".
 > - **3c (deferred) is a volume-conserving swash SWE.** Signed face flux, not Mei pipes. It
 >   gets built only if 3a's swash sheet reads fake, and it is the same solver the deferred
 >   live rivers need.
+>
+> **Split accepted by Dante 2026-09-13.** 3c is built at whichever comes first: 3a's swash
+> reading fake, or the live rivers needing the solver.
 
 Everything here reads `shoreSDF`, `shoreNormal` and `depth` from Phase 1.
 

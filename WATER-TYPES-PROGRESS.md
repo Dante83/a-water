@@ -59,10 +59,16 @@ no shader regen, so there is nothing to run.
 
 ### ⚠ Outstanding — needs Dante
 
-1. Read `NEARSHORE-WAVES.md` § 8 and accept, or change, the 3a / 3b / 3c split.
+1. ~~Read `NEARSHORE-WAVES.md` § 8 and accept, or change, the 3a / 3b / 3c split.~~
+   **Accepted 2026-09-13.** 3c stays deferred. It gets built either here, if 3a's swash
+   sheet reads fake, or with the live rivers, whichever comes first.
 2. Decide whether a Dean-profile beach brush in a-faraway-land goes on its roadmap. It is
    the only way this world gets rolling spilling surf, which needs about 1:8 or gentler
    across the breaker band.
+   In the meantime Dante hand-built `a-faraway-project/island-sholes` as a gentle-beach
+   test world (1:20–1:55 near the shore). The 2026-09-13 rebuild has spilling, plunging
+   and surging shores within a few hundred metres of each other. The survey script is in
+   `island-sholes/survey/`, and the demo page is `examples/demos/island-sholes-ocean.html`.
 
 ---
 
