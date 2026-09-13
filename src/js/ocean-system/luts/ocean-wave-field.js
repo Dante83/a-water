@@ -700,6 +700,11 @@ ARestlessOcean.ShoreBreaker.SWASH_BAND_MAX = 60.0;
 ARestlessOcean.ShoreBreaker.SWASH_PROBE = 6.0;       //m offshore where the foreshore slope is read
 ARestlessOcean.ShoreBreaker.SWASH_UPRUSH = 0.3;      //fraction of a wave period spent running up
 ARestlessOcean.ShoreBreaker.WAVE_FACTOR_MAX = 1.155; //largest waveFactor() can return
+//The discard band is this many times the run-up reach on the PROBED slope: the
+//upper beach is often flatter than the slope 6 m offshore, and the sheet is only
+//visible where it is above the sand anyway, so a generous band costs nothing
+//but a cut line if it is too tight.
+ARestlessOcean.ShoreBreaker.SWASH_REACH_MARGIN = 2.0;
 
 ARestlessOcean.ShoreBreaker.createUniforms = function(){
   return {
@@ -908,10 +913,12 @@ ARestlessOcean.ShoreBreaker.evaluateSwash = function(x, z, field, gradX, gradZ, 
   const S = Math.sqrt(Sinc * Sinc + Sig * Sig);
   const R2 = 1.1 * (setup + 0.5 * S);
   out.R2 = R2; out.slope = slope;
-  out.reach = SB.WAVE_FACTOR_MAX * R2 / slope + 2.0;
-  const pf = phaseField || field;
-  const ph_h = Math.max(pf.depth, SB.MIN_DEPTH), ph_s = Math.max(pf.shoreSDF, 0.0), ph_X = k0 * ph_h;
-  let theta = w * p.time + (ph_s / ph_h) * Math.sqrt(ph_X * ph_X + 4.0 * ph_X * (1.0 + 0.3184 * ph_X) / (1.0 + 0.516 * ph_X));
+  out.reach = Math.min(SB.SWASH_BAND_MAX, SB.SWASH_REACH_MARGIN * SB.WAVE_FACTOR_MAX * R2 / slope + 2.0);
+  //The SHORELINE phase, the same at every cross-shore distance: the swash zone
+  //fills and drains as one sheet, and the waterline climbs the beach because the
+  //sheet rises. (Using the breaker's local phase here made standing strips of
+  //sheet that crept shoreward at shallow-water speed; browser round 2.)
+  let theta = w * p.time;
   theta += SB.PHASE_NOISE_AMP * (SB.noise(x / SB.PHASE_NOISE_SCALE + p.time * 0.004, z / SB.PHASE_NOISE_SCALE + p.time * 0.0028) - 0.5);
   const cyc = theta / (2.0 * Math.PI) + 0.25;
   const m = Math.floor(cyc);
@@ -1072,11 +1079,9 @@ ARestlessOcean.ShoreBreaker.GLSL = (function(){
     '  float Sig = 0.06 * HL;',
     '  float S = sqrt(Sinc * Sinc + Sig * Sig);',
     '  float R2 = 1.1 * (setup + 0.5 * S);',
-    '  reach = ' + f(SB.WAVE_FACTOR_MAX) + ' * R2 / slope + 2.0;',
-    '  float phH = max(phaseField.g, ' + f(SB.MIN_DEPTH) + ');',
-    '  float phS = max(phaseField.b, 0.0);',
-    '  float phX = k0 * phH;',
-    '  float theta = w * shoreBreakerTime + (phS / phH) * sqrt(phX * phX + 4.0 * phX * (1.0 + 0.3184 * phX) / (1.0 + 0.516 * phX));',
+    '  reach = min(' + f(SB.SWASH_BAND_MAX) + ', ' + f(SB.SWASH_REACH_MARGIN * SB.WAVE_FACTOR_MAX) + ' * R2 / slope + 2.0);',
+    '  //Shoreline phase at every distance: the swash zone fills and drains as one sheet.',
+    '  float theta = w * shoreBreakerTime;',
     '  theta += ' + f(SB.PHASE_NOISE_AMP) + ' * (shoreBreakerNoise(xz / ' + f(SB.PHASE_NOISE_SCALE) + ' + vec2(shoreBreakerTime * 0.004, shoreBreakerTime * 0.0028)) - 0.5);',
     '  float cyc = theta / 6.2831853 + 0.25;',
     '  float m = floor(cyc);',

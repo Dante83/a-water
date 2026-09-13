@@ -159,6 +159,22 @@ parked, none of them fixed yet:
 - the square outlines Dante saw. Those are breaker foam fronts on isolated wet
   texels just inland, moving with the wave.
 
+**Browser round 2 (Dante): creeping strips of sheet, fixed.** The swash was timed
+with the breaker's LOCAL phase, (s/h)·I, which changes quickly with distance near
+the shoreline. The sheet was therefore a set of short standing "waves": strips of
+water and sand parallel to the shore that crept up the beach at shallow-water
+speed and cut off the next uprush. The fix is to time the swash with the
+SHORELINE phase (ωt plus the alongshore noise), identical at every cross-shore
+distance, so the zone fills and drains as one sheet. Checked two ways:
+- **JS waterline simulation (1:28, 8 m/s × 1.5).** Each wave runs 8–15 m up the
+  sand in ~1.5 s, drains over ~4 s, then briefly sits below still water.
+- **Headless frame sequences** show one advancing and retreating waterline, with
+  no strips.
+
+The band limit also went to 2 × the probed-slope reach (capped at 60 m), so a
+flatter upper beach no longer gets a cut line. GPU parity after the change:
+0.3 mm, 0 cover mismatches.
+
 ### Next (3a steps 3–4)
 
 - **Splash.** The `_emitShore` breaker trigger, reading shoreSDF and Kr from the
