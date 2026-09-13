@@ -255,6 +255,45 @@ unchanged: breaker 2.2 mm, swash 1.3 mm. Screenshots from above show foam around
 the rocks and no walls. `water-shader.glsl` changed (`bGrad` is now a vec4), so
 this **needs create-shader.py**.
 
+### Tuning pass 3 — grey foam front, milky shallows, inland squares (investigated; nothing changed)
+
+- **Grey foam front and milky shallows share one cause: a lighting-unit fudge.**
+  - *Not the foam amount.* Foam compositing is a soft ramp
+    (`smoothstep(0.04, 0.5, foamAmount)`), and there is no hard threshold.
+  - *Not foam facing away from the sun.* A frozen-breaker A/B that lit breaker foam
+    about an upward normal changed nothing. That edit was reverted.
+  - *Not caustics.* With `causticsStrength = 0` the shallows are slightly
+    brighter (mean RGB 190/209/202 → 197/220/213), because caustics modulate
+    rather than add.
+  - *The real cause.* The seabed relight (`water-shader.glsl`, the
+    `refractedLight *= (sunDown * NdotL_seabed ...)` line) deliberately has no
+    1/π. The comment dates from 2026-05-16: dividing erased the seabed against
+    the inscatter in clean deep water. Foam is lit as energy-conserving Lambert
+    WITH 1/π, so sand seen through thin water is lit about π× brighter than foam.
+    The breaker foam reads grey against the shallows, and the shallows read milky.
+  - *Measured* (tonemapped, one frame): dry sand is 214/204/191; sand under
+    shallow water is 170/210/199, just as bright as dry sand. Wet, submerged sand
+    should be clearly darker (lower albedo, surface Fresnel loss, absorption).
+  - **Decision for Dante.** Put 1/π back on the seabed relight (physical, and
+    consistent with foam), compensating the deep-water case another way. Or keep
+    the fudge and lift foam instead.
+- **Square foam outlines inland: not reproducible after tuning pass 2.**
+  - *Test.* A GPU scan counted breaker foam > 0.3 on texels that the 4 m field
+    calls land (isolated wet pockets). It covered 512 m windows over the oval,
+    steep and long islands, at 5 times each: 0 texels.
+  - *Beach control.* The same scan found 8–16 k foam texels along the real
+    shores.
+  - *Likely explanation.* The phase-consistency gate already removes pocket
+    breakers.
+  - *Status.* A pocket-fade guard was written and then reverted, because there
+    was nothing left for it to fix. Dante to re-check.
+- **Sand through the backwash.** Dante's reading: no foam rolls back with the
+  drawdown, so bare sand shows. A backwash foam/turbidity term is a candidate.
+  On rocky bottoms the particles would differ, which is a texture and shader
+  question.
+- **Idea logged (Dante).** Nearby caustics driven by the actual rendered surface
+  height instead of the scrolling texture, if cheap enough.
+
 ### Next (3a steps 3–4)
 
 - **Splash.** The `_emitShore` breaker trigger, reading shoreSDF and Kr from the
