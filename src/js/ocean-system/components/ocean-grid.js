@@ -623,6 +623,37 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     return ARestlessOcean.Passes.WaterFieldPass
       ? ARestlessOcean.Passes.WaterFieldPass.OPEN_OCEAN_DEPTH : 1000.0;
   };
+  //Phase 4: the current at a world position, for debris, splash ballistics and
+  //a-avatar. `out` is {vx, vz, energy, flowWeight} (m/s, m/s, 0-1, 0-1); returns
+  //it. flowWeight is the still/flowing hand-off weight of ARestlessOcean.FlowHandoff
+  //(where the flowing surface draws the water), from the same speed band the GPU
+  //field packs. Standalone and dry: all zero. Like waterLevelAt this is a
+  //synchronous read of a-land's tile cache, never a GPU readback.
+  this.waterFlowAt = function(x, z, out){
+    out = out || {vx: 0, vz: 0, energy: 0, flowWeight: 0};
+    out.vx = 0.0; out.vz = 0.0; out.energy = 0.0; out.flowWeight = 0.0;
+    if(self._terrainProvider === 'a-faraway-land' && self._landTerrainApi){
+      const w = self._landTerrainApi.getWaterAt(x, z);
+      if(w){
+        out.vx = w.vx || 0.0;
+        out.vz = w.vz || 0.0;
+        out.energy = w.energy || 0.0;
+        out.flowWeight = ARestlessOcean.FlowHandoff.weightFromVelocity(out.vx, out.vz, self.waterFieldPass);
+      }
+    }
+    return out;
+  };
+  //The square the flowing surface covers this frame ({enabled, centerX, centerZ,
+  //halfWidth}), or null when nothing draws flowing water — then the clipmap keeps
+  //every creek (see FlowHandoff).
+  //Sanctioned global, in the spirit of Crest's QueryFlow (last grid wins, like
+  //the sampleWater* globals). Phase 8 folds it into getWaterStateAt.
+  ARestlessOcean.queryFlow = function(x, z, out){ return self.waterFlowAt(x, z, out); };
+  this.flowHandoffState = function(){
+    const pass = self.flowSurfacePass;
+    return pass && pass.handoffState ? pass.handoffState() : null;
+  };
+  this._flowHandoffState = null;
   //The analytic Gerstner twin is pointed at this same seam too — see
   //_syncWaveFieldSeam below. It cannot be done here: ARestlessOcean.waveField
   //does not exist until the band library is constructed a few lines down.
@@ -686,9 +717,11 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
   //CPU mirror of the GPU field texel (level, depth, shoreSDF, dryMask).
   //`out` is {level, depth, shoreSDF, dryMask}; returns it.
-  this._fieldScratch = {level: 0, depth: 0, shoreSDF: 0, dryMask: 0};
+  //Phase 4 adds flowWeight (the still/flowing hand-off weight, window NOT applied).
+  this._fieldScratch = {level: 0, depth: 0, shoreSDF: 0, dryMask: 0, flowWeight: 0};
   this.waterFieldSampleAt = function(x, z, out){
-    out = out || {level: 0, depth: 0, shoreSDF: 0, dryMask: 0};
+    out = out || {level: 0, depth: 0, shoreSDF: 0, dryMask: 0, flowWeight: 0};
+    out.flowWeight = 0.0;
     const OPEN = ARestlessOcean.Passes.WaterFieldPass
       ? ARestlessOcean.Passes.WaterFieldPass.OPEN_OCEAN_DEPTH : 1000.0;
     out.level = self.heightOffset;
@@ -700,6 +733,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       if(w){
         out.level = w.level;
         out.depth = w.depth;
+        out.flowWeight = ARestlessOcean.FlowHandoff.weightFromVelocity(w.vx || 0.0, w.vz || 0.0, self.waterFieldPass);
         //shoreSDF only matters to WaveMask for INLAND water; skip the search
         //over the ocean, where the GPU's value is ignored too.
         if(Math.abs(w.level - self.heightOffset) > ARestlessOcean.WaveMask.INLAND_START){
@@ -815,7 +849,13 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     out6 = out6 || [1, 1, 1, 1, 1, 1];
     const p = self._waveMaskParams || self.waveMaskParams();
     const s = self.waterFieldSampleAt(x, z, self._fieldScratch);
-    return ARestlessOcean.WaveMask.compute(out6, s.level, s.depth, s.shoreSDF, s.dryMask, p);
+    ARestlessOcean.WaveMask.compute(out6, s.level, s.depth, s.shoreSDF, s.dryMask, p);
+    //Phase 4: the still surface lets go of flowing water (water-vertex.glsl's stillKeep).
+    const fw = s.flowWeight * ARestlessOcean.FlowHandoff.windowFade(x, z, self._flowHandoffState);
+    if(fw > 0.0){
+      for(let c = 0; c < 6; c++) out6[c] *= (1.0 - fw);
+    }
+    return out6;
   };
 
   this.oceanHeightBandLibrary = new ARestlessOcean.LUTlibraries.OceanHeightBandLibrary(this);
@@ -872,6 +912,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       .replace('$wave_mask_functions', function(){ return ARestlessOcean.WaveMask.GLSL; })
       //Phase 3a: the shared ShoreBreaker GLSL (ocean-wave-field.js).
       .replace('$shore_breaker_functions', function(){ return ARestlessOcean.ShoreBreaker.GLSL; })
+      //Phase 4: the still/flowing hand-off (ocean-wave-field.js).
+      .replace('$flow_handoff_functions', function(){ return ARestlessOcean.FlowHandoff.GLSL; })
       //Phase 3b: the shore-reflection sampler (shore-reflection-pass.js).
       .replace('$shore_reflection_functions', shoreReflectionGLSL);
   }
@@ -886,6 +928,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   function buildFragmentShader(atmEnabled, atmFunctions){
     return ARestlessOcean.Materials.Ocean.waterMaterial.fragmentShader(self.causticsEnabled, self.foamEnabled, atmEnabled, atmFunctions)
       .replace('$shore_breaker_functions', function(){ return ARestlessOcean.ShoreBreaker.GLSL; })
+      .replace('$flow_handoff_functions', function(){ return ARestlessOcean.FlowHandoff.GLSL; })
       .replace('$shore_reflection_functions', shoreReflectionGLSL);
   }
   const vertexShaderSource = buildVertexShader(atmosphereReady, false);
@@ -917,6 +960,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   Object.assign(this.oceanMaterial.uniforms, ARestlessOcean.WaveMask.createUniforms());
   //Phase 3a ShoreBreaker uniforms, declared next to their GLSL for the same reason.
   Object.assign(this.oceanMaterial.uniforms, ARestlessOcean.ShoreBreaker.createUniforms());
+  //Phase 4 still/flowing hand-off uniforms.
+  Object.assign(this.oceanMaterial.uniforms, ARestlessOcean.FlowHandoff.createUniforms());
   //Phase 3b shore reflection uniforms (shore-reflection-pass.js).
   if(ARestlessOcean.ShoreReflection){
     Object.assign(this.oceanMaterial.uniforms, ARestlessOcean.ShoreReflection.createUniforms());
@@ -1925,12 +1970,15 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     self._shoreBreakerTime = time * 0.001;
     const shoreBreakerParams = self.shoreBreakerParams();
     const shoreReflectionState = self.shoreReflectionPass ? self.shoreReflectionPass.consumerState() : null;
+    //Phase 4: the square the flowing surface covers this frame, or null.
+    const flowHandoffState = self._flowHandoffState = self.flowHandoffState();
 
     for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
       const uniformsRef = oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms;
       ARestlessOcean.WaveMask.writeUniforms(uniformsRef, waveMaskParams);
       if(shoreBreakerParams) ARestlessOcean.ShoreBreaker.writeUniforms(uniformsRef, shoreBreakerParams);
       if(shoreReflectionState) ARestlessOcean.ShoreReflection.writeUniforms(uniformsRef, shoreReflectionState);
+      ARestlessOcean.FlowHandoff.writeUniforms(uniformsRef, flowHandoffState);
       for(let c = 0; c < 6; c++){
         uniformsRef.cascadeDisplacementTextures.value[c] = self.oceanHeightComposer.cascadeDisplacementTextures[c];
       }

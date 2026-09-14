@@ -617,6 +617,158 @@ ARestlessOcean.WaveMask.GLSL = [
 ].join('\n');
 
 //═══════════════════════════════════════════════════════════════════════════
+// FlowHandoff — where still water gives way to flowing water (Phase 4).
+//═══════════════════════════════════════════════════════════════════════════
+//
+// Still water (ocean, lakes) is the FFT clipmap. Flowing water (creeks, rivers)
+// is its own surface, drawn by FlowSurfacePass with the flowing-water material
+// variant. This is the one weight that splits the two: w = 0 still, w = 1
+// flowing, smoothstep over the flow speed |v| between FLOW_LO and FLOW_HI. Lakes
+// and the sea decode as bit-exact zero velocity (a-land's 16-bit flow encoding
+// puts raw 32768 at exactly 0), so a river mouth or a lake inlet blends by
+// itself, with no body boundary anywhere.
+//
+// WHERE IT IS STORED. The water program has no texture unit to spare for the
+// field's RT1 (flow lives there), so WaterFieldPass's compose packs w into RT0's
+// dryMask channel:
+//     wet texel            a = −w              (0 for still water, as before)
+//     known-dry texel      a = 1 + w_nearest   (w of the nearest wet texel)
+//     unknown-dry texel    a = 0               (loading / standalone, as before)
+// Every pre-Phase-4 reader of that channel asks `> 0.999`, `> 0.5`, `< 0.5` or
+// clamps it to [0, 1], and each of those still answers the same question.
+// Dilating w onto dry bank texels is what lets the flowing surface own the bank
+// edge: the still surface is drawn up to one texel past the last wet texel
+// (the terrain depth test cuts the true shoreline), and without it that band
+// would read as still water beside every creek.
+//
+// ⚠ DECODE BEFORE FILTERING. A bilinear read between a flowing texel (−1) and
+// its dilated bank (2) passes through (0, 1), which decodes as "still, wet".
+// So flowHandoffWeightAt texelFetches the four texels, decodes each, and then
+// interpolates — the same rule a-land states for its split-channel tiles.
+//
+// ONE SOURCE, FOUR GPU CONSUMERS: the water vertex (FFT, breakers and reflection
+// scaled by 1 − w), the water fragment (the discard), the ocean CSM caster and
+// the CPU height bake splice FlowHandoff.GLSL at `$flow_handoff_functions`,
+// AFTER their waterField samplers. `FlowHandoff.weightFromVelocity` is the JS
+// mirror; the CPU wave twin applies it through OceanGrid's mask provider.
+//
+// flowHandoffEnabled is 0 unless a FlowSurfacePass is actually drawing the
+// flowing surface, so without one nothing changes: the clipmap keeps drawing
+// creeks as it did before Phase 4.
+
+ARestlessOcean.FlowHandoff = {};
+
+//Speed band, m/s. Below LO the water is still; above HI it is fully flowing.
+//LO sits above a-land's 16-bit step (~0.5 mm/s at ±16 m/s) and well above any
+//numerical residue in a lake; HI is a slow creek.
+ARestlessOcean.FlowHandoff.FLOW_LO = 0.05;
+ARestlessOcean.FlowHandoff.FLOW_HI = 0.25;
+
+ARestlessOcean.FlowHandoff.createUniforms = function(){
+  return {
+    flowHandoffEnabled: {value: 0.0},
+    //(centre x, centre z, half-width) of the square the flowing surface covers.
+    //The weight fades to 0 over its outer RIM_FRACTION, so the still surface
+    //takes a creek back exactly where the flowing surface lets go of it.
+    flowHandoffWindow:  {value: new THREE.Vector3(0.0, 0.0, 0.0)}
+  };
+};
+
+ARestlessOcean.FlowHandoff.RIM_FRACTION = 0.15;
+
+ARestlessOcean.FlowHandoff.copyUniforms = function(dst, src){
+  dst.flowHandoffEnabled.value = src.flowHandoffEnabled.value;
+  dst.flowHandoffWindow.value.copy(src.flowHandoffWindow.value);
+};
+
+//state: {enabled, centerX, centerZ, halfWidth} or null (off).
+ARestlessOcean.FlowHandoff.writeUniforms = function(u, state){
+  const on = !!(state && state.enabled && state.halfWidth > 0.0);
+  u.flowHandoffEnabled.value = on ? 1.0 : 0.0;
+  if(on) u.flowHandoffWindow.value.set(state.centerX, state.centerZ, state.halfWidth);
+};
+
+//JS mirror of the window fade in flowHandoffWeightAt.
+ARestlessOcean.FlowHandoff.windowFade = function(x, z, state){
+  if(!(state && state.enabled && state.halfWidth > 0.0)) return 0.0;
+  const m = Math.max(Math.abs(x - state.centerX), Math.abs(z - state.centerZ));
+  const hw = state.halfWidth;
+  const t = Math.min(1.0, Math.max(0.0, (m - hw * (1.0 - ARestlessOcean.FlowHandoff.RIM_FRACTION)) / (hw * ARestlessOcean.FlowHandoff.RIM_FRACTION)));
+  return 1.0 - t * t * (3.0 - 2.0 * t);
+};
+
+//JS mirror of the compose pass's weight. p: {flowLo, flowHi} or null (defaults).
+ARestlessOcean.FlowHandoff.weightFromVelocity = function(vx, vz, p){
+  const lo = p ? p.flowLo : ARestlessOcean.FlowHandoff.FLOW_LO;
+  const hi = p ? p.flowHi : ARestlessOcean.FlowHandoff.FLOW_HI;
+  const t = Math.min(1.0, Math.max(0.0, (Math.sqrt(vx * vx + vz * vz) - lo) / Math.max(hi - lo, 1e-6)));
+  return t * t * (3.0 - 2.0 * t);
+};
+
+//Decode one packed RT0.a value into the flow weight (see the header).
+ARestlessOcean.FlowHandoff.decodeWeight = function(a){
+  return a < 0.0 ? -a : (a > 1.0 ? a - 1.0 : 0.0);
+};
+
+//GLSL, WebGL2 (texelFetch/textureSize). Needs the waterFieldCascade0..2 samplers
+//and their centre/half-width uniforms declared above the splice point.
+ARestlessOcean.FlowHandoff.GLSL = [
+  '//── FlowHandoff (spliced from ocean-wave-field.js — edit it THERE) ──',
+  'uniform float flowHandoffEnabled;',
+  'uniform vec3 flowHandoffWindow;',
+  'float flowHandoffDecode(float a){',
+  '  return a < 0.0 ? -a : (a > 1.0 ? a - 1.0 : 0.0);',
+  '}',
+  '//Bilinear interpolation of the DECODED weight over one cascade.',
+  'float flowHandoffCascade(sampler2D tex, vec2 centre, float hw, vec2 worldXZ){',
+  '  ivec2 size = textureSize(tex, 0);',
+  '  vec2 p = ((worldXZ - centre) / (2.0 * hw) + 0.5) * vec2(size) - 0.5;',
+  '  vec2 i = floor(p);',
+  '  vec2 f = p - i;',
+  '  ivec2 lo = clamp(ivec2(i), ivec2(0), size - 1);',
+  '  ivec2 hi = clamp(ivec2(i) + 1, ivec2(0), size - 1);',
+  '  float w00 = flowHandoffDecode(texelFetch(tex, lo, 0).a);',
+  '  float w10 = flowHandoffDecode(texelFetch(tex, ivec2(hi.x, lo.y), 0).a);',
+  '  float w01 = flowHandoffDecode(texelFetch(tex, ivec2(lo.x, hi.y), 0).a);',
+  '  float w11 = flowHandoffDecode(texelFetch(tex, hi, 0).a);',
+  '  return mix(mix(w00, w10, f.x), mix(w01, w11, f.x), f.y);',
+  '}',
+  '//The field flow weight at a world XZ (no window). Same cascade',
+  '//choice and 10% edge crossfade as waterFieldAt.',
+  'float flowHandoffFieldWeightAt(vec2 worldXZ){',
+  '  vec2 d0 = abs(worldXZ - waterFieldCascadeCenter[0]);',
+  '  float hw0 = waterFieldCascadeHalfWidth[0];',
+  '  float m0 = max(d0.x, d0.y);',
+  '  if(m0 < hw0){',
+  '    float w = flowHandoffCascade(waterFieldCascade0, waterFieldCascadeCenter[0], hw0, worldXZ);',
+  '    float e = smoothstep(hw0 * 0.9, hw0, m0);',
+  '    if(e > 0.0) w = mix(w, flowHandoffCascade(waterFieldCascade1, waterFieldCascadeCenter[1], waterFieldCascadeHalfWidth[1], worldXZ), e);',
+  '    return w;',
+  '  }',
+  '  vec2 d1 = abs(worldXZ - waterFieldCascadeCenter[1]);',
+  '  float hw1 = waterFieldCascadeHalfWidth[1];',
+  '  float m1 = max(d1.x, d1.y);',
+  '  if(m1 < hw1){',
+  '    float w = flowHandoffCascade(waterFieldCascade1, waterFieldCascadeCenter[1], hw1, worldXZ);',
+  '    float e = smoothstep(hw1 * 0.9, hw1, m1);',
+  '    if(e > 0.0) w = mix(w, flowHandoffCascade(waterFieldCascade2, waterFieldCascadeCenter[2], waterFieldCascadeHalfWidth[2], worldXZ), e);',
+  '    return w;',
+  '  }',
+  '  return flowHandoffCascade(waterFieldCascade2, waterFieldCascadeCenter[2], waterFieldCascadeHalfWidth[2], worldXZ);',
+  '}',
+  '//What the still surface gives away here: the field weight inside the flowing',
+  '//surface window, faded out over its rim; 0 when there is no flowing surface.',
+  'float flowHandoffWeightAt(vec2 worldXZ){',
+  '  if(flowHandoffEnabled < 0.5) return 0.0;',
+  '  vec2 dw = abs(worldXZ - flowHandoffWindow.xy);',
+  '  float hw = flowHandoffWindow.z;',
+  '  float rim = 1.0 - smoothstep(hw * ' + (1.0 - ARestlessOcean.FlowHandoff.RIM_FRACTION).toFixed(4) + ', hw, max(dw.x, dw.y));',
+  '  if(rim <= 0.0) return 0.0;',
+  '  return rim * flowHandoffFieldWeightAt(worldXZ);',
+  '}'
+].join('\n');
+
+//═══════════════════════════════════════════════════════════════════════════
 // ShoreBreaker — depth-limited breakers swept along the shore (Phase 3a).
 //═══════════════════════════════════════════════════════════════════════════
 //

@@ -109,6 +109,10 @@ vec4 waterFieldAt(vec2 worldXZ){
 //the same chunk the vertex, the CSM caster and the height bake use. After
 //waterFieldAt, which it calls. Bare token so the min build cannot strip it.
 $shore_breaker_functions
+//Phase 4 FlowHandoff (flowHandoffWeightAt): how much of this place belongs to the
+//flowing surface. Spliced from ARestlessOcean.FlowHandoff.GLSL in
+//ocean-wave-field.js; after the waterField samplers, which it reads.
+$flow_handoff_functions
 //Phase 3b ShoreReflection (shoreReflectionHeightAt, shoreReflectionSlopeAt):
 //spliced from ARestlessOcean.ShoreReflection.GLSL in shore-reflection-pass.js.
 $shore_reflection_functions
@@ -1445,6 +1449,17 @@ void main(){
   vec4 dryTestField = waterFieldAt(worldPosition.xz);
   if(dryTestField.a > 0.999 && !shoreSwashCovers(worldPosition.xz, dryTestField)){
     discard;
+  }
+  //Phase 4: flowing water belongs to FlowSurfacePass. Across the hand-off band
+  //the two surfaces dither against the same static blue-noise threshold (the
+  //flowing surface keeps the pixels this one throws away), so they cross-fade
+  //without alpha sorting and never both draw or both miss a pixel. Sampled at
+  //the displaced position, like the dry discard above. 0 when no flowing
+  //surface exists, so creeks stay on the clipmap then.
+  float flowHandoffW = flowHandoffWeightAt(worldPosition.xz);
+  if(flowHandoffW > 0.0){
+    float flowHandoffNoise = (texelFetch(blueNoiseTexture, ivec2(mod(gl_FragCoord.xy, 128.0)), 0).g * 254.0 + 0.5) / 255.0;
+    if(flowHandoffW > flowHandoffNoise) discard;
   }
   //Phase 3a: a ripple floor for the two smallest cascades in very shallow water and
   //on the swash sheet (normals only; the geometry is untouched).

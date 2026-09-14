@@ -73,6 +73,8 @@ vec4 waterFieldAt(vec2 worldXZ){
 }
 
 $wave_mask_functions
+//Phase 4: the still/flowing hand-off, so the caster flattens where the receiver does.
+$flow_handoff_functions
 //Phase 3a: the breakers too, from the same splice as the receiver, so a breaker
 //crest is not self-shadowed by a caster that never rose.
 $shore_breaker_functions
@@ -93,6 +95,10 @@ void main() {
   vec3 waveMaskA;
   vec3 waveMaskB;
   waveMaskCascades(field, waveMaskA, waveMaskB);
+  //Phase 4 — keep in lockstep with water-vertex.glsl.
+  float stillKeep = 1.0 - flowHandoffWeightAt(worldXZ);
+  waveMaskA *= stillKeep;
+  waveMaskB *= stillKeep;
 
   vec3 displacement = vec3(0.0);
   displacement += waveMaskA.x * texture2D(cascadeDisplacementTextures[0], (worldXZ + cascadeSpatialOffsets[0]) / cascadePatchSizes[0]).xyz;
@@ -107,8 +113,8 @@ void main() {
 
   offsetPosition += displacement;
   //Phase 3a — keep in lockstep with water-vertex.glsl (fade keyed on the MAIN camera, via shoreBreakerCamera).
-  offsetPosition.y += shoreBreakerHeightAt(worldXZ, field, shoreBreakerDistanceFade(worldPositionOfVertex.xyz));
-  offsetPosition.y += shoreReflectionHeightAt(worldXZ);
+  offsetPosition.y += stillKeep * shoreBreakerHeightAt(worldXZ, field, shoreBreakerDistanceFade(worldPositionOfVertex.xyz));
+  offsetPosition.y += stillKeep * shoreReflectionHeightAt(worldXZ);
   offsetPosition.y += (field.r - baseHeightOffset);
   gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);
 }

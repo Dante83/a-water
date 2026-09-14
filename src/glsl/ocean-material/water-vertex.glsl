@@ -97,6 +97,9 @@ vec4 waterFieldAt(vec2 worldXZ){
 //and the CPU height bake use. A bare token rather than a comment so the min
 //build's GLSL comment strip cannot eat it.
 $wave_mask_functions
+//Phase 4 FlowHandoff uniforms + flowHandoffWeightAt, spliced from
+//ARestlessOcean.FlowHandoff.GLSL (ocean-wave-field.js).
+$flow_handoff_functions
 //Phase 3a ShoreBreaker uniforms + shoreBreakerEval / shoreBreakerHeightAt,
 //spliced the same way from ARestlessOcean.ShoreBreaker.GLSL (ocean-wave-field.js).
 //Must come after waterFieldAt, which the geometry helper calls.
@@ -154,6 +157,13 @@ void main() {
   vec3 waveMaskA;
   vec3 waveMaskB;
   waveMaskCascades(field, waveMaskA, waveMaskB);
+  //Phase 4: where the water flows, FlowSurfacePass draws it and this surface
+  //discards. Flatten the still waves there first, so nothing pokes through the
+  //flowing surface across the dithered hand-off band. Scaling the masks (not
+  //just the displacement) keeps the fragment normals weighed the same way.
+  float stillKeep = 1.0 - flowHandoffWeightAt(worldXZ);
+  waveMaskA *= stillKeep;
+  waveMaskB *= stillKeep;
 
   vec3 displacement = vec3(0.0);
   displacement += waveMaskA.x * texture2D(cascadeDisplacementTextures[0], (worldXZ + cascadeSpatialOffsets[0]) / cascadePatchSizes[0]).xyz;
@@ -174,12 +184,12 @@ void main() {
   //at breaking. Sampled at the UNDISPLACED worldXZ for the same reason as the
   //field above. Faded with camera distance because clipmap cells outgrow the
   //nearshore wavelength; the fragment carries it further as normals and foam.
-  offsetPosition.y += shoreBreakerHeightAt(worldXZ, field, shoreBreakerDistanceFade(worldPositionOfVertex.xyz));
+  offsetPosition.y += stillKeep * shoreBreakerHeightAt(worldXZ, field, shoreBreakerDistanceFade(worldPositionOfVertex.xyz));
 
   //Phase 3b: the wave the shore sends back (ShoreReflection). A wave-equation
   //field around the camera; zero outside its window, faded out at the rim.
   //Undisplaced worldXZ, like everything else that is a property of the place.
-  offsetPosition.y += shoreReflectionHeightAt(worldXZ);
+  offsetPosition.y += stillKeep * shoreReflectionHeightAt(worldXZ);
 
   //Phase 1b: shift this vertex's rest height from the mesh's baked flat
   //plane (baseHeightOffset) to the real WaterField level at its position —

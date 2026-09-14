@@ -32,6 +32,12 @@
 //  dryMask   1 = the terrain provider SAYS dry here; 0 = wet, or no provider
 //            answer yet (see water-tile-decode-pass.js).
 //
+//PHASE 4 — THE FLOW WEIGHT RIDES IN dryMask. The compose pass packs the
+//still/flowing hand-off weight w (smoothstep over |flow|) into RT0.a: −w on
+//wet texels, 1 + w_nearest on known-dry texels. Every older reader of the
+//channel still gets its answer; the layout and the decode-before-filter rule
+//are in ARestlessOcean.FlowHandoff (ocean-wave-field.js).
+//
 //⚠ Each cascade only sees shores INSIDE ITS OWN FOOTPRINT. Near a cascade edge
 //the SDF overestimates (the true nearest shore may be just outside), so a
 //consumer must crossfade cascades exactly the way waterFieldLevelAt does rather
@@ -82,6 +88,9 @@ ARestlessOcean.Passes.WaterFieldPass = function(oceanGrid){
   this._blitMaterial = null;
   this._readTarget = null;   //single-attachment copy target for RT1 readback
   this.shoreFieldEnabled = true;
+  //Phase 4 still/flowing speed band, m/s (ARestlessOcean.FlowHandoff).
+  this.flowLo = ARestlessOcean.FlowHandoff ? ARestlessOcean.FlowHandoff.FLOW_LO : 0.05;
+  this.flowHi = ARestlessOcean.FlowHandoff ? ARestlessOcean.FlowHandoff.FLOW_HI : 0.25;
   //Cumulative cascade refills (debug). Each is ~12 fullscreen 512² draws with the
   //shore field on. A count rather than a timing: GL is async, and browsers clamp
   //performance.now() coarsely enough that a CPU timing of the submit reads 0.00.
@@ -399,7 +408,9 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
       uFieldB: {value: null},
       uSeedTex: {value: null},
       uTexel: {value: 1.0},
-      uNoShore: {value: 1.0}
+      uNoShore: {value: 1.0},
+      uFlowLo: {value: ARestlessOcean.FlowHandoff ? ARestlessOcean.FlowHandoff.FLOW_LO : 0.05},
+      uFlowHi: {value: ARestlessOcean.FlowHandoff ? ARestlessOcean.FlowHandoff.FLOW_HI : 0.25}
     },
     vertexShader: vertexShader,
     //DRY TEXELS TAKE THE LEVEL OF THEIR NEAREST WATER. The base fill and the
@@ -415,13 +426,18 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
     //level. Where two bodies meet, the level steps at the medial axis between
     //them, under dry ground, where the dry discard removes it anyway. Needs the
     //shore field: with it disabled the old sea-level answer stands.
+    //
+    //PHASE 4: THE FLOW WEIGHT (see ARestlessOcean.FlowHandoff). Packed into
+    //.a — wet −w, known-dry 1 + w of the same nearest wet texel the level comes
+    //from. Standalone flow is zero everywhere, so .a is unchanged there.
     fragmentShader: [
       'precision highp float;',
       resDefine,
       'layout(location = 0) out vec4 gSurface;',
       'layout(location = 1) out vec4 gMotion;',
       'uniform sampler2D uFieldA, uFieldB, uSeedTex;',
-      'uniform float uTexel, uNoShore;',
+      'uniform float uTexel, uNoShore, uFlowLo, uFlowHi;',
+      'float flowWeight(vec4 motion){ return smoothstep(uFlowLo, uFlowHi, length(motion.xy)); }',
       'void main(){',
       '  ivec2 p = ivec2(gl_FragCoord.xy);',
       '  vec4 a = texelFetch(uFieldA, p, 0);',
@@ -430,6 +446,7 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
       '  float side = a.g > 0.0 ? 1.0 : -1.0;',
       '  float dist = s.a > 0.5 ? distance(vec2(p), s.xy) * uTexel : uNoShore;',
       '  float level = a.r;',
+      '  float nearW = 0.0;',
       //The seed lies between a wet and a dry texel (or ON a one-texel strip), so
       //the wet texel nearest to it is always inside its 3x3.
       '  if(!(a.g > 0.0) && s.a > 0.5){',
@@ -442,11 +459,12 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
       '        if(!(w.g > 0.0)) continue;',
       '        vec2 d = vec2(q) - s.xy;',
       '        float dd = dot(d, d);',
-      '        if(dd < bestD){ bestD = dd; level = w.r; }',
+      '        if(dd < bestD){ bestD = dd; level = w.r; nearW = flowWeight(texelFetch(uFieldB, q, 0)); }',
       '      }',
       '    }',
       '  }',
-      '  gSurface = vec4(level, a.g, side * dist, a.a);',
+      '  float packed = a.g > 0.0 ? -flowWeight(b) : (a.a > 0.5 ? 1.0 + nearW : a.a);',
+      '  gSurface = vec4(level, a.g, side * dist, packed);',
       '  gMotion = b;',
       '}'
     ].join('\n'),
@@ -484,6 +502,9 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._drawQuad = function(material, ta
 
 //Jump flood over the scratch field's depth, then write the finished cascade.
 ARestlessOcean.Passes.WaterFieldPass.prototype._composeShoreField = function(c){
+  //Flow band, live (see setFlowBand).
+  this._composeMaterial.uniforms.uFlowLo.value = this.flowLo;
+  this._composeMaterial.uniforms.uFlowHi.value = this.flowHi;
   const RES = ARestlessOcean.Passes.WaterFieldPass.RESOLUTION;
   const depthTex = this._scratch.textures[0];
   let read = 0;
@@ -519,6 +540,14 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._composeShoreField = function(c){
   cu.uTexel.value = c.texel;
   cu.uNoShore.value = 2.0 * c.halfWidth;
   this._drawQuad(this._composeMaterial, c.target);
+};
+
+//Change the still/flowing speed band (m/s). Packed into the cascades at compose
+//time, so it refills them.
+ARestlessOcean.Passes.WaterFieldPass.prototype.setFlowBand = function(lo, hi){
+  this.flowLo = Math.max(0.0, +lo);
+  this.flowHi = Math.max(this.flowLo + 1e-3, +hi);
+  this.invalidate();
 };
 
 //Fixed-resolution cascades — independent of the drawing buffer.
@@ -644,8 +673,10 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.probeAt = function(x, z, opts){
   const texelX = c.centerX - c.halfWidth + (px + 0.5) * c.texel;
   const texelZ = c.centerZ - c.halfWidth + (py + 0.5) * c.texel;
   const pack = function(s, m){
+    const FH = ARestlessOcean.FlowHandoff;
     const out = {level: s[0], depth: s[1], shoreSDF: s[2], dryMask: s[3], cascade: i,
-      texelX: texelX, texelZ: texelZ};
+      texelX: texelX, texelZ: texelZ,
+      flowWeight: FH ? FH.decodeWeight(s[3]) : 0.0};
     if(m){ out.flowX = m[0]; out.flowZ = m[1]; out.energy = m[2]; out.type = m[3]; }
     return out;
   };
@@ -786,7 +817,11 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.compareAgainstLandTerrain = funct
       cpu: cpu,
       gpu: gpu,
       deltaLevel: (cpu && gpu) ? (gpu.level - cpu.level) : null,
-      deltaDepth: (cpu && gpu) ? (gpu.depth - cpu.depth) : null
+      deltaDepth: (cpu && gpu) ? (gpu.depth - cpu.depth) : null,
+      //Phase 4: the current and energy (RT1) against the same oracle.
+      deltaVx: (cpu && gpu) ? (gpu.flowX - (cpu.vx || 0)) : null,
+      deltaVz: (cpu && gpu) ? (gpu.flowZ - (cpu.vz || 0)) : null,
+      deltaEnergy: (cpu && gpu) ? (gpu.energy - (cpu.energy || 0)) : null
     };
   });
 };

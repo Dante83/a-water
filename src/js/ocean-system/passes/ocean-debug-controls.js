@@ -392,6 +392,12 @@ ARestlessOcean.installOceanDebugControls = function(grid){
           console.log('[waterField parity]', r);
         });
       };
+      window.setFlowBand = function(lo, hi){
+        const f = grid.waterFieldPass;
+        if(!f){ console.log('[flow] pass not loaded'); return; }
+        f.setFlowBand(lo, hi);
+        console.log('[flow] still below ' + f.flowLo + ' m/s, flowing above ' + f.flowHi + ' m/s');
+      };
       window.testWaterFieldParity = function(radius, n){
         const f = grid.waterFieldPass;
         if(!f){ console.log('[waterField] pass not loaded'); return; }
@@ -407,7 +413,7 @@ ARestlessOcean.installOceanDebugControls = function(grid){
           }
         }
         Promise.all(jobs).then(function(all){
-          let checked = 0, mismatches = 0;
+          let checked = 0, mismatches = 0, flowing = 0, flowMismatches = 0;
           for(const r of all){
             if(r.deltaLevel === null) continue;
             checked++;
@@ -416,8 +422,16 @@ ARestlessOcean.installOceanDebugControls = function(grid){
               console.log('[waterField parity] MISMATCH at texel centre', r.texelX.toFixed(2), r.texelZ.toFixed(2),
                 'deltaLevel', r.deltaLevel.toFixed(3), 'deltaDepth', r.deltaDepth.toFixed(3));
             }
+            //Phase 4: flow (m/s) and energy, RT1.
+            if(r.cpu && (Math.abs(r.cpu.vx || 0) + Math.abs(r.cpu.vz || 0)) > 0.01) flowing++;
+            if(Math.abs(r.deltaVx) > 0.01 || Math.abs(r.deltaVz) > 0.01 || Math.abs(r.deltaEnergy) > 0.01){
+              flowMismatches++;
+              console.log('[waterField parity] FLOW MISMATCH at texel centre', r.texelX.toFixed(2), r.texelZ.toFixed(2),
+                'dVx', r.deltaVx.toFixed(4), 'dVz', r.deltaVz.toFixed(4), 'dEnergy', r.deltaEnergy.toFixed(4));
+            }
           }
-          console.log('[waterField parity] ' + checked + ' points compared, ' + mismatches + ' mismatches'
+          console.log('[waterField parity] ' + checked + ' points compared, ' + mismatches + ' mismatches; '
+            + flowing + ' flowing, ' + flowMismatches + ' flow/energy mismatches'
             + (checked === 0 ? ' (no wet points in range — try near the lake/ocean)' : ''));
         });
       };
@@ -655,7 +669,10 @@ ARestlessOcean.installOceanDebugControls = function(grid){
       };
 
       //── Shore field (Phase 1c) ────────────────────────────────────────────
-      //showShoreField(cascade, mode, opts)  mode: 'sdf' | 'dry' | 'slope'
+      //showShoreField(cascade, mode, opts)  mode: 'sdf' | 'dry' | 'slope' | 'flow' | 'energy' | 'handoff'
+      //  (Phase 4: flow = hue by direction, brightness by speed up to 3 m/s;
+      //  energy = grey ramp; handoff = the decoded still/flowing weight.)
+      //setFlowBand(lo, hi)  the still/flowing speed band, m/s (refills the field)
       //  Draws one cascade into a top-right canvas (clear of the shader's own
       //  corner panels and top strip). -Z is UP, +X is right, the
       //  camera is the white dot at the centre (the cascades follow it).
@@ -803,6 +820,8 @@ ARestlessOcean.installOceanDebugControls = function(grid){
           + ' Surging = waves slosh up the rock without breaking; that is the "too steep" answer.');
       };
 
+      //m/s at full brightness in showShoreField(ci, 'flow').
+      const FLOW_VIS_MAX = 3.0;
       let shoreCanvas = null, shoreLiveTimer = null;
       window.hideShoreField = function(){
         if(shoreLiveTimer){ clearInterval(shoreLiveTimer); shoreLiveTimer = null; }
@@ -839,7 +858,31 @@ ARestlessOcean.installOceanDebugControls = function(grid){
               const o = (row * res + col) * 4;
               const depth = field.a[o + 1], sdf = field.a[o + 2], dry = field.a[o + 3];
               let r = 0, g = 0, bl = 0;
-              if(mode === 'dry'){
+              if(mode === 'flow' || mode === 'energy' || mode === 'handoff'){
+                //Phase 4. flow: hue = direction, brightness = speed (full at
+                //FLOW_VIS_MAX m/s); energy: grey ramp; handoff: the packed
+                //still/flowing weight, decoded (magenta = flowing, blue = still
+                //wet, dark = dry, dim magenta = a dry bank dilated from flow).
+                const vx = field.b[o], vz = field.b[o + 1], en = field.b[o + 2];
+                const wetT = depth > 0.0;
+                if(mode === 'flow'){
+                  const sp = Math.sqrt(vx * vx + vz * vz);
+                  if(wetT && sp > 1e-4){
+                    const v = Math.min(1.0, sp / FLOW_VIS_MAX);
+                    const hue = (Math.atan2(vz, vx) / (2 * Math.PI) + 1.0) % 1.0;
+                    const k = function(n){ const t = (n + hue * 6) % 6; return 1 - Math.max(0, Math.min(t, 4 - t, 1)); };
+                    r = 255 * v * k(5); g = 255 * v * k(3); bl = 255 * v * k(1);
+                  } else if(wetT){ r = 20; g = 30; bl = 60; }
+                  else { r = 40; g = 36; bl = 32; }
+                } else if(mode === 'energy'){
+                  if(wetT){ r = g = bl = 40 + 215 * en; } else { r = 40; g = 20; bl = 20; }
+                } else {
+                  const wgt = ARestlessOcean.FlowHandoff.decodeWeight(dry);
+                  if(wetT){ r = 60 + 195 * wgt; g = 110 * (1 - wgt); bl = 220; }
+                  else if(wgt > 0.0){ r = 120 * wgt; g = 0; bl = 90 * wgt; }
+                  else { r = 30; g = 28; bl = 26; }
+                }
+              } else if(mode === 'dry'){
                 if(depth > 0.0){ r = 40; g = 110; bl = 220; }
                 else if(dry > 0.5){ r = 200; g = 50; bl = 50; }
                 else if(hasWorld){ r = 110; g = 110; bl = 110; }

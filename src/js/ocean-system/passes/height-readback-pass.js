@@ -126,6 +126,8 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
     fieldReady ? ARestlessOcean.Passes.WaterFieldPass.SAMPLE_GLSL : '',
     fieldReady ? ARestlessOcean.WaveMask.GLSL : '',
     fieldReady ? ARestlessOcean.ShoreBreaker.GLSL : '',
+    //Phase 4: flowing water is not the FFT surface (see FlowHandoff).
+    fieldReady ? ARestlessOcean.FlowHandoff.GLSL : 'float flowHandoffWeightAt(vec2 xz){ return 0.0; }',
     //Phase 3b: the shore reflection rides in the same sum.
     reflectionReady ? ARestlessOcean.ShoreReflection.GLSL : 'float shoreReflectionHeightAt(vec2 xz){ return 0.0; }',
     'void main(){',
@@ -137,6 +139,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
     '  float breakerSpray = 0.0;',
     '  float breakerDir = 0.0;',
     '  float breakerCrest = 0.0;',
+    '  float stillKeep = 1.0;',
     //Phase 3a: the breakers and swash ride in the same sum, so floats and splash see
     //them. Fade 1: the bake covers ±256 m, well inside ShoreBreaker.FADE_NEAR. This is
     //shoreBreakerHeightAt unrolled, because the splash emitter also wants the breaker
@@ -148,6 +151,10 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
       '    vec4 field = waterFieldAt(worldXZ);',
       '    level = field.r;',
       '    waveMaskCascades(field, hfMaskA, hfMaskB);',
+      //Phase 4, in lockstep with water-vertex.glsl.
+      '    stillKeep = 1.0 - flowHandoffWeightAt(worldXZ);',
+      '    hfMaskA *= stillKeep;',
+      '    hfMaskB *= stillKeep;',
       '    bool breakerOn = shoreBreakerActive(field);',
       '    bool swashOn = shoreSwashActive(field);',
       '    if(breakerOn || swashOn){',
@@ -158,12 +165,15 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
       '      breaker = breakerCrest;',
       '      if(swashOn) breaker += shoreSwashEval(worldXZ, field, sPhase, sGrad, sReach, sSwashFoam);',
       '      breakerDir = atan(-sGrad.y, -sGrad.x);',
+      '      breaker *= stillKeep;',
+      '      breakerSpray *= stillKeep;',
+      '      breakerCrest *= stillKeep;',
       '    }',
       '  }'
     ].join('\n') : '',
     '  float dy = 0.0;',
     '  ' + hfSumLines,
-    '  gl_FragColor = vec4(level + dy * hfWhm + breaker + shoreReflectionHeightAt(worldXZ), breakerSpray, breakerDir, breakerCrest);',
+    '  gl_FragColor = vec4(level + dy * hfWhm + breaker + stillKeep * shoreReflectionHeightAt(worldXZ), breakerSpray, breakerDir, breakerCrest);',
     '}'
   ].join('\n');
   const hfUniforms = {
@@ -180,6 +190,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
     Object.assign(hfUniforms, ARestlessOcean.Passes.WaterFieldPass.createSampleUniforms());
     Object.assign(hfUniforms, ARestlessOcean.WaveMask.createUniforms());
     Object.assign(hfUniforms, ARestlessOcean.ShoreBreaker.createUniforms());
+    Object.assign(hfUniforms, ARestlessOcean.FlowHandoff.createUniforms());
   }
   if(reflectionReady) Object.assign(hfUniforms, ARestlessOcean.ShoreReflection.createUniforms());
   this._heightFieldMaterial = new THREE.ShaderMaterial({
@@ -272,6 +283,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.updateHeightField = function(
       ARestlessOcean.WaveMask.writeUniforms(u, p);
       const sbp = grid._shoreBreakerParams;
       if(sbp) ARestlessOcean.ShoreBreaker.writeUniforms(u, sbp);
+      ARestlessOcean.FlowHandoff.writeUniforms(u, grid._flowHandoffState);
       u.hfUseField.value = 1.0;
     }
   }
