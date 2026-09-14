@@ -189,6 +189,12 @@ uniform float meteringSurveyValid;
   uniform sampler2D foamNormalMap;
   uniform float foamStartLevel;
 #endif
+#if($flowing_water)
+  //Phase 4: FlowFoamPass's target — r foam coverage, gb flow (m/s), a energy —
+  //and the square it covers (centre x, centre z, half-width; 0 = none).
+  uniform sampler2D flowFoamMap;
+  uniform vec3 flowFoamWindow;
+#endif
 
 //Foam-texture scroll velocity (m/s). Driven from a randomized wind vector in
 //ocean-grid.js so foam drifts with the prevailing wind direction.
@@ -1816,6 +1822,34 @@ void main(){
   //Scroll direction is foamScrollVelocity (random wind-derived in ocean-grid.js).
   vec2 foamTextureUV  = (worldPosition.xz + t * foamScrollVelocity) / 2.0;
   vec2 foamTextureUV2 = (vec2(-worldPosition.z, worldPosition.x) + t * foamScrollVelocity) / 3.0;
+  //Weight of the second foam layer. 0.5 on the ocean: the plain average of two
+  //differently oriented tiles, which breaks up the repeat.
+  float foamLayerMix = 0.5;
+  #if($flowing_water)
+    //Phase 4: two-phase flow-map advection (Vlachos, Portal 2). Both layers
+    //scroll WITH the current, each resetting once per period, half a period
+    //apart; each is weighted to zero exactly at its own reset, so the texture
+    //moves at the water speed without ever stretching past half a period of
+    //travel. The foam COVERAGE is advected for real by FlowFoamPass; these
+    //layers only carry the bubble grain along with it.
+    vec4 flowFoamSample = vec4(0.0);
+    float flowFoamInside = 0.0;
+    if(flowFoamWindow.z > 0.0){
+      vec2 ffOffset = abs(worldPosition.xz - flowFoamWindow.xy);
+      float ffEdge = max(ffOffset.x, ffOffset.y);
+      flowFoamInside = 1.0 - smoothstep(0.9 * flowFoamWindow.z, flowFoamWindow.z, ffEdge);
+      if(flowFoamInside > 0.0){
+        flowFoamSample = texture2D(flowFoamMap, (worldPosition.xz - flowFoamWindow.xy) / (2.0 * flowFoamWindow.z) + 0.5);
+      }
+    }
+    const float FLOW_PHASE_PERIOD = 1.0;
+    vec2 flowVelocity = flowFoamSample.gb;
+    float flowPhaseA = fract(t / FLOW_PHASE_PERIOD);
+    float flowPhaseB = fract(flowPhaseA + 0.5);
+    foamTextureUV  = (worldPosition.xz - flowVelocity * flowPhaseA * FLOW_PHASE_PERIOD) / 2.0;
+    foamTextureUV2 = (worldPosition.xz - flowVelocity * flowPhaseB * FLOW_PHASE_PERIOD) / 2.0 + vec2(0.37, 0.61);
+    foamLayerMix = abs(1.0 - 2.0 * flowPhaseA);
+  #endif
 
   #if($foam_enabled)
     //Foam is a top-surface effect, so the WHOLE foam system is gated off when the
@@ -1829,6 +1863,10 @@ void main(){
     //Crest-style accumulation + wind advection + dt-scaled decay, so no live
     //turbulence boost is needed. The shore branch still adds its turbulence-
     //driven boost on top for the breaker-line near terrain.
+    #if($flowing_water)
+    //Phase 4: the flowing surface's foam is FlowFoamPass's accumulated coverage.
+    foamAmount = flowFoamInside * flowFoamSample.r;
+    #else
     foamAmount = fftFoamAmount;
     //Phase 3a: foam on the breaking front and the bore behind it, scaled by the
     //dissipated fraction 1 - Kr^2 (see ShoreBreaker). Replaces the shoreFade
@@ -1862,6 +1900,7 @@ void main(){
         foamAmount = max(foamAmount, shoreBoost);
       }
     }
+    #endif
     } //end if(underwaterFactor < 0.5) — foam system off below the surface
   #else
     float foamAmount = 0.0;
@@ -2535,10 +2574,12 @@ void main(){
     if(underwaterFactor < 0.5){
     //Two-layer foam sampling: average a 90°-rotated, differently-scaled second sample
     //with the first to break up the repeating brick pattern (same trick as the large normal map).
-    vec3  foamAlbedo = 0.5 * (texture2D(foamDiffuseMap, foamTextureUV).rgb  + texture2D(foamDiffuseMap, foamTextureUV2).rgb);
-    float foamMask   = 0.5 * (texture2D(foamOpacityMap, foamTextureUV).r    + texture2D(foamOpacityMap, foamTextureUV2).r);
-    //Average packed normals in [0,1] space, then decode once
-    vec2  foamNMXZ   = (texture2D(foamNormalMap, foamTextureUV).xy + texture2D(foamNormalMap, foamTextureUV2).xy) - 1.0;
+    //foamLayerMix is 0.5 on the ocean (the plain average) and the two-phase
+    //flow weight on flowing water.
+    vec3  foamAlbedo = mix(texture2D(foamDiffuseMap, foamTextureUV).rgb, texture2D(foamDiffuseMap, foamTextureUV2).rgb, foamLayerMix);
+    float foamMask   = mix(texture2D(foamOpacityMap, foamTextureUV).r,   texture2D(foamOpacityMap, foamTextureUV2).r,   foamLayerMix);
+    //Blend packed normals in [0,1] space, then decode once
+    vec2  foamNMXZ   = 2.0 * mix(texture2D(foamNormalMap, foamTextureUV).xy, texture2D(foamNormalMap, foamTextureUV2).xy, foamLayerMix) - 1.0;
 
     //Foam normal: perturb the FFT surface normal with the foam normal map.
     vec3 foamSurfaceNormal = normalize(displacedNormal + vec3(foamNMXZ.x, 0.0, foamNMXZ.y) * 0.5);
@@ -2575,6 +2616,16 @@ void main(){
     const float foamGrainFloor   = 0.5;
     float foamShape = smoothstep(foamShapeFeather, 0.5, foamAmount);
     float foamBlend = foamShape * mix(foamGrainFloor, 1.0, foamMask);
+    #if($flowing_water)
+      //Phase 4: on flowing water the bubble texture is NOT world-locked (the
+      //two-phase layers ride the current), which was the whole objection above,
+      //so Crest's sliding black point is right here after all: a bubble shows
+      //where the grain beats 1 - coverage. Thin foam breaks into flecks and
+      //streaks that travel; dense foam closes up into whitewater.
+      const float FLOW_FOAM_FEATHER = 0.12;
+      foamBlend = smoothstep(1.0 - foamAmount - FLOW_FOAM_FEATHER, 1.0 - foamAmount + FLOW_FOAM_FEATHER, foamMask)
+                * smoothstep(0.0, 0.05, foamAmount);
+    #endif
     dbgFoamColor  = foamDiffuse + foamAmbient;
     dbgFoamMask   = foamMask;
     dbgFoamBlend  = foamBlend;
@@ -3186,6 +3237,20 @@ void main(){
     vec3 dbgCol = vec3(clamp(0.5 + dbgEta, 0.0, 1.0));
     gl_FragColor = vec4(mix(dbgCol * 0.6, dbgCol * vec3(0.8, 0.9, 1.1), dbgIn), 1.0);
   }
+  #if($flowing_water)
+  //Mode 63 (flowing surface only): FlowFoamPass coverage, grayscale; blue tint
+  //outside the foam window. Mode 64: the current it carries, hue = direction,
+  //brightness = speed (full at 3 m/s).
+  else if(oceanShadowDebugMode == 63){
+    gl_FragColor = vec4(mix(vec3(0.0, 0.0, 0.25), vec3(flowFoamSample.r), flowFoamInside), 1.0);
+  }
+  else if(oceanShadowDebugMode == 64){
+    float dbgSpeed = clamp(length(flowVelocity) / 3.0, 0.0, 1.0);
+    float dbgHue = atan(flowVelocity.y, flowVelocity.x) / 6.2831853 + 0.5;
+    vec3 dbgRgb = clamp(abs(fract(dbgHue + vec3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0) - 1.0, 0.0, 1.0);
+    gl_FragColor = vec4(dbgRgb * dbgSpeed, 1.0);
+  }
+  #endif
 
   //Debug overlays — only drawn when oceanShadowDebugMode is non-zero. Bottom-
   //left: raw jacobian mapped [0,2] → [0,1] (grey=1.0=flat, black=0=folded,

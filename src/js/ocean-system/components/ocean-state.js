@@ -104,6 +104,18 @@ AFRAME.registerComponent('ocean-state', {
     //decodes real per-position level/depth from its tiles instead of the flat
     //height_offset plane.
     'terrain_provider': {type: 'string', default: 'auto'},
+    //Phase 4 flowing water (<ocean-river>): creeks and rivers from a-faraway-land's
+    //hydrology, drawn by FlowSurfacePass. Needs terrain_provider a-faraway-land.
+    //  flow_low/high  still -> flowing speed band (m/s) of ARestlessOcean.FlowHandoff
+    //  foam_*         FlowFoamPass: decay time (s) and source gains (see its header)
+    'river_enabled': {type: 'bool', default: true},
+    'river_flow_low': {type: 'number', default: 0.05},
+    'river_flow_high': {type: 'number', default: 0.25},
+    'river_foam_decay': {type: 'number', default: 6.0},
+    'river_foam_convergence': {type: 'number', default: 1.5},
+    'river_foam_bank': {type: 'number', default: 0.6},
+    'river_foam_step': {type: 'number', default: 1.2},
+    'river_foam_fall': {type: 'number', default: 0.25},
     'jonswap_gamma': {type: 'number', default: 3.3},
     'jonswap_fetch': {type: 'number', default: 100000.0},
     //Directional spreading turbulence: 0 = pure cos²(θ) (waves aligned to wind),

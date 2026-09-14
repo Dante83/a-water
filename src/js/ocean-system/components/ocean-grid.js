@@ -931,9 +931,10 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //The fragment carries the same ShoreBreaker splice (normals, foam, debug).
   function buildFragmentShader(atmEnabled, atmFunctions, flowing){
     //The flowing variant has no caustics (its bed is centimetres deep and the
-    //projector is the ocean's) and, until its foam RT lands, no ocean foam.
+    //projector is the ocean's). Its foam path reads FlowFoamPass instead of the
+    //ocean's fold and shore terms (see $flowing_water in water-shader.glsl).
     return ARestlessOcean.Materials.Ocean.waterMaterial.fragmentShader(
-        flowing ? false : self.causticsEnabled, flowing ? false : self.foamEnabled, atmEnabled, atmFunctions)
+        flowing ? false : self.causticsEnabled, self.foamEnabled, atmEnabled, atmFunctions)
       .replace(/\$flowing_water/g, flowing ? '1' : '0')
       .replace('$shore_breaker_functions', function(){ return ARestlessOcean.ShoreBreaker.GLSL; })
       .replace('$flow_handoff_functions', function(){ return ARestlessOcean.FlowHandoff.GLSL; })
@@ -1248,7 +1249,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.shoreReflectionEnabled = true;
   //Phase 4 flowing-water surface (creeks, rivers). Built lazily in tick once
   //a-faraway-land is present; see FlowSurfacePass.
-  this.flowSurfaceEnabled = true;
+  this.flowSurfaceEnabled = data.river_enabled !== false;
   this.flowSurfacePass = null;
   if(ARestlessOcean.Passes && ARestlessOcean.Passes.ShoreReflectionPass && ARestlessOcean.ShoreReflection.ENABLED){
     this.shoreReflectionPass = new ARestlessOcean.Passes.ShoreReflectionPass(this);
@@ -1323,6 +1324,9 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     mat.vertexShader = buildVertexShader(atmReady, false, true);
     mat.fragmentShader = buildFragmentShader(atmReady, self.atmosphereFunctionsGLSL, true);
     mat.fog = true;
+    //The flowing variant's own foam + flow target (FlowFoamPass).
+    mat.uniforms.flowFoamMap = {value: null};
+    mat.uniforms.flowFoamWindow = {value: new THREE.Vector3(0, 0, 0)};
     return mat;
   };
   //Register a water mesh built outside this constructor into the per-frame
@@ -1625,6 +1629,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     }
     if(self.flowSurfacePass){
       self.flowSurfacePass.tick({
+        timeMs: time,
         cameraX: self.globalCameraPosition.x,
         cameraZ: self.globalCameraPosition.z,
         heightOffset: self.heightOffset,

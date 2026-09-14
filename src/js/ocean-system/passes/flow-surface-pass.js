@@ -11,16 +11,17 @@
 //the per-texel flow field. Its creeks are ~14 m wide at 1 m field texels, and
 //their level is a staircase that falls one metre at a time down the bed. So the
 //geometry is two camera-following grids whose vertices read the field level,
-//and everything the material does is in world space (level-gradient normals now;
-//flow-map advection and wave profile buffers next). Phase 5's ribbons replace
-//only the geometry.
+//and everything the material does is in world space (level-gradient normals,
+//two-phase flow-map advection, and wave profile buffers next). Phase 5's ribbons
+//replace only the geometry.
 //
 //THE MATERIAL
 //A clone of the water material with the $flowing_water variant
 //(OceanGrid.createFlowingWaterMaterial), registered with the grid so it gets
 //the whole per-frame uniform stream. The variant compiles out the six FFT cascade
-//samplers, caustics, ocean foam and the ocean CSM, which is what makes room for
-//flow at all: the ocean program is at 31 of 32 texture units.
+//samplers, caustics, the ocean's fold/shore foam drive and the ocean CSM, which
+//is what makes room for flow at all: the ocean program is at 31 of 32 texture
+//units. Its foam and current come from FlowFoamPass (one sampler for both).
 //
 //GEOMETRY AND LOD (declared here, per the cross-cutting rules)
 //  near  1 m cells  over ±128 m, vertices on WaterField cascade 0 texel centres
@@ -42,6 +43,7 @@ ARestlessOcean.Passes.FlowSurfacePass = function(oceanGrid){
   this.enabled = true;
   this._ready = false;
   this._state = {enabled: false, centerX: 0, centerZ: 0, halfWidth: 0};
+  this.foamPass = null;
 };
 
 //cell: metres per grid cell; halfWidth: metres; hole: half-width of the square
@@ -114,12 +116,44 @@ ARestlessOcean.Passes.FlowSurfacePass.prototype.init = function(scene){
     og.registerOceanMesh(key, mesh);
     this.rings.push({spec: spec, mesh: mesh, key: key});
   }
+  //The foam accumulation target this surface's foam and flow come from.
+  if(ARestlessOcean.Passes.FlowFoamPass){
+    this.foamPass = new ARestlessOcean.Passes.FlowFoamPass(og);
+    this.foamPass.init();
+    //<ocean-river> knobs (ocean-state.js); undefined keeps the pass defaults.
+    const d = og.data || {};
+    const fp = this.foamPass;
+    if(d.river_foam_decay !== undefined) fp.decayTime = d.river_foam_decay;
+    if(d.river_foam_convergence !== undefined) fp.convergenceGain = d.river_foam_convergence;
+    if(d.river_foam_bank !== undefined) fp.bankShearGain = d.river_foam_bank;
+    if(d.river_foam_step !== undefined) fp.stepGain = d.river_foam_step;
+    if(d.river_foam_fall !== undefined) fp.fallGain = d.river_foam_fall;
+  }
+  //The still/flowing speed band is packed into the field (refills it).
+  const cfg = og.data || {};
+  if(og.waterFieldPass && cfg.river_flow_low !== undefined && cfg.river_flow_high !== undefined
+     && (cfg.river_flow_low !== og.waterFieldPass.flowLo || cfg.river_flow_high !== og.waterFieldPass.flowHi)){
+    og.waterFieldPass.setFlowBand(cfg.river_flow_low, cfg.river_flow_high);
+  }
   this._ready = true;
 };
 
-//ctx: {cameraX, cameraZ, heightOffset, enabled}
+//ctx: {timeMs, cameraX, cameraZ, heightOffset, enabled}
 ARestlessOcean.Passes.FlowSurfacePass.prototype.tick = function(ctx){
   this.enabled = ctx.enabled !== false;
+  const og = this.oceanGrid;
+  const fp = this.foamPass;
+  if(fp && this.enabled && og.waterFieldPass && og.waterFieldPass.cascades.length === 3){
+    const mj = og._landDirector && og._landDirector.mapJson;
+    fp.tick({
+      timeMs: ctx.timeMs,
+      cameraX: ctx.cameraX,
+      cameraZ: ctx.cameraZ,
+      fieldCascade: og.waterFieldPass.cascades[0],
+      waterfalls: (mj && mj.simulation && mj.simulation.waterfalls) || null
+    });
+  }
+  const foamTex = fp ? fp.texture() : null;
   for(let r = 0; r < this.rings.length; ++r){
     const ring = this.rings[r];
     const cell = ring.spec.cell;
@@ -131,6 +165,10 @@ ARestlessOcean.Passes.FlowSurfacePass.prototype.tick = function(ctx){
     ring.mesh.visible = this.enabled;
     ring.centerX = cx;
     ring.centerZ = cz;
+    const u = ring.mesh.material.uniforms;
+    u.flowFoamMap.value = foamTex;
+    if(foamTex) u.flowFoamWindow.value.set(fp.centerX, fp.centerZ, ARestlessOcean.Passes.FlowFoamPass.HALF_WIDTH);
+    else u.flowFoamWindow.value.set(0, 0, 0);
   }
   const outer = this.rings[this.rings.length - 1];
   this._state.enabled = this._ready && this.enabled;
@@ -157,6 +195,7 @@ ARestlessOcean.Passes.FlowSurfacePass.prototype.dispose = function(){
     ring.mesh.geometry.dispose();
     ring.mesh.material.dispose();
   }
+  if(this.foamPass){ this.foamPass.dispose(); this.foamPass = null; }
   this.rings.length = 0;
   this._ready = false;
   this._state.enabled = false;
