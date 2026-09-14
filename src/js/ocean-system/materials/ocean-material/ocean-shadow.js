@@ -141,6 +141,8 @@ ARestlessOcean.Materials.Ocean.oceanShadowMaterial = {
     '//Phase 3a: the breakers too, from the same splice as the receiver, so a breaker',
     '//crest is not self-shadowed by a caster that never rose.',
     '$shore_breaker_functions',
+    '//Phase 3b: the shore reflection, same reason.',
+    '$shore_reflection_functions',
 
     'void main() {',
       'vec3 offsetPosition = position;',
@@ -171,6 +173,7 @@ ARestlessOcean.Materials.Ocean.oceanShadowMaterial = {
       'offsetPosition += displacement;',
       '//Phase 3a — keep in lockstep with water-vertex.glsl (fade keyed on the MAIN camera, via shoreBreakerCamera).',
       'offsetPosition.y += shoreBreakerHeightAt(worldXZ, field, shoreBreakerDistanceFade(worldPositionOfVertex.xyz));',
+      'offsetPosition.y += shoreReflectionHeightAt(worldXZ);',
       'offsetPosition.y += (field.r - baseHeightOffset);',
       'gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);',
     '}',

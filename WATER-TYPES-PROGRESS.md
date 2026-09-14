@@ -8,6 +8,213 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
+## Phase 3b — shore reflection — **PARKED** (2026-09-13)
+
+Branch `phase-3b-reflection`, off `multi-water-types` at `1efd476`.
+
+> **Parked by Dante, 2026-09-13.** Reasons:
+> - It costs 0.58 ms/frame on the reference iGPU.
+> - On the current two-way FFT spectrum (round 2 below) a reflection cannot read.
+> - Making the sea one-way would change the ocean's look and the buoyancy feel, so
+>   Dante kept the two-way sea.
+>
+> What "parked" means in the code:
+> - `ARestlessOcean.ShoreReflection.ENABLED = false` (in `shore-reflection-pass.js`).
+> - No pass is constructed: no render targets, no self-test, no step.
+> - Every consumer splices `STUB_GLSL` (no sampler, so the water program stays at
+>   its old unit count).
+> - Verified headless: pass null, no sampler in the water program, no shader errors,
+>   60 fps.
+>
+> To revive: flip `ENABLED`, and consider the one-sided spectrum (round 2).
+**GLSL changed: run `create-shader.py`** (it regenerates `water-shader.js` and
+`ocean-shadow.js`).
+
+### First task: oblique incidence (spike, committed d098492)
+
+The measurements and tables are in `NEARSHORE-WAVES.md` § 5.9. They changed the design:
+- **The mirror law emerges.** Direction error is ≤ 0.3° at shore angles 0/20/45° and
+  incidence 0/30/60°.
+- **§ 8's Dirichlet emitter is the wrong shore.** It sends any *simulated* wave back
+  inverted at full strength (phase 175°, |R| = 1), so reflections would ring forever
+  between shores.
+- **Replaced by a Robin (impedance) shore with α = (1 − Kr)/(1 + Kr).**
+  - α is spread over the staircase faces (× 1/(|nx| + |ny|)).
+  - The shore is driven by the incident's **shoreward characteristic** only. The
+    total-field source also cancelled 65–100% of an offshore-going incident; this
+    one leaks 2–6%.
+  - It reflects at Kr 0.498–0.503 at every angle tested.
+- **Sloping bed.** The medium is c(h; Tp) in the constant-amplitude form
+  η_tt = c∇·(c∇η), with the shore on the h_min = L0/18π contour. The deep gauge
+  reads Kr 0.49 for a set 0.5, on both 1:10 and 30° slopes.
+- **No separate absorber.** A Kr ≈ 0 shore absorbs by itself, including other shores'
+  reflections.
+
+### What shipped in step 1
+
+- **`ARestlessOcean.Passes.ShoreReflectionPass` + `ARestlessOcean.ShoreReflection`**,
+  in the new `src/js/ocean-system/passes/shore-reflection-pass.js`. The file header
+  has the full model. Registered in `make-combined.py` and in the four example
+  pages (gitignored; backups in the session scratchpad).
+  - **Grid.** 512² RGBA32F ping-pong, state = (η, v, incident last step, valid).
+    dx = L0/30 in quarter-octave steps, clamped to 0.25–4 m: 1.68 m and a ±430 m
+    window on island-sholes. World-snapped; it re-centres by integer-cell shift
+    once the camera is 25% of the half-width out.
+  - **Medium bake.** (c, α·cosθ·faceScale, source gain, faceScale) per cell, from
+    the WaterField. It re-bakes on a shift, on a field refill, and at least once a
+    second.
+    - Shore normal: shoreSDF central differences on cascade 1.
+    - Kr: Battjes, with ξ from h/s.
+    - cosθ: wind direction against the normal, floored at 0.35.
+  - **Incident.** The unmasked cascades × WaveMask's fetch part, mip-filtered to
+    dx, smooth-faded out below 5–10 cells per wavelength.
+  - **Breaking.** Where |η| > max(0.39·h, Hs/2), damping grows with the excess.
+    Without it, the steep-island ↔ oval-island strait rang up to 3–4 m of reflected
+    height in 1–3 m of water. The Hs/2 floor is flagged as a look choice: a pure
+    McCowan cap on the ~1 m shore contour clipped a cliff's single reflection to a
+    third.
+  - **Precision self-test** at init (100 × +0.001 through a float target). It
+    disables the layer on the § 5.8 half-precision drivers.
+  - **Enabled with the breakers** (same terrain-provider rule), when Hs ≥ 0.1 m.
+- **Consumers.** `$shore_reflection_functions` is a new token in `water-vertex.glsl`,
+  `water-shader.glsl` and `ocean-shadow-vertex.glsl`, spliced at runtime like
+  ShoreBreaker. There is a stub if the file is missing.
+  - Vertex: height.
+  - Fragment: slope from central differences one cell apart, added to the normal
+    and the macro normal, plus debug mode 62.
+  - CSM caster: height.
+  - Height bake: `.r`.
+  - Camera submersion probe: the breaker probe texel.
+  - The rim fade matches the sponge.
+- **Console:** `setShoreReflectionEnabled`, `setShoreReflectionHeightScale`,
+  `shoreReflectionStats()`.
+
+### Verified headless (island-sholes-ocean.html, scratch regen served via CDP Fetch)
+
+- **4090 / ANGLE GL:** no shader or program errors, 60 fps, self-test 10.10004.
+  The standalone `islands.html` is inactive with its uniform at 0. Its 8 "Unable to
+  serialize Texture" warnings are pre-existing (same count on the base code).
+- **Reflections come from the right shores.** The steep island (1393, 2524) radiates
+  outgoing rings, and the gentle oval and long islands send back essentially nothing.
+- **Shore cells, over 15 s:** RMS(η)/RMS(incident) tracks each cell's own Kr.
+  Bins Kr 0–0.1 / 0.1–0.2 / 0.2–0.35 / 0.35–0.5 / 0.5–0.7 / 0.7–0.9 / 0.9–1 give
+  medians **0.08 / 0.18 / 0.29 / 0.47 / 0.52 / 0.63 / 0.66**. The top bins read low
+  because part of the FFT incident travels away from those shores.
+- **Stable for 100 s.** Strait RMS 0.14–0.22 m, max ≤ 2.1 m (Hs 2.94 m). Lee side
+  ~0.05 m. No non-finite cells.
+- **GPU cost** (timer query):
+  - RTX 4090: step 0.016 ms, bake 0.014 ms.
+  - **Radeon 7800X3D iGPU (RADV): step 0.58 ms/frame, bake 0.26 ms** (~1/s plus
+    shifts).
+  - That is over the spike's 0.24 ms because of the medium fetch and branching.
+    Skipping the step when the window has no shore cells is the obvious saving (not
+    done).
+
+### ⚠ Outstanding — needs Dante
+
+1. Run `create-shader.py`, then look at `examples/demos/island-sholes-ocean.html` near
+   the steep island. Try `setOceanShadowDebug(62)`, and A/B with
+   `setShoreReflectionEnabled(false)`. Does the cross-hatch read as a real coast or as
+   noise? Is the strait's clapotis too lively?
+2. The acceptance line in WATER-TYPES.md (§ Verification, Phase 3):
+   - a steep shore at 12 m/s shows outgoing crests at about half the incident;
+   - a 1:20 beach shows none;
+   - oblique waves reflect at the mirror angle.
+
+   Only the spike and the Kr-ratio check are numbers so far.
+
+### Browser round 1 (2026-09-13) — "strongest near rocks?", "toggle changes little"
+
+- **Fixed: toggling off reset the sim.** Off → on restarted from flat water, and the
+  field took tens of seconds to rebuild. Off now freezes the field; only a new cell
+  size or a camera jump out of the window clears it.
+- **Fixed: a dead band at the waterline.** Cells shallower than h_min (0.92 m) were
+  held at 0, which made the grey line along the rocks in debug 62. They are now
+  filled each step from their wet neighbours. RMS reflected height against shore
+  distance around the steep island, before → after:
+
+  | shore distance | 0–2 m | 2–4 m | 4–8 m | 8–16 m | 16–32 m | 32–64 m | 64–128 m | 128–256 m |
+  |---|---|---|---|---|---|---|---|---|
+  | before | 0.17 | 0.34 | 0.32 | 0.25 | 0.19 | 0.11 | 0.08 | 0.06 |
+  | after | **0.44** | 0.35 | 0.32 | 0.25 | 0.19 | 0.11 | 0.08 | 0.06 |
+
+  The reflection now peaks at the rocks.
+- **Not a bug: the lit render barely changes.**
+  - In the steep ↔ oval strait the reflected height exceeds ±0.5 m (0.64 m RMS 25 m
+    off the rock). It is carried by the ~52 m peak waves, whose slope (~0.06) is
+    lost under the 2.9 m Hs chop.
+  - The south shore Dante looked at is side-on to the −X waves, so it reflects
+    little by design.
+  - Halving dx (L0/60, window ±215 m) let the 8 m cascade in and changed nothing
+    visible: that band holds too little energy.
+- **Open question for Dante:** accept a physically subtle reflection, or add cues
+  driven by it (clapotis foam, surge spray on rock faces).
+
+### Browser round 2 (2026-09-13) — "should go back out and interfere; not seeing it"
+
+Measured headless with a per-frame transect along the normal of a Kr 1 rock face on
+the steep island (1440.5, 2362.1), normal (0.99, −0.10). Every frame, a sync read
+of four heights over 160 m at 1 m spacing:
+- rendered masked FFT
+- breaker + swash
+- reflection
+- the unmasked incident the sim is driven by
+
+Direction comes from the peak-band phase gradient.
+
+**⚠ Root cause, pre-existing (not 3b): the FFT ocean is not directional.**
+- `h_0-pass.glsl`'s spreading is `mix(d_k * d_k, 0.5, turb)`, with the same value
+  for k and −k. So every wave has an equal twin travelling against the wind.
+- In open water the space-time diagram is a chevron cross-hatch: crests run both
+  ways. The peak band's phase gradient is incoherent: apparent L 100–1400 m and
+  30–100 m/s.
+- Crest's function is **Pos**CosSquared (the downwind half only); the "Pos" was
+  lost in the port.
+- With a sea that already contains its own "reflection", a real reflection cannot
+  read as a wave going back out.
+
+**The fix, prototyped only (scratch h_0-pass.js served headless, NOT committed):**
+
+    float spread_k       = mix(d_minus_k > 0.0 ? 1.41421356 * d_minus_k * d_minus_k : 0.0, 0.5, turb);
+    float spread_minus_k = mix(d_k       > 0.0 ? 1.41421356 * d_k       * d_k       : 0.0, 0.5, turb);
+
+- **Why the halves are swapped:** `h_k-pass` evolves h₀(k)·e^{+iωt}, so the downwind
+  half must sit on h₀(−k). Putting it on h₀(k) was measured travelling upwind.
+- **√2** keeps the height variance (2cos⁴ averaged over the circle) the same when
+  turb = 0.
+- **Measured in open water:** crests run one way only. Peak band L 51 m at
+  9.3 m/s (deep theory 9.0 m/s); short band 6.9 m/s. Coherence 1.00.
+- `OceanWaveField.buildGerstnerComponents` (the buoyancy twin) has the same
+  symmetric spread and needs the same change.
+
+**With the fixed spectrum, at the rock:**
+- The incident arrives (−s, L 55 m, 10 m/s), and **the reflection travels back
+  out (+s)**.
+- Variance of the total surface, reflection on / off, against distance from the
+  rock: **3.49 (rock) → 0.93 (node, 10 m) → 1.63 (antinode, 18 m) → 1.04 (28 m)
+  → 1.22 (44 m)**, then noise.
+- In the space-time diagram the incoming diagonal crests turn into a standing
+  checkerboard within ~40 m of the rock. That is the clapotis Dante expected.
+- It fades past ~50 m: the reflection there carries 5–25% of the incident
+  variance (convex island, spreading reflection).
+- Near the rock the reflection variance is ~5× the rendered incident's, because
+  the FFT is TMA depth-masked there and the reflection is relative to the deep
+  incident. Worth a look once the spectrum is fixed.
+
+**Decision for Dante:**
+1. Take the one-sided spectrum. It changes the whole ocean's look: crests visibly
+   travel downwind, and the height stays calibrated.
+2. After that, reassess the reflection visually before any more tuning.
+
+### Not done / next
+
+- Skip the step when no shore cells are in the window (iGPU budget).
+- Kr above ξ 2.5 is Battjes extrapolated (capped at 1). Rough and permeable rock
+  should reflect less.
+- Phase 8's boat, rain and avatar ripples can inject into the same field.
+
+---
+
 ## Phase 3a — shorelines that break — **landed, browser-checked, merged** (2026-09-13)
 
 Branch `phase-3a-breakers`, off `multi-water-types` at `9cfb079`. Step 1 is the

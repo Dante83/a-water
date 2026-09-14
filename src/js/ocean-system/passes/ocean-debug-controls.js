@@ -572,6 +572,57 @@ ARestlessOcean.installOceanDebugControls = function(grid){
         return o;
       };
 
+      //── Shore reflection (Phase 3b) ───────────────────────────────────────
+      //setShoreReflectionEnabled(false) -> no reflected wave anywhere (geometry,
+      //  normals, CSM caster, height bake, probe). A/B it.
+      //setShoreReflectionHeightScale(s) -> look knob (1 = physical).
+      //  setOceanShadowDebug(62) shows the reflected height and the window.
+      //shoreReflectionStats() -> grid, sea-derived cell size, step count and a
+      //  synchronous read of the field: RMS / max height, how many cells are
+      //  simulated, how many are shore cells and the Kr spread along them.
+      window.setShoreReflectionEnabled = function(on){
+        grid.shoreReflectionEnabled = !!on;
+        console.log('[shoreReflection] ' + (grid.shoreReflectionEnabled ? 'ON' : 'OFF'));
+      };
+      window.setShoreReflectionHeightScale = function(v){
+        if(grid.shoreReflectionPass) grid.shoreReflectionPass.heightScale = +v;
+      };
+      window.shoreReflectionStats = function(){
+        const pass = grid.shoreReflectionPass;
+        if(!pass){ console.log('[shoreReflection] pass not loaded'); return null; }
+        const r = pass.readback();
+        const out = {supported: pass.supported, selfTestValue: pass.selfTestValue, active: pass.active,
+          steps: pass.stepCount, bakes: pass.bakeCount, centre: [pass.centerX, pass.centerZ], grid: pass.grid};
+        if(r){
+          let wet = 0, shore = 0, sum2 = 0, max = 0, bad = 0;
+          const kr = [];
+          const n = r.res;
+          for(let j = 0; j < n; ++j) for(let i = 0; i < n; ++i){
+            const o = (j * n + i) * 4;
+            const eta = r.state[o];
+            if(!isFinite(eta)){ bad++; continue; }
+            if(r.medium[o] <= 0) continue;
+            wet++;
+            sum2 += eta * eta;
+            max = Math.max(max, Math.abs(eta));
+            if(r.state[o + 3] > 0.5){
+              shore++;
+              //med.g = α cosθ faceScale and med.a = faceScale; cosθ is not stored, so this is
+              //Kr as the impedance sees it (cosθ folded in).
+              const a = r.medium[o + 1] / Math.max(r.medium[o + 3], 1e-6);
+              kr.push((1 - a) / (1 + a));
+            }
+          }
+          kr.sort(function(a, b){ return a - b; });
+          const q = function(f){ return kr.length ? +kr[Math.min(kr.length - 1, Math.floor(f * kr.length))].toFixed(3) : null; };
+          Object.assign(out, {simulatedCells: wet, shoreCells: shore, nonFinite: bad,
+            rmsHeight: wet ? +Math.sqrt(sum2 / wet).toFixed(4) : 0, maxHeight: +max.toFixed(4),
+            shoreKrImpedance: {p10: q(0.1), median: q(0.5), p90: q(0.9)}});
+        }
+        console.log('[shoreReflection]', JSON.stringify(out));
+        return out;
+      };
+
       //── Wave masks (Phase 2) ──────────────────────────────────────────────
       //setWaveMaskEnabled(false) -> every cascade at full weight everywhere
       //  (the pre-Phase-2 ocean), on the GPU and the CPU twin alike. A/B it.

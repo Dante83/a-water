@@ -230,6 +230,233 @@ function makeSim(mode, nx, ny, bedArr, initState, initFlux, unis){
   };
 }
 
+// ── test: oblique incidence in 2D (Phase 3b first task) ─────────────────────
+// A straight shore at `wall` degrees to the grid, an infinite plane-wave packet
+// arriving at `theta` degrees from the shore normal. Only the scattered field is
+// simulated. Emitter cells (wet, shore distance < band*dx) are Dirichlet-forced to
+// Kr * eta_inc(evalPoint, t) where evalPoint is the cell centre (emit=cell, the plan
+// as written) or the cell's mirror image across the true shoreline (emit=image).
+// The field starts at the exact image solution, so the only errors are the
+// discretisation, the staircase and the emitter. Scored on a gauge patch `gauge` m
+// off the shore: relative RMS vs the analytic reflection, and a quadrature fit of
+// amplitude, phase and direction.
+const WAVE2D = COMMON + `
+uniform sampler2D state, mask;
+uniform float t, kk, cc, amp, S0, halfLp, Kr, robin, srcOn;
+uniform vec2 dir, C, nrm;
+uniform float faceScale, charSrc, alphaRaw, charGain, impCos;
+float inc(vec2 x, float tt){ float xi = dot(dir, x - C) + S0 - cc * tt; float s = abs(xi) / halfLp;
+  return s < 1.0 ? amp * 0.5 * (1.0 + cos(3.14159265 * s)) * sin(kk * xi) : 0.0; }
+float rim(ivec2 p){ vec2 q = (vec2(p) + 0.5) * dx; vec2 r = res * dx - q; float d = min(min(q.x, q.y), min(r.x, r.y));
+  float w = max(0.0, 1.0 - d / spongeW); return spongeRate * w * w; }
+void main(){
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  vec4 m = texelFetch(mask, p, 0);
+  if(m.a < 0.5){ o = vec4(0.0); return; }
+  if(robin < 0.5 && m.r > 0.5){ o = vec4(Kr * inc(m.gb, t), 0.0, 0.0, 0.0); return; }
+  vec4 s = texelFetch(state, p, 0);
+  float lap = 0.0;
+  ivec2 nb[4] = ivec2[4](ivec2(-1,0), ivec2(1,0), ivec2(0,-1), ivec2(0,1));
+  // Robin shore (robin = 1): a dry neighbour is a ghost cell holding the value that makes the
+  // TOTAL field (incident + scattered) reflect with Kr at the face:
+  //   d(eta)/de = -alpha * eta_t / c,  alpha = (1 - Kr) / (1 + Kr)
+  // so the scattered ghost = s_p - alpha dx v_p / c + [inc_p - alpha dx inc_t,p / c - inc_q].
+  // The bracket is the source; inc_t is a one-step backward difference, as a frame diff would be.
+  // A staircase shore at angle phi has |nx| + |ny| faces per cell of true shore length; spreading the
+  // impedance over them (faceScale = 1 / (|nx| + |ny|)) keeps the total boundary flux right.
+  float alpha = (1.0 - Kr) / (1.0 + Kr) * faceScale * impCos;
+  vec2 xp = (vec2(p) + 0.5) * dx;
+  float incP = 0.0, incPt = 0.0;
+  if(robin > 0.5){ incP = inc(xp, t - dt); incPt = (incP - inc(xp, t - 2.0 * dt)) / dt; }
+  for(int k = 0; k < 4; ++k){
+    ivec2 q = p + nb[k];
+    bool wet = inside(q) && texelFetch(mask, q, 0).a > 0.5;
+    float ej;
+    if(wet) ej = texelFetch(state, q, 0).r;
+    else if(robin > 0.5 && inside(q)){
+      float incQ = inc((vec2(q) + 0.5) * dx, t - dt);
+      // charSrc: only the shoreward-moving characteristic of the incident drives the shore,
+      // (1 - alpha)/2 * (inc_p - inc_q + dx inc_t / c), so offshore-going incident is ignored.
+      float src = charSrc > 0.5 ? charGain * 0.5 * (1.0 - alphaRaw) * (incP - incQ + faceScale * dx * incPt / cc)
+                                : incP - alpha * dx * incPt / cc - incQ;
+      ej = s.r - alpha * dx * s.g / cc + srcOn * src;
+    }
+    else ej = s.r;
+    lap += ej - s.r;
+  }
+  float v = s.g + dt * cc * cc * lap / (dx * dx);
+  float k = rim(p);
+  v /= 1.0 + dt * k;
+  float eta = (s.r + dt * v) / (1.0 + dt * k);
+  o = vec4(eta, v, 0.0, 0.0);
+}`;
+function testOblique(){
+  const h0 = num('h0', 10), T = num('T', 6.6), H = num('H', 1), Kr = num('Kr', 0.5);
+  const cpl = num('cpl', 30), n = num('n', 1024), dt = num('dt', 1 / 60), band = num('band', 1);
+  const wallDeg = num('wall', 0), thetaDeg = num('theta', 0), emit = Q.emit || 'cell', gaugeOff = num('gauge', 200);
+  // emit=robin: partially reflecting shore faces + incident source. arrival=1: no incident source; the packet
+  // starts IN the scattered field and hits the shore (does a scattered wave reflect with this shore's Kr?)
+  const arrival = num('arrival', 0) > 0.5, charSrc = (Q.src || 'full') === 'char', outgoing = num('outgoing', 0) > 0.5;
+  // non-dispersive wave equation at the linear-dispersion phase speed of T in h0
+  const w = 2 * Math.PI / T; let k = w * w / G; for(let i = 0; i < 50; ++i) k = w * w / (G * Math.tanh(k * h0));
+  const c = w / k, L = 2 * Math.PI / k, dx = L / cpl, Lp = 4 * L;
+  const W = n * dx, C = [W / 2, W / 2];
+  const wr = wallDeg * Math.PI / 180, th = thetaDeg * Math.PI / 180;
+  const nrm = [Math.cos(wr), Math.sin(wr)], tan = [-Math.sin(wr), Math.cos(wr)];      // water on +nrm side
+  const sgn = outgoing ? 1 : -1;   // outgoing=1: the incident travels AWAY from the shore (must not drive it)
+  const dir = [sgn * Math.cos(th) * nrm[0] + Math.sin(th) * tan[0], sgn * Math.cos(th) * nrm[1] + Math.sin(th) * tan[1]];
+  const S0 = Lp / 2 + num('lead', 50);              // packet front 50 m short of the shore point C along dir
+  const spongeW = num('sponge', 200);
+  const env = s => Math.abs(s) < 1 ? 0.5 * (1 + Math.cos(Math.PI * s)) : 0;
+  const incAt = (x, y, t) => { const xi = dir[0] * (x - C[0]) + dir[1] * (y - C[1]) + S0 - c * t; return (H / 2) * env(xi / (Lp / 2)) * Math.sin(k * xi); };
+  const sdf = (x, y) => (x - C[0]) * nrm[0] + (y - C[1]) * nrm[1];
+  const mask = new Float32Array(n * n * 4), st = new Float32Array(n * n * 4);
+  let emitters = 0;
+  for(let j = 0; j < n; ++j) for(let i = 0; i < n; ++i){
+    const x = (i + 0.5) * dx, y = (j + 0.5) * dx, d = sdf(x, y), o = (j * n + i) * 4;
+    if(d <= 0) continue;
+    mask[o + 3] = 1;
+    const mx = x - 2 * d * nrm[0], my = y - 2 * d * nrm[1];
+    if(d < band * dx){ mask[o] = 1; emitters++;
+      if(emit === 'image'){ mask[o + 1] = mx; mask[o + 2] = my; } else { mask[o + 1] = x; mask[o + 2] = y; } }
+    if(outgoing){ /* starts empty: the shore must not emit for an offshore-going incident */ }
+    else if(arrival){ st[o] = incAt(x, y, 0); st[o + 1] = (incAt(x, y, 1e-3) - incAt(x, y, -1e-3)) / 2e-3; }
+    else { st[o] = Kr * incAt(mx, my, 0); st[o + 1] = Kr * (incAt(mx, my, 1e-3) - incAt(mx, my, -1e-3)) / 2e-3; }
+  }
+  const maskT = tex(n, n, mask);
+  const S = [target(n, n, st), target(n, n, null)];
+  const prog = program(WAVE2D);
+  const U = {res: [n, n], dt, dx, t: 0, kk: k, cc: c, amp: H / 2, S0, halfLp: Lp / 2, Kr, spongeW, spongeRate: 2, dir, C, robin: emit === 'robin' ? 1 : 0, srcOn: arrival ? 0 : 1, nrm, faceScale: (num('faceFix', 1) > 0.5 ? 1 / (Math.abs(nrm[0]) + Math.abs(nrm[1])) : 1) * (num('cosFix', 0) > 0.5 && !charSrc ? Math.cos(th) : 1),
+    charSrc: charSrc ? 1 : 0, alphaRaw: (1 - Kr) / (1 + Kr),
+    // char source: the impedance alpha*cos(theta) for the scattered field, and the source rescaled by 2cos/(1+cos)
+    charGain: num('cosFix', 0) > 0.5 ? 2 * Math.cos(th) / (1 + Math.cos(th)) : 1};
+  U.impCos = charSrc && num('cosFix', 0) > 0.5 ? Math.cos(th) : 1;
+  // gauge patch centred gaugeOff m off the shore point C
+  const g = [C[0] + gaugeOff * nrm[0], C[1] + gaugeOff * nrm[1]], P = num('patch', 33), gi = Math.floor(g[0] / dx) - (P >> 1), gj = Math.floor(g[1] / dx) - (P >> 1);
+  const dirR = [dir[0] - 2 * (dir[0] * nrm[0] + dir[1] * nrm[1]) * nrm[0], dir[1] - 2 * (dir[0] * nrm[0] + dir[1] * nrm[1]) * nrm[1]];
+  const xiG = dirR[0] * (g[0] - C[0]) + dirR[1] * (g[1] - C[1]);            // reflected path to the gauge
+  const tPass = (Math.abs(xiG) + S0) / c, tStart = Math.max(0, tPass - Lp / (2 * c)), tEnd = tPass + Lp / (2 * c);
+  const deltas = []; for(let d = -3; d <= 3.0001; d += 0.1) deltas.push(d * Math.PI / 180);
+  const acc = deltas.map(() => ({ss: 0, sc: 0, aa: 0})); let err2 = 0, ref2 = 0, inc2 = 0, si = 0, samples = 0;
+  const steps = Math.ceil(tEnd / dt), buf = new Float32Array(P * P * 4);
+  for(let s = 0; s < steps; ++s){
+    const tn = (s + 1) * dt; U.t = tn;
+    draw(prog, S[1 - si].fb, n, n, {bed: maskT, state: S[si].t, mask: maskT}, U); si = 1 - si;
+    if(tn < tStart || s % 6) continue;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, S[si].fb); gl.readPixels(gi, gj, P, P, gl.RGBA, gl.FLOAT, buf); samples++;
+    for(let b = 0; b < P; ++b) for(let a = 0; a < P; ++a){
+      const x = (gi + a + 0.5) * dx, y = (gj + b + 0.5) * dx, eta = buf[(b * P + a) * 4];
+      const mx = x - 2 * sdf(x, y) * nrm[0], my = y - 2 * sdf(x, y) * nrm[1], ana = outgoing ? 0 : Kr * incAt(mx, my, tn);
+      err2 += (eta - ana) ** 2; ref2 += ana * ana; inc2 += incAt(x, y, tn) ** 2;
+      deltas.forEach((de, q) => {
+        const cs = Math.cos(de), sn = Math.sin(de), rx = cs * dirR[0] - sn * dirR[1], ry = sn * dirR[0] + cs * dirR[1];
+        const xi = rx * (x - g[0]) + ry * (y - g[1]) + xiG + S0 - c * tn, e = (H / 2) * env(xi / (Lp / 2));
+        const A = e * Math.sin(k * xi), B = e * Math.cos(k * xi);
+        acc[q].ss += eta * A; acc[q].sc += eta * B; acc[q].aa += A * A;
+      });
+    }
+  }
+  let best = 0; acc.forEach((a, q) => { if(a.ss * a.ss + a.sc * a.sc > acc[best].ss ** 2 + acc[best].sc ** 2) best = q; });
+  const b = acc[best];
+  return {test: 'oblique', emit, arrival, wallDeg, thetaDeg, Kr, cpl, band, dx: +dx.toFixed(3), c: +c.toFixed(3), L: +L.toFixed(2), n, dt, emitters, samples,
+    relRmsError: Kr > 0 ? +Math.sqrt(err2 / Math.max(ref2, 1e-12)).toFixed(4) : null, rmsVsIncident: +Math.sqrt(err2 / (outgoing ? inc2 : acc[best].aa)).toFixed(4),
+    fitKr: +(Math.hypot(b.ss, b.sc) / b.aa).toFixed(4), fitPhaseDeg: +(Math.atan2(b.sc, b.ss) * 180 / Math.PI).toFixed(2),
+    fitDirErrDeg: +(deltas[best] * 180 / Math.PI).toFixed(2)};
+}
+
+// ── test: sloping shore, variable celerity (Phase 3b production form) ───────
+// Bed: deep flat h0 offshore, a plane slope tanB up to the shoreline. The sim's wet
+// region stops at the hMin contour (resolution floor), where a Robin shore with the
+// characteristic source is driven by the DEEP-water incident (what the FFT renders,
+// travelling at c0 over any bathymetry). The medium is c(h; T) by linear dispersion,
+// in the constant-amplitude form eta_tt = c div(c grad eta), so the reflection
+// leaves at Kr times the deep incident. Scored at a deep gauge by energy ratio
+// (delay-independent) and by the carrier direction.
+const SLOPE = COMMON + `
+uniform sampler2D state, med;
+uniform float t, kk, cc, amp, S0, halfLp, alphaRaw, faceScale, impCos, charGain;
+uniform vec2 dir, C;
+float inc(vec2 x, float tt){ float xi = dot(dir, x - C) + S0 - cc * tt; float s = abs(xi) / halfLp;
+  return s < 1.0 ? amp * 0.5 * (1.0 + cos(3.14159265 * s)) * sin(kk * xi) : 0.0; }
+float rim(ivec2 p){ vec2 q = (vec2(p) + 0.5) * dx; vec2 r = res * dx - q; float d = min(min(q.x, q.y), min(r.x, r.y));
+  float w = max(0.0, 1.0 - d / spongeW); return spongeRate * w * w; }
+void main(){
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  float cp = texelFetch(med, p, 0).r;
+  if(cp <= 0.0){ o = vec4(0.0); return; }
+  vec4 s = texelFetch(state, p, 0);
+  vec2 xp = (vec2(p) + 0.5) * dx;
+  float incP = inc(xp, t - dt), incPt = (incP - inc(xp, t - 2.0 * dt)) / dt;
+  float alpha = alphaRaw * faceScale * impCos;
+  float flux = 0.0;
+  ivec2 nb[4] = ivec2[4](ivec2(-1,0), ivec2(1,0), ivec2(0,-1), ivec2(0,1));
+  for(int k = 0; k < 4; ++k){
+    ivec2 q = p + nb[k];
+    float cq = inside(q) ? texelFetch(med, q, 0).r : 0.0;
+    if(cq > 0.0){ flux += 0.5 * (cp + cq) * (texelFetch(state, q, 0).r - s.r); continue; }
+    if(!inside(q)) continue;
+    float incQ = inc((vec2(q) + 0.5) * dx, t - dt);
+    float src = charGain * 0.5 * (1.0 - alphaRaw) * (faceScale * dx * incPt / cp + (cc / cp) * (incP - incQ));
+    flux += cp * (-alpha * dx * s.g / cp + src);
+  }
+  float v = s.g + dt * cp * flux / (dx * dx);
+  float kr = rim(p);
+  v /= 1.0 + dt * kr;
+  o = vec4((s.r + dt * v) / (1.0 + dt * kr), v, 0.0, 0.0);
+}`;
+function testSlope(){
+  const h0 = num('h0', 20), T = num('T', 6.6), H = num('H', 1), Kr = num('Kr', 0.5), tanB = num('slope', 0.1);
+  const cpl = num('cpl', 30), n = num('n', 1024), dt = num('dt', 1 / 60), wallDeg = num('wall', 0), thetaDeg = num('theta', 0);
+  const w = 2 * Math.PI / T, kAt = h => { let k = w * w / G; for(let i = 0; i < 60; ++i) k = w * w / (G * Math.tanh(k * h)); return k; };
+  const k0 = kAt(h0), c0 = w / k0, L0 = 2 * Math.PI / k0, dx = L0 / cpl, Lp = 4 * L0;
+  const L0deep = G * T * T / (2 * Math.PI), hMin = num('hMin', L0deep / (18 * Math.PI));
+  const W = n * dx, C = [W / 2, W / 2], wr = wallDeg * Math.PI / 180, th = thetaDeg * Math.PI / 180;
+  const nrm = [Math.cos(wr), Math.sin(wr)], tan = [-Math.sin(wr), Math.cos(wr)];
+  const dir = [-Math.cos(th) * nrm[0] + Math.sin(th) * tan[0], -Math.cos(th) * nrm[1] + Math.sin(th) * tan[1]];
+  const gaugeOff = num('gauge', h0 / tanB + 250), lead = num('lead', gaugeOff * Math.tan(th) * Math.sin(th) + 100 + h0 / tanB);
+  const S0 = Lp / 2 + lead, spongeW = 200;
+  const med = new Float32Array(n * n * 4); let wet = 0;
+  for(let j = 0; j < n; ++j) for(let i = 0; i < n; ++i){
+    const x = (i + 0.5) * dx, y = (j + 0.5) * dx, d = (x - C[0]) * nrm[0] + (y - C[1]) * nrm[1];
+    const h = Math.min(h0, tanB * d);
+    if(h < hMin) continue;
+    med[(j * n + i) * 4] = w / kAt(h); wet++;
+  }
+  const medT = tex(n, n, med), S = [target(n, n, null), target(n, n, null)], prog = program(SLOPE);
+  const U = {res: [n, n], dt, dx, t: 0, kk: k0, cc: c0, amp: H / 2, S0, halfLp: Lp / 2, spongeW, spongeRate: 2, dir, C,
+    alphaRaw: (1 - Kr) / (1 + Kr), faceScale: 1 / (Math.abs(nrm[0]) + Math.abs(nrm[1])), impCos: Math.cos(th), charGain: 2 * Math.cos(th) / (1 + Math.cos(th))};
+  const env = s => Math.abs(s) < 1 ? 0.5 * (1 + Math.cos(Math.PI * s)) : 0;
+  const incAt = (x, y, t) => { const xi = dir[0] * (x - C[0]) + dir[1] * (y - C[1]) + S0 - c0 * t; return (H / 2) * env(xi / (Lp / 2)) * Math.sin(k0 * xi); };
+  const g = [C[0] + gaugeOff * nrm[0], C[1] + gaugeOff * nrm[1]], P = num('patch', 97), gi = Math.floor(g[0] / dx) - (P >> 1), gj = Math.floor(g[1] / dx) - (P >> 1);
+  const dn = dir[0] * nrm[0] + dir[1] * nrm[1], dirR = [dir[0] - 2 * dn * nrm[0], dir[1] - 2 * dn * nrm[1]];
+  // image-at-shoreline timing, then a generous window (slope delay is a few seconds)
+  const tImg = (gaugeOff * Math.cos(th) + S0) / c0, tStart = tImg - Lp / (2 * c0) - 5, tEnd = tImg + Lp / (2 * c0) + 40;
+  const deltas = []; for(let d = -10; d <= 10.0001; d += 0.25) deltas.push(d * Math.PI / 180);
+  const pw = deltas.map(() => 0); let sim2 = 0, img2 = 0, si = 0, samples = 0;
+  const steps = Math.ceil(tEnd / dt), buf = new Float32Array(P * P * 4);
+  for(let st = 0; st < steps; ++st){
+    const tn = (st + 1) * dt; U.t = tn;
+    draw(prog, S[1 - si].fb, n, n, {state: S[si].t, med: medT}, U); si = 1 - si;
+    if(tn < tStart || st % 10) continue;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, S[si].fb); gl.readPixels(gi, gj, P, P, gl.RGBA, gl.FLOAT, buf); samples++;
+    const ss = deltas.map(() => 0), sc = deltas.map(() => 0);
+    for(let b = 0; b < P; ++b) for(let a = 0; a < P; ++a){
+      const x = (gi + a + 0.5) * dx, y = (gj + b + 0.5) * dx, eta = buf[(b * P + a) * 4];
+      const dd = (x - C[0]) * nrm[0] + (y - C[1]) * nrm[1];
+      const img = incAt(x - 2 * dd * nrm[0], y - 2 * dd * nrm[1], tn);
+      sim2 += eta * eta; img2 += img * img;
+      if(st % 30) continue;
+      deltas.forEach((de, q) => { const cs = Math.cos(de), sn = Math.sin(de);
+        const ph = k0 * ((cs * dirR[0] - sn * dirR[1]) * (x - g[0]) + (sn * dirR[0] + cs * dirR[1]) * (y - g[1]));
+        ss[q] += eta * Math.sin(ph); sc[q] += eta * Math.cos(ph); });
+    }
+    if(st % 30 === 0) deltas.forEach((_, q) => { pw[q] += ss[q] * ss[q] + sc[q] * sc[q]; });
+  }
+  let best = 0; pw.forEach((v, q) => { if(v > pw[best]) best = q; });
+  return {test: 'slope', Kr, slope: tanB, h0, T, thetaDeg, wallDeg, dx: +dx.toFixed(3), hMin: +hMin.toFixed(3), c0: +c0.toFixed(3), wet, samples,
+    measuredKr: +Math.sqrt(sim2 / Math.max(img2, 1e-12)).toFixed(4), dirErrDeg: +(deltas[best] * 180 / Math.PI).toFixed(2)};
+}
+
 // ── test: reflection coefficient in a 1D channel ─────────────────────────────
 // ── test: scattered-field reflection emitter ────────────────────────────────
 // The incident wave is NOT simulated (it is the FFT ocean's job). A wall at xw emits
@@ -256,7 +483,7 @@ function testScatter(){
     const ana = Kr * inc(2 * xwc - gxc, t);
     err2 += (eta - ana) ** 2; ref2 += ana * ana;
   }
-  return {test: 'scatter', Kr, dx, dt, h0, T, relRmsError: +Math.sqrt(err2 / Math.max(ref2, 1e-12)).toFixed(4),
+  return {test: 'scatter', Kr, dx, dt, h0, T, relRmsError: Kr > 0 ? +Math.sqrt(err2 / Math.max(ref2, 1e-12)).toFixed(4) : null, rmsVsIncident: +Math.sqrt(err2 / (outgoing ? inc2 : acc[best].aa)).toFixed(4),
     measuredKr: +(Kr * Math.sqrt((ref2 + err2 - 0) / Math.max(ref2, 1e-12))).toFixed(3)};
 }
 
@@ -467,7 +694,7 @@ async function testReadback(){
   let r;
   try {
     const t = Q.test || 'kr';
-    r = t === 'precision' ? testPrecision() : t === 'costGPU' ? await testCostGPU() : t === 'kr' ? testKr() : t === 'scatter' ? testScatter() : t === 'volume' ? testVolume() : t === 'cost' ? testCost() : await testReadback();
+    r = t === 'precision' ? testPrecision() : t === 'costGPU' ? await testCostGPU() : t === 'kr' ? testKr() : t === 'scatter' ? testScatter() : t === 'oblique' ? testOblique() : t === 'slope' ? testSlope() : t === 'volume' ? testVolume() : t === 'cost' ? testCost() : await testReadback();
     r.renderer = RENDERER;
   } catch(e){ r = {error: String(e && e.stack || e)}; }
   window.__result = r;
