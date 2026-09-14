@@ -112,7 +112,7 @@ ARestlessOcean.OceanShadowCSM = function(oceanGrid, scene, configOverrides){
     vertexShader: baseShadowMat.vertexShader
       .replace('$wave_mask_functions', function(){ return ARestlessOcean.WaveMask.GLSL; })
       .replace('$shore_breaker_functions', function(){ return ARestlessOcean.ShoreBreaker.GLSL; })
-      .replace('$shore_reflection_functions', function(){ return ARestlessOcean.ShoreReflection ? ARestlessOcean.ShoreReflection.GLSL
+      .replace('$shore_reflection_functions', function(){ return ARestlessOcean.ShoreReflection ? ARestlessOcean.ShoreReflection.consumerGLSL()
         : 'float shoreReflectionHeightAt(vec2 xz){ return 0.0; }'; }),
     fragmentShader: baseShadowMat.fragmentShader
   };

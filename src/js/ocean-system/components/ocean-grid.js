@@ -878,8 +878,9 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //A stub when shore-reflection-pass.js is not loaded, so the token never
   //reaches the compiler.
   function shoreReflectionGLSL(){
-    return ARestlessOcean.ShoreReflection ? ARestlessOcean.ShoreReflection.GLSL
-      : 'float shoreReflectionHeightAt(vec2 xz){ return 0.0; }\nvec2 shoreReflectionSlopeAt(vec2 xz){ return vec2(0.0); }';
+    return ARestlessOcean.ShoreReflection ? ARestlessOcean.ShoreReflection.consumerGLSL()
+      : 'uniform float shoreReflectionEnabled;\nuniform vec2 shoreReflectionCenter;\nuniform float shoreReflectionHalfWidth;\n'
+        + 'float shoreReflectionHeightAt(vec2 xz){ return 0.0; }\nvec2 shoreReflectionSlopeAt(vec2 xz){ return vec2(0.0); }';
   }
   //The fragment carries the same ShoreBreaker splice (normals, foam, debug).
   function buildFragmentShader(atmEnabled, atmFunctions){
@@ -1190,8 +1191,9 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //Phase 3b: shore reflection — a camera-following wave equation that carries
   //only the wave the shore sends back (ARestlessOcean.Passes.ShoreReflectionPass;
   //read its header). Enabled with the breakers: same terrain-provider rule.
+  //PARKED behind ARestlessOcean.ShoreReflection.ENABLED (see that file).
   this.shoreReflectionEnabled = true;
-  if(ARestlessOcean.Passes && ARestlessOcean.Passes.ShoreReflectionPass){
+  if(ARestlessOcean.Passes && ARestlessOcean.Passes.ShoreReflectionPass && ARestlessOcean.ShoreReflection.ENABLED){
     this.shoreReflectionPass = new ARestlessOcean.Passes.ShoreReflectionPass(this);
     this.shoreReflectionPass.init();
   } else {

@@ -110,7 +110,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
     hfSumLines += 'dy += ' + w + 'texture2D(hfCascadeTex[' + c + '], (worldXZ + hfCascadeOffset[' + c + ']) / hfCascadePatch[' + c + ']).y;\n';
   }
   const fieldReady = !!(ARestlessOcean.Passes.WaterFieldPass && ARestlessOcean.WaveMask);
-  const reflectionReady = !!ARestlessOcean.ShoreReflection;
+  const reflectionReady = !!(ARestlessOcean.ShoreReflection && ARestlessOcean.ShoreReflection.ENABLED);
   const hfVert = 'varying vec2 vHfUv;\nvoid main(){ vHfUv = uv; gl_Position = vec4(position, 1.0); }';
   const hfFrag = [
     'precision highp float;',
@@ -409,7 +409,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._renderBreakerProbe = functio
   if(!this._hfFieldReady || !ARestlessOcean.ShoreBreaker || !sbp || !sbp.enabled) return false;
   if(!grid.waterFieldPass) return false;
   if(!this._breakerProbeMaterial){
-    const reflectionReady = !!ARestlessOcean.ShoreReflection;
+    const reflectionReady = !!(ARestlessOcean.ShoreReflection && ARestlessOcean.ShoreReflection.ENABLED);
     const uniforms = Object.assign({probeXZ: {value: new THREE.Vector2()}},
       ARestlessOcean.Passes.WaterFieldPass.createSampleUniforms(),
       ARestlessOcean.ShoreBreaker.createUniforms(),

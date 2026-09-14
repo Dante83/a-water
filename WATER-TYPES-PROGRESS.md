@@ -8,9 +8,25 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
-## Phase 3b — shore reflection — **step 1 written, headless-verified, awaiting regen + browser** (2026-09-13)
+## Phase 3b — shore reflection — **PARKED** (2026-09-13)
 
 Branch `phase-3b-reflection`, off `multi-water-types` at `1efd476`.
+
+> **Parked by Dante, 2026-09-13.** Reasons:
+> - It costs 0.58 ms/frame on the reference iGPU.
+> - On the current two-way FFT spectrum (round 2 below) a reflection cannot read.
+> - Making the sea one-way would change the ocean's look and the buoyancy feel, so
+>   Dante kept the two-way sea.
+>
+> What "parked" means in the code:
+> - `ARestlessOcean.ShoreReflection.ENABLED = false` (in `shore-reflection-pass.js`).
+> - No pass is constructed: no render targets, no self-test, no step.
+> - Every consumer splices `STUB_GLSL` (no sampler, so the water program stays at
+>   its old unit count).
+> - Verified headless: pass null, no sampler in the water program, no shader errors,
+>   60 fps.
+>
+> To revive: flip `ENABLED`, and consider the one-sided spectrum (round 2).
 **GLSL changed: run `create-shader.py`** (it regenerates `water-shader.js` and
 `ocean-shadow.js`).
 

@@ -340,7 +340,8 @@ needs gentler bathymetry, not more simulation".
 >   - Breaker foam and spray scale with the dissipated fraction 1 − Kr².
 >   - `_emitShore` reads `shoreSDF` / Kr from spare channels of the existing 256² height
 >     readback. That readback becomes the first CPU mirror of `shoreSDF`.
-> - **3b (new) is shore reflection.** It is Phase 8's dynamic-waves sim, pulled forward
+> - **3b (new) is shore reflection — built, then PARKED 2026-09-13** (`ShoreReflection.ENABLED`;
+>   see `WATER-TYPES-PROGRESS.md` § Phase 3b). It is Phase 8's dynamic-waves sim, pulled forward
 >   (amended by `NEARSHORE-WAVES.md` § 5.9: a Robin shore with a characteristic source
 >   replaces the emitter, and no separate absorber is needed):
 >   - A camera-following linear wave equation carries only the **reflected** wave.

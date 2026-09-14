@@ -64,6 +64,15 @@
 
 ARestlessOcean.ShoreReflection = {};
 
+//⚠ PARKED (2026-09-13). Off: no pass, no render targets, no per-frame step, and
+//every consumer splices STUB_GLSL (no sampler). Reasons, in
+//WATER-TYPES-PROGRESS.md § Phase 3b:
+//  - 0.58 ms/frame on the reference iGPU.
+//  - On the current two-way FFT spectrum (h_0-pass's symmetric cos² spreading) a
+//    reflection has nothing directional to stand out against.
+//Flip to true to bring it back.
+ARestlessOcean.ShoreReflection.ENABLED = false;
+
 ARestlessOcean.ShoreReflection.G = 9.80665;
 ARestlessOcean.ShoreReflection.RESOLUTION = 512;
 ARestlessOcean.ShoreReflection.CELLS_PER_WAVELENGTH = 30.0;
@@ -103,6 +112,20 @@ ARestlessOcean.ShoreReflection.NORMAL_STEP = 4.0;
 ARestlessOcean.ShoreReflection.REBAKE_MS = 1000.0;
 
 //── Consumer chunk ─────────────────────────────────────────────────────────
+//What consumers splice when the layer is parked or this file is missing: the
+//same functions and scalar uniforms (debug 62 reads them), and no sampler.
+ARestlessOcean.ShoreReflection.STUB_GLSL = [
+  'uniform float shoreReflectionEnabled;',
+  'uniform vec2 shoreReflectionCenter;',
+  'uniform float shoreReflectionHalfWidth;',
+  'float shoreReflectionHeightAt(vec2 xz){ return 0.0; }',
+  'vec2 shoreReflectionSlopeAt(vec2 xz){ return vec2(0.0); }'
+].join('\n');
+//The chunk a consumer should splice right now.
+ARestlessOcean.ShoreReflection.consumerGLSL = function(){
+  const SR = ARestlessOcean.ShoreReflection;
+  return SR.ENABLED ? SR.GLSL : SR.STUB_GLSL;
+};
 ARestlessOcean.ShoreReflection.createUniforms = function(){
   return {
     shoreReflectionEnabled:     {value: 0.0},
