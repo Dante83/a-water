@@ -307,6 +307,93 @@ Kr to four digits. Any float-state sim should run a startup self-test (this harn
 whether Chrome's default Linux backend uses that path for real users, or whether
 WaterField's float level (−150 m) is affected. Worth a look.
 
+### 5.9 Phase 3b's first task: oblique incidence, and a better shore (2026-09-13)
+
+Run at the start of Phase 3b (`test=oblique` and `test=slope` in `sim.html`). A 1024² 2D
+wave equation at 30 cells per wavelength (T 6.6 s, h 10 m, dx 1.84 m, dt 1/60 s) holds
+a straight shore at 0°, 20° or 45° to the grid. An infinite plane-wave packet arrives
+at 0°, 30° or 60° from the shore normal. Only the scattered field is simulated. The
+score is taken on a 33² gauge patch 200 m offshore, against the analytic mirror image,
+with a quadrature fit of amplitude, phase and direction.
+
+**1. The mirror law emerges.** § 8's Dirichlet emitter (shore cells forced to
+`Kr · η_inc`) reflects at the mirror angle with a direction error of 0.3° or less, and
+Kr within 2%, for every shore and incidence angle tested.
+- If the cell is forced to the incident at its **mirror image** across the true
+  shoreline, the phase error is 3° or less.
+- If it is forced to the incident at the **cell centre** (§ 8 as written), the wave lags
+  by 9–16°. That is a wall about half a cell out, which would not be visible.
+
+**2. But a Dirichlet emitter is the wrong shore.** It forces the cell regardless of
+what arrives, so a *simulated* wave hitting it (the reflection off another shore)
+comes back **inverted at full strength** (measured phase 175°, |R| = 1.0). Across a
+cove or strait, the reflected field would bounce between shores indefinitely.
+
+**3. A Robin (impedance) shore fixes it.** Every dry neighbour of a wet cell is a ghost
+cell. Its value makes the face reflect with that shore's Kr:
+
+    ghost = η_p − α·dx·v_p / c + source,     α = (1 − Kr) / (1 + Kr)
+
+- Kr = 1 is a rigid wall (Neumann), and Kr = 0 is a first-order absorbing boundary.
+- **Arriving simulated waves** reflect as impedance theory predicts,
+  R(θ) = (cosθ − α) / (cosθ + α): 0.50 at normal incidence and 0.45 at 30°, for Kr 0.5.
+- **The staircase needs one correction.** A shore at angle φ to the grid has
+  |nx| + |ny| cell faces per unit length, so α is spread over them
+  (× 1 / (|nx| + |ny|)). Uncorrected, a 20° shore reflected 0.33 instead of 0.5.
+  Corrected, every shore angle gives 0.49–0.50.
+
+**4. The source must be the shoreward characteristic only.** The obvious source makes the
+**total** field (incident + scattered) obey the impedance condition,
+`inc_p − inc_q − α·dx·inc_t / c`. With α × cosθ_inc it reflects the incident at exactly
+Kr at every angle.
+- **It also cancels any incident travelling away from the shore.** Measured: 65–100% of
+  such a wave re-emitted. The FFT holds exactly such components: the directional spread
+  seen from any shore not facing the wind.
+- **The fix drives the face with the incoming characteristic alone:**
+
+      source = G · (1 − α)/2 · (faceScale · dx · inc_t / c + (c₀ / c) · (inc_p − inc_q))
+      G = 2 cosθ / (1 + cosθ),  and the ghost's impedance uses α · cosθ · faceScale
+
+  - c₀ is the incident's own speed and c the local simulated speed.
+  - θ is the incident direction against the shore normal.
+  - `inc_t` is a one-step backward difference, which is what a frame difference gives.
+- **Result:** Kr **0.498–0.503**, with phase error of 3° or less, at every shore angle
+  (0°, 20°) × incidence (0°, 30°, 60°). An offshore-going incident leaks only **2–6%**.
+
+**5. Sloping bed, variable speed (`test=slope`).**
+- **Setup.**
+  - The bed runs from deep flat h₀ = 20 m up a plane slope. The simulated water stops
+    at the **resolution contour h_min = L₀ / 18π**, where the local wavelength falls to
+    about 10 cells: 1.2 m at T = 6.6 s.
+  - The Robin shore sits there, driven by the **deep-water** incident at c₀. That is
+    what the FFT renders, whatever the bathymetry.
+  - The medium is c(h; T) from linear dispersion, in the **constant-amplitude form**
+    η_tt = c ∇·(c ∇η). Its WKB amplitude is exactly constant, so the reflection leaves
+    at Kr × the deep incident. That is Battjes' definition.
+  - The divergence form would shoal it by c^−½ (Green's law). The plain c²∇²η form
+    would amplify it by c^½.
+- **Measured** by the energy ratio at a deep gauge (independent of delay):
+
+| slope | Kr set | θ, shore angle | measured Kr | direction error |
+| --- | --- | --- | --- | --- |
+| 1:10 | 0.5 | 0°, 0° | 0.494 | 0° |
+| 1:10 | 1.0 | 0°, 0° | 0.979 | 0° |
+| 1:10 | 0.5 | 40°, 20° | 0.464 | 0° |
+| 30° | 0.5 | 0°, 0° | 0.495 | 0° |
+| 1:20 | 0.1 | 0°, 0° | 0.099 | 0° |
+
+  The 40° case reads 7% low. Refraction turns the wave toward the normal before it
+  reaches h_min, so the deep-water cosθ over-corrects.
+
+**What this changes in § 8 (3b):**
+- The emitter becomes a **Robin shore with a characteristic source**.
+- The "graded absorber on dissipative shores" is not needed: a Kr ≈ 0 shore *is* the
+  absorber, and it absorbs the reflections of other shores too.
+- The shore sits on the h_min contour, not at shoreSDF = 0. There the masked FFT
+  height has gone to zero, and the local wavelength is under-resolved.
+- The incident is the **unmasked** cascade height, low-passed to the grid, and weighed
+  only by the fetch part of WaveMask.
+
 ## 6. The families, compared
 
 | | 1. Parametric only | 2. Boussinesq window | 3. Pipe / staggered SWE window | 4. Wavelets / wave cages | 5. Wave eq (iWave-class) |
@@ -445,8 +532,8 @@ result in numbers.
 
 ## 9. What the spikes did not prove
 
-- **Oblique incidence and 2D emitter behaviour**, including corner and cove focusing. Only
-  normal incidence in a 1D channel was measured.
+- ~~**Oblique incidence and 2D emitter behaviour**~~ — measured in § 5.9 (2026-09-13).
+  Corner and cove focusing are still unmeasured.
 - **Kr above ξ ≈ 2.5 and for rough faces.** The source fits were not reachable (§ 3).
 - **Nonlinear steepening.** The H = 3 m SWE packets steepened toward a bore over the 10 m
   flat (gauge peak 3.25 m for a 1.5 m amplitude). No shock capturing; relevant to 3c only.
