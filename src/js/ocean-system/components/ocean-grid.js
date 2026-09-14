@@ -903,10 +903,14 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //and $horizon_skirt. Ocean tiles use the {AP, no-skirt} variant; the
   //horizon skirt clones the material and uses the {AP, skirt} variant
   //which pins gl_Position.z just inside the far plane.
-  function buildVertexShader(atmEnabled, skirt){
+  //Phase 4: `flowing` builds the flowing-water variant ($flowing_water) that
+  //FlowSurfacePass draws creeks with — FFT, ocean CSM and cascade debug compiled
+  //out. Substituted here rather than in the template, like $horizon_skirt.
+  function buildVertexShader(atmEnabled, skirt, flowing){
     return ARestlessOcean.Materials.Ocean.waterMaterial.vertexShader
       .replace(/\$atmospheric_perspective_enabled/g, atmEnabled ? '1' : '0')
       .replace(/\$horizon_skirt/g, skirt ? '1' : '0')
+      .replace(/\$flowing_water/g, flowing ? '1' : '0')
       //Phase 2: the shared WaveMask GLSL (ocean-wave-field.js). A function
       //replacement, so a `$` in the GLSL could never be read as a pattern.
       .replace('$wave_mask_functions', function(){ return ARestlessOcean.WaveMask.GLSL; })
@@ -925,8 +929,12 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         + 'float shoreReflectionHeightAt(vec2 xz){ return 0.0; }\nvec2 shoreReflectionSlopeAt(vec2 xz){ return vec2(0.0); }';
   }
   //The fragment carries the same ShoreBreaker splice (normals, foam, debug).
-  function buildFragmentShader(atmEnabled, atmFunctions){
-    return ARestlessOcean.Materials.Ocean.waterMaterial.fragmentShader(self.causticsEnabled, self.foamEnabled, atmEnabled, atmFunctions)
+  function buildFragmentShader(atmEnabled, atmFunctions, flowing){
+    //The flowing variant has no caustics (its bed is centimetres deep and the
+    //projector is the ocean's) and, until its foam RT lands, no ocean foam.
+    return ARestlessOcean.Materials.Ocean.waterMaterial.fragmentShader(
+        flowing ? false : self.causticsEnabled, flowing ? false : self.foamEnabled, atmEnabled, atmFunctions)
+      .replace(/\$flowing_water/g, flowing ? '1' : '0')
       .replace('$shore_breaker_functions', function(){ return ARestlessOcean.ShoreBreaker.GLSL; })
       .replace('$flow_handoff_functions', function(){ return ARestlessOcean.FlowHandoff.GLSL; })
       .replace('$shore_reflection_functions', shoreReflectionGLSL);
@@ -1238,6 +1246,10 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //read its header). Enabled with the breakers: same terrain-provider rule.
   //PARKED behind ARestlessOcean.ShoreReflection.ENABLED (see that file).
   this.shoreReflectionEnabled = true;
+  //Phase 4 flowing-water surface (creeks, rivers). Built lazily in tick once
+  //a-faraway-land is present; see FlowSurfacePass.
+  this.flowSurfaceEnabled = true;
+  this.flowSurfacePass = null;
   if(ARestlessOcean.Passes && ARestlessOcean.Passes.ShoreReflectionPass && ARestlessOcean.ShoreReflection.ENABLED){
     this.shoreReflectionPass = new ARestlessOcean.Passes.ShoreReflectionPass(this);
     this.shoreReflectionPass.init();
@@ -1300,6 +1312,33 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   if(this.atmosphericPerspectiveEnabled && this.skyDirector){
     this._createHorizonSkirt();
   }
+
+  //Phase 4: a material for the flowing-water surface. A clone of the water
+  //material (so it inherits lights, atmosphere, refraction, SSR and underwater)
+  //built with the $flowing_water variant — a flag permutation, never a fork.
+  this.createFlowingWaterMaterial = function(){
+    const mat = self.oceanMaterial.clone();
+    mat.uniforms = ARestlessOcean.cloneUniforms(self.oceanMaterial.uniforms);
+    const atmReady = !!(self.atmosphericPerspectiveEnabled && self.atmosphereFunctionsGLSL);
+    mat.vertexShader = buildVertexShader(atmReady, false, true);
+    mat.fragmentShader = buildFragmentShader(atmReady, self.atmosphereFunctionsGLSL, true);
+    mat.fog = true;
+    return mat;
+  };
+  //Register a water mesh built outside this constructor into the per-frame
+  //uniform stream, the underwater side flip, the offscreen-pass hiding and the
+  //atmosphere recompile — everything the clipmap rings get. A mesh flagged
+  //userData.flowingWater is recompiled with the flowing variant.
+  this.registerOceanMesh = function(key, mesh){
+    if(oceanPatchGeometryInstances[key]) return;
+    oceanPatchGeometryInstances[key] = mesh;
+    oceanGridInstanceKeys.push(key);
+  };
+  this.unregisterOceanMesh = function(key){
+    const i = oceanGridInstanceKeys.indexOf(key);
+    if(i >= 0) oceanGridInstanceKeys.splice(i, 1);
+    delete oceanPatchGeometryInstances[key];
+  };
 
   //Iterate every ocean surface mesh — all clipmap ring InstancedMeshes plus
   //the horizon skirt. The one sanctioned way for anything outside this
@@ -1574,6 +1613,23 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           halfWidths: [wfc[0].halfWidth, wfc[1].halfWidth, wfc[2].halfWidth]
         });
       }
+    }
+
+    //Phase 4: the flowing-water surface. a-faraway-land only (WATER-TYPES.md
+    //decision 4: rivers need the hydrology bake), built the frame the director
+    //appears, like the tile decode. Before the uniform loop, which reads its window.
+    if(!self.flowSurfacePass && self.flowSurfaceEnabled && self._terrainProvider === 'a-faraway-land'
+       && self._landDirector && self.waterFieldPass && ARestlessOcean.Passes.FlowSurfacePass){
+      self.flowSurfacePass = new ARestlessOcean.Passes.FlowSurfacePass(self);
+      self.flowSurfacePass.init(scene);
+    }
+    if(self.flowSurfacePass){
+      self.flowSurfacePass.tick({
+        cameraX: self.globalCameraPosition.x,
+        cameraZ: self.globalCameraPosition.z,
+        heightOffset: self.heightOffset,
+        enabled: self.flowSurfaceEnabled
+      });
     }
 
     //Show all of our ocean grid elements again
@@ -1979,6 +2035,11 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       if(shoreBreakerParams) ARestlessOcean.ShoreBreaker.writeUniforms(uniformsRef, shoreBreakerParams);
       if(shoreReflectionState) ARestlessOcean.ShoreReflection.writeUniforms(uniformsRef, shoreReflectionState);
       ARestlessOcean.FlowHandoff.writeUniforms(uniformsRef, flowHandoffState);
+      //The flowing surface carries no breakers or shore reflection of its own.
+      if(oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].userData.flowingWater){
+        if(uniformsRef.shoreBreakerEnabled) uniformsRef.shoreBreakerEnabled.value = 0.0;
+        if(uniformsRef.shoreReflectionEnabled) uniformsRef.shoreReflectionEnabled.value = 0.0;
+      }
       for(let c = 0; c < 6; c++){
         uniformsRef.cascadeDisplacementTextures.value[c] = self.oceanHeightComposer.cascadeDisplacementTextures[c];
       }
@@ -2144,9 +2205,20 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
             //this AP-recompile path.
             const newVtxSrc = buildVertexShader(true, false);
             const skirtVtxSrc = buildVertexShader(true, true);
+            let flowVtxSrc = null, flowFragSrc = null;
             for(let j = 0; j < oceanGridInstanceKeys.length; ++j){
               const mesh = oceanPatchGeometryInstances[oceanGridInstanceKeys[j]];
               const isSkirt = (mesh === self.horizonSkirtMesh);
+              //Phase 4 flowing surface: its own variant (see registerOceanMesh).
+              if(mesh.userData.flowingWater){
+                flowVtxSrc = flowVtxSrc || buildVertexShader(true, false, true);
+                flowFragSrc = flowFragSrc || buildFragmentShader(true, self.atmosphereFunctionsGLSL, true);
+                mesh.material.vertexShader = flowVtxSrc;
+                mesh.material.fragmentShader = flowFragSrc;
+                mesh.material.fog = true;
+                mesh.material.needsUpdate = true;
+                continue;
+              }
               mesh.material.vertexShader = isSkirt ? skirtVtxSrc : newVtxSrc;
               mesh.material.fragmentShader = newFragShader;
               mesh.material.fog = true;

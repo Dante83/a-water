@@ -1447,9 +1447,24 @@ void main(){
   //higher than the sheet the depth test hides it, which is what draws the moving
   //waterline. shoreSwashCovers only pays extra taps within ~60 m of a shore.
   vec4 dryTestField = waterFieldAt(worldPosition.xz);
+  #if($flowing_water)
+    //Phase 4: the bank. a-land stamps a creek as a disc of level per bed cell,
+    //so past the last wet texel the ground often lies BELOW the continued
+    //level and the terrain cannot hide the cut, which the clipmap relies on.
+    //Cut where the jump-flooded shore distance crosses zero: it is seeded half
+    //way between wet and dry texel centres and filters smoothly, so the bank
+    //runs on a clean line instead of the one-metre texel staircase that any
+    //threshold on the (decoded) dry mask draws.
+    if(dryTestField.b < 0.0 && flowHandoffDryAt(worldPosition.xz) > 0.0) discard;
+    //The vertex stage drops vertices that can never show flowing water below
+    //their level. A triangle joining one of those to a kept vertex slopes down
+    //through the air as a wall; nothing of this surface lies below its level.
+    if(worldPosition.y < dryTestField.r - 0.05) discard;
+  #else
   if(dryTestField.a > 0.999 && !shoreSwashCovers(worldPosition.xz, dryTestField)){
     discard;
   }
+  #endif
   //Phase 4: flowing water belongs to FlowSurfacePass. Across the hand-off band
   //the two surfaces dither against the same static blue-noise threshold (the
   //flowing surface keeps the pixels this one throws away), so they cross-fade
@@ -1457,10 +1472,14 @@ void main(){
   //the displaced position, like the dry discard above. 0 when no flowing
   //surface exists, so creeks stay on the clipmap then.
   float flowHandoffW = flowHandoffWeightAt(worldPosition.xz);
-  if(flowHandoffW > 0.0){
-    float flowHandoffNoise = (texelFetch(blueNoiseTexture, ivec2(mod(gl_FragCoord.xy, 128.0)), 0).g * 254.0 + 0.5) / 255.0;
+  float flowHandoffNoise = (texelFetch(blueNoiseTexture, ivec2(mod(gl_FragCoord.xy, 128.0)), 0).g * 254.0 + 0.5) / 255.0;
+  #if($flowing_water)
+    //This IS the flowing surface: it keeps exactly the pixels the clipmap
+    //discards above that threshold, and nothing where the water is still.
+    if(flowHandoffW <= flowHandoffNoise) discard;
+  #else
     if(flowHandoffW > flowHandoffNoise) discard;
-  }
+  #endif
   //Phase 3a: a ripple floor for the two smallest cascades in very shallow water and
   //on the swash sheet (normals only; the geometry is untouched).
   //WaveMask weighs a whole cascade by its LONGEST wavelength, so in a few
@@ -1510,6 +1529,7 @@ void main(){
   //wide-eps low-pass version (option 2 — sub-pixel sampling correlation for
   //the Beckmann lobe without disturbing displacedNormal).
   vec2 c5NativeHeightSlope = vec2(0.0);
+  #if(!$flowing_water)
   {
     float eps = 1.0 / patchDataSize;
     float worldStep = cascadePatchSizes[0] / patchDataSize;
@@ -1619,6 +1639,24 @@ void main(){
     float oneMinusFade = waveMask * (1.0 - fade);
     lostSlopeVar += oneMinusFade * oneMinusFade * (cDdx.y * cDdx.y + cDdz.y * cDdz.y);
   }
+  #else
+  //Phase 4 flowing water (FlowSurfacePass): no FFT here. This surface IS the
+  //field level, which falls along the channel, so a creek is lit as sloping
+  //water. Central differences over 1.5 m either side: a-land steps the level
+  //down the bed one metre at a time, and a one-texel stencil would facet every
+  //step. Stored pre-multiplier, like the cascade slopes it replaces.
+  {
+    const float LEVEL_EPS = 1.5;
+    float lxm = waterFieldAt(vWorldXZ - vec2(LEVEL_EPS, 0.0)).r;
+    float lxp = waterFieldAt(vWorldXZ + vec2(LEVEL_EPS, 0.0)).r;
+    float lzm = waterFieldAt(vWorldXZ - vec2(0.0, LEVEL_EPS)).r;
+    float lzp = waterFieldAt(vWorldXZ + vec2(0.0, LEVEL_EPS)).r;
+    vec2 levelSlope = vec2(lxp - lxm, lzp - lzm) / (2.0 * LEVEL_EPS) / max(waveHeightMultiplier, 0.0001);
+    rawDdx.y = levelSlope.x;
+    rawDdz.y = levelSlope.y;
+    cascade0HeightSlope = levelSlope;
+  }
+  #endif
   rawDdx *= waveHeightMultiplier;
   rawDdz *= waveHeightMultiplier;
   c5NativeHeightSlope *= waveHeightMultiplier;
@@ -1751,7 +1789,14 @@ void main(){
   //full shadow; both 1 means fully lit. macroNormal is the smooth wave normal
   //(cascade 0 only), used by the ocean shadow's normal-based slope bias.
   vec3 sunDirToSky = -brightestDirectionalLightDirection;
-  float oceanShadowRaw = getOceanShadow(vOceanShadowCoord0, vOceanShadowCoord1, vOceanShadowCoord2, vOceanShadowCoord3, macroNormal, sunDirToSky);
+  #if($flowing_water)
+    //The flowing surface casts no ocean CSM shadow and has no waves to
+    //self-shadow; the clipmap caster under it is flattened to this very level,
+    //so sampling the CSM here would only shadow the surface with itself.
+    float oceanShadowRaw = 1.0;
+  #else
+    float oceanShadowRaw = getOceanShadow(vOceanShadowCoord0, vOceanShadowCoord1, vOceanShadowCoord2, vOceanShadowCoord3, macroNormal, sunDirToSky);
+  #endif
   //Fade ocean self-shadow as the sun approaches zenith. EVSM on a tessellated
   //wave mesh produces visible triangle-silhouette artifacts at high sun angles
   //because the cascade depth slab is huge relative to the actual wave-height
@@ -2338,6 +2383,7 @@ void main(){
   //(FFTWater.shader:251-264) but using a wide eps to get the same
   //implicit-low-pass behavior on a height texture.
   vec2 c5FilteredHeightSlope = vec2(0.0);
+  #if(!$flowing_water)
   {
     float specEps = 8.0 / patchDataSize;
     float specWorldStep = cascadePatchSizes[5] * 8.0 / patchDataSize;
@@ -2350,6 +2396,7 @@ void main(){
     c5FilteredHeightSlope = vec2(hR - hL, hT - hB) / (2.0 * specWorldStep);
     c5FilteredHeightSlope *= waveMask5 * fade5 * waveHeightMultiplier;
   }
+  #endif
   //Total height slope for spec = full displacedNormal slope minus cascade-5
   //native contribution plus cascade-5 filtered contribution. Same cross
   //product form (chop derivatives unchanged — they don't suffer from
@@ -2938,6 +2985,7 @@ void main(){
   //→ C5 right. grey=1=flat, black=0=folded, white=2=stretched. Shows which
   //bands actually fold; the live foam uses the SUMMED fold (`turbulence`), so a
   //single strip sitting near grey is fine — folds come from the combination.
+  #if(!$flowing_water)
   else if(oceanShadowDebugMode == 30){
     float strip = gl_FragCoord.x / screenResolution.x;
     int idx = int(min(strip * 6.0, 5.0));
@@ -2986,6 +3034,7 @@ void main(){
     }
     gl_FragColor = vec4(vec3(clamp(j * 0.5, 0.0, 1.0)), 1.0);
   }
+  #endif
   //Mode 35: Snell's-window diagnostic for the underwater ceiling. Tells you at
   //a glance whether the camera is detected as submerged and which part of the
   //ceiling you are looking at — recomputes the same terms computeUnderwaterCeiling

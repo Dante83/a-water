@@ -156,6 +156,23 @@ void main() {
   vec4 field = waterFieldAt(worldXZ);
   vec3 waveMaskA;
   vec3 waveMaskB;
+  #if($flowing_water)
+  //Phase 4 flowing surface (FlowSurfacePass): the field level and nothing else
+  //yet. No FFT (its samplers are compiled out of this variant), no breakers.
+  waveMaskA = vec3(0.0);
+  waveMaskB = vec3(0.0);
+  offsetPosition.y += (field.r - baseHeightOffset);
+  //Cull what can never show flowing water: the still water itself and land
+  //whose nearest water is still (weight 0), and land more than CULL_INLAND
+  //metres from any water. Dropping the vertex under its own level puts those
+  //triangles below the terrain and the still surface, where the depth test
+  //rejects them before the fragment shader runs its discards.
+  const float CULL_INLAND = 3.0;
+  const float CULL_DROP = 30.0;
+  if(flowHandoffFieldWeightAt(worldXZ) <= 0.0 || field.b < -CULL_INLAND){
+    offsetPosition.y -= CULL_DROP;
+  }
+  #else
   waveMaskCascades(field, waveMaskA, waveMaskB);
   //Phase 4: where the water flows, FlowSurfacePass draws it and this surface
   //discards. Flatten the still waves there first, so nothing pokes through the
@@ -199,6 +216,7 @@ void main() {
   //the wave-displaced position would make the shoreline crawl as waves move
   //(see WATER-TYPES.md's FFT-displacement gotcha).
   offsetPosition.y += (field.r - baseHeightOffset);
+  #endif
 
   //Set up our varyings
   vWorldXZ = worldPositionOfVertex.xz;
@@ -226,6 +244,9 @@ void main() {
   //adjacent triangle. Offsetting receiver-side decouples the comparison.
   //Cascade 0 alone is enough — coarse waves dominate the normal, and the
   //offset only needs to point roughly outward from the surface.
+  #if($flowing_water)
+  vec3 normalOffsetN = vec3(0.0, 1.0, 0.0);
+  #else
   vec2 ndUV = (worldXZ + cascadeSpatialOffsets[0]) / cascadePatchSizes[0];
   float ndEps = 1.0 / patchDataSize;
   float ndStep = cascadePatchSizes[0] / patchDataSize;
@@ -236,6 +257,7 @@ void main() {
   float dHdX = waveMaskA.x * (hR - hL) / (2.0 * ndStep) * waveHeightMultiplier;
   float dHdZ = waveMaskA.x * (hT - hB) / (2.0 * ndStep) * waveHeightMultiplier;
   vec3 normalOffsetN = normalize(vec3(-dHdX, 1.0, -dHdZ));
+  #endif
   vec4 shadowSamplePos = vec4(worldDisplacedPosition.xyz + normalOffsetN * oceanShadowNormalBias, 1.0);
 
   vOceanShadowCoord0 = oceanShadowMatrix0 * shadowSamplePos;
