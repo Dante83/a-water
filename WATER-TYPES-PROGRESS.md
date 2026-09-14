@@ -107,6 +107,33 @@ The measurements and tables are in `NEARSHORE-WAVES.md` § 5.9. They changed the
 
    Only the spike and the Kr-ratio check are numbers so far.
 
+### Browser round 1 (2026-09-13) — "strongest near rocks?", "toggle changes little"
+
+- **Fixed: toggling off reset the sim.** Off → on restarted from flat water, and the
+  field took tens of seconds to rebuild. Off now freezes the field; only a new cell
+  size or a camera jump out of the window clears it.
+- **Fixed: a dead band at the waterline.** Cells shallower than h_min (0.92 m) were
+  held at 0, which made the grey line along the rocks in debug 62. They are now
+  filled each step from their wet neighbours. RMS reflected height against shore
+  distance around the steep island, before → after:
+
+  | shore distance | 0–2 m | 2–4 m | 4–8 m | 8–16 m | 16–32 m | 32–64 m | 64–128 m | 128–256 m |
+  |---|---|---|---|---|---|---|---|---|
+  | before | 0.17 | 0.34 | 0.32 | 0.25 | 0.19 | 0.11 | 0.08 | 0.06 |
+  | after | **0.44** | 0.35 | 0.32 | 0.25 | 0.19 | 0.11 | 0.08 | 0.06 |
+
+  The reflection now peaks at the rocks.
+- **Not a bug: the lit render barely changes.**
+  - In the steep ↔ oval strait the reflected height exceeds ±0.5 m (0.64 m RMS 25 m
+    off the rock). It is carried by the ~52 m peak waves, whose slope (~0.06) is
+    lost under the 2.9 m Hs chop.
+  - The south shore Dante looked at is side-on to the −X waves, so it reflects
+    little by design.
+  - Halving dx (L0/60, window ±215 m) let the 8 m cascade in and changed nothing
+    visible: that band holds too little energy.
+- **Open question for Dante:** accept a physically subtle reflection, or add cues
+  driven by it (clapotis foam, surge spray on rock faces).
+
 ### Not done / next
 
 - Skip the step when no shore cells are in the window (iGPU budget).

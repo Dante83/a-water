@@ -294,7 +294,10 @@ ARestlessOcean.Passes.ShoreReflectionPass.prototype._buildMaterials = function()
     '  float h = field.g;',
     //At the provider's depth cap the depth is unknown, not shallow (see WaveMask).
     '  if(h >= srDepthCap * 0.98) h = 1.0e4;',
-    '  if(field.a > 0.5 || field.b <= 0.0 || h < srHMin){ gl_FragColor = vec4(0.0); return; }',
+    '  if(field.a > 0.5 || field.b <= 0.0 || h <= 0.0){ gl_FragColor = vec4(0.0); return; }',
+    //Wet but shoreward of h_min: not simulated, but filled from its neighbours so
+    //the reflection reaches the waterline (.g = -1 marks it).
+    '  if(h < srHMin){ gl_FragColor = vec4(0.0, -1.0, 0.0, 0.0); return; }',
     '  float k0 = srOmega * srOmega / ' + f(SR.G) + ';',
     '  float X = min(k0 * h, 40.0);',
     '  float e2 = exp(-2.0 * X);',
@@ -368,8 +371,26 @@ ARestlessOcean.Passes.ShoreReflectionPass.prototype._buildMaterials = function()
     '  ivec2 p = ivec2(gl_FragCoord.xy);',
     '  vec4 med = texelFetch(srMedium, p, 0);',
     '  float cp = med.r;',
-    '  if(cp <= 0.0){ gl_FragColor = vec4(0.0); return; }',
     '  ivec2 shift = ivec2(srShift);',
+    '  if(cp <= 0.0){',
+    '    if(med.g > -0.5){ gl_FragColor = vec4(0.0); return; }',
+    //Waterline band: the mean of the wet neighbours (simulated or filled) last step.
+    //A band a few cells wide settles within a few frames, against a ~6 s period.
+    '    ivec2 fn[4] = ivec2[4](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));',
+    '    float sum = 0.0;',
+    '    float cnt = 0.0;',
+    '    for(int k = 0; k < 4; ++k){',
+    '      ivec2 q = p + fn[k];',
+    '      if(!srInWindow(q)) continue;',
+    '      vec4 mq = texelFetch(srMedium, q, 0);',
+    '      if(mq.r <= 0.0 && mq.g > -0.5) continue;',
+    '      ivec2 qs = q + shift;',
+    '      sum += srInWindow(qs) ? texelFetch(srState, qs, 0).r : 0.0;',
+    '      cnt += 1.0;',
+    '    }',
+    '    gl_FragColor = vec4(cnt > 0.0 ? sum / cnt : 0.0, 0.0, 0.0, 0.0);',
+    '    return;',
+    '  }',
     '  ivec2 ps = p + shift;',
     '  vec4 s = srInWindow(ps) ? texelFetch(srState, ps, 0) : vec4(0.0);',
     '  ivec2 nb[4] = ivec2[4](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));',
@@ -507,7 +528,9 @@ ARestlessOcean.Passes.ShoreReflectionPass.prototype.tick = function(ctx){
     && field && field.cascades.length === 3 && composer && composer.cascadeDisplacementTextures
     && composer.cascadeDisplacementTextures[0]);
   if(!this.active){
-    this._needsReset = true;
+    //Frozen, not cleared: switching the layer back on (or a sea briefly under
+    //MIN_HS) resumes the field instead of waiting tens of seconds for it to
+    //rebuild. A new cell size or a camera jump still resets it below.
     return;
   }
 
@@ -530,6 +553,13 @@ ARestlessOcean.Passes.ShoreReflectionPass.prototype.tick = function(ctx){
     this._draw(this._clearMaterial, this._state[1]);
     this._lastBakeMs = -1e9;
     this._needsReset = false;
+  } else if(Math.abs(ctx.cameraX - this.centerX) > this.grid.halfWidth || Math.abs(ctx.cameraZ - this.centerZ) > this.grid.halfWidth){
+    //Teleported out of the window: nothing in the old field is still in view.
+    this.centerX = Math.round(ctx.cameraX / dx) * dx;
+    this.centerZ = Math.round(ctx.cameraZ / dx) * dx;
+    this._draw(this._clearMaterial, this._state[0]);
+    this._draw(this._clearMaterial, this._state[1]);
+    this._lastBakeMs = -1e9;
   } else {
     const limit = SR.RECENTER_FRACTION * this.grid.halfWidth;
     if(Math.abs(ctx.cameraX - this.centerX) > limit || Math.abs(ctx.cameraZ - this.centerZ) > limit){
