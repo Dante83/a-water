@@ -134,6 +134,62 @@ The measurements and tables are in `NEARSHORE-WAVES.md` § 5.9. They changed the
 - **Open question for Dante:** accept a physically subtle reflection, or add cues
   driven by it (clapotis foam, surge spray on rock faces).
 
+### Browser round 2 (2026-09-13) — "should go back out and interfere; not seeing it"
+
+Measured headless with a per-frame transect along the normal of a Kr 1 rock face on
+the steep island (1440.5, 2362.1), normal (0.99, −0.10). Every frame, a sync read
+of four heights over 160 m at 1 m spacing:
+- rendered masked FFT
+- breaker + swash
+- reflection
+- the unmasked incident the sim is driven by
+
+Direction comes from the peak-band phase gradient.
+
+**⚠ Root cause, pre-existing (not 3b): the FFT ocean is not directional.**
+- `h_0-pass.glsl`'s spreading is `mix(d_k * d_k, 0.5, turb)`, with the same value
+  for k and −k. So every wave has an equal twin travelling against the wind.
+- In open water the space-time diagram is a chevron cross-hatch: crests run both
+  ways. The peak band's phase gradient is incoherent: apparent L 100–1400 m and
+  30–100 m/s.
+- Crest's function is **Pos**CosSquared (the downwind half only); the "Pos" was
+  lost in the port.
+- With a sea that already contains its own "reflection", a real reflection cannot
+  read as a wave going back out.
+
+**The fix, prototyped only (scratch h_0-pass.js served headless, NOT committed):**
+
+    float spread_k       = mix(d_minus_k > 0.0 ? 1.41421356 * d_minus_k * d_minus_k : 0.0, 0.5, turb);
+    float spread_minus_k = mix(d_k       > 0.0 ? 1.41421356 * d_k       * d_k       : 0.0, 0.5, turb);
+
+- **Why the halves are swapped:** `h_k-pass` evolves h₀(k)·e^{+iωt}, so the downwind
+  half must sit on h₀(−k). Putting it on h₀(k) was measured travelling upwind.
+- **√2** keeps the height variance (2cos⁴ averaged over the circle) the same when
+  turb = 0.
+- **Measured in open water:** crests run one way only. Peak band L 51 m at
+  9.3 m/s (deep theory 9.0 m/s); short band 6.9 m/s. Coherence 1.00.
+- `OceanWaveField.buildGerstnerComponents` (the buoyancy twin) has the same
+  symmetric spread and needs the same change.
+
+**With the fixed spectrum, at the rock:**
+- The incident arrives (−s, L 55 m, 10 m/s), and **the reflection travels back
+  out (+s)**.
+- Variance of the total surface, reflection on / off, against distance from the
+  rock: **3.49 (rock) → 0.93 (node, 10 m) → 1.63 (antinode, 18 m) → 1.04 (28 m)
+  → 1.22 (44 m)**, then noise.
+- In the space-time diagram the incoming diagonal crests turn into a standing
+  checkerboard within ~40 m of the rock. That is the clapotis Dante expected.
+- It fades past ~50 m: the reflection there carries 5–25% of the incident
+  variance (convex island, spreading reflection).
+- Near the rock the reflection variance is ~5× the rendered incident's, because
+  the FFT is TMA depth-masked there and the reflection is relative to the deep
+  incident. Worth a look once the spectrum is fixed.
+
+**Decision for Dante:**
+1. Take the one-sided spectrum. It changes the whole ocean's look: crests visibly
+   travel downwind, and the height stays calibrated.
+2. After that, reassess the reflection visually before any more tuning.
+
 ### Not done / next
 
 - Skip the step when no shore cells are in the window (iGPU budget).
