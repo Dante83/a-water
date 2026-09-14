@@ -8,6 +8,108 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
+## Phase 4 — flowing water, proven on creeks — **steps 1–3 written, headless-verified, awaiting regen + browser** (2026-09-14)
+
+Branch `phase-4-flowing-water`, off `multi-water-types` at `c0f12e6`. Plan:
+`~/.claude/plans/okies-i-think-we-re-delegated-stroustrup.md`.
+**GLSL changed in every step: run `create-shader.py`** (water-shader.js + ocean-shadow.js).
+
+### Decisions taken with Dante (2026-09-14)
+
+1. **Field-grid sheet, not ribbons, for Phase 4.** a-land exports no centrelines
+   (no spline, no river body, no graph). All shading is world-space, so Phase 5's
+   ribbons swap the geometry only.
+2. **Wave profile buffers stay in Phase 4**, as step 4 (not written yet).
+3. **Foam is driven by our own physical terms, not a-land's energy.** On
+   island-sholes every creek is 14 m wide and 0.2 m deep at 1–3 m/s (width 4√Q
+   at the default 50 % source, 12.5 m³/s), so Froude ≥ 1 and energy = 1 everywhere.
+   **Note for a-land:** that width formula makes every default creek supercritical.
+
+### What the data looks like (fresh export, 2026-09-14 10:39)
+
+- Five creeks. wtr-6's lower run is at x 1741–1785, z 2098–2231, passing through
+  auto-lakes 15.99 and 14.05. The wtr-8 creek runs down the steep island through
+  13 `waterfalls[]` entries. The two lakes sit at 15 m (1719, 1960) and 16 m (2034, 1989).
+- a-land stamps a **disc of level and velocity per bed cell**. The level is a
+  staircase down the bed, and past the last wet texel the ground often lies
+  *below* the continued level. It renders no water and carves no channels.
+
+### Step 1 — the hand-off weight (58f78b7)
+
+- **Where the weight goes.** `w = smoothstep(0.05, 0.25, |v|)` is packed into
+  **RT0.a**: wet `−w`, known-dry `1 + w_nearest`. No sampler is spent, and every
+  older reader of the dryMask channel still answers the same question.
+- **`ARestlessOcean.FlowHandoff`** (ocean-wave-field.js) holds the GLSL and a JS
+  mirror.
+  - It **decodes before filtering** (4× texelFetch).
+  - It is spliced at `$flow_handoff_functions` into the water vertex and fragment,
+    the CSM caster and the height bake.
+  - The clipmap scales masks, breakers and reflection by `1 − w`, and
+    dither-discards against a static blue-noise threshold.
+- **CPU side.**
+  - `oceanGrid.waterFlowAt` and `ARestlessOcean.queryFlow` read from a-land.
+  - The wave twin applies the same weight.
+  - `testWaterFieldParity` now checks flow and energy: **15/15 flowing points
+    match `getWaterAt`**, with 0 mis-packed texels.
+  - `showShoreField(c, 'flow' | 'energy' | 'handoff')` draws the new channels.
+
+### Step 2 — the flowing surface (dfb2fad)
+
+- **`ARestlessOcean.Passes.FlowSurfacePass`** (new flow-surface-pass.js) draws two
+  camera-following grids:
+  - 1 m cells over ±128 m on cascade 0's texel centres;
+  - 4 m cells over ±512 m on cascade 1's, with one cell of overlap.
+- **The `$flowing_water` variant** is substituted in ocean-grid.js, not the
+  template.
+  - It compiles out the FFT cascades, caustics and the ocean CSM: **17 samplers**
+    against the ocean's 28 on this page.
+  - Normals come from the level gradient (±1.5 m).
+- **Registration.** `OceanGrid.createFlowingWaterMaterial` and `registerOceanMesh`
+  hook it in, and the atmosphere recompile knows the variant.
+- **The bank cut uses the shoreSDF zero line, not the dry mask.** The dry mask
+  drew a 1 m staircase, because the terrain cannot hide a cut on ground below the
+  level.
+- **Culled vertices drop 30 m.** Their triangles are discarded below the level.
+  Without that, walls showed.
+
+### Step 3 — foam accumulation (5611501)
+
+- **`ARestlessOcean.Passes.FlowFoamPass`** (new flow-foam-pass.js): 512² float
+  ping-pong at 0.5 m (±128 m).
+  - Channels: r = foam, gb = smoothed flow, a = energy.
+  - Each step does semi-Lagrangian advection and decays with τ = 6 s.
+  - Sources: convergence and bank shear above an onset, bed steps (|∇level|
+    0.5–0.8) × |v|, and discs at the waterfall bases.
+- **Measured.** A 1 m stencil read every disc-stamp edge as foam, giving
+  creek-wide mean coverage 0.36. **A 2 m stencil plus onsets gives 0.045**, as
+  streaks from the lake outlet lip and the chutes.
+- **Material.**
+  - Two-phase Vlachos advection of the bubble layers.
+  - A sliding black point for the foam shape, which is valid here because the
+    grain is not world-locked.
+  - The ocean's layer average is now `mix(a, b, 0.5)`: identical output.
+- Debug modes **63** (foam coverage) and **64** (current). The `<ocean-river>`
+  config group lives in config-terrain.js, so no new script tag.
+- **Headless.** island-sholes runs at 58–60 fps on the 4090. Standalone
+  `islands.html` has no pass and no errors.
+
+### ⚠ Outstanding — needs Dante
+
+1. Run `create-shader.py`, then open `examples/demos/island-sholes-ocean.html`.
+   - Fly to wtr-6's lower run (≈ 1765, 20, 2115) and the lake-14.05 outlet.
+   - A/B with `oceanGrid.flowSurfaceEnabled = false`.
+   - Try `setOceanShadowDebug(63)` and `(64)`.
+2. **Still glassy between foam streaks.** Surface waves (WPB) are step 4.
+3. **Known look issues:**
+   - The steep-island falls render as lumpy glass sheets. That is a Phase 6
+     placeholder; a steep-cell foam clamp is step 5.
+   - A bright white line at the far confluence has not been investigated.
+   - Wet-sand albedo under thin water is Phase 9.
+4. Headless terrain textures sometimes load grey. That is a harness flake, not
+   ours.
+
+---
+
 ## Phase 3b — shore reflection — **PARKED** (2026-09-13)
 
 Branch `phase-3b-reflection`, off `multi-water-types` at `1efd476`.
