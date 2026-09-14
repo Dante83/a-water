@@ -8,6 +8,114 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
+## Phase 3b — shore reflection — **step 1 written, headless-verified, awaiting regen + browser** (2026-09-13)
+
+Branch `phase-3b-reflection`, off `multi-water-types` at `1efd476`.
+**GLSL changed: run `create-shader.py`** (it regenerates `water-shader.js` and
+`ocean-shadow.js`).
+
+### First task: oblique incidence (spike, committed d098492)
+
+The measurements and tables are in `NEARSHORE-WAVES.md` § 5.9. They changed the design:
+- **The mirror law emerges.** Direction error is ≤ 0.3° at shore angles 0/20/45° and
+  incidence 0/30/60°.
+- **§ 8's Dirichlet emitter is the wrong shore.** It sends any *simulated* wave back
+  inverted at full strength (phase 175°, |R| = 1), so reflections would ring forever
+  between shores.
+- **Replaced by a Robin (impedance) shore with α = (1 − Kr)/(1 + Kr).**
+  - α is spread over the staircase faces (× 1/(|nx| + |ny|)).
+  - The shore is driven by the incident's **shoreward characteristic** only. The
+    total-field source also cancelled 65–100% of an offshore-going incident; this
+    one leaks 2–6%.
+  - It reflects at Kr 0.498–0.503 at every angle tested.
+- **Sloping bed.** The medium is c(h; Tp) in the constant-amplitude form
+  η_tt = c∇·(c∇η), with the shore on the h_min = L0/18π contour. The deep gauge
+  reads Kr 0.49 for a set 0.5, on both 1:10 and 30° slopes.
+- **No separate absorber.** A Kr ≈ 0 shore absorbs by itself, including other shores'
+  reflections.
+
+### What shipped in step 1
+
+- **`ARestlessOcean.Passes.ShoreReflectionPass` + `ARestlessOcean.ShoreReflection`**,
+  in the new `src/js/ocean-system/passes/shore-reflection-pass.js`. The file header
+  has the full model. Registered in `make-combined.py` and in the four example
+  pages (gitignored; backups in the session scratchpad).
+  - **Grid.** 512² RGBA32F ping-pong, state = (η, v, incident last step, valid).
+    dx = L0/30 in quarter-octave steps, clamped to 0.25–4 m: 1.68 m and a ±430 m
+    window on island-sholes. World-snapped; it re-centres by integer-cell shift
+    once the camera is 25% of the half-width out.
+  - **Medium bake.** (c, α·cosθ·faceScale, source gain, faceScale) per cell, from
+    the WaterField. It re-bakes on a shift, on a field refill, and at least once a
+    second.
+    - Shore normal: shoreSDF central differences on cascade 1.
+    - Kr: Battjes, with ξ from h/s.
+    - cosθ: wind direction against the normal, floored at 0.35.
+  - **Incident.** The unmasked cascades × WaveMask's fetch part, mip-filtered to
+    dx, smooth-faded out below 5–10 cells per wavelength.
+  - **Breaking.** Where |η| > max(0.39·h, Hs/2), damping grows with the excess.
+    Without it, the steep-island ↔ oval-island strait rang up to 3–4 m of reflected
+    height in 1–3 m of water. The Hs/2 floor is flagged as a look choice: a pure
+    McCowan cap on the ~1 m shore contour clipped a cliff's single reflection to a
+    third.
+  - **Precision self-test** at init (100 × +0.001 through a float target). It
+    disables the layer on the § 5.8 half-precision drivers.
+  - **Enabled with the breakers** (same terrain-provider rule), when Hs ≥ 0.1 m.
+- **Consumers.** `$shore_reflection_functions` is a new token in `water-vertex.glsl`,
+  `water-shader.glsl` and `ocean-shadow-vertex.glsl`, spliced at runtime like
+  ShoreBreaker. There is a stub if the file is missing.
+  - Vertex: height.
+  - Fragment: slope from central differences one cell apart, added to the normal
+    and the macro normal, plus debug mode 62.
+  - CSM caster: height.
+  - Height bake: `.r`.
+  - Camera submersion probe: the breaker probe texel.
+  - The rim fade matches the sponge.
+- **Console:** `setShoreReflectionEnabled`, `setShoreReflectionHeightScale`,
+  `shoreReflectionStats()`.
+
+### Verified headless (island-sholes-ocean.html, scratch regen served via CDP Fetch)
+
+- **4090 / ANGLE GL:** no shader or program errors, 60 fps, self-test 10.10004.
+  The standalone `islands.html` is inactive with its uniform at 0. Its 8 "Unable to
+  serialize Texture" warnings are pre-existing (same count on the base code).
+- **Reflections come from the right shores.** The steep island (1393, 2524) radiates
+  outgoing rings, and the gentle oval and long islands send back essentially nothing.
+- **Shore cells, over 15 s:** RMS(η)/RMS(incident) tracks each cell's own Kr.
+  Bins Kr 0–0.1 / 0.1–0.2 / 0.2–0.35 / 0.35–0.5 / 0.5–0.7 / 0.7–0.9 / 0.9–1 give
+  medians **0.08 / 0.18 / 0.29 / 0.47 / 0.52 / 0.63 / 0.66**. The top bins read low
+  because part of the FFT incident travels away from those shores.
+- **Stable for 100 s.** Strait RMS 0.14–0.22 m, max ≤ 2.1 m (Hs 2.94 m). Lee side
+  ~0.05 m. No non-finite cells.
+- **GPU cost** (timer query):
+  - RTX 4090: step 0.016 ms, bake 0.014 ms.
+  - **Radeon 7800X3D iGPU (RADV): step 0.58 ms/frame, bake 0.26 ms** (~1/s plus
+    shifts).
+  - That is over the spike's 0.24 ms because of the medium fetch and branching.
+    Skipping the step when the window has no shore cells is the obvious saving (not
+    done).
+
+### ⚠ Outstanding — needs Dante
+
+1. Run `create-shader.py`, then look at `examples/demos/island-sholes-ocean.html` near
+   the steep island. Try `setOceanShadowDebug(62)`, and A/B with
+   `setShoreReflectionEnabled(false)`. Does the cross-hatch read as a real coast or as
+   noise? Is the strait's clapotis too lively?
+2. The acceptance line in WATER-TYPES.md (§ Verification, Phase 3):
+   - a steep shore at 12 m/s shows outgoing crests at about half the incident;
+   - a 1:20 beach shows none;
+   - oblique waves reflect at the mirror angle.
+
+   Only the spike and the Kr-ratio check are numbers so far.
+
+### Not done / next
+
+- Skip the step when no shore cells are in the window (iGPU budget).
+- Kr above ξ 2.5 is Battjes extrapolated (capped at 1). Rough and permeable rock
+  should reflect less.
+- Phase 8's boat, rain and avatar ripples can inject into the same field.
+
+---
+
 ## Phase 3a — shorelines that break — **landed, browser-checked, merged** (2026-09-13)
 
 Branch `phase-3a-breakers`, off `multi-water-types` at `9cfb079`. Step 1 is the

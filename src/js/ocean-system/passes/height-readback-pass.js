@@ -110,6 +110,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
     hfSumLines += 'dy += ' + w + 'texture2D(hfCascadeTex[' + c + '], (worldXZ + hfCascadeOffset[' + c + ']) / hfCascadePatch[' + c + ']).y;\n';
   }
   const fieldReady = !!(ARestlessOcean.Passes.WaterFieldPass && ARestlessOcean.WaveMask);
+  const reflectionReady = !!ARestlessOcean.ShoreReflection;
   const hfVert = 'varying vec2 vHfUv;\nvoid main(){ vHfUv = uv; gl_Position = vec4(position, 1.0); }';
   const hfFrag = [
     'precision highp float;',
@@ -125,6 +126,8 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
     fieldReady ? ARestlessOcean.Passes.WaterFieldPass.SAMPLE_GLSL : '',
     fieldReady ? ARestlessOcean.WaveMask.GLSL : '',
     fieldReady ? ARestlessOcean.ShoreBreaker.GLSL : '',
+    //Phase 3b: the shore reflection rides in the same sum.
+    reflectionReady ? ARestlessOcean.ShoreReflection.GLSL : 'float shoreReflectionHeightAt(vec2 xz){ return 0.0; }',
     'void main(){',
     '  vec2 worldXZ = hfRegionOrigin + vHfUv * hfRegionSize;',
     '  vec3 hfMaskA = vec3(1.0);',
@@ -160,7 +163,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
     ].join('\n') : '',
     '  float dy = 0.0;',
     '  ' + hfSumLines,
-    '  gl_FragColor = vec4(level + dy * hfWhm + breaker, breakerSpray, breakerDir, breakerCrest);',
+    '  gl_FragColor = vec4(level + dy * hfWhm + breaker + shoreReflectionHeightAt(worldXZ), breakerSpray, breakerDir, breakerCrest);',
     '}'
   ].join('\n');
   const hfUniforms = {
@@ -178,6 +181,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
     Object.assign(hfUniforms, ARestlessOcean.WaveMask.createUniforms());
     Object.assign(hfUniforms, ARestlessOcean.ShoreBreaker.createUniforms());
   }
+  if(reflectionReady) Object.assign(hfUniforms, ARestlessOcean.ShoreReflection.createUniforms());
   this._heightFieldMaterial = new THREE.ShaderMaterial({
     uniforms: hfUniforms,
     vertexShader: hfVert,
@@ -273,6 +277,9 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.updateHeightField = function(
   }
   u.hfRegionOrigin.value.set(originX, originZ);
   u.hfRegionSize.value = HEIGHT_FIELD_SIZE;
+  if(ARestlessOcean.ShoreReflection){
+    ARestlessOcean.ShoreReflection.writeUniforms(u, grid.shoreReflectionPass ? grid.shoreReflectionPass.consumerState() : null);
+  }
 
   const prevRT = this.renderer.getRenderTarget();
   this.renderer.setRenderTarget(this._heightFieldRT);
@@ -402,9 +409,11 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._renderBreakerProbe = functio
   if(!this._hfFieldReady || !ARestlessOcean.ShoreBreaker || !sbp || !sbp.enabled) return false;
   if(!grid.waterFieldPass) return false;
   if(!this._breakerProbeMaterial){
+    const reflectionReady = !!ARestlessOcean.ShoreReflection;
     const uniforms = Object.assign({probeXZ: {value: new THREE.Vector2()}},
       ARestlessOcean.Passes.WaterFieldPass.createSampleUniforms(),
-      ARestlessOcean.ShoreBreaker.createUniforms());
+      ARestlessOcean.ShoreBreaker.createUniforms(),
+      reflectionReady ? ARestlessOcean.ShoreReflection.createUniforms() : {});
     this._breakerProbeMaterial = new THREE.ShaderMaterial({
       uniforms: uniforms,
       vertexShader: 'void main(){ gl_Position = vec4(position, 1.0); }',
@@ -413,8 +422,9 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._renderBreakerProbe = functio
         'uniform vec2 probeXZ;',
         ARestlessOcean.Passes.WaterFieldPass.SAMPLE_GLSL,
         ARestlessOcean.ShoreBreaker.GLSL,
+        reflectionReady ? ARestlessOcean.ShoreReflection.GLSL : 'float shoreReflectionHeightAt(vec2 xz){ return 0.0; }',
         'void main(){',
-        '  gl_FragColor = vec4(shoreBreakerHeightAt(probeXZ, waterFieldAt(probeXZ), 1.0), 0.0, 0.0, 1.0);',
+        '  gl_FragColor = vec4(shoreBreakerHeightAt(probeXZ, waterFieldAt(probeXZ), 1.0) + shoreReflectionHeightAt(probeXZ), 0.0, 0.0, 1.0);',
         '}'
       ].join('\n'),
       depthTest: false,
@@ -431,6 +441,9 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._renderBreakerProbe = functio
   const u = this._breakerProbeMaterial.uniforms;
   if(!grid.waterFieldPass.bindUniforms(u)) return false;
   ARestlessOcean.ShoreBreaker.writeUniforms(u, sbp);
+  if(ARestlessOcean.ShoreReflection){
+    ARestlessOcean.ShoreReflection.writeUniforms(u, grid.shoreReflectionPass ? grid.shoreReflectionPass.consumerState() : null);
+  }
   u.probeXZ.value.set(grid.globalCameraPosition.x, grid.globalCameraPosition.z);
   const prevRT = this.renderer.getRenderTarget();
   this.renderer.setRenderTarget(this._breakerProbeRT);

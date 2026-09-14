@@ -105,11 +105,15 @@ ARestlessOcean.OceanShadowCSM = function(oceanGrid, scene, configOverrides){
   Object.assign(shadowUniforms, ARestlessOcean.WaveMask.createUniforms());
   //Phase 3a: breakers lift the receiver, so they lift the caster.
   Object.assign(shadowUniforms, ARestlessOcean.ShoreBreaker.createUniforms());
+  //Phase 3b: and so does the shore reflection.
+  if(ARestlessOcean.ShoreReflection) Object.assign(shadowUniforms, ARestlessOcean.ShoreReflection.createUniforms());
   this._shadowMatDef = {
     uniforms: shadowUniforms,
     vertexShader: baseShadowMat.vertexShader
       .replace('$wave_mask_functions', function(){ return ARestlessOcean.WaveMask.GLSL; })
-      .replace('$shore_breaker_functions', function(){ return ARestlessOcean.ShoreBreaker.GLSL; }),
+      .replace('$shore_breaker_functions', function(){ return ARestlessOcean.ShoreBreaker.GLSL; })
+      .replace('$shore_reflection_functions', function(){ return ARestlessOcean.ShoreReflection ? ARestlessOcean.ShoreReflection.GLSL
+        : 'float shoreReflectionHeightAt(vec2 xz){ return 0.0; }'; }),
     fragmentShader: baseShadowMat.fragmentShader
   };
 
@@ -310,6 +314,7 @@ ARestlessOcean.OceanShadowCSM.prototype.render = function(renderer, mainCamera, 
     }
     ARestlessOcean.WaveMask.copyUniforms(u, sharedOceanUniforms);
     ARestlessOcean.ShoreBreaker.copyUniforms(u, sharedOceanUniforms);
+    if(ARestlessOcean.ShoreReflection) ARestlessOcean.ShoreReflection.copyUniforms(u, sharedOceanUniforms);
   }
 
   const pivotX = this._cameraWorldPos.x;

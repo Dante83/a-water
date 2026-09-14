@@ -109,6 +109,9 @@ vec4 waterFieldAt(vec2 worldXZ){
 //the same chunk the vertex, the CSM caster and the height bake use. After
 //waterFieldAt, which it calls. Bare token so the min build cannot strip it.
 $shore_breaker_functions
+//Phase 3b ShoreReflection (shoreReflectionHeightAt, shoreReflectionSlopeAt):
+//spliced from ARestlessOcean.ShoreReflection.GLSL in shore-reflection-pass.js.
+$shore_reflection_functions
 
 //uniform vec3 cameraDirection;
 uniform float sizeOfOceanPatch;
@@ -1654,6 +1657,11 @@ void main(){
       breakerSlope = vec2(breakerEtaX - breakerEta, breakerEtaZ - breakerEta) / BREAKER_EPS;
     }
   }
+  //── Phase 3b: the shore's reflected wave (ShoreReflection) ───────────────
+  //Its slope from the state texture one cell either side: there are no spare
+  //varyings to carry it down from the vertex.
+  vec2 reflectionSlope = shoreReflectionSlopeAt(vWorldXZ);
+  breakerSlope += reflectionSlope;
   rawDdx.y += breakerSlope.x;
   rawDdz.y += breakerSlope.y;
   //macroSlope below re-applies waveHeightMultiplier to cascade 0's slope; the
@@ -3103,6 +3111,16 @@ void main(){
   else if(oceanShadowDebugMode == 61){
     vec3 dbgCol = vec3(clamp(0.5 + 0.5 * breakerEta, 0.0, 1.0));
     gl_FragColor = vec4(mix(dbgCol, vec3(1.0, 0.1, 0.1), 0.5 * breakerBreaking), 1.0);
+  }
+  //Phase 3b ShoreReflection debug view.
+  //Mode 62: reflected height alone, grey = 0, white = +0.5 m, black = -0.5 m,
+  //         tinted blue inside the simulation window so its extent shows.
+  else if(oceanShadowDebugMode == 62){
+    float dbgEta = shoreReflectionHeightAt(vWorldXZ);
+    vec2 dbgD = abs(vWorldXZ - shoreReflectionCenter) / max(shoreReflectionHalfWidth, 0.001);
+    float dbgIn = (shoreReflectionEnabled > 0.5 && max(dbgD.x, dbgD.y) < 1.0) ? 1.0 : 0.0;
+    vec3 dbgCol = vec3(clamp(0.5 + dbgEta, 0.0, 1.0));
+    gl_FragColor = vec4(mix(dbgCol * 0.6, dbgCol * vec3(0.8, 0.9, 1.1), dbgIn), 1.0);
   }
 
   //Debug overlays — only drawn when oceanShadowDebugMode is non-zero. Bottom-

@@ -101,6 +101,9 @@ $wave_mask_functions
 //spliced the same way from ARestlessOcean.ShoreBreaker.GLSL (ocean-wave-field.js).
 //Must come after waterFieldAt, which the geometry helper calls.
 $shore_breaker_functions
+//Phase 3b ShoreReflection uniforms + shoreReflectionHeightAt, spliced from
+//ARestlessOcean.ShoreReflection.GLSL (shore-reflection-pass.js).
+$shore_reflection_functions
 //Displacement-texture pixel resolution per side (RG=dh/dx,dh/dz storage).
 //Used here only to size the finite-difference epsilon for the per-vertex
 //normal estimate that drives normal-offset shadow bias.
@@ -172,6 +175,11 @@ void main() {
   //field above. Faded with camera distance because clipmap cells outgrow the
   //nearshore wavelength; the fragment carries it further as normals and foam.
   offsetPosition.y += shoreBreakerHeightAt(worldXZ, field, shoreBreakerDistanceFade(worldPositionOfVertex.xyz));
+
+  //Phase 3b: the wave the shore sends back (ShoreReflection). A wave-equation
+  //field around the camera; zero outside its window, faded out at the rim.
+  //Undisplaced worldXZ, like everything else that is a property of the place.
+  offsetPosition.y += shoreReflectionHeightAt(worldXZ);
 
   //Phase 1b: shift this vertex's rest height from the mesh's baked flat
   //plane (baseHeightOffset) to the real WaterField level at its position —

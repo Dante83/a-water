@@ -871,12 +871,21 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       //replacement, so a `$` in the GLSL could never be read as a pattern.
       .replace('$wave_mask_functions', function(){ return ARestlessOcean.WaveMask.GLSL; })
       //Phase 3a: the shared ShoreBreaker GLSL (ocean-wave-field.js).
-      .replace('$shore_breaker_functions', function(){ return ARestlessOcean.ShoreBreaker.GLSL; });
+      .replace('$shore_breaker_functions', function(){ return ARestlessOcean.ShoreBreaker.GLSL; })
+      //Phase 3b: the shore-reflection sampler (shore-reflection-pass.js).
+      .replace('$shore_reflection_functions', shoreReflectionGLSL);
+  }
+  //A stub when shore-reflection-pass.js is not loaded, so the token never
+  //reaches the compiler.
+  function shoreReflectionGLSL(){
+    return ARestlessOcean.ShoreReflection ? ARestlessOcean.ShoreReflection.GLSL
+      : 'float shoreReflectionHeightAt(vec2 xz){ return 0.0; }\nvec2 shoreReflectionSlopeAt(vec2 xz){ return vec2(0.0); }';
   }
   //The fragment carries the same ShoreBreaker splice (normals, foam, debug).
   function buildFragmentShader(atmEnabled, atmFunctions){
     return ARestlessOcean.Materials.Ocean.waterMaterial.fragmentShader(self.causticsEnabled, self.foamEnabled, atmEnabled, atmFunctions)
-      .replace('$shore_breaker_functions', function(){ return ARestlessOcean.ShoreBreaker.GLSL; });
+      .replace('$shore_breaker_functions', function(){ return ARestlessOcean.ShoreBreaker.GLSL; })
+      .replace('$shore_reflection_functions', shoreReflectionGLSL);
   }
   const vertexShaderSource = buildVertexShader(atmosphereReady, false);
   this.oceanMaterial = new THREE.ShaderMaterial({
@@ -907,6 +916,10 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   Object.assign(this.oceanMaterial.uniforms, ARestlessOcean.WaveMask.createUniforms());
   //Phase 3a ShoreBreaker uniforms, declared next to their GLSL for the same reason.
   Object.assign(this.oceanMaterial.uniforms, ARestlessOcean.ShoreBreaker.createUniforms());
+  //Phase 3b shore reflection uniforms (shore-reflection-pass.js).
+  if(ARestlessOcean.ShoreReflection){
+    Object.assign(this.oceanMaterial.uniforms, ARestlessOcean.ShoreReflection.createUniforms());
+  }
   this.oceanMaterial.uniforms.sizeOfOceanPatch.value = this.patchSize;
 
   //Ocean-only cascaded shadow map, orchestrated by
@@ -1172,6 +1185,17 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     this.heightReadbackPass = null;
     this.sampleFFTHeightAt = function(){ return null; };
     this.sampleWaterHeightFieldCached = function(){ return null; };
+  }
+
+  //Phase 3b: shore reflection — a camera-following wave equation that carries
+  //only the wave the shore sends back (ARestlessOcean.Passes.ShoreReflectionPass;
+  //read its header). Enabled with the breakers: same terrain-provider rule.
+  this.shoreReflectionEnabled = true;
+  if(ARestlessOcean.Passes && ARestlessOcean.Passes.ShoreReflectionPass){
+    this.shoreReflectionPass = new ARestlessOcean.Passes.ShoreReflectionPass(this);
+    this.shoreReflectionPass.init();
+  } else {
+    this.shoreReflectionPass = null;
   }
 
   //Build the horizon-skirt mesh and register it as another instance key so the
@@ -1514,6 +1538,22 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     self.oceanHeightBandLibrary.tick(time);
 
     self.oceanHeightComposer.tick();
+
+    //Phase 3b: step the shore reflection against this frame's cascades. After the
+    //composer (the incident) and the water field (the medium); before the height
+    //bake and the probe, which read its output.
+    if(self.shoreReflectionPass){
+      const breakerParams = self.shoreBreakerParams();
+      self.shoreReflectionPass.tick({
+        timeMs: time,
+        cameraX: self.globalCameraPosition.x,
+        cameraZ: self.globalCameraPosition.z,
+        enabled: self.shoreReflectionEnabled,
+        breakerParams: breakerParams,
+        waveMaskParams: self.waveMaskParams(),
+        depthCap: self._waterFieldDepthCap()
+      });
+    }
 
     //Refresh the local CPU height field for scalable exact buoyancy queries
     //(tiny GPU pass + async read; no-ops unless something asked for it).
@@ -1882,11 +1922,13 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //Phase 3a breaker sea state, on the same clock as the water material's `t`.
     self._shoreBreakerTime = time * 0.001;
     const shoreBreakerParams = self.shoreBreakerParams();
+    const shoreReflectionState = self.shoreReflectionPass ? self.shoreReflectionPass.consumerState() : null;
 
     for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
       const uniformsRef = oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms;
       ARestlessOcean.WaveMask.writeUniforms(uniformsRef, waveMaskParams);
       if(shoreBreakerParams) ARestlessOcean.ShoreBreaker.writeUniforms(uniformsRef, shoreBreakerParams);
+      if(shoreReflectionState) ARestlessOcean.ShoreReflection.writeUniforms(uniformsRef, shoreReflectionState);
       for(let c = 0; c < 6; c++){
         uniformsRef.cascadeDisplacementTextures.value[c] = self.oceanHeightComposer.cascadeDisplacementTextures[c];
       }

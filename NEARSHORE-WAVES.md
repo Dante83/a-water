@@ -490,6 +490,10 @@ Keep everything in Phase 3 and change what drives it:
 
 ### 3b — Shore reflection *(new; Phase 8's dynamic-waves sim, pulled forward as a service)*
 
+> **Amended 2026-09-13 by § 5.9.** The emitter is a Robin shore driven by the incident's
+> shoreward characteristic, on the h_min contour, with no separate absorber. Built as
+> `shore-reflection-pass.js`; see `WATER-TYPES-PROGRESS.md` § Phase 3b.
+
 - **The solver.** A camera-following, world-snapped 2D wave equation, like the
   foam-ortho snap. It holds **only scattered height**, 512² RGBA32F ping-pong.
 - **The emitter.** Shore texels, the wet cells within one cell of `shoreSDF` = 0, are
