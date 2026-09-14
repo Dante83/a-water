@@ -93,6 +93,44 @@ Branch `phase-4-flowing-water`, off `multi-water-types` at `c0f12e6`. Plan:
 - **Headless.** island-sholes runs at 58–60 fps on the 4090. Standalone
   `islands.html` has no pass and no errors.
 
+### Browser round 1 (Dante, 2026-09-14) and the a-land carve
+
+Six screenshots:
+- a flat sheet with polygon edges that stops short of the sea;
+- spikes in the surf running around the island;
+- water going over a hill;
+- polygon lakes;
+- a horizontal bar at a spring, and an upwelling out of a lake;
+- a steep fall popping in and out;
+- lakes with no shore waves.
+
+**Diagnosis.** It came from an offline decode of the export plus headless live shader
+patches.
+
+- **Root cause: a-land never carved a channel.** Each creek is a disc of flat water per bed
+  cell, 0.15–0.35 m deep, on the unmodified ground. About 25% of the dry texels beside a
+  creek lie *below* its continued level (the floating edges). On steep ground the
+  rendered terrain wins the depth test through a film that thin: the holes on the fall.
+  Removing our wall discard and bank cut in live shader patches did not remove them.
+- **The data is connected.** All flowing components touch still water, and wtr-6 reaches
+  the waterline at z ≈ 2229 with a 0.37 m step. The sheet ending at the beach is real. A
+  plume into the surf is estuary work.
+- **The surf sand patches are the Phase 3a drawdown patches.** They go away with breakers
+  off.
+- **Not reproduced:** the spikes around the island. That needs Dante's camera position.
+
+**Fix, in a-faraway-land:** branch `water-carve-channels`, commit `3d5ce1c`.
+- `WaterSolve.carveChannels` derives the bed, and Solve Water now runs solve → carve →
+  replace the *Channels* layer → solve again.
+- Bake & Export's refresh does not re-carve.
+- Offline on the same heights, floating bank texels beside flowing water drop 1144 → 224
+  on the long island and 628 → 106 on wtr-10.
+- Wet width is 13–15 texels, and the deepest cut is 3.47 m.
+- `check-carve.js` added. `check-lake-preview.js` was already failing before this change.
+
+**Decided with Dante:** a-land carving now. Then in a-water: step 4 (ripples + speed
+roughness), lake shore lapping, and the fringes + mouth plume.
+
 ### ⚠ Outstanding — needs Dante
 
 1. Run `create-shader.py`, then open `examples/demos/island-sholes-ocean.html`.
