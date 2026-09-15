@@ -156,6 +156,29 @@ roughness), lake shore lapping, and the fringes + mouth plume.
 - **Step 4 (8e56a99, needs regen):** the ripple profile buffer and standing waves,
   normals only. See the commit message.
 
+### Browser rounds 5–6 (2026-09-14, late)
+
+**a-land (branch `water-carve-channels`).**
+- f10fbfe: Manning uses the reach slope, 8 cells down the path, not one D8 step. A flat
+  patch read as slope 0, which gave 2 m of water on a 0.3 m creek. The carve's
+  min-combined discs made 7 m flats, hence the domes.
+- f10fbfe also raised the carve cut limit to 40 m. On the jagged steep island that cut
+  40–77 m slot canyons (mu2806ib: 13,798 cells cut deeper than 5 m).
+- **ef1e621 sets `carveMaxCutM` to 3: "trench small, lake big"** (decided with Dante).
+  `check-carve` gains an enclosed-ring control: uncapped 11.8 m, capped 3.7 m, a lake
+  forms.
+- **Workflow trap.** The Channels layer only persists on Save (⌘S). Bake & Export writes
+  carved heights into the project's `tiles/height`, so an unsaved session leaves the
+  carve baked in at startup; a terrain history rebuild removes it.
+
+**a-water.**
+- c16b41e: the vertex cull is dilated (no bare band between creek and pond), and the
+  current turns down the water surface's slope (no D8 zig-zag).
+- 6c567ee: the hand-off is an ~8 m alpha cross-fade.
+  - WaterFieldPass blurs the weight; the flowing sheet is transparent with alpha = w.
+  - A dither over that width read as speckle.
+  - Caustics stay off on creeks: the projector samples ~0 there and darkened the bed.
+
 ### ⚠ Outstanding — needs Dante
 
 1. Run `create-shader.py`, then open `examples/demos/island-sholes-ocean.html`.
