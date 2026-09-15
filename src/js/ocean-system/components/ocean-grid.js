@@ -936,6 +936,9 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     return ARestlessOcean.Materials.Ocean.waterMaterial.fragmentShader(
         flowing ? false : self.causticsEnabled, self.foamEnabled, atmEnabled, atmFunctions)
       .replace(/\$flowing_water/g, flowing ? '1' : '0')
+      //Phase 4 step 4: the ripple profile period (m), owned by FlowSurfacePass.
+      .replace(/\$flow_wave_period/g, (ARestlessOcean.Passes.FlowSurfacePass
+        ? ARestlessOcean.Passes.FlowSurfacePass.WAVE_PERIOD : 8.0).toFixed(1))
       .replace('$shore_breaker_functions', function(){ return ARestlessOcean.ShoreBreaker.GLSL; })
       .replace('$flow_handoff_functions', function(){ return ARestlessOcean.FlowHandoff.GLSL; })
       .replace('$shore_reflection_functions', shoreReflectionGLSL);
@@ -1327,6 +1330,9 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //The flowing variant's own foam + flow target (FlowFoamPass).
     mat.uniforms.flowFoamMap = {value: null};
     mat.uniforms.flowFoamWindow = {value: new THREE.Vector3(0, 0, 0)};
+    //Step 4: ripple profile buffer (FlowSurfacePass) and its live slope knob.
+    mat.uniforms.flowWaveProfile = {value: null};
+    mat.uniforms.flowRippleScale = {value: 1.0};
     return mat;
   };
   //Register a water mesh built outside this constructor into the per-frame

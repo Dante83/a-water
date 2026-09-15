@@ -38,6 +38,23 @@
 //vertex shader (see water-vertex.glsl), so a window over open sea costs vertices
 //and little fill.
 
+//THE RIPPLE PROFILE BUFFER (step 4)
+//The flowing material's small waves come from one periodic 1D profile, after the
+//wave profile buffers of Jeschke & Wojtan (Water Surface Wavelets, 2018): instead of
+//summing hundreds of waves per pixel, a GPU pass sums them once per frame along a
+//line, and the material samples that line along eight directions. The profile holds
+//waves i = 2..200 over WAVE_PERIOD metres (wavelengths 4 m down to 4 cm):
+//  * slope amplitude ∝ i^-1/2, i.e. equal slope variance per octave, the saturation
+//    range a wind or turbulence driven ripple field settles into;
+//  * capillary-gravity dispersion, ω² = (g·k + σ/ρ·k³)·tanh(k·h), at a representative
+//    creek depth (one global h — a look approximation, flagged);
+//  * a fixed random phase per wave.
+//r = height, g = slope along the profile, both scaled to unit RMS slope. The target is
+//mipmapped, so the material's texture lookups average ripples finer than a pixel
+//(and it folds the lost variance into roughness). Sampled with repeat wrapping.
+//Time wraps every TIME_WRAP seconds to keep ω·t inside float precision; that is one
+//imperceptible reshuffle every quarter of an hour.
+
 ARestlessOcean.Passes = ARestlessOcean.Passes || {};
 
 ARestlessOcean.Passes.FlowSurfacePass = function(oceanGrid){
@@ -48,6 +65,8 @@ ARestlessOcean.Passes.FlowSurfacePass = function(oceanGrid){
   this._ready = false;
   this._state = {enabled: false, centerX: 0, centerZ: 0, halfWidth: 0};
   this.foamPass = null;
+  //Live knob on the small-wave slope (step 4; 1 = the material's defaults).
+  this.rippleScale = 1.0;
 };
 
 //cell: metres per grid cell; halfWidth: metres; hole: half-width of the square
@@ -59,6 +78,70 @@ ARestlessOcean.Passes.FlowSurfacePass.RINGS = [
 ];
 //Hand-off window half-width (m): inside cascade 0's 90% (230 m) edge crossfade.
 ARestlessOcean.Passes.FlowSurfacePass.WINDOW_HALF_WIDTH = 228.0;
+//Ripple profile buffer (see the header).
+ARestlessOcean.Passes.FlowSurfacePass.WAVE_PERIOD = 8.0;
+ARestlessOcean.Passes.FlowSurfacePass.WAVE_RES = 1024;
+ARestlessOcean.Passes.FlowSurfacePass.WAVE_I_MIN = 2;
+ARestlessOcean.Passes.FlowSurfacePass.WAVE_I_MAX = 200;
+ARestlessOcean.Passes.FlowSurfacePass.WAVE_DEPTH = 0.3;
+ARestlessOcean.Passes.FlowSurfacePass.TIME_WRAP = 900.0;
+
+ARestlessOcean.Passes.FlowSurfacePass.prototype._initWaveProfile = function(){
+  const FS = ARestlessOcean.Passes.FlowSurfacePass;
+  const renderer = this.oceanGrid.renderer;
+  const canFilterFloat = !!(renderer.extensions && renderer.extensions.has('OES_texture_float_linear'));
+  this.waveTarget = new THREE.WebGLRenderTarget(FS.WAVE_RES, 1, {
+    type: THREE.FloatType, format: THREE.RGBAFormat,
+    wrapS: THREE.RepeatWrapping, wrapT: THREE.ClampToEdgeWrapping,
+    minFilter: canFilterFloat ? THREE.LinearMipmapLinearFilter : THREE.NearestFilter,
+    magFilter: canFilterFloat ? THREE.LinearFilter : THREE.NearestFilter,
+    generateMipmaps: canFilterFloat, depthBuffer: false, stencilBuffer: false
+  });
+  //Unit RMS slope: each wave i carries slope amplitude i^-1/2, so the slope variance is
+  //Σ (1/i) / 2 over the band.
+  let harmonic = 0.0;
+  for(let i = FS.WAVE_I_MIN; i <= FS.WAVE_I_MAX; i++) harmonic += 1.0 / i;
+  const norm = 1.0 / Math.sqrt(0.5 * harmonic);
+  const f = function(v){ return v.toFixed(6); };
+  this.waveMaterial = new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    uniforms: {uTime: {value: 0.0}},
+    vertexShader: 'void main(){ gl_Position = vec4(position.xy, 0.0, 1.0); }',
+    fragmentShader: [
+      'precision highp float;',
+      'layout(location = 0) out vec4 oProfile;',
+      'uniform float uTime;',
+      'void main(){',
+      '  float p = gl_FragCoord.x / ' + f(FS.WAVE_RES) + ' * ' + f(FS.WAVE_PERIOD) + ';',
+      '  float eta = 0.0, slope = 0.0;',
+      '  for(int i = ' + FS.WAVE_I_MIN + '; i <= ' + FS.WAVE_I_MAX + '; i++){',
+      '    float fi = float(i);',
+      '    float k = 6.2831853 * fi / ' + f(FS.WAVE_PERIOD) + ';',
+      '    float omega = sqrt((9.81 * k + 7.28e-5 * k * k * k) * tanh(k * ' + f(FS.WAVE_DEPTH) + '));',
+      '    float phase = fract(sin(fi * 78.233) * 43758.5453) * 6.2831853;',
+      '    float slopeAmp = inversesqrt(fi);',
+      '    float arg = k * p - omega * uTime + phase;',
+      '    eta += slopeAmp / k * cos(arg);',
+      '    slope -= slopeAmp * sin(arg);',
+      '  }',
+      '  oProfile = vec4(eta * ' + f(norm) + ', slope * ' + f(norm) + ', 0.0, 1.0);',
+      '}'
+    ].join('\n'),
+    depthTest: false, depthWrite: false
+  });
+  this._waveScene = new THREE.Scene();
+  this._waveScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.waveMaterial));
+  this._waveCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+};
+
+ARestlessOcean.Passes.FlowSurfacePass.prototype._stepWaveProfile = function(timeMs){
+  const renderer = this.oceanGrid.renderer;
+  this.waveMaterial.uniforms.uTime.value = (timeMs * 0.001) % ARestlessOcean.Passes.FlowSurfacePass.TIME_WRAP;
+  const prevRT = renderer.getRenderTarget();
+  renderer.setRenderTarget(this.waveTarget);
+  renderer.render(this._waveScene, this._waveCamera);
+  renderer.setRenderTarget(prevRT);
+};
 
 //A flat grid in XZ at y = 0, centred on the origin, cells of `cell` metres,
 //optionally with a square hole. Position only: the water material reads nothing
@@ -122,6 +205,7 @@ ARestlessOcean.Passes.FlowSurfacePass.prototype.init = function(scene){
     og.registerOceanMesh(key, mesh);
     this.rings.push({spec: spec, mesh: mesh, key: key});
   }
+  this._initWaveProfile();
   //The foam accumulation target this surface's foam and flow come from.
   if(ARestlessOcean.Passes.FlowFoamPass){
     this.foamPass = new ARestlessOcean.Passes.FlowFoamPass(og);
@@ -160,6 +244,7 @@ ARestlessOcean.Passes.FlowSurfacePass.prototype.tick = function(ctx){
     });
   }
   const foamTex = fp ? fp.texture() : null;
+  if(this.enabled && this.waveTarget) this._stepWaveProfile(ctx.timeMs);
   for(let r = 0; r < this.rings.length; ++r){
     const ring = this.rings[r];
     //Vertices on cascade 0's texel CENTRES, (k + ½) m: cascade 0 snaps its centre to
@@ -172,6 +257,8 @@ ARestlessOcean.Passes.FlowSurfacePass.prototype.tick = function(ctx){
     ring.centerZ = cz;
     const u = ring.mesh.material.uniforms;
     u.flowFoamMap.value = foamTex;
+    u.flowWaveProfile.value = this.waveTarget ? this.waveTarget.texture : null;
+    u.flowRippleScale.value = this.rippleScale;
     if(foamTex) u.flowFoamWindow.value.set(fp.centerX, fp.centerZ, ARestlessOcean.Passes.FlowFoamPass.HALF_WIDTH);
     else u.flowFoamWindow.value.set(0, 0, 0);
   }
@@ -200,6 +287,8 @@ ARestlessOcean.Passes.FlowSurfacePass.prototype.dispose = function(){
     ring.mesh.material.dispose();
   }
   if(this.foamPass){ this.foamPass.dispose(); this.foamPass = null; }
+  if(this.waveTarget){ this.waveTarget.dispose(); this.waveTarget = null; }
+  if(this.waveMaterial) this.waveMaterial.dispose();
   this.rings.length = 0;
   this._ready = false;
   this._state.enabled = false;

@@ -194,6 +194,22 @@ uniform float meteringSurveyValid;
   //and the square it covers (centre x, centre z, half-width; 0 = none).
   uniform sampler2D flowFoamMap;
   uniform vec3 flowFoamWindow;
+  //Phase 4 step 4: FlowSurfacePass's ripple profile buffer — r height, g slope along
+  //the profile, each normalized to unit RMS slope over one FLOW_WAVE_PERIOD, and its
+  //mips, so ripples finer than a pixel average away instead of glittering.
+  uniform sampler2D flowWaveProfile;
+  //Live knob on ripple slope (1 = the physical-ish defaults below).
+  uniform float flowRippleScale;
+  const float FLOW_WAVE_PERIOD = $flow_wave_period;
+  //Cheap value noise for standing-wave patches (a look choice, see below).
+  float flowHash(vec2 q){ return fract(sin(dot(q, vec2(127.1, 311.7))) * 43758.5453); }
+  float flowValueNoise(vec2 q){
+    vec2 i = floor(q);
+    vec2 f = q - i;
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(flowHash(i), flowHash(i + vec2(1.0, 0.0)), f.x),
+               mix(flowHash(i + vec2(0.0, 1.0)), flowHash(i + vec2(1.0, 1.0)), f.x), f.y);
+  }
 #endif
 
 //Foam-texture scroll velocity (m/s). Driven from a randomized wind vector in
@@ -1662,6 +1678,104 @@ void main(){
     rawDdz.y = levelSlope.y;
     cascade0HeightSlope = levelSlope;
   }
+  //The current, foam and energy here (FlowFoamPass), read once for the waves below and
+  //for the foam further down. Zero outside the pass window.
+  vec4 flowFoamSample = vec4(0.0);
+  float flowFoamInside = 0.0;
+  if(flowFoamWindow.z > 0.0){
+    vec2 ffOffset = abs(vWorldXZ - flowFoamWindow.xy);
+    float ffEdge = max(ffOffset.x, ffOffset.y);
+    flowFoamInside = 1.0 - smoothstep(0.9 * flowFoamWindow.z, flowFoamWindow.z, ffEdge);
+    if(flowFoamInside > 0.0){
+      flowFoamSample = texture2D(flowFoamMap, (vWorldXZ - flowFoamWindow.xy) / (2.0 * flowFoamWindow.z) + 0.5);
+    }
+  }
+  vec2 flowVelocity = flowFoamSample.gb * flowFoamInside;
+  float flowSpeed = length(flowVelocity);
+
+  //── Phase 4 step 4: small waves on flowing water ─────────────────────────
+  //RIPPLES. Water moving over a bed is never a mirror: turbulence roughens its
+  //surface with capillary-gravity ripples. FlowSurfacePass keeps one periodic 1D
+  //profile of that spectrum (see its header: equal slope per octave, lambda 4 m to
+  //4 cm, dispersion with surface tension, animated). Sixteen directions of it, each
+  //stretched by a different incommensurate factor so the 8 m period never lines
+  //up, are summed here, and advected WITH the current by the same two-phase trick
+  //as the foam grain (two layers half a period apart, each weighted to zero at its
+  //own reset), so ripples ride the stream without the shear smearing them out.
+  //Only normals: at creek scale the heights are millimetres to centimetres, far
+  //below the 1-2 m mesh, so the geometry and the CPU buoyancy twin are untouched.
+  //RMS slope rises with a-land's Froude-derived energy (decision 3: energy drives
+  //roughness) and fades in with speed. Outside the pass window the current is
+  //unknown: gentle ripples, not advected. The slope constants are look choices
+  //inside the physical range (river surfaces measure roughly 0.05-0.2).
+  const float FLOW_RIPPLE_SLOPE_CALM = 0.035;
+  const float FLOW_RIPPLE_SLOPE_TURBULENT = 0.13;
+  float flowEnergy = mix(0.25, flowFoamSample.a, flowFoamInside);
+  float rippleGate = mix(1.0, smoothstep(0.05, 0.6, flowSpeed), flowFoamInside);
+  float rippleSlope = (FLOW_RIPPLE_SLOPE_CALM + FLOW_RIPPLE_SLOPE_TURBULENT * flowEnergy) * rippleGate * flowRippleScale;
+  const float RIPPLE_ADVECT_PERIOD = 2.0;
+  float rippleA = fract(t / RIPPLE_ADVECT_PERIOD);
+  float rippleB = fract(rippleA + 0.5);
+  float rippleMix = abs(1.0 - 2.0 * rippleA);
+  vec2 xa = vWorldXZ - flowVelocity * rippleA * RIPPLE_ADVECT_PERIOD;
+  vec2 xb = vWorldXZ - flowVelocity * rippleB * RIPPLE_ADVECT_PERIOD + vec2(3.7, 1.9);
+  //Sixteen directions, each with its own smooth amplitude field in space (the
+  //amplitude function of the wavelet method): a single profile per direction is an
+  //endless set of straight crests, and a handful of those sum into a visible
+  //crosshatch. Letting each direction come and go in patches a few metres across
+  //breaks the crests into the short, shifting ripple cells real streams show.
+  //E[amp²] of 0.3 + 0.7·noise is about 0.55; the normalization uses that expectation
+  //rather than the local sum, so the patches keep their contrast.
+  vec2 rippleSlopeVec = vec2(0.0);
+  float rippleScaleSq = 0.0;
+  for(int d = 0; d < 16; d++){
+    float fd = float(d);
+    float ang = (fd + 0.5) * 0.19634954 + 0.09 * sin(fd * 2.39);
+    vec2 dir = vec2(cos(ang), sin(ang));
+    float stretch = 1.0 + 0.071 * fd;
+    float off = fract(sin(fd * 12.9898) * 43758.5453);
+    float amp = 0.3 + 0.7 * flowValueNoise(xa * 0.21 + vec2(fd * 7.13, fd * 3.37));
+    float sa = texture2D(flowWaveProfile, vec2(dot(xa, dir) * stretch / FLOW_WAVE_PERIOD + off, 0.5)).g;
+    float sb = texture2D(flowWaveProfile, vec2(dot(xb, dir) * stretch / FLOW_WAVE_PERIOD + off, 0.5)).g;
+    rippleSlopeVec += dir * mix(sa, sb, rippleMix) * stretch * amp;
+    rippleScaleSq += stretch * stretch;
+  }
+  //Unit RMS slope per direction, summed; renormalize to one, then scale.
+  rippleSlopeVec *= rippleSlope * inversesqrt(0.5 * 0.55 * rippleScaleSq);
+  //The part of that slope variance the mips averaged away at this pixel. Levels lost
+  //= log2(texels per pixel); the buffer holds wave i = 2..200 (of an 8 m period) at
+  //equal slope per octave, and a mip level L resolves waves up to i = 512 / 2^L.
+  float rippleTexelsPerPixel = length(fwidth(vWorldXZ)) * 1.5 / FLOW_WAVE_PERIOD * 1024.0;
+  float rippleResolvedI = clamp(512.0 / max(rippleTexelsPerPixel, 1.0), 2.0, 200.0);
+  float flowRippleLostVar = rippleSlope * rippleSlope * (log(200.0) - log(rippleResolvedI)) / log(100.0);
+
+  //STANDING WAVES. In a fast shallow reach the wave that holds still in the world
+  //is the one whose phase speed equals the current: deep-water c = sqrt(g/k) = |v|
+  //gives k = g/|v|^2, crests facing upstream. Across Froude 1 the flow throws them
+  //up as an undular jump, height roughly (Fr - 1) times the depth, capped by
+  //McCowan at 0.78 of the depth; they give way to broken whitewater by Fr ~ 4.
+  //They form over bed features, not as ruled lines down a whole reach, so a
+  //smooth noise keyed along and across the flow breaks them into patches (look
+  //choice). Only where the wavelength is resolvable, 0.3 to 8 m.
+  if(flowFoamInside > 0.0 && flowSpeed > 0.3){
+    float swDepth = max(waterFieldAt(vWorldXZ).g, 0.02);
+    float froude = flowSpeed / sqrt(9.81 * swDepth);
+    float ksw = 9.81 / (flowSpeed * flowSpeed);
+    float lambdaSw = 6.2831853 / ksw;
+    float swGate = smoothstep(0.9, 1.3, froude) * (1.0 - smoothstep(3.0, 4.5, froude))
+                 * smoothstep(0.3, 0.6, lambdaSw) * (1.0 - smoothstep(6.0, 9.0, lambdaSw));
+    if(swGate > 0.0){
+      vec2 vdir = flowVelocity / flowSpeed;
+      float along = dot(vWorldXZ, vdir);
+      float across = dot(vWorldXZ, vec2(-vdir.y, vdir.x));
+      float swPatch = smoothstep(0.35, 0.8, flowValueNoise(vec2(along * 0.07, across * 0.12)));
+      float swHeight = min(0.78, froude - 1.0) * swDepth;
+      float swAmp = 0.5 * max(swHeight, 0.0) * swGate * swPatch * flowRippleScale;
+      rippleSlopeVec += -vdir * swAmp * ksw * sin(ksw * along);
+    }
+  }
+  rawDdx.y += rippleSlopeVec.x / max(waveHeightMultiplier, 0.0001);
+  rawDdz.y += rippleSlopeVec.y / max(waveHeightMultiplier, 0.0001);
   #endif
   rawDdx *= waveHeightMultiplier;
   rawDdz *= waveHeightMultiplier;
@@ -1832,18 +1946,8 @@ void main(){
     //moves at the water speed without ever stretching past half a period of
     //travel. The foam COVERAGE is advected for real by FlowFoamPass; these
     //layers only carry the bubble grain along with it.
-    vec4 flowFoamSample = vec4(0.0);
-    float flowFoamInside = 0.0;
-    if(flowFoamWindow.z > 0.0){
-      vec2 ffOffset = abs(worldPosition.xz - flowFoamWindow.xy);
-      float ffEdge = max(ffOffset.x, ffOffset.y);
-      flowFoamInside = 1.0 - smoothstep(0.9 * flowFoamWindow.z, flowFoamWindow.z, ffEdge);
-      if(flowFoamInside > 0.0){
-        flowFoamSample = texture2D(flowFoamMap, (worldPosition.xz - flowFoamWindow.xy) / (2.0 * flowFoamWindow.z) + 0.5);
-      }
-    }
+    //(flowFoamSample, flowFoamInside and flowVelocity are read with the normals above.)
     const float FLOW_PHASE_PERIOD = 1.0;
-    vec2 flowVelocity = flowFoamSample.gb;
     float flowPhaseA = fract(t / FLOW_PHASE_PERIOD);
     float flowPhaseB = fract(flowPhaseA + 0.5);
     foamTextureUV  = (worldPosition.xz - flowVelocity * flowPhaseA * FLOW_PHASE_PERIOD) / 2.0;
@@ -2134,6 +2238,10 @@ void main(){
   //quadratically. Apply on the shader side so live artistic changes to
   //wave_scale_multiple flow through without recomputing cascadeRMSSlope.
   alpha2 *= waveHeightMultiplier * waveHeightMultiplier;
+  #if($flowing_water)
+    //Phase 4: the ripple slope the profile mips averaged away (see the flowing normals).
+    alpha2 += flowRippleLostVar;
+  #endif
   //Beckmann-to-GGX: α²_GGX ≈ 2·σ²_slope. Clamp keeps the horizon-ceiling
   //term well-defined when several cascades pile in at extreme range.
   alpha2 = clamp(2.0 * alpha2, 0.0, 1.0);
@@ -3243,6 +3351,11 @@ void main(){
   //brightness = speed (full at 3 m/s).
   else if(oceanShadowDebugMode == 63){
     gl_FragColor = vec4(mix(vec3(0.0, 0.0, 0.25), vec3(flowFoamSample.r), flowFoamInside), 1.0);
+  }
+  else if(oceanShadowDebugMode == 65){
+    //Mode 65: flowing-surface small-wave slope (ripples + standing waves) as RG around
+    //grey, blue = the slope variance averaged into roughness.
+    gl_FragColor = vec4(clamp(0.5 + 2.0 * rippleSlopeVec, 0.0, 1.0), clamp(flowRippleLostVar * 40.0, 0.0, 1.0), 1.0);
   }
   else if(oceanShadowDebugMode == 64){
     float dbgSpeed = clamp(length(flowVelocity) / 3.0, 0.0, 1.0);
