@@ -331,6 +331,8 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
   };
   this._scratch = nearestFloat(2);
   this._jfaTargets = [nearestFloat(1), nearestFloat(1)];
+  //Phase 4 hand-off band: raw flow weight, blurred H then V (see _flowBand).
+  this._bandTargets = [nearestFloat(1), nearestFloat(1)];
   this._readTarget = nearestFloat(1);
 
   const vertexShader = this._fillMaterial.vertexShader;
@@ -401,6 +403,64 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
     depthWrite: false
   });
 
+  //Phase 4: the hand-off BAND. The raw weight flips from flowing to still inside one
+  //texel, and the two surfaces run different models (ripples and advected foam vs FFT
+  //waves and fold foam), so the seam read as a hard edge (browser round 6). Blur the raw
+  //weight over FlowHandoff.BAND_M metres, then take max(raw, smoothstep(0, 0.5, blur)):
+  //the creek itself stays fully flowing (its edge blurs to 0.5, which maps back to 1)
+  //and the blend reaches about half the band into the still water, where the two
+  //surfaces dither against each other.
+  this._bandSeedMaterial = new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    uniforms: {uFieldA: {value: null}, uFieldB: {value: null}, uFlowLo: {value: 0.05}, uFlowHi: {value: 0.25}},
+    vertexShader: vertexShader,
+    fragmentShader: [
+      'precision highp float;',
+      'layout(location = 0) out vec4 oBand;',
+      'uniform sampler2D uFieldA, uFieldB;',
+      'uniform float uFlowLo, uFlowHi;',
+      'void main(){',
+      '  ivec2 p = ivec2(gl_FragCoord.xy);',
+      '  vec4 a = texelFetch(uFieldA, p, 0);',
+      '  vec4 b = texelFetch(uFieldB, p, 0);',
+      '  float w = a.g > 0.0 ? max(smoothstep(uFlowLo, uFlowHi, length(b.xy)), smoothstep(' + (ARestlessOcean.FlowHandoff ? ARestlessOcean.FlowHandoff.ENERGY_LO : 0.002).toFixed(4) + ', ' + (ARestlessOcean.FlowHandoff ? ARestlessOcean.FlowHandoff.ENERGY_HI : 0.02).toFixed(4) + ', b.z)) : 0.0;',
+      //r: blurred by the next two draws, g: the raw weight carried through
+      '  oBand = vec4(w, w, 0.0, 1.0);',
+      '}'
+    ].join('\n'),
+    depthTest: false,
+    depthWrite: false
+  });
+  this._bandBlurMaterial = new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    uniforms: {uSrc: {value: null}, uStep: {value: new THREE.Vector2(1, 0)}, uRadius: {value: 8}},
+    vertexShader: vertexShader,
+    fragmentShader: [
+      'precision highp float;',
+      resDefine,
+      'layout(location = 0) out vec4 oBand;',
+      'uniform sampler2D uSrc;',
+      'uniform vec2 uStep;',
+      'uniform int uRadius;',
+      'void main(){',
+      '  ivec2 p = ivec2(gl_FragCoord.xy);',
+      '  vec4 c = texelFetch(uSrc, p, 0);',
+      '  float sum = 0.0, wsum = 0.0;',
+      '  for(int k = -16; k <= 16; k++){',
+      '    if(k < -uRadius || k > uRadius) continue;',
+      '    ivec2 q = clamp(p + ivec2(uStep) * k, ivec2(0), ivec2(RES - 1));',
+      //triangle kernel
+      '    float wt = float(uRadius + 1 - abs(k));',
+      '    sum += wt * texelFetch(uSrc, q, 0).r;',
+      '    wsum += wt;',
+      '  }',
+      '  oBand = vec4(sum / wsum, c.g, 0.0, 1.0);',
+      '}'
+    ].join('\n'),
+    depthTest: false,
+    depthWrite: false
+  });
+
   this._composeMaterial = new THREE.ShaderMaterial({
     glslVersion: THREE.GLSL3,
     uniforms: {
@@ -409,6 +469,7 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
       uSeedTex: {value: null},
       uTexel: {value: 1.0},
       uNoShore: {value: 1.0},
+      uBand: {value: null},
       uFlowLo: {value: ARestlessOcean.FlowHandoff ? ARestlessOcean.FlowHandoff.FLOW_LO : 0.05},
       uFlowHi: {value: ARestlessOcean.FlowHandoff ? ARestlessOcean.FlowHandoff.FLOW_HI : 0.25}
     },
@@ -435,11 +496,10 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
       resDefine,
       'layout(location = 0) out vec4 gSurface;',
       'layout(location = 1) out vec4 gMotion;',
-      'uniform sampler2D uFieldA, uFieldB, uSeedTex;',
+      'uniform sampler2D uFieldA, uFieldB, uSeedTex, uBand;',
       'uniform float uTexel, uNoShore, uFlowLo, uFlowHi;',
-      //Energy too (see FlowHandoff.ENERGY_LO/HI): a river cell a-land stamped nearly
-      //motionless is still river, and a still body is bit-exact 0.
-      'float flowWeight(vec4 motion){ return max(smoothstep(uFlowLo, uFlowHi, length(motion.xy)), smoothstep(' + (ARestlessOcean.FlowHandoff ? ARestlessOcean.FlowHandoff.ENERGY_LO : 0.002).toFixed(4) + ', ' + (ARestlessOcean.FlowHandoff ? ARestlessOcean.FlowHandoff.ENERGY_HI : 0.02).toFixed(4) + ', motion.z)); }',
+      //The banded weight at a texel (see _bandSeedMaterial): the raw weight, or the blend outside it.
+      'float bandWeight(ivec2 q){ vec4 bw = texelFetch(uBand, q, 0); return max(bw.g, smoothstep(0.0, 0.5, bw.r)); }',
       'void main(){',
       '  ivec2 p = ivec2(gl_FragCoord.xy);',
       '  vec4 a = texelFetch(uFieldA, p, 0);',
@@ -461,11 +521,11 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
       '        if(!(w.g > 0.0)) continue;',
       '        vec2 d = vec2(q) - s.xy;',
       '        float dd = dot(d, d);',
-      '        if(dd < bestD){ bestD = dd; level = w.r; nearW = flowWeight(texelFetch(uFieldB, q, 0)); }',
+      '        if(dd < bestD){ bestD = dd; level = w.r; nearW = bandWeight(q); }',
       '      }',
       '    }',
       '  }',
-      '  float packed = a.g > 0.0 ? -flowWeight(b) : (a.a > 0.5 ? 1.0 + nearW : a.a);',
+      '  float packed = a.g > 0.0 ? -bandWeight(p) : (a.a > 0.5 ? 1.0 + nearW : a.a);',
       '  gSurface = vec4(level, a.g, side * dist, packed);',
       '  gMotion = b;',
       '}'
@@ -535,7 +595,10 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._composeShoreField = function(c){
     this.renderer.setClearColor(prevColor, prevAlpha);
   }
 
+  this._flowBand(c);
+
   const cu = this._composeMaterial.uniforms;
+  cu.uBand.value = this._bandTargets[0].texture;
   cu.uFieldA.value = this._scratch.textures[0];
   cu.uFieldB.value = this._scratch.textures[1];
   cu.uSeedTex.value = this._jfaTargets[read].texture;
@@ -550,6 +613,27 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.setFlowBand = function(lo, hi){
   this.flowLo = Math.max(0.0, +lo);
   this.flowHi = Math.max(this.flowLo + 1e-3, +hi);
   this.invalidate();
+};
+
+//Raw flow weight into _bandTargets, blurred horizontally then vertically back into
+//_bandTargets[0] over FlowHandoff.BAND_M metres at this cascade's texel size.
+ARestlessOcean.Passes.WaterFieldPass.prototype._flowBand = function(c){
+  const su = this._bandSeedMaterial.uniforms;
+  su.uFieldA.value = this._scratch.textures[0];
+  su.uFieldB.value = this._scratch.textures[1];
+  su.uFlowLo.value = this.flowLo;
+  su.uFlowHi.value = this.flowHi;
+  this._drawQuad(this._bandSeedMaterial, this._bandTargets[0]);
+  const bandM = ARestlessOcean.FlowHandoff ? ARestlessOcean.FlowHandoff.BAND_M : 8.0;
+  const radius = Math.max(1, Math.min(16, Math.round(bandM / c.texel)));
+  const bu = this._bandBlurMaterial.uniforms;
+  bu.uRadius.value = radius;
+  bu.uSrc.value = this._bandTargets[0].texture;
+  bu.uStep.value.set(1, 0);
+  this._drawQuad(this._bandBlurMaterial, this._bandTargets[1]);
+  bu.uSrc.value = this._bandTargets[1].texture;
+  bu.uStep.value.set(0, 1);
+  this._drawQuad(this._bandBlurMaterial, this._bandTargets[0]);
 };
 
 //Fixed-resolution cascades — independent of the drawing buffer.
@@ -837,6 +921,8 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.dispose = function(){
   if(this._fillMaterial) this._fillMaterial.dispose();
   if(this._scratch) this._scratch.dispose();
   if(this._jfaTargets){ this._jfaTargets[0].dispose(); this._jfaTargets[1].dispose(); }
+  if(this._bandTargets){ this._bandTargets[0].dispose(); this._bandTargets[1].dispose(); }
+  [this._bandSeedMaterial, this._bandBlurMaterial].forEach(function(m){ if(m) m.dispose(); });
   if(this._readTarget) this._readTarget.dispose();
   [this._seedMaterial, this._jfaMaterial, this._composeMaterial, this._blitMaterial]
     .forEach(function(m){ if(m) m.dispose(); });

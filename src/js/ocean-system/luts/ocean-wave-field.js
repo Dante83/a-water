@@ -672,6 +672,9 @@ ARestlessOcean.FlowHandoff.FLOW_HI = 0.25;
 //fraction of the creek's energy through the decode's bilinear filter and dithers across
 //the band, which is the confluence, where the two surfaces should meet anyway.
 ARestlessOcean.FlowHandoff.ENERGY_LO = 0.002;
+//Hand-off band width (m): WaterFieldPass blurs the weight over this, so flowing and still
+//water dither across roughly half of it on the still side instead of meeting at a texel.
+ARestlessOcean.FlowHandoff.BAND_M = 8.0;
 ARestlessOcean.FlowHandoff.ENERGY_HI = 0.02;
 
 ARestlessOcean.FlowHandoff.createUniforms = function(){

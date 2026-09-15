@@ -3,8 +3,8 @@
 //Phase 4 of the multi-water plan (WATER-TYPES.md): the flowing-water surface.
 //Creeks and rivers are drawn here; still water (ocean, lakes) stays on the FFT
 //clipmap. The split is ARestlessOcean.FlowHandoff's weight (ocean-wave-field.js),
-//packed into the WaterField, and the two surfaces dither against the same
-//threshold across it so they never both draw or both miss a pixel.
+//packed into the WaterField and blurred into a band several metres wide, across
+//which this surface alpha-blends over the (flattened) clipmap.
 //
 //WHY A FIELD-GRID SHEET AND NOT RIBBONS (decided with Dante, 2026-09-14)
 //a-land exports no river centrelines — no spline, no river body, no graph — only
@@ -187,6 +187,14 @@ ARestlessOcean.Passes.FlowSurfacePass.prototype.init = function(scene){
     //One material per ring, like the clipmap: each registered mesh gets its own
     //uniforms written by the per-frame loop.
     const material = r === 0 ? this.material : og.createFlowingWaterMaterial();
+    //A transparent layer over the clipmap: across the hand-off band its alpha is the
+    //flow weight (water-shader.glsl). Drawn after the opaque clipmap; the small offset
+    //keeps it winning ties with the flattened still surface at the same level.
+    material.transparent = true;
+    material.depthWrite = true;
+    material.polygonOffset = true;
+    material.polygonOffsetFactor = -1;
+    material.polygonOffsetUnits = -2;
     //InstancedMesh with one identity instance: the water vertex shader
     //multiplies by instanceMatrix. The mesh itself carries the snapped centre.
     const mesh = new THREE.InstancedMesh(geometry, material, 1);
@@ -195,8 +203,8 @@ ARestlessOcean.Passes.FlowSurfacePass.prototype.init = function(scene){
     mesh.frustumCulled = false;
     mesh.castShadow = false;       //no ocean CSM caster, no scene shadow caster
     mesh.receiveShadow = true;
-    //Above the skirt (1) and the clipmap (2): the two dither against each other
-    //and never overlap, so the order only matters for overdraw.
+    //Above the skirt (1) and the clipmap (2): it alpha-blends over the clipmap across
+    //the hand-off band, so it must draw after it.
     mesh.renderOrder = 3;
     mesh.userData.flowingWater = true;
     mesh.layers.set(ARestlessOcean.OCEAN_LAYER);

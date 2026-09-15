@@ -1488,19 +1488,19 @@ void main(){
   }
   #endif
   //Phase 4: flowing water belongs to FlowSurfacePass. Across the hand-off band
-  //the two surfaces dither against the same static blue-noise threshold (the
-  //flowing surface keeps the pixels this one throws away), so they cross-fade
-  //without alpha sorting and never both draw or both miss a pixel. Sampled at
-  //the displaced position, like the dry discard above. 0 when no flowing
-  //surface exists, so creeks stay on the clipmap then.
+  //(WaterFieldPass blurs the weight over ~8 m) the two surfaces ALPHA cross-fade:
+  //this surface draws wherever the water is not fully flowing, its waves already
+  //flattened by 1 - w in the vertex stage, and the flowing surface is a transparent
+  //layer over it with alpha = w. It used to dither the two against a blue-noise
+  //threshold; over a band several metres wide that read as speckle between two
+  //different models (browser round 6). Sampled at the displaced position, like the
+  //dry discard above. 0 when no flowing surface exists, so creeks stay here then.
   float flowHandoffW = flowHandoffWeightAt(worldPosition.xz);
-  float flowHandoffNoise = (texelFetch(blueNoiseTexture, ivec2(mod(gl_FragCoord.xy, 128.0)), 0).g * 254.0 + 0.5) / 255.0;
   #if($flowing_water)
-    //This IS the flowing surface: it keeps exactly the pixels the clipmap
-    //discards above that threshold, and nothing where the water is still.
-    if(flowHandoffW <= flowHandoffNoise) discard;
+    if(flowHandoffW <= 0.002) discard;
+    float flowHandoffAlpha = flowHandoffW;
   #else
-    if(flowHandoffW > flowHandoffNoise) discard;
+    if(flowHandoffW >= 0.998) discard;
   #endif
   //Phase 3a: a ripple floor for the two smallest cascades in very shallow water and
   //on the swash sheet (normals only; the geometry is untouched).
@@ -3423,4 +3423,8 @@ void main(){
     #include <fog_fragment>
   #endif
 
+  #if($flowing_water)
+    //The hand-off cross-fade (see the discard above). Debug views stay opaque.
+    if(oceanShadowDebugMode == 0) gl_FragColor.a = flowHandoffAlpha;
+  #endif
 }

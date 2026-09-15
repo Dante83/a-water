@@ -930,8 +930,10 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   }
   //The fragment carries the same ShoreBreaker splice (normals, foam, debug).
   function buildFragmentShader(atmEnabled, atmFunctions, flowing){
-    //The flowing variant has no caustics (its bed is centimetres deep and the
-    //projector is the ocean's). Its foam path reads FlowFoamPass instead of the
+    //The flowing variant has no caustics. Tried 2026-09-14: the caustic projector is
+    //built around the sea surface, its sample reads ~0 on a creek bed 20 m up, and the
+    //mean-1 modulation then darkens the bed to a quarter (purple, mottled). Creek
+    //caustics need their own projection. Its foam path reads FlowFoamPass instead of the
     //ocean's fold and shore terms (see $flowing_water in water-shader.glsl).
     return ARestlessOcean.Materials.Ocean.waterMaterial.fragmentShader(
         flowing ? false : self.causticsEnabled, self.foamEnabled, atmEnabled, atmFunctions)
