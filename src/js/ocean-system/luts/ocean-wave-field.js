@@ -663,6 +663,12 @@ ARestlessOcean.FlowHandoff = {};
 //numerical residue in a lake; HI is a slow creek.
 ARestlessOcean.FlowHandoff.FLOW_LO = 0.05;
 ARestlessOcean.FlowHandoff.FLOW_HI = 0.25;
+//Energy (a-land's Froude-derived class channel) at or above which water flows whatever
+//its speed. a-land stamps the edge of some reaches nearly motionless (island-sholes: 30
+//river cells under 0.05 m/s with energy > 0); as still water they drew sloped lake
+//slivers. Lakes and the sea are exactly 0; the decode's bilinear smear onto a lake rim
+//beside a creek stays well under this.
+ARestlessOcean.FlowHandoff.ENERGY_FLOWING = 0.25;
 
 ARestlessOcean.FlowHandoff.createUniforms = function(){
   return {
@@ -698,9 +704,10 @@ ARestlessOcean.FlowHandoff.windowFade = function(x, z, state){
 };
 
 //JS mirror of the compose pass's weight. p: {flowLo, flowHi} or null (defaults).
-ARestlessOcean.FlowHandoff.weightFromVelocity = function(vx, vz, p){
+ARestlessOcean.FlowHandoff.weightFromVelocity = function(vx, vz, p, energy){
   const lo = p ? p.flowLo : ARestlessOcean.FlowHandoff.FLOW_LO;
   const hi = p ? p.flowHi : ARestlessOcean.FlowHandoff.FLOW_HI;
+  if(energy >= ARestlessOcean.FlowHandoff.ENERGY_FLOWING) return 1.0;
   const t = Math.min(1.0, Math.max(0.0, (Math.sqrt(vx * vx + vz * vz) - lo) / Math.max(hi - lo, 1e-6)));
   return t * t * (3.0 - 2.0 * t);
 };
@@ -1039,7 +1046,8 @@ ARestlessOcean.ShoreBreaker.evaluate = function(x, z, field, gradX, gradZ, p, ou
   out.eta = 0; out.foam = 0; out.breaking = 0; out.H = 0; out.W = 0; out.xi = 0; out.Kr = 0; out.theta = 0; out.B = 0; out.psi = 0;
   if(!p || !p.enabled || p.Hs < 0.02) return out;
   const h = field.depth, s = field.shoreSDF;
-  if(s <= 0.0 || h <= 0.0 || field.dryMask > 0.5 || h >= p.depthCap * 0.98) return out;
+  //Phase 4: no breakers in flowing water (GPU: field.a < -0.5).
+  if(s <= 0.0 || h <= 0.0 || field.dryMask > 0.5 || field.flowWeight > 0.5 || h >= p.depthCap * 0.98) return out;
   const inland = _sbSmooth(0.5, 2.0, Math.abs(field.level - p.seaLevel));
   const g = SB.G, w = p.omega, k0 = w * w / g;
   const hh = Math.max(h, SB.MIN_DEPTH);
@@ -1127,6 +1135,9 @@ ARestlessOcean.ShoreBreaker.evaluateSwash = function(x, z, field, gradX, gradZ, 
   out.eta = 0; out.reach = -1; out.foam = 0; out.R2 = 0; out.slope = 0;
   if(!p || !p.enabled || p.Hs < 0.02) return out;
   const s = field.shoreSDF, h = Math.max(field.depth, 0.0);
+  //Phase 4: not up a creek bank (GPU: field.a outside [-0.5, 1.5]). The CPU sample knows
+  //the flow weight only on wet points, so dry banks beside a creek still pass here.
+  if(field.flowWeight > 0.5) return out;
   if(s < -SB.SWASH_BAND_MAX || h >= p.depthCap * 0.98 || h > 3.0 * p.Hs + 1.0) return out;
   const inland = _sbSmooth(0.5, 2.0, Math.abs(field.level - p.seaLevel));
   if(inland >= 1.0) return out;
@@ -1321,6 +1332,10 @@ ARestlessOcean.ShoreBreaker.GLSL = (function(){
     '//Smooth shore gradient: central differences on cascade 1 (see NORMAL_STEP).',
     'bool shoreSwashActive(vec4 field){',
     '  if(shoreBreakerEnabled < 0.5 || shoreBreakerHs < 0.02) return false;',
+    //Phase 4: not up a creek bank. Flowing water (a = -w) and dry ground whose nearest
+    //water flows (a = 1 + w, see FlowHandoff) are not a surf shore, even where the creek
+    //joins the sea and its banks become part of the shoreline the field measures.
+    '  if(field.a < -0.5 || field.a > 1.5) return false;',
     '  if(field.b < -' + f(SB.SWASH_BAND_MAX) + ' || field.g >= shoreBreakerDepthCap * 0.98 || field.g > 3.0 * shoreBreakerHs + 1.0) return false;',
     '  return abs(field.r - shoreBreakerSeaLevel) < 2.0;',
     '}',
@@ -1380,7 +1395,7 @@ ARestlessOcean.ShoreBreaker.GLSL = (function(){
     '//callers skip the two extra field taps for the shore normal (open ocean, land).',
     'bool shoreBreakerActive(vec4 field){',
     '  if(shoreBreakerEnabled < 0.5 || shoreBreakerHs < 0.02) return false;',
-    '  if(field.b <= 0.0 || field.g <= 0.0 || field.a > 0.5 || field.g >= shoreBreakerDepthCap * 0.98) return false;',
+    '  if(field.b <= 0.0 || field.g <= 0.0 || field.a > 0.5 || field.a < -0.5 || field.g >= shoreBreakerDepthCap * 0.98) return false;',
     '  float aP = shoreBreakerDepthAmplitude(shoreBreakerOmega * shoreBreakerOmega / ' + f(SB.G) + ' * max(field.g, ' + f(SB.MIN_DEPTH) + '));',
     '  return aP < 0.99995;',
     '}',

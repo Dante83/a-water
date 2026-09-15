@@ -638,7 +638,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         out.vx = w.vx || 0.0;
         out.vz = w.vz || 0.0;
         out.energy = w.energy || 0.0;
-        out.flowWeight = ARestlessOcean.FlowHandoff.weightFromVelocity(out.vx, out.vz, self.waterFieldPass);
+        out.flowWeight = ARestlessOcean.FlowHandoff.weightFromVelocity(out.vx, out.vz, self.waterFieldPass, out.energy);
       }
     }
     return out;
@@ -733,7 +733,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       if(w){
         out.level = w.level;
         out.depth = w.depth;
-        out.flowWeight = ARestlessOcean.FlowHandoff.weightFromVelocity(w.vx || 0.0, w.vz || 0.0, self.waterFieldPass);
+        out.flowWeight = ARestlessOcean.FlowHandoff.weightFromVelocity(w.vx || 0.0, w.vz || 0.0, self.waterFieldPass, w.energy || 0.0);
         //shoreSDF only matters to WaveMask for INLAND water; skip the search
         //over the ocean, where the GPU's value is ignored too.
         if(Math.abs(w.level - self.heightOffset) > ARestlessOcean.WaveMask.INLAND_START){

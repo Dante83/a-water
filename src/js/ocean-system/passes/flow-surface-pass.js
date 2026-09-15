@@ -24,12 +24,16 @@
 //units. Its foam and current come from FlowFoamPass (one sampler for both).
 //
 //GEOMETRY AND LOD (declared here, per the cross-cutting rules)
-//  near  1 m cells  over ±128 m, vertices on WaterField cascade 0 texel centres
-//  far   4 m cells  over ±512 m, on cascade 1 texel centres, with a hole under
-//        the near grid that stops one far cell short of it so the two overlap by
-//        a cell (hides the T-junction cracks between the 1 m and 4 m edges)
-//Beyond the far grid the hand-off window fades the weight to zero over its outer
-//15%, and the clipmap draws creeks as sloped still water, as before Phase 4.
+//  near  1 m cells  over ±128 m
+//  mid   2 m cells  over ±240 m, with a hole under the near grid that stops one
+//        mid cell short of it so the two overlap (hides the T-junction cracks)
+//Every vertex sits on a WaterField cascade 0 (1 m) texel centre, and the whole
+//surface stays inside cascade 0. It used to reach ±512 m on cascade 1, and at 4 m
+//a texel the hand-off drew blocky squares and the dilated bank weight drew wedges
+//over lakes (browser round 2, 2026-09-14): a 14 m creek is 3½ texels there. Past
+//the window the hand-off weight fades to zero over its outer 15%, inside the
+//cascade's own edge crossfade, and the clipmap draws distant creeks as sloped
+//still water, as before Phase 4.
 //Vertices that can never show flowing water are dropped under their level in the
 //vertex shader (see water-vertex.glsl), so a window over open sea costs vertices
 //and little fill.
@@ -51,8 +55,10 @@ ARestlessOcean.Passes.FlowSurfacePass = function(oceanGrid){
 //cascade whose texel centres its vertices sit on.
 ARestlessOcean.Passes.FlowSurfacePass.RINGS = [
   {cell: 1.0, halfWidth: 128.0, hole: 0.0},
-  {cell: 4.0, halfWidth: 512.0, hole: 124.0}
+  {cell: 2.0, halfWidth: 240.0, hole: 124.0}
 ];
+//Hand-off window half-width (m): inside cascade 0's 90% (230 m) edge crossfade.
+ARestlessOcean.Passes.FlowSurfacePass.WINDOW_HALF_WIDTH = 228.0;
 
 //A flat grid in XZ at y = 0, centred on the origin, cells of `cell` metres,
 //optionally with a square hole. Position only: the water material reads nothing
@@ -156,11 +162,10 @@ ARestlessOcean.Passes.FlowSurfacePass.prototype.tick = function(ctx){
   const foamTex = fp ? fp.texture() : null;
   for(let r = 0; r < this.rings.length; ++r){
     const ring = this.rings[r];
-    const cell = ring.spec.cell;
-    //Vertices on the matching cascade's texel CENTRES: the cascade centre snaps
-    //to multiples of its texel, so its centres sit at (k + ½)·texel.
-    const cx = (Math.floor(ctx.cameraX / cell) + 0.5) * cell;
-    const cz = (Math.floor(ctx.cameraZ / cell) + 0.5) * cell;
+    //Vertices on cascade 0's texel CENTRES, (k + ½) m: cascade 0 snaps its centre to
+    //whole metres, and every ring's half-width is a whole number of its (integer) cells.
+    const cx = Math.floor(ctx.cameraX) + 0.5;
+    const cz = Math.floor(ctx.cameraZ) + 0.5;
     ring.mesh.position.set(cx, ctx.heightOffset, cz);
     ring.mesh.visible = this.enabled;
     ring.centerX = cx;
@@ -175,8 +180,7 @@ ARestlessOcean.Passes.FlowSurfacePass.prototype.tick = function(ctx){
   if(outer){
     this._state.centerX = outer.centerX;
     this._state.centerZ = outer.centerZ;
-    //One cell inside the outer edge, so the fade finishes on geometry.
-    this._state.halfWidth = outer.spec.halfWidth - outer.spec.cell;
+    this._state.halfWidth = Math.min(ARestlessOcean.Passes.FlowSurfacePass.WINDOW_HALF_WIDTH, outer.spec.halfWidth - outer.spec.cell);
   }
 };
 
