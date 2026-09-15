@@ -30,6 +30,8 @@
 //       bed steps    |∇level| past tan 30° (a-land's own waterfall slope), × |v|
 //       fall bases   a disc at each simulation.waterfalls[].bottom, ∝ discharge
 //     Energy only nudges the total (×0.6 at 0, ×1 at 1).
+//  The current's DIRECTION is turned toward the water surface's downhill where the level
+//  visibly slopes (a-land's D8 directions zig-zag across diagonal creeks); speed stays.
 //  Convergence and shear start above an onset (entraining air takes a minimum
 //  of turbulence). The derivatives use a 2 m stencil over a flow smoothed with a
 //  5-tap cross of the same reach: a-land routes with D8 and stamps a disc of
@@ -137,6 +139,26 @@ ARestlessOcean.Passes.FlowFoamPass.prototype.init = function(){
       '  vec4 fa = texture(uFieldA, fieldUV(xz));',
       '  vec4 fb = texture(uFieldB, fieldUV(xz));',
       '  vec2 v = flowAt(xz);',
+      //Direction from the water surface: open-channel flow runs down its own surface
+      //slope. a-land routes on D8, so a creek crossing the grid at an angle zig-zags
+      //between diagonal velocities cell to cell and the foam wanders sideways (browser
+      //round 5, oval island). Where the surface visibly slopes, turn a-land's direction
+      //toward the downhill of the level (same speed); on flat water (lakes, pools) keep
+      //a-land's.
+      '  vec2 gradL = vec2(texture(uFieldA, fieldUV(xz + vec2(uStencil, 0.0))).r - texture(uFieldA, fieldUV(xz - vec2(uStencil, 0.0))).r,',
+      '                    texture(uFieldA, fieldUV(xz + vec2(0.0, uStencil))).r - texture(uFieldA, fieldUV(xz - vec2(0.0, uStencil))).r) / (2.0 * uStencil);',
+      '  float gradLen = length(gradL);',
+      '  float speed = length(v);',
+      '  if(speed > 0.05 && gradLen > 1e-4){',
+      '    float align = smoothstep(0.003, 0.02, gradLen);',
+      '    vec2 dirV = v / speed;',
+      '    vec2 dirL = -gradL / gradLen;',
+      //never turn the flow more than 90 degrees: past that the level gradient is noise
+      '    if(dot(dirV, dirL) > 0.0){',
+      '      vec2 dir = normalize(mix(dirV, dirL, 0.85 * align));',
+      '      v = dir * speed;',
+      '    }',
+      '  }',
       '  float wet = fa.g > 0.0 ? 1.0 : 0.0;',
       //1. advect, 2. decay
       '  vec2 back = xz - v * uDt;',
