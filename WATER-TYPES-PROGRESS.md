@@ -131,6 +131,31 @@ patches.
 **Decided with Dante:** a-land carving now. Then in a-water: step 4 (ripples + speed
 roughness), lake shore lapping, and the fringes + mouth plume.
 
+### Browser rounds 2–3 (2026-09-14)
+
+- **2cb8f3d (JS).** Three fixes:
+  - The flow sheet stays inside cascade 0 (1 m to ±128 m, 2 m to ±240 m, window
+    228 m). On cascade 1, 4 m texels drew hand-off squares, and the bank dilation
+    drew wedges over lakes.
+  - energy ≥ 0.25 counts as flowing. a-land leaves some river cells nearly
+    motionless, and they drew as sloped still slivers.
+  - Breakers and swash are gated off on flowing water and on dry texels dilated from
+    it, because the creek banks joined the shoreline.
+- **Round 3 (camera at 1797, 26, 2499).** The big "sheets over land" are the real
+  wtr-10 creek, confirmed with a binary debug patch: wet + flowing. The jagged
+  textured patches are small still pools, rendered as tiny oceans.
+  - The pools came from the carve. Manning depth grows where a steep reach flattens,
+    so the bed dipped into pits.
+  - a-land 9d1ae1b makes the centreline bed non-increasing. Offline, pools go
+    35 → 3 on the long island.
+  - The first editor re-bake after it still showed about 3× the carve. That was
+    stale code or a double carve. The second solve logged 11,622 cut / 10,142 raised,
+    which is correct; its export is pending.
+- **Island-sholes has `rainRunoffPerKm2: 2` in its water settings.** Dante is testing
+  with it at 0.
+- **Step 4 (8e56a99, needs regen):** the ripple profile buffer and standing waves,
+  normals only. See the commit message.
+
 ### ⚠ Outstanding — needs Dante
 
 1. Run `create-shader.py`, then open `examples/demos/island-sholes-ocean.html`.
