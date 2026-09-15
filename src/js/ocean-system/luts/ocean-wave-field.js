@@ -663,12 +663,16 @@ ARestlessOcean.FlowHandoff = {};
 //numerical residue in a lake; HI is a slow creek.
 ARestlessOcean.FlowHandoff.FLOW_LO = 0.05;
 ARestlessOcean.FlowHandoff.FLOW_HI = 0.25;
-//Energy (a-land's Froude-derived class channel) at or above which water flows whatever
-//its speed. a-land stamps the edge of some reaches nearly motionless (island-sholes: 30
-//river cells under 0.05 m/s with energy > 0); as still water they drew sloped lake
-//slivers. Lakes and the sea are exactly 0; the decode's bilinear smear onto a lake rim
-//beside a creek stays well under this.
-ARestlessOcean.FlowHandoff.ENERGY_FLOWING = 0.25;
+//Energy (a-land's Froude-derived class channel) band over which water counts as flowing
+//whatever its speed. a-land writes energy only on river cells (lakes and the sea are
+//exactly 0), and it fades velocity toward the banks, so the fringe cells of a slow reach
+//sit under 0.05 m/s with energy 0.02-0.04 (island-sholes mu25uueg: ~24 single cells per
+//island). As still water they drew one-metre wavy squares beside the creek. The band
+//starts at a byte of the 8-bit class encoding. A lake texel next to a creek picks up a
+//fraction of the creek's energy through the decode's bilinear filter and dithers across
+//the band, which is the confluence, where the two surfaces should meet anyway.
+ARestlessOcean.FlowHandoff.ENERGY_LO = 0.002;
+ARestlessOcean.FlowHandoff.ENERGY_HI = 0.02;
 
 ARestlessOcean.FlowHandoff.createUniforms = function(){
   return {
@@ -707,9 +711,9 @@ ARestlessOcean.FlowHandoff.windowFade = function(x, z, state){
 ARestlessOcean.FlowHandoff.weightFromVelocity = function(vx, vz, p, energy){
   const lo = p ? p.flowLo : ARestlessOcean.FlowHandoff.FLOW_LO;
   const hi = p ? p.flowHi : ARestlessOcean.FlowHandoff.FLOW_HI;
-  if(energy >= ARestlessOcean.FlowHandoff.ENERGY_FLOWING) return 1.0;
-  const t = Math.min(1.0, Math.max(0.0, (Math.sqrt(vx * vx + vz * vz) - lo) / Math.max(hi - lo, 1e-6)));
-  return t * t * (3.0 - 2.0 * t);
+  const FH = ARestlessOcean.FlowHandoff;
+  const smooth = function(a, b, x){ const t = Math.min(1.0, Math.max(0.0, (x - a) / Math.max(b - a, 1e-9))); return t * t * (3.0 - 2.0 * t); };
+  return Math.max(smooth(lo, hi, Math.sqrt(vx * vx + vz * vz)), smooth(FH.ENERGY_LO, FH.ENERGY_HI, energy || 0.0));
 };
 
 //Decode one packed RT0.a value into the flow weight (see the header).

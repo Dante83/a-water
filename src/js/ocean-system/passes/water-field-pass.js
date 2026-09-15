@@ -437,9 +437,9 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
       'layout(location = 1) out vec4 gMotion;',
       'uniform sampler2D uFieldA, uFieldB, uSeedTex;',
       'uniform float uTexel, uNoShore, uFlowLo, uFlowHi;',
-      //Energy too (see FlowHandoff.ENERGY_FLOWING): a river cell a-land stamped nearly
+      //Energy too (see FlowHandoff.ENERGY_LO/HI): a river cell a-land stamped nearly
       //motionless is still river, and a still body is bit-exact 0.
-      'float flowWeight(vec4 motion){ return max(smoothstep(uFlowLo, uFlowHi, length(motion.xy)), step(' + (ARestlessOcean.FlowHandoff ? ARestlessOcean.FlowHandoff.ENERGY_FLOWING : 0.25).toFixed(4) + ', motion.z)); }',
+      'float flowWeight(vec4 motion){ return max(smoothstep(uFlowLo, uFlowHi, length(motion.xy)), smoothstep(' + (ARestlessOcean.FlowHandoff ? ARestlessOcean.FlowHandoff.ENERGY_LO : 0.002).toFixed(4) + ', ' + (ARestlessOcean.FlowHandoff ? ARestlessOcean.FlowHandoff.ENERGY_HI : 0.02).toFixed(4) + ', motion.z)); }',
       'void main(){',
       '  ivec2 p = ivec2(gl_FragCoord.xy);',
       '  vec4 a = texelFetch(uFieldA, p, 0);',
