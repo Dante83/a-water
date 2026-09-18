@@ -125,9 +125,10 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
     'uniform float hfRegionSize;',
     fieldReady ? ARestlessOcean.Passes.WaterFieldPass.SAMPLE_GLSL : '',
     fieldReady ? ARestlessOcean.WaveMask.GLSL : '',
-    fieldReady ? ARestlessOcean.ShoreBreaker.GLSL : '',
-    //Phase 4: flowing water is not the FFT surface (see FlowHandoff).
+    //Phase 4: flowing water is not the FFT surface (see FlowHandoff). Before
+    //ShoreBreaker, whose swash reads it.
     fieldReady ? ARestlessOcean.FlowHandoff.GLSL : 'float flowHandoffWeightAt(vec2 xz){ return 0.0; }',
+    fieldReady ? ARestlessOcean.ShoreBreaker.GLSL : '',
     //Phase 3b: the shore reflection rides in the same sum.
     reflectionReady ? ARestlessOcean.ShoreReflection.GLSL : 'float shoreReflectionHeightAt(vec2 xz){ return 0.0; }',
     'void main(){',
@@ -433,6 +434,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._renderBreakerProbe = functio
         'precision highp float;',
         'uniform vec2 probeXZ;',
         ARestlessOcean.Passes.WaterFieldPass.SAMPLE_GLSL,
+        ARestlessOcean.FlowHandoff.GLSL,
         ARestlessOcean.ShoreBreaker.GLSL,
         reflectionReady ? ARestlessOcean.ShoreReflection.GLSL : 'float shoreReflectionHeightAt(vec2 xz){ return 0.0; }',
         'void main(){',

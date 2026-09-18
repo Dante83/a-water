@@ -162,6 +162,18 @@ void main() {
   waveMaskA = vec3(0.0);
   waveMaskB = vec3(0.0);
   offsetPosition.y += (field.r - baseHeightOffset);
+  //THE EDGE THINS TO NOTHING. a-land stamps a creek only as wide as its hydraulic
+  //width, so the ground a metre outside often lies BELOW the stamped surface (19% of
+  //the bank texels on island-sholes, 1.3 m at p90) and the sheet ended in a vertical
+  //lip standing over the hillside — the river floating in the air of browser rounds
+  //7 and 7b. Real shallow water goes to zero depth at its waterline, so over the last
+  //BANK_TAPER metres of shore distance the surface slides down to the bed. It cannot
+  //hide a bank that is metres low (that is a-land's carve, carveMaxBankFillM), but it
+  //ends the sheet on the ground instead of in the air, and it is what the depth
+  //shading wants anyway.
+  const float BANK_TAPER = 1.5;
+  const float BANK_TAPER_MAX = 2.0;
+  offsetPosition.y -= (1.0 - clamp(field.b / BANK_TAPER, 0.0, 1.0)) * min(field.g, BANK_TAPER_MAX);
   //Cull what can never show flowing water: the still water itself and land
   //whose nearest water is still (weight 0), and land more than CULL_INLAND
   //metres from any water. Dropping the vertex under its own level puts those

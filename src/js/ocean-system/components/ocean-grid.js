@@ -930,13 +930,15 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   }
   //The fragment carries the same ShoreBreaker splice (normals, foam, debug).
   function buildFragmentShader(atmEnabled, atmFunctions, flowing){
-    //The flowing variant has no caustics. Tried 2026-09-14: the caustic projector is
-    //built around the sea surface, its sample reads ~0 on a creek bed 20 m up, and the
-    //mean-1 modulation then darkens the bed to a quarter (purple, mottled). Creek
-    //caustics need their own projection. Its foam path reads FlowFoamPass instead of the
-    //ocean's fold and shore terms (see $flowing_water in water-shader.glsl).
+    //Caustics are ON for the flowing variant too (round 7, 2026-09-15). Round 6 turned
+    //them off after blaming "the projector", but that is the SpotLight that lights the
+    //terrain, and this flag controls the in-shader seabed caustic, which is world-space
+    //(the caustic texture is sampled along the refracted ray at pSurfaceHit.xz) and so
+    //works on a creek bed 20 m up as well as on the seabed. With it off a lake and the
+    //creek running into it lit their beds differently. Its foam path still reads
+    //FlowFoamPass instead of the ocean's fold and shore terms (see $flowing_water).
     return ARestlessOcean.Materials.Ocean.waterMaterial.fragmentShader(
-        flowing ? false : self.causticsEnabled, self.foamEnabled, atmEnabled, atmFunctions)
+        self.causticsEnabled, self.foamEnabled, atmEnabled, atmFunctions)
       .replace(/\$flowing_water/g, flowing ? '1' : '0')
       //Phase 4 step 4: the ripple profile period (m), owned by FlowSurfacePass.
       .replace(/\$flow_wave_period/g, (ARestlessOcean.Passes.FlowSurfacePass
@@ -1187,22 +1189,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       mesh.layers.enable(ARestlessOcean.OCEAN_LAYER);
 
       const uniformsRef = mesh.material.uniforms;
-      uniformsRef.foamScrollVelocity.value.set(self.foamScrollVelocityVec[0], self.foamScrollVelocityVec[1]);
-      //Jerlov preset wins over the explicit RGB vec3s when water_type is in
-      //range (1..N). water_type == 0 ⇒ fall through to the custom values.
-      const jerlovPreset = ARestlessOcean.JERLOV_PRESETS[self.data.water_type | 0];
-      if(jerlovPreset){
-        uniformsRef.waterAbsorption.value.copy(jerlovPreset.absorption);
-        uniformsRef.waterScattering.value.copy(jerlovPreset.scattering);
-      } else {
-        uniformsRef.waterAbsorption.value.copy(self.data.water_absorption);
-        uniformsRef.waterScattering.value.copy(self.data.water_scattering);
-      }
-      uniformsRef.reflectionScale.value = self.reflectionScale;
-      uniformsRef.reflectionDistanceFalloff.value = self.reflectionDistanceFalloff;
-      uniformsRef.fresnelDistanceRoughness.value = self.fresnelDistanceRoughness;
-      uniformsRef.patchDataSize.value = self.data.patch_data_size;
-      uniformsRef.chop.value = self.data.chop;
+      applyStaticWaterUniforms(uniformsRef);
       uniformsRef.ringIndex.value = k;
       //sizeOfOceanPatch stays as base patchSize for consistent world-space normal-map UV scaling
     }
@@ -1319,12 +1306,37 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     this._createHorizonSkirt();
   }
 
+  //The water uniforms written once per material rather than every frame: the
+  //Jerlov body (preset wins over the explicit RGB vec3s when water_type is in
+  //range 1..N; water_type == 0 falls through to the custom values), the
+  //reflection knobs, and the FFT sizing. Every water material needs them, not
+  //only the clipmap tiles: the template's defaults are a different water body,
+  //and the flowing surface cloned those until browser round 7 (2026-09-15), so a
+  //creek and the pond it ran into were two colours.
+  function applyStaticWaterUniforms(uniformsRef){
+    uniformsRef.foamScrollVelocity.value.set(self.foamScrollVelocityVec[0], self.foamScrollVelocityVec[1]);
+    const jerlovPreset = ARestlessOcean.JERLOV_PRESETS[self.data.water_type | 0];
+    if(jerlovPreset){
+      uniformsRef.waterAbsorption.value.copy(jerlovPreset.absorption);
+      uniformsRef.waterScattering.value.copy(jerlovPreset.scattering);
+    } else {
+      uniformsRef.waterAbsorption.value.copy(self.data.water_absorption);
+      uniformsRef.waterScattering.value.copy(self.data.water_scattering);
+    }
+    uniformsRef.reflectionScale.value = self.reflectionScale;
+    uniformsRef.reflectionDistanceFalloff.value = self.reflectionDistanceFalloff;
+    uniformsRef.fresnelDistanceRoughness.value = self.fresnelDistanceRoughness;
+    uniformsRef.patchDataSize.value = self.data.patch_data_size;
+    uniformsRef.chop.value = self.data.chop;
+  }
+
   //Phase 4: a material for the flowing-water surface. A clone of the water
   //material (so it inherits lights, atmosphere, refraction, SSR and underwater)
   //built with the $flowing_water variant — a flag permutation, never a fork.
   this.createFlowingWaterMaterial = function(){
     const mat = self.oceanMaterial.clone();
     mat.uniforms = ARestlessOcean.cloneUniforms(self.oceanMaterial.uniforms);
+    applyStaticWaterUniforms(mat.uniforms);
     const atmReady = !!(self.atmosphericPerspectiveEnabled && self.atmosphereFunctionsGLSL);
     mat.vertexShader = buildVertexShader(atmReady, false, true);
     mat.fragmentShader = buildFragmentShader(atmReady, self.atmosphereFunctionsGLSL, true);
@@ -1710,10 +1722,20 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
     //Underwater caustic projector — caustics on the directly-viewed seabed.
     if(self.causticProjectionPass){
+      //Not under flowing water: the flowing surface draws no caustics from above (its
+      //variant compiles them out), so diving into a creek must not switch them on
+      //(browser round 7). Same weight and window the surfaces hand off with.
+      let causticFlowKeep = 1.0;
+      if(underwaterFactor > 0.001){
+        const cf = self.waterFlowAt(self.globalCameraPosition.x, self.globalCameraPosition.z, self._causticFlowScratch);
+        self._causticFlowScratch = cf;
+        causticFlowKeep = 1.0 - cf.flowWeight * ARestlessOcean.FlowHandoff.windowFade(
+          self.globalCameraPosition.x, self.globalCameraPosition.z, self._flowHandoffState);
+      }
       self.causticProjectionPass.tick({
         time: time,
         waterSurfaceY: waterSurfaceY,
-        underwaterFactor: underwaterFactor,
+        underwaterFactor: underwaterFactor * causticFlowKeep,
         causticMap: self.causticMap,
         cameraX: self.globalCameraPosition.x,
         cameraZ: self.globalCameraPosition.z,

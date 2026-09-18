@@ -888,6 +888,8 @@ ARestlessOcean.ShoreBreaker.FOAM_RESIDUAL = 0.06;
 //inland; the actual reach per point comes from the run-up and the beach slope.
 ARestlessOcean.ShoreBreaker.SWASH_BAND_MAX = 60.0;
 ARestlessOcean.ShoreBreaker.SWASH_PROBE = 6.0;       //m offshore where the foreshore slope is read
+//Flow hand-off weight by which the swash drawdown has faded out (Phase 4, round 7).
+ARestlessOcean.ShoreBreaker.SWASH_FLOW_DRAWDOWN_W = 0.2;
 ARestlessOcean.ShoreBreaker.SWASH_UPRUSH = 0.3;      //fraction of a wave period spent running up
 ARestlessOcean.ShoreBreaker.WAVE_FACTOR_MAX = 1.155; //largest waveFactor() can return
 //The discard band is this many times the run-up reach on the PROBED slope: the
@@ -1180,7 +1182,9 @@ ARestlessOcean.ShoreBreaker.evaluateSwash = function(x, z, field, gradX, gradZ, 
   const d = _sbFract(theta / (2.0 * Math.PI));
   const up = SB.SWASH_UPRUSH;
   const c = d < up ? Math.sin(0.5 * Math.PI * d / up) : 1.0 - Math.pow((d - up) / (1.0 - up), 2.0);
-  const zMin = setup - 0.5 * S, zMax = R2 * A;
+  //Phase 4: no drawdown under a river (see the GLSL). The CPU weight is a-land's raw one,
+  //without the field's blurred band.
+  const zMin = (setup - 0.5 * S) * (1.0 - _sbSmooth(0.0, SB.SWASH_FLOW_DRAWDOWN_W, field.flowWeight || 0.0)), zMax = R2 * A;
   const gateDepth = Math.min(p.depthCap * 0.98, 3.0 * p.Hs + 1.0) * SB.SWASH_TAPER_GATE_FRACTION;
   const taper = 1.0 - _sbSmooth(0.0, Math.max(Math.min(SB.WAVE_FACTOR_MAX * R2, gateDepth), 0.05), h);
   //Inland, fade to nothing by the reach so the geometry agrees with the discard.
@@ -1195,7 +1199,8 @@ ARestlessOcean.ShoreBreaker.evaluateSwash = function(x, z, field, gradX, gradZ, 
 };
 
 //GLSL ES 1.00, mirrors evaluate() line for line. Requires the consumer to have
-//defined `vec4 waterFieldAt(vec2 worldXZ)` above the splice point.
+//defined `vec4 waterFieldAt(vec2 worldXZ)` above the splice point, and (Phase 4)
+//ARestlessOcean.FlowHandoff.GLSL's flowHandoffFieldWeightAt: splice FlowHandoff first.
 ARestlessOcean.ShoreBreaker.GLSL = (function(){
   const SB = ARestlessOcean.ShoreBreaker;
   const f = function(v){ return (+v).toFixed(6); };
@@ -1381,6 +1386,11 @@ ARestlessOcean.ShoreBreaker.GLSL = (function(){
     '  float x = (d - up) / (1.0 - up);',
     '  float c = d < up ? sin(1.57079633 * d / up) : 1.0 - x * x;',
     '  float zMin = setup - 0.5 * S;',
+    '  //Phase 4 browser round 7: no drawdown under a river. Across the hand-off band the',
+    '  //flowing surface is only partly opaque, and a still surface draining below the sand',
+    '  //there opened sand inside the river and cut its mouth off from the sea. The band',
+    '  //weight reaches about half its width into the sea, so the mouth stays wet.',
+    '  zMin *= 1.0 - smoothstep(0.0, ' + f(SB.SWASH_FLOW_DRAWDOWN_W) + ', flowHandoffFieldWeightAt(xz));',
     '  float zMax = R2 * A;',
     '  float gateDepth = min(shoreBreakerDepthCap * 0.98, 3.0 * shoreBreakerHs + 1.0) * ' + f(SB.SWASH_TAPER_GATE_FRACTION) + ';',
     '  float taper = 1.0 - smoothstep(0.0, max(min(' + f(SB.WAVE_FACTOR_MAX) + ' * R2, gateDepth), 0.05), max(field.g, 0.0));',

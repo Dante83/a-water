@@ -104,15 +104,16 @@ vec4 waterFieldAt(vec2 worldXZ){
   return sampleWaterFieldCascade2(worldXZ);
 }
 
+//Phase 4 FlowHandoff (flowHandoffWeightAt): how much of this place belongs to the
+//flowing surface. Spliced from ARestlessOcean.FlowHandoff.GLSL in
+//ocean-wave-field.js; after the waterField samplers, which it reads, and before
+//ShoreBreaker, whose swash reads it.
+$flow_handoff_functions
 //Phase 3a ShoreBreaker (uniforms, shoreBreakerEval, shoreBreakerActive): spliced
 //from ARestlessOcean.ShoreBreaker.GLSL in ocean-wave-field.js by ocean-grid.js,
 //the same chunk the vertex, the CSM caster and the height bake use. After
 //waterFieldAt, which it calls. Bare token so the min build cannot strip it.
 $shore_breaker_functions
-//Phase 4 FlowHandoff (flowHandoffWeightAt): how much of this place belongs to the
-//flowing surface. Spliced from ARestlessOcean.FlowHandoff.GLSL in
-//ocean-wave-field.js; after the waterField samplers, which it reads.
-$flow_handoff_functions
 //Phase 3b ShoreReflection (shoreReflectionHeightAt, shoreReflectionSlopeAt):
 //spliced from ARestlessOcean.ShoreReflection.GLSL in shore-reflection-pass.js.
 $shore_reflection_functions
@@ -1480,10 +1481,31 @@ void main(){
     if(dryTestField.b < 0.0 && flowHandoffDryAt(worldPosition.xz) > 0.0) discard;
     //The vertex stage drops vertices that can never show flowing water below
     //their level. A triangle joining one of those to a kept vertex slopes down
-    //through the air as a wall; nothing of this surface lies below its level.
-    if(worldPosition.y < dryTestField.r - 0.05) discard;
+    //through the air as a wall, so cut anything far under the level — far enough
+    //to clear the bank taper above (BANK_TAPER_MAX), which is a real part of the
+    //surface, while still catching the 30 m drop of a culled vertex.
+    if(worldPosition.y < dryTestField.r - 4.0) discard;
   #else
-  if(dryTestField.a > 0.999 && !shoreSwashCovers(worldPosition.xz, dryTestField)){
+  //Browser round 7: also cut on the shore line itself, as the flowing surface does
+  //(see its bank cut above). dryMask > 0.999 lands a texel inland of the shore, and
+  //wherever the rendered terrain sits a little below the level there (coarse terrain
+  //LODs, a solve cell that rounded dry) that texel of flat water showed as a sheet
+  //hanging over the bank. shoreSDF crosses zero half way between the last wet and
+  //first dry texel centres, and only a KNOWN dry tap (a-land's answer) may cut.
+  bool dryByShoreLine = dryTestField.b < 0.0 && flowHandoffDryAt(worldPosition.xz) > 0.0;
+  if((dryTestField.a > 0.999 || dryByShoreLine) && !shoreSwashCovers(worldPosition.xz, dryTestField)){
+    discard;
+  }
+  //Phase 4 browser round 7: no triangle that BRIDGES two water levels. A dry texel
+  //takes the level of its nearest water (WaterFieldPass's compose), so where two
+  //bodies meet under dry ground (a beach between the sea and a creek or lagoon
+  //behind it) the level steps. A coarse clipmap cell with one vertex on either side
+  //of that step is a thin wall metres tall, and the swash exception above kept it
+  //on the beach: the spikes seen from ~400 m that shrank away on approach as the
+  //cells got finer. The level this fragment interpolated from its vertices must be
+  //the level of the place it lands on. Flowing water (a < -0.5) is exempt: a creek
+  //the clipmap still draws beyond the flowing window really is sloped.
+  if(dryTestField.a > -0.5 && abs(vFieldLevelMaskA.x - dryTestField.r) > 1.0){
     discard;
   }
   #endif
@@ -1712,7 +1734,17 @@ void main(){
   const float FLOW_RIPPLE_SLOPE_TURBULENT = 0.13;
   float flowEnergy = mix(0.25, flowFoamSample.a, flowFoamInside);
   float rippleGate = mix(1.0, smoothstep(0.05, 0.6, flowSpeed), flowFoamInside);
-  float rippleSlope = (FLOW_RIPPLE_SLOPE_CALM + FLOW_RIPPLE_SLOPE_TURBULENT * flowEnergy) * rippleGate * flowRippleScale;
+  //NEVER A MIRROR. The energy and the speed gate can both collapse on the same texel —
+  //a slack pool, or one of the stagnation points the foam pass's SMOOTHED velocity field
+  //has — and at browser round 7c, the bubble Dante found, the two together left an rms slope of
+  //0.027, well under the 0.05-0.2 real river surfaces measure. A near-mirror holds the
+  //sun's Phong lobe together, and it drew a soft round blob on the creek (debug 22).
+  //Bed turbulence and the lightest wind roughen a stream everywhere, so the floor is the
+  //low end of that measured range: it is physical, and it is the flowing twin of
+  //SHALLOW_RIPPLE_FLOOR on the swash sheet.
+  const float FLOW_RIPPLE_SLOPE_MIN = 0.05;
+  float rippleSlope = max(FLOW_RIPPLE_SLOPE_MIN * flowFoamInside,
+                          (FLOW_RIPPLE_SLOPE_CALM + FLOW_RIPPLE_SLOPE_TURBULENT * flowEnergy) * rippleGate) * flowRippleScale;
   const float RIPPLE_ADVECT_PERIOD = 2.0;
   float rippleA = fract(t / RIPPLE_ADVECT_PERIOD);
   float rippleB = fract(rippleA + 0.5);
