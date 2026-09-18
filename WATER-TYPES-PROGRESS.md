@@ -179,6 +179,215 @@ roughness), lake shore lapping, and the fringes + mouth plume.
   - A dither over that width read as speckle.
   - Caustics stay off on creeks: the projector samples ~0 there and darkened the bed.
 
+### Browser round 7 (2026-09-15) — seven screenshots, headless-reproduced
+
+Plan: `~/.claude/plans/okay-so-i-m-trying-valiant-quokka.md`. Scratch harness (not committed):
+regen into scratch + CDP Fetch swap, and an offline tile audit (water tiles vs height tiles).
+
+**a-water (uncommitted, GLSL changed → run `create-shader.py`).**
+- **Beach spikes** at (1839, 19, 2359) looking at the steep island: confirmed by a debug patch
+  painting fragments whose interpolated vertex level differs from their own field level. Dry
+  texels inherit their nearest water's level, so a beach between the sea and a creek steps
+  under the sand; coarse clipmap cells bridged the step, and the swash exception kept them.
+  Fix: the still surface discards where `|vFieldLevel − field.r| > 1 m` (flowing texels exempt).
+- **The creek never got the Jerlov preset.** The per-tile block became
+  `applyStaticWaterUniforms`, also called by `createFlowingWaterMaterial` (verified: the
+  flowing uniforms now equal the tiles', water-type 5).
+- **Caustics when diving into a creek.** The SpotLight projector is scaled by
+  `1 − flowWeight × windowFade` at the camera (creek: intensity 0; sea: unchanged). The
+  clipmap's in-shader caustics fade by `1 − w` across the band.
+- **Still shore cut** also on the shoreSDF zero line (known-dry taps only), as the flowing
+  bank already was.
+- **River mouth drained to sand** (the "tide" is the Phase 3a swash; a-water has no tide):
+  drawdown fades out by band weight 0.2 (`SWASH_FLOW_DRAWDOWN_W`), GPU and CPU. FlowHandoff
+  now splices before ShoreBreaker in the fragment and both height-readback shaders.
+  - Time-lapse at the wtr-6 mouth, before: sand between the tip and the sea in 2 of 8 frames.
+    After: attached through the cycle.
+- **Not done (deferred):** the mouth plume (Phase 7, Dante). Closing still pockets in the mouth.
+  The any-wet-corner decode is kept for `getWaterAt` parity.
+
+**Data audit of the island-sholes export (tiles 08:40 height, 08:49 water).**
+- Still water: terrain = level − depth to 0.07 m at p99.
+- **Flowing water on the steep island (tile 5_9): 1931 of 2054 texels float 10–50 m above the
+  terrain, depth not saturated.** The terrain holds deeper cuts than the solve saw, i.e. two
+  carve states. Other creeks match within ~0.3 m. Needs one consistent Solve → Save → Bake &
+  Export.
+
+**a-faraway-land (branch `water-carve-channels`, uncommitted).**
+- **The height pyramid was a 2x2 box on EDGE-ALIGNED tiles**: parent texels half a child texel
+  off, alternating by quadrant.
+  - Steep island, lods 2–4 against lod 0: p99 4.5–5.7 m, worst 9–12 m. This is the LOD
+    "jumping".
+  - Now `mipGenerator.heightmapEdgeQuadrant`: the coincident child texel, the suite's own
+    invariant. A tent filter was tried first and still gave p99 3.9–4.7 m.
+  - `heightPyramid` bumped 3 → 4, so the next bake re-derives every coarse tile.
+  - `check-disk-pyramid` gains a plane-position check (the box is the failing control) and a
+    shared-edge check. All lod-coherence checks pass.
+- **Coarse water export:** a box-filtered texel is wet only at ≥ 50% wet footprint
+  (`MIN_WET_FRACTION`); mean depth alone made 16 m squares of every creek.
+  - test-water, navmesh and lighting export checks pass. check-lake-preview was already failing.
+
+### Round 7b (2026-09-15) — after Dante's re-bake
+
+- **⚠ The point-sampled height pyramid was wrong** (round 7 above). It is exact at every coarse
+  texel and ALIASES everything between: on the steep island the rms laplacian went 0.26 m at
+  lod 0 to 1.92 m at lod 1 (box 1.26), and the mountain rendered as a crosshatch of spikes.
+  - `mipGenerator.heightmapEdgeQuadrant` is now a **[1 4 6 4 1]² binomial centred on the
+    coincident child texel**: aligned (a symmetric kernel reproduces a plane exactly) and a
+    proper half-band low pass. Roughness 0.72 at lod 1, relief kept (97.7 m of 99.7 m).
+  - Near a tile edge the kernel shrinks symmetrically (clamping bent the surface by 0.45 m);
+    on the edge itself it reads only the shared row, so neighbours agree bit for bit.
+  - `heightPyramid` 4 → **5**, so the next bake rebuilds every coarse tile again.
+  - `check-disk-pyramid` gains the checkerboard low-pass check (point sampling fails it).
+- **The re-bake fixed the big data mismatch.** Flowing texels vs terrain: was p90 32 m, now
+  p90 0.50 m / p99 3.7 m. The steep island is 1007 texels within ±8 m rather than 1931 at 38 m.
+- **Creeks floating over their own bank** (Dante's shot at 1793, 2513): the transect shows the
+  creek's level 0.3–0.5 m above the ground on BOTH banks, dry. a-land stamps wet only inside the
+  hydraulic width, and the bank lip could be raised by at most `carveMaxFillM` 1 m, which cannot
+  hold a channel that crosses a slope. Measured: 17% of dry cells beside flowing water sit under
+  its level, p90 1.2 m, p99 4.1 m. **New `carveMaxBankFillM` = 3 m** (its own cap, matching
+  carveMaxCutM); `check-carve`'s fill bound now tests it.
+- **Creek caustics are back ON** (`ocean-grid.js` no longer forces `$caustics_enabled` false for
+  the flowing variant). Round 6 blamed "the projector", but that is the SpotLight that lights the
+  terrain; this flag is the in-shader seabed caustic, which is world-space and works on a creek
+  bed. The clipmap's `1 − w` caustic fade from round 7 is removed with it. 18 samplers, 60 fps.
+
+### Round 7c (2026-09-15) — after the second re-bake
+
+**The second bake landed the pyramid and the bank cap.** Water vs terrain, from the audit:
+still p99 0.03 m, flowing p99 3.7 m → **0.76 m**; dry-beside-still floating 7.2% → **1.0%**.
+
+- **⚠ The point-sampled pyramid was replaced** (see round 7b) — the mountain's crosshatch was
+  that. `mipGenerator.heightmapEdgeQuadrant` is now a [1 4 6 4 1]² binomial centred on the
+  coincident child texel, with the kernel shrinking symmetrically near a tile edge (clamping
+  bent a plane by 0.45 m) and collapsing to the shared row on the edge itself.
+  **`heightPyramid` 4 → 5: the next bake rebuilds every coarse tile again.**
+- **Creeks still stood proud of their bank** (1793, 2513): the transect shows the surface
+  0.3–0.5 m over the ground on both banks, dry. a-land stamps wet only across the hydraulic
+  width, so ground just outside it that lies under the water line stays dry.
+  - **Tried and reverted in a-land:** flooding that fringe to the waterline. As a per-cell disc
+    stamp it does not work — per-cell levels walk the floating edge one cell outward (122 cells
+    left of 124), and a flat centreline level in the fringe brings back the steeper-reads-DEEPER
+    inversion `check-rivers` guards (2.73 m on a steep reach). The finding is written into
+    WaterSolve where the stamp is. A real fix is a fill over the reach, not a disc.
+  - **Kept instead:** `carveMaxBankFillM` = 3 m (round 7b), and in a-water **the creek surface
+    now tapers to its bed over the last 1.5 m of shore distance** (water-vertex.glsl), so the
+    sheet ends on the ground the way shallow water does instead of in the air. The flowing
+    below-level discard moved to `level − 4 m` to leave room for it.
+- **"That weird bubble thing" (2307, 2129): the sun's specular lobe on near-mirror water.**
+  Found with debug 22 after ruling out spray, foam (both the map and its sources), the planar
+  reflection and the sky's sun. Measured at the blob: rms ripple slope **0.027**, against the
+  0.05–0.2 real river surfaces measure — a-land's energy is low there and the speed gate nearly
+  closed on top of it, and a near-mirror holds the lobe together.
+  - `FLOW_RIPPLE_SLOPE_MIN` = 0.05 floors the ripple slope wherever the flowing sheet draws.
+  - ⚠ **A live uniform edit from the console does not stick** — the per-frame stream rewrites
+    `specBoost`, `reflectionScale` and the rest every frame. A/B those in a scratch shader.
+  - ⚠ **`readRenderTargetPixels` on the FlowFoamPass targets reads all zeros** even when the
+    pass is plainly writing (the material samples the same texture fine, and debug 63/64 show
+    its foam and current). Do not diagnose that pass by readback; look through the material.
+
+### Round 9 (2026-09-18) — "water floating in the air": the solve, not the renderer
+
+Audit harness (scratch, not committed): the island-sholes export mosaicked back to a 4096² grid,
+WaterSolve run on it in Node (676 river cells, 15 bodies, 13 falls: matches the editor), and
+three metrics. **Edge overhang** = water depth standing past a dry creek-side cell, min(depth,
+level − dry ground); **sideways** = the surface's downhill more than 45° off the current;
+**pond steps**.
+
+**a-faraway-land (uncommitted):**
+- **WaterSolve stages 5b–5e** replace the per-disc `min(bed here, bed at centre) + depth` stamp,
+  which DRAPED the low bank (a surface sloping across the flow; a-water's c16b41e then turned the
+  current sideways: "water coming out of the sides").
+  - 5b: the surface over the channel discs is the harmonic extension of the centreline (centres
+    pinned at bed + Manning depth, 24 Jacobi sweeps). It is flat across the channel, continuous
+    along it, and blends round D8 bends and confluences. Nearest-centre levels stepped at every
+    Voronoi seam: 73% of the >15 cm overhangs.
+  - 5c: an auto-pond a creek runs through stands at its outlet's surface (at most +1 m, and no
+    higher than a rim that drains away). wtr-10's spring pond: outflow step 0.33 → 0.15 m.
+  - 5d: dry hollows beside creeks or raised ponds fill when they close (≤ 400 cells). Anything
+    that would float is unfilled again, so the edge never walks outward. User lakes and the
+    ocean are never a source.
+  - 5e: edges nothing contains come down to the ground at 10% (a Dijkstra from uncontained dry
+    ground outside every disc).
+- **Tried and dropped:** HAND (drain-into-channel) wetness. On planar slopes the D8 paths run
+  parallel to the channel, so it dried half the creeks (overhang 65%).
+- **Editor preview:** river ring verts sit on their own ground (no wet-level sheet over lower banks).
+- **terrain.vert:** material displacement fades under flowing water plus a 3 m bank band
+  (`ALand.runtime.TerrainMaterial.waterDispFlattenBandM`, 0 = off). Its GLSL is already
+  regenerated into shaders.js.
+
+| island-sholes | before | after |
+|---|---|---|
+| edge overhang > 5 cm | 22.9% | **4.2%** |
+| edge overhang > 15 cm | 6.7% | **0.8%** |
+| overhang p99 | 0.23 m | 0.14 m |
+| sideways > 45° / > 60° | 34% / 20% | **20% / 10%** |
+| creek depth p50 | 0.24 m | 0.18 m |
+
+The remaining sideways cells are mostly 5e's edge ramps (a spill edge slopes by design). Pond
+junction p90 is 0.80 m (was 0.73). That metric also counts creeks cascading INTO ponds over a
+lip, which is a legitimate step. Tests: test-water 106 ok (check-lake-preview's PaintRaster crash
+predates this), navmesh 35, compile 158. Solve time unchanged (~7–10 s per pass at 4096²).
+
+### Round 10 (2026-09-18) — browser verdict on round 9, and the pivot
+
+**Dante's shots:** z-fighting everywhere, the 15 m lake broken into chunks, ponds that float,
+water blobs scattered down the steep island, sheets on the falls.
+
+- **Regression, now fixed:** round 9's edge ramp floored water at 2 cm. The export had **47% of
+  creek cells < 2 cm deep** (median 0.04 m; it was 0.2% / 0.22 m). A film that thin is coincident
+  with the terrain (z-fighting), and the ground rises through it in holes (the "chunks").
+  `edgeMinDepthM` is now 0.15. Harness on the new terrain: < 5 cm 36% → 5.5%, overhang
+  > 15 cm 4.8% (original code 7.7%). Lesson: audit the depth distribution, not only the overhang.
+  "Meets the ground" and "coincident with the ground" are the same thing to a depth buffer.
+- **The real diagnosis:** island-sholes' creeks are 5–20 cm deep, against a 1 m grid, terrain
+  displacement of ±0.4 m, and 0.4 m per cell on the steep island. Water thinner than the
+  terrain's own detail cannot look right as a heightfield surface. That is not an SPH/LBM
+  problem; it is below what this representation can hold. Games draw it as wet terrain.
+- **Where Dante was aiming:** Jean-Philippe Grenier's river editor
+  (https://80.lv/articles/river-editor-water-simulation-in-real-time):
+  - a LATTICE BOLTZMANN shallow-water solve (D2Q9, 512×1024 on the GPU, fp16, ping-pong);
+  - rendering by wave profile buffers + wave particles;
+  - foam and two UV sets advected by the velocity field;
+  - thickness-dependent volumetric scattering, so thin water goes transparent.
+  Phase 4 already built most of the rendering half: WPB (step 4), two-phase advection + foam
+  accumulation (steps 1–3). What was missing is the SIMULATION half. a-land's D8 stamp
+  approximates it, and every round of today was patching that approximation.
+
+### NEXT (decided with Dante 2026-09-18): the LBM shallow-water river solver, on new branches
+
+- **Architecture:**
+  - Long term, the solver lives in a-water and reads a-land.
+  - FIRST it runs as an a-land editor bake (option "a"): run the LBM to a steady state and
+    export the SAME waterLevel/waterFlow/waterClass tiles, so the tile contract and a-water are
+    unchanged.
+  - Write the GPU passes so the same shader code can later run live in a-water as a
+    camera-following window. Cascade 0 is already 512² at 1 m, which matches Grenier's domain.
+- **What a-land keeps:** the D8 solve for the whole-world questions: where rivers go, their
+  discharge, lake intents and bodies, carve. It supplies the LBM with the bed (carved terrain),
+  the inflows (sources, lake pour outlets, with their Q), the outflows (sea and map edge) and an
+  initial state, so the LBM converges in seconds rather than filling from dry.
+- **What the LBM fixes by construction:** continuous surfaces, ponds finding their own
+  shorelines, splits at saddles (the 15 m lake's beach outlet that "gives up"), wetting and
+  drying, eddies behind obstacles.
+- **Phase 4 closes first**, on the current branch:
+  - a thickness-based alpha fade in the flowing material (Grenier's volumetric term): water
+    below ~10 cm fades out, which kills the remaining z-fighting;
+  - step 5, the fall spray placeholder, plus docs.
+  - Acceptance: a hero creek (gentle 1–3% valley, carved, ≥ 0.3 m deep) reads as water in its
+    bed; thin water is never drawn as a surface; queryFlow works. island-sholes is the stress
+    test, not the proof.
+- **Phase 5 (centreline ribbons) is likely superseded:** Grenier renders the simulated grid
+  directly. Re-plan it once the LBM runs.
+- **Branches:** do NOT `git switch` in a-faraway-land. Another session's uncommitted work lives
+  in that tree, and a branch switch would carry it along, then land its next commit on the
+  wrong branch. Use `git worktree add ../a-faraway-land-lbm -b lbm-river-solver` (and the same
+  for a-water, if its tree is shared at the time).
+- **Harness to reuse:** the scratch solve.js / audit.py / overhang.py flow. Export mosaic →
+  4096² grid → Node solve → metrics (depth distribution, overhang, sideways). Rebuild it in the
+  new worktree's tests/ if it is worth keeping.
+- **Later, not now:** LBM on shores with waves (the Phase 3 nine-stage path stays).
+
 ### ⚠ Outstanding — needs Dante
 
 1. Run `create-shader.py`, then open `examples/demos/island-sholes-ocean.html`.
