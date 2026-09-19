@@ -593,6 +593,13 @@ sink seeding particles, the pool is an LBM source receiving them.
   - The shared tree is untouched.
 - **Design:** `a-faraway-land-lbm/WATER-LBM.md` (ba3ac3f). Awaiting Dante's answers to its
   three open questions before milestone 1 (CPU reference + physics tests).
+- **Milestone 1 DONE** (a-faraway-land-lbm b892e31): the CPU reference `WaterLBMReference.js`
+  plus `tests/test-water-lbm` (16 checks pass).
+  - **Two equal sills split 50.5 / 49.5 %** (D8: 0 / 100).
+  - Lake at rest exact (1e-14); Manning 0.15 %; weir head within ±15 % of theory.
+  - Known limits: dam-break transients; narrow channels run deep.
+  - Details in WATER-LBM.md.
+  - Next: milestone 2, the GPU stepper checked against it.
 - **Note for the LBM hand-off (Dante, round 13):** the pond and creek still switch
   height/normal at the join rather than blending. Leave it: the LBM's own surface and waves
   replace the creek's height there.
