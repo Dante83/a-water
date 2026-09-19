@@ -399,14 +399,33 @@ water blobs scattered down the steep island, sheets on the falls.
   4096² grid → Node solve → metrics (depth distribution, overhang, sideways). Rebuild it in the
   new worktree's tests/ if it is worth keeping.
 - **Later, not now:** LBM on shores with waves (the Phase 3 nine-stage path stays).
-- **Test world (Dante authors it):** a hero-creek world, because island-sholes is the stress
-  test, not the proof. Suggested content:
-  - a valley 400–500 m long (fits the 512² window) with a 1–3% carved floor;
-  - discharge enough for ≥ 0.3 m depth;
-  - a meander, a boulder or two (eddies) and a confluence;
-  - a pond whose rim has two low saddles (the split outlet);
-  - a short steep reach or fall;
-  - a mouth at the sea or the map edge.
+- **Test world: `a-faraway-project/hero-creek`, GENERATED 2026-09-18.** It is not sculpted:
+  `hero-creek/survey/make_terrain.py` holds every number, and `survey/README.md` has the
+  steps, the source console lines, and a feature table.
+  - A 1 km island. The creek valley's floor runs 14 m → sea, ~1.5% then ~1.3%.
+  - Features: a meander, a tributary confluence, two boulders in the channel, a pond with
+    TWO outlets cresting at exactly 8.664 m (a side channel rejoins downstream), a 3 m
+    waterfall with a plunge pool, and the coast.
+  - Carving is off (`carveChannels: false`). Sea level 0, 1 m solve grid.
+  - How it was built:
+    - Scaffolded with a-land's own `new-world.py`; only the height tiles are replaced.
+    - Coarse LODs come from a numpy port of `heightmapEdgeQuadrant`, parity-tested
+      against the JS to 0.007 mm.
+    - Opened headless in the editor, with writes blocked: heights match on flat ground.
+  - Offline D8 solve (water-carve-channels WaterSolve, sources 55% / 40%):
+    - main channel centre 0.49–0.56 m deep, median flowing depth 0.33 m;
+    - the pond fills to its sill; the 3.0 m fall is detected;
+    - D8 routes the whole pond outflow down ONE outlet, which is the LBM's split test.
+  - a-water page: `examples/demos/hero-creek-ocean.html` (gitignored like the others).
+    Loads headless at 60 fps, terrain only until the editor's Solve + Bake & Export.
+  - Lessons from building it:
+    - Key a valley floor to z, never to arc length: the nearest point on a meander
+      jumps between loops, and the floor stepped with it.
+    - A tributary must join heading downstream.
+    - A side outlet must leave its pond radially; one set at an angle ran along the rim
+      and crested 0.6 m high.
+    - The solve only counts a waterfall if one 1 m cell drops ≥ 0.5 m at > 30° and the
+      whole run is ≥ 2 m.
 
 ### Round 11 (2026-09-18) — Phase 4 closed: thin water fades, fall placeholder, docs
 
@@ -457,8 +476,8 @@ Commits 1d13687 (fade) and 1d92371 (falls). Headless on the 4090 / ANGLE GL:
    - A/B with `oceanGrid.flowSurfaceEnabled = false`;
    - `setOceanShadowDebug(66)` for thickness, `(63)` / `(64)` for foam and current;
    - spray knobs on `oceanSplash.fallSprayRate` / `.fallSprayEnabled`.
-3. **Author the hero-creek world** (see NEXT). It is the Phase 4 acceptance and the LBM's
-   test bed.
+3. **hero-creek** (generated, see NEXT): paste the two source lines from
+   `hero-creek/survey/README.md` in the editor, then Solve Water → ⌘S Save → Bake & Export.
 4. **Known look issues:**
    - A bright white line at the far confluence has not been investigated.
    - Wet-sand albedo under thin water is Phase 9. It matters more now that thin water
