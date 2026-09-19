@@ -583,19 +583,21 @@ Sky page only.** Measured:
 should connect the two. Agreed, and written into WATER-TYPES.md § Phase 6: the lip is an LBM
 sink seeding particles, the pool is an LBM source receiving them.
 
-### ▶ RESUME HERE (end of 2026-09-18)
+### ▶ RESUME HERE (end of 2026-09-19)
 
-- **Solver work:** `../a-faraway-land-lbm`, branch `lbm-river-solver` (a2fca2f). Design and all
-  results are in its `WATER-LBM.md`. The core is **finite volume** (`WaterFVReference.js`);
-  tests run with `tests/test-water-lbm/run.sh`.
+- **Solver work:** `../a-faraway-land-lbm`, branch `lbm-river-solver`. Design and all results
+  are in its `WATER-LBM.md`. The core is **finite volume** (`WaterFVReference.js`, the
+  specification) with a **GPU stepper** (`WaterFVGPU.js`) that matches it. Tests:
+  `tests/test-water-lbm/run.sh` (38 checks, ~90 s, the GPU ones skip without a Chrome).
 - **Test world:** `a-faraway-project/hero-creek/survey/`
-  - `lbm-crop.js` + `compare-crop.py` for the crop;
+  - `crop-scene.js` is the one crop definition; `lbm-crop.js` runs it on the CPU and
+    `fv-crop-gpu.mjs` on the GPU; `compare-crop.py <solver>` grades either;
   - `baseline.py` / `grade.py` for exports.
 - **Next, Dante picks the order:**
   - (a) hero-creek in-bank: sources ~45 % / 35 %, or regenerate with a deeper channel and a
     taller rim (wipes the folder);
-  - (b) milestone 2: a GPU stepper for the FV core, checked against the CPU reference, then
-    milestone 3 (editor bake behind the flag, graded on hero-creek).
+  - (b) **milestone 3**: the editor bake behind `settings.water.params.lbm`, in the D8 slot
+    in `layer-bridge.js`, graded on hero-creek by `baseline.py`.
 - **Uncommitted, deliberately:** a-water's regenerated `water-shader.js` (Dante's regen; it
   matches the verified build).
 - **Parked:** the lighting-unit seam (a-land lux vs a-water sky units underwater, round 13).
@@ -630,6 +632,32 @@ sink seeding particles, the pool is an LBM source receiving them.
 - **Note for the LBM hand-off (Dante, round 13):** the pond and creek still switch
   height/normal at the join rather than blending. Leave it: the LBM's own surface and waves
   replace the creek's height there.
+
+### Milestone 2 DONE — the GPU stepper (2026-09-19)
+
+`a-faraway-land-lbm/src/js/runtime/terrain/WaterFVGPU.js`: the finite-volume core as WebGL2
+fragment passes on THREE's renderer. Full write-up in that repo's `WATER-LBM.md`.
+
+- **hero-creek crop: 3020 s simulated in 6.4 s of wall clock** (115k steps, 18k steps/s),
+  against **36 minutes** on the CPU for 2400 s.
+- **Every `compare-crop.py` metric is identical to the CPU run** — pond level 9.31, split
+  77/23, side outlet −0.11 m, 0 % overhang. Field against field, level agrees to p99 0.2 mm
+  and the wet mask disagrees on 1 cell in 15450.
+- **Parity harness:** `tests/test-water-lbm/check-gpu-parity.mjs` runs both solvers on the
+  same seven scenes in headless Chrome over raw CDP — no npm dependencies, three.js cached
+  on first run. Parity scenes pin `dtMax` so both walk the same clock; one scene grades the
+  CFL reduction itself. Agreement is at fp32 noise, 1e-7 to 1e-8.
+- **Throughput (RTX 4090):** 18k steps/s up to 256², 5.3k at 1024² (5.6 G cell-steps/s). Below
+  256² it is draw-call bound, ~9 passes per step. A live 512 m window in a-water would cost
+  0.08 ms per step on this GPU.
+- **The bug worth remembering:** GLSL ES defaults fragment-stage `sampler2D` to **lowp**, and
+  `RawShaderMaterial` adds no precision header — so every `texelFetch` came back quantised to
+  about fp16 (1.2 read as 1.2001953125) while the fp32 render targets tested clean. Still
+  water crept at 3 mm/s and Manning was 35 % out until `precision highp sampler2D;` went into
+  each preamble. Anything computing in a RawShaderMaterial in either repo wants that line.
+- The GPU deliberately drops the reference's global mass-debt rescale: instrumented on the
+  crop, the negative-depth clip fired in **0 of 2024 steps**. It banks any clipped depth
+  instead, and the parity suite asserts it stays zero.
 
 ### ⚠ Outstanding — needs Dante
 
