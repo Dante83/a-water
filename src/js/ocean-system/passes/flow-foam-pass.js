@@ -68,6 +68,9 @@ ARestlessOcean.Passes.FlowFoamPass = function(oceanGrid){
   this.stencil = 2.0;            //m: derivative and flow-smoothing reach
   this.fallGain = 0.25;          //per (m³/s) of waterfall discharge
   this.enabled = true;
+  //The falls near the window this frame, nearest first: [{d, x, z, r, q, fall}], fall the
+  //simulation.waterfalls[] entry. OceanSplash reads it for the plunge spray.
+  this.nearFalls = [];
 };
 
 ARestlessOcean.Passes.FlowFoamPass.RESOLUTION = 512;
@@ -227,12 +230,14 @@ ARestlessOcean.Passes.FlowFoamPass.prototype._updateFalls = function(ctx){
     const dx = b[0] - this.centerX, dz = b[2] - this.centerZ;
     const r = 0.5 * (falls[i].width || 4.0);
     if(Math.abs(dx) > hw + r || Math.abs(dz) > hw + r) continue;
-    near.push({d: dx * dx + dz * dz, x: b[0], z: b[2], r: r, q: falls[i].discharge || 0.0});
+    near.push({d: dx * dx + dz * dz, x: b[0], z: b[2], r: r, q: falls[i].discharge || 0.0, fall: falls[i]});
   }
   near.sort(function(a, b){ return a.d - b.d; });
   const n = Math.min(near.length, MAX_FALLS);
   for(let i = 0; i < n; ++i) u.uFalls.value[i].set(near[i].x, near[i].z, near[i].r, this.fallGain * near[i].q);
   u.uFallCount.value = n;
+  if(near.length > n) near.length = n;
+  this.nearFalls = near;
 };
 
 //ctx: {timeMs, cameraX, cameraZ, fieldCascade (WaterField cascade 0), waterfalls}

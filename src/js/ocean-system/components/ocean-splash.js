@@ -167,6 +167,11 @@ ARestlessOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
   this.breakerJetScale = 1.2;       //launch v = scale * sqrt(2 g crest). 1 = Torricelli on the crest.
   this.breakerForward = 0.8;        //shoreward lean of the launch cone (0 = straight up, 1 = 45°).
   this.breakerSheetSpan = 2.5;      //m: smear each cell's burst along the crest line.
+  //Phase 4 waterfall spray (PLACEHOLDER until Phase 6 falls): a burst stream at every
+  //simulation.waterfalls[].bottom that FlowFoamPass lists near the camera. See _emitFalls.
+  this.fallSprayEnabled = true;
+  this.fallSprayRate = 0.3;         //FUDGE: emitImpact countScale per (m³/s of discharge) per second.
+  this.fallSprayMinDrop = 0.5;      //m: a step lower than this is a riffle, not a plunge.
   this.impactBurstPerSpeed = 6.0;//particles per m/s of impact speed (FUDGE).
   this.impactMinBurst = 4;
   this.impactMaxBurst = 60;
@@ -987,6 +992,34 @@ ARestlessOcean.OceanSplash.prototype._emitBreakers = function(field, t, camX, ca
   }
 };
 
+//Spray where a-land's waterfalls land (Phase 4 step 5). PLACEHOLDER: Phase 6 draws real
+//falls; this only marks the plunge pools. The water arrives at Torricelli speed √(2 g drop),
+//moving along the fall (top to bottom) at the horizontal speed that covers the fall's run
+//in its free-fall time, and emitImpact bounces it off the pool, so a tall fall throws a
+//taller, faster plume. The burst is smeared across the fall's width. Rate ∝ discharge.
+//falls: FlowFoamPass.nearFalls (nearest first, inside its window); .fall is the entry.
+ARestlessOcean.OceanSplash.prototype._emitFalls = function(falls, dt, camX, camZ){
+  if(!this.fallSprayEnabled || !falls) return;
+  const maxD2 = this.maxEmitDistance * this.maxEmitDistance;
+  for(let i = 0; i < falls.length; ++i){
+    const f = falls[i].fall;
+    const top = f.top, bot = f.bottom;
+    if(!top || !bot) continue;
+    const dx = bot[0] - camX, dz = bot[2] - camZ;
+    if(dx * dx + dz * dz > maxD2) continue;
+    const drop = f.drop !== undefined ? f.drop : Math.max(top[1] - bot[1], 0.0);
+    if(drop < this.fallSprayMinDrop) continue;
+    const v = Math.sqrt(2.0 * this.gravity * drop);
+    let hx = bot[0] - top[0], hz = bot[2] - top[2];
+    const run = Math.sqrt(hx * hx + hz * hz);
+    if(run > 1e-3){ hx /= run; hz /= run; } else { hx = 1.0; hz = 0.0; }
+    const vh = run / Math.sqrt(2.0 * drop / this.gravity);
+    this.emitImpact(bot[0], bot[1] + 0.1, bot[2], 0.0, 1.0, 0.0, v,
+      -hz, hx, f.width || 4.0, this.fallSprayRate * (f.discharge || 0.0) * dt,
+      hx * vh, -v, hz * vh);
+  }
+};
+
 //$DEBUG_START$
 //Lazily build the debug surface-probe ball. It is a CHILD of the splash points
 //mesh (which sits at the origin and is never transformed), so it inherits that
@@ -1124,6 +1157,7 @@ ARestlessOcean.OceanSplash.prototype.tick = function(ctx){
                       ctx.camFwdX || 0.0, ctx.camFwdZ || 1.0);
       this._emitBreakers(field, field.currentTimeSeconds, ctx.camX, ctx.camZ,
                          ctx.camFwdX || 0.0, ctx.camFwdZ || 1.0);
+      this._emitFalls(ctx.falls, dt, ctx.camX, ctx.camZ);
     }
   }
 

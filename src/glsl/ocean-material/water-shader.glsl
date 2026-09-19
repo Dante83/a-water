@@ -1733,6 +1733,12 @@ void main(){
     rawDdz.y = levelSlope.y;
     cascade0HeightSlope = levelSlope;
   }
+  //PLACEHOLDER: Phase 6 falls. Where the level drops faster than tan 30 degrees the
+  //sheet is a waterfall stretched over its step, which this heightfield cannot draw
+  //(the lumpy glass sheets of the browser rounds). Until Phase 6 gives falls their
+  //own geometry, such cells are all whitewater: full foam and a rough surface. It is
+  //the same onset as FlowFoamPass step foam, but not gated on speed or its window.
+  float flowFallSheet = smoothstep(0.577, 1.0, length(cascade0HeightSlope) * waveHeightMultiplier);
   //The current, foam and energy here (FlowFoamPass), read once for the waves below and
   //for the foam further down. Zero outside the pass window.
   vec4 flowFoamSample = vec4(0.0);
@@ -2034,7 +2040,7 @@ void main(){
     //driven boost on top for the breaker-line near terrain.
     #if($flowing_water)
     //Phase 4: the flowing surface's foam is FlowFoamPass's accumulated coverage.
-    foamAmount = flowFoamInside * flowFoamSample.r;
+    foamAmount = max(flowFoamInside * flowFoamSample.r, flowFallSheet);
     #else
     foamAmount = fftFoamAmount;
     //Phase 3a: foam on the breaking front and the bore behind it, scaled by the
@@ -2306,6 +2312,9 @@ void main(){
   #if($flowing_water)
     //Phase 4: the ripple slope the profile mips averaged away (see the flowing normals).
     alpha2 += flowRippleLostVar;
+    //PLACEHOLDER: Phase 6 falls (see flowFallSheet): a fall sheet is broken water,
+    //slope variance 0.2 (GGX roughness about 0.63).
+    alpha2 = max(alpha2, 0.2 * flowFallSheet);
   #endif
   //Beckmann-to-GGX: α²_GGX ≈ 2·σ²_slope. Clamp keeps the horizon-ceiling
   //term well-defined when several cascades pile in at extreme range.

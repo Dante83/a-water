@@ -2435,7 +2435,10 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         viewportHeight: self.refractionGBufferTarget.height,
         resW: self.refractionGBufferTarget.width,
         resH: self.refractionGBufferTarget.height,
-        linearDepthTexture: self.refractionGBufferTarget.textures[2]
+        linearDepthTexture: self.refractionGBufferTarget.textures[2],
+        //Phase 4: the waterfalls FlowFoamPass found near the camera (plunge spray).
+        falls: (self.flowSurfacePass && self.flowSurfacePass.enabled && self.flowSurfacePass.foamPass)
+          ? self.flowSurfacePass.foamPass.nearFalls : null
       });
       //Airborne spray is an above-water phenomenon: hide it whenever the camera is submerged, or the
       //mist/foam billboards punch through the underwater ceiling (they render on OCEAN_LAYER in the
