@@ -572,6 +572,12 @@ Sky page only.** Measured:
   - B. a-water adopts the physical exposure throughout. Consistent, but touches every scene's
     look.
   - C. a-land publishes an offscreen/sibling rendering mode or conversion.
+- **PARKED by Dante.** He expected a-land not to be physically based. It is, since a-land
+  18c7c3e (2026-08-25, "Meter the world in lux…", on main and multi-water-types):
+  - `land-terrain._applyPhotometry` drives the exposure every tick, with no setting;
+  - it skips only while no sun altitude is known, so any page with a-land + a-starry-sky
+    gets it.
+  - No earlier ocean page combined a-land with the sky, which is why nobody saw it.
 
 **Waterfall (images 10–11).** Dante: the LBM will not do the fall itself; a small PIC/SPH
 should connect the two. Agreed, and written into WATER-TYPES.md § Phase 6: the lip is an LBM
