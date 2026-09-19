@@ -530,11 +530,58 @@ inlet needs momentum (LBM) or a delta (sediment, out of scope).
   envelope, i.e. below 50 m) covers the whole island. Max ≈ 0.115 (below 3 m), feather
   ≈ 0.02 lets Grass show.
 
+### Round 13 (2026-09-18) — hero-creek browser round 2
+
+**hero-creek-sky.html works in a real browser.** The headless failures (near terrain or water
+missing) were the harness.
+
+**Pond vs creek caustics clashed (image 9).** e18b516: one depth-driven model for every body.
+- Cell ≈ 0.16 × depth: the ripples that focus at depth h have curvature ~4/h, so at slope 0.1
+  their wavelength is ~0.16 h.
+- Two fixed octave scales are blended, never world position × a varying scale (that warps).
+- The focus ramp (0.25 m) and depth-scaled dispersion now apply to every body.
+- Deeper than ~5 m it is exactly the old 0.3 UV ocean tile.
+- 12 caustic taps, was 6.
+- **Needs create-shader.py.**
+
+**Underwater in the sea blows out, and there are no underwater caustics (images 8, 9).
+Sky page only.** Measured:
+- Present with a-land + a-starry-sky + sea only. The pond on the same page is fine, as are
+  the sea on the sky-less page and islands.html.
+- It is not the ACES tone mapping I added: without it, it is worse.
+- Debug 50 (the raw underwater mirror sample) is white on the sky page and dark on
+  islands.html.
+- Mirror-target pixels (half-float, read with the PBO unbound): 171–298 on the sky page,
+  0.06 on the sky-less page.
+- renderer.toneMappingExposure is **1.8e-5** on the sky page (a-land's SkyPhotometry
+  auto-exposure) and 1 elsewhere. a-land's sun is ~124,000 lux (`u_sunLuxRGB`).
+- Cause:
+  - With a sky present, a-land lights its terrain in lux and relies on the screen's
+    exposure to scale it back.
+  - The ocean works in a-starry-sky units behind its own fixed ACES (it ignores renderer
+    exposure). a-land's SkyEnvironment.js:245-256 documents exactly why a-land does not
+    touch the shared lights.
+  - Offscreen captures never get the screen exposure. So a-land terrain enters the ocean's
+    underwater mirror ~30,000× too bright, and a-water's own contributions that land on
+    a-land terrain on screen are crushed ×1.8e-5: the caustic SpotLight, and the underwater
+    fog colour via the fog-chunk seam. The last two are inferred, not measured: the
+    sky-less pond shows underwater light shafts, the sky pond none.
+- **Options (decision for Dante: the a-land ↔ a-water lighting contract):**
+  - A. a-water converts at the seam: its captures of foreign-lit content ×exposure, and its
+    own light injected into foreign materials ÷exposure. Consumer-side, local.
+  - B. a-water adopts the physical exposure throughout. Consistent, but touches every scene's
+    look.
+  - C. a-land publishes an offscreen/sibling rendering mode or conversion.
+
+**Waterfall (images 10–11).** Dante: the LBM will not do the fall itself; a small PIC/SPH
+should connect the two. Agreed, and written into WATER-TYPES.md § Phase 6: the lip is an LBM
+sink seeding particles, the pool is an LBM source receiving them.
+
 ### ⚠ Outstanding — needs Dante
 
 1. **Re-bake island-sholes** with a-faraway-land `water-carve-channels` (cb7f963 or later):
    Solve Water → ⌘S Save → Bake & Export. The current water tiles are the film export.
-2. **Run `create-shader.py`** (again after 604e1a5, creek caustics). Only `water-shader.js` changes. Then open
+2. **Run `create-shader.py`** (again after e18b516, one caustic model). Only `water-shader.js` changes. Then open
    `examples/demos/island-sholes-ocean.html`:
    - wtr-6's lower run (≈ 1765, 20, 2115), the lake-14.05 outlet, and the wtr-8 falls
      (≈ 1480, 2525);

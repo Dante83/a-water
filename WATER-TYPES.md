@@ -439,6 +439,18 @@ a-land already hands us `simulation.waterfalls[]` with `top`, `bottom`, `width`,
 
 > Phase 4 left a placeholder to replace: `OceanSplash._emitFalls` (plunge spray) and the
 > `flowFallSheet` whitewater term in `water-shader.glsl`, both marked `PLACEHOLDER`.
+>
+> **With the LBM (Dante, 2026-09-18):** a shallow-water solver, LBM included, stops at the lip.
+> Its equations assume a thin layer with no vertical motion, so a free-falling jet is outside
+> what it can represent. The plan:
+> - The LBM runs up to the lip and resumes in the plunge pool.
+> - A small particle solver (PIC/FLIP or SPH) carries the fall between them.
+> - The coupling is mass bookkeeping. The lip is an LBM sink whose outflow (discharge,
+>   velocity, width along the lip) seeds the particles. The pool is an LBM source that
+>   receives what lands, with its momentum, which is what churns the pool.
+> - That is the tier-1 interface above (lip spline + pool point) with a solver behind it.
+
+
 
 - **Tier 1, the sheet**: a ribbon from lip to plunge, scrolling shredded-noise alpha with
   vertical stretch increasing down the fall, Fresnel-lit edges.
