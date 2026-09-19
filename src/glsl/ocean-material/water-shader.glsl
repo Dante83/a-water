@@ -1521,6 +1521,39 @@ void main(){
   #if($flowing_water)
     if(flowHandoffW <= 0.002) discard;
     float flowHandoffAlpha = flowHandoffW;
+    //THIN WATER IS NOT A SURFACE (Phase 4 close-out, the simplest form of the River
+    //Editor's thickness-dependent scattering). island-sholes creeks are 5-20 cm deep
+    //over a 1 m height grid with +-0.4 m of material displacement, and the bank taper
+    //in the vertex stage slides the sheet onto its bed on purpose, so wherever the
+    //water is a few centimetres thick the sheet and the terrain are coincident. That
+    //is the z-fighting and the holes of browser round 10. Real water that thin shows
+    //the bed, not a surface: fade the sheet out below FLOW_FADE_FULL_M and drop it
+    //entirely below FLOW_FADE_MIN_M, which also keeps it out of the depth buffer.
+    //Thickness is what the depth buffer sees, not a-land's solve depth: this surface
+    //minus the ground the refraction G-buffer holds under the SAME pixel (undistorted,
+    //so a bank behind the water cannot stand in for the bed). Measured from the 32-bit
+    //depth texture, not the half-float linear depth, whose steps are 3 cm by 50 m.
+    //Positive where the ground is under the sheet, negative where the polygon offset
+    //pulled the sheet in front of ground that is really above it.
+    const float FLOW_FADE_MIN_M = 0.03;
+    const float FLOW_FADE_FULL_M = 0.10;
+    float flowSheetThickness = 1000.0;
+    float flowThicknessAlpha = 1.0;
+    if(underwaterFactor < 0.5){
+      vec2 flowGroundUV = gl_FragCoord.xy / screenResolution;
+      float flowGroundRaw = texture2D(refractionDepthTexture, flowGroundUV).r;
+      //1.0 is the clear: no ground under this pixel, so the column is deep.
+      if(flowGroundRaw < 1.0){
+        vec4 flowGroundView = inverseProjectionMatrix * vec4(flowGroundUV * 2.0 - 1.0, flowGroundRaw * 2.0 - 1.0, 1.0);
+        flowGroundView /= flowGroundView.w;
+        flowSheetThickness = worldPosition.y - (inverseViewMatrix * flowGroundView).y;
+        flowThicknessAlpha = smoothstep(FLOW_FADE_MIN_M, FLOW_FADE_FULL_M, flowSheetThickness);
+      }
+    }
+    //$DEBUG_START$
+    if(oceanShadowDebugMode == 66) flowThicknessAlpha = max(flowThicknessAlpha, 0.01);
+    //$DEBUG_END$
+    if(flowThicknessAlpha <= 0.002) discard;
   #else
     if(flowHandoffW >= 0.998) discard;
   #endif
@@ -3395,6 +3428,16 @@ void main(){
     vec3 dbgRgb = clamp(abs(fract(dbgHue + vec3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0) - 1.0, 0.0, 1.0);
     gl_FragColor = vec4(dbgRgb * dbgSpeed, 1.0);
   }
+  else if(oceanShadowDebugMode == 66){
+    //Mode 66: rendered sheet thickness (surface minus G-buffer ground under the pixel),
+    //grey 0 to 0.5 m. Red = below FLOW_FADE_MIN_M (the sheet is dropped there), yellow
+    //= inside the fade band, blue = no ground under the pixel (deep).
+    vec3 dbgCol = vec3(clamp(flowSheetThickness / 0.5, 0.0, 1.0));
+    if(flowSheetThickness > 999.0) dbgCol = vec3(0.0, 0.2, 0.8);
+    else if(flowSheetThickness < FLOW_FADE_MIN_M) dbgCol = vec3(0.8, 0.0, 0.0);
+    else if(flowSheetThickness < FLOW_FADE_FULL_M) dbgCol = mix(vec3(0.9, 0.8, 0.0), dbgCol, flowThicknessAlpha);
+    gl_FragColor = vec4(dbgCol, 1.0);
+  }
   #endif
 
   //Debug overlays — only drawn when oceanShadowDebugMode is non-zero. Bottom-
@@ -3456,7 +3499,8 @@ void main(){
   #endif
 
   #if($flowing_water)
-    //The hand-off cross-fade (see the discard above). Debug views stay opaque.
-    if(oceanShadowDebugMode == 0) gl_FragColor.a = flowHandoffAlpha;
+    //The hand-off cross-fade and the thin-water fade (see the discards above).
+    //Debug views stay opaque.
+    if(oceanShadowDebugMode == 0) gl_FragColor.a = flowHandoffAlpha * flowThicknessAlpha;
   #endif
 }
