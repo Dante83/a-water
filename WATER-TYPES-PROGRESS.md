@@ -590,8 +590,9 @@ sink seeding particles, the pool is an LBM source receiving them.
   specification) with a **GPU stepper** (`WaterFVGPU.js`) that matches it. Tests:
   `tests/test-water-lbm/run.sh` (38 checks, ~90 s, the GPU ones skip without a Chrome).
 - **Test world:** `a-faraway-project/hero-creek/survey/`
-  - `crop-scene.js` is the one crop definition; `lbm-crop.js` runs it on the CPU and
-    `fv-crop-gpu.mjs` on the GPU; `compare-crop.py <solver>` grades either;
+  - `crop-scene.js` / `world-scene.js` are the scene definitions; `lbm-crop.js` runs the crop
+    on the CPU, `fv-gpu.mjs <crop|world>` runs either on the GPU; `compare-crop.py <solver>`
+    grades any of them and `world-view.py` draws the island beside D8;
   - `baseline.py` / `grade.py` for exports.
 - **Next, Dante picks the order:**
   - (a) hero-creek in-bank: sources ~45 % / 35 %, or regenerate with a deeper channel and a
@@ -658,6 +659,33 @@ fragment passes on THREE's renderer. Full write-up in that repo's `WATER-LBM.md`
 - The GPU deliberately drops the reference's global mass-debt rescale: instrumented on the
   crop, the negative-depth clip fired in **0 of 2024 steps**. It banks any clipped depth
   instead, and the parity suite asserts it stays zero.
+
+### The whole island on the GPU (2026-09-19)
+
+`hero-creek/survey/fv-gpu.mjs world` solves all 1024² of hero-creek with **D8's real
+boundaries** instead of the crop's invented ones — intents become mass sources spread over a
+disc (a point cannot take 16.6 m³/s: that is 28 cm in one cell in one step), ocean cells are
+held at sea level, lakes deeper than 3 m are held and shallower ones simulated. That
+translation is what milestone 3 has to do inside the editor, and it is now written and
+measured.
+
+- **3050 s of the whole island in 29 s of wall clock** (181k steps, dt 0.0168 s, set by the
+  8 m deep sea).
+- **It agrees with the crop it cannot see:** pond 9.33 vs 9.31, split 76/24 vs 77/23, side
+  outlet −0.12 vs −0.11 m, depth p50 0.26 both. The crop's fake boundaries were telling the
+  truth.
+- The river **meets the sea at 0.00 m** — the Dirichlet ocean works.
+- **Convergence is graded on the bulk now:** a steep creek always has a jump wandering a
+  metre, so max level change sits at 5–8 cm forever while p99 is 0.3–0.6 cm and only ~180 of
+  35,620 wet cells move more than 1 cm per 50 s.
+- ⚠ **For milestone 3 and for a-water:** the FV solution wets **34,685 cells against D8's
+  12,509**, because D8 stamps a 4√Q ribbon and the real flow spills out of a channel holding
+  ~17 m³/s bank-full while carrying 23. **7.5 % of flowing cells are under 3 cm**, and
+  a-water's thickness fade discards below 3 cm — so baking this world today would ring every
+  creek with a halo of nearly-invisible water. It is hero-creek being over-fed (the
+  in-bank fix: sources to ~45 %/35 %), but the export may also want a minimum-depth
+  threshold of its own. Picture: `survey/out/world-d8-vs-fvworld.png`, drawn by
+  `world-view.py` (thin water in red).
 
 ### ⚠ Outstanding — needs Dante
 
