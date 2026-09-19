@@ -427,6 +427,30 @@ water blobs scattered down the steep island, sheets on the falls.
     - The solve only counts a waterfall if one 1 m cell drops ≥ 0.5 m at > 30° and the
       whole run is ≥ 2 m.
 
+- **LBM acceptance baseline: D8 on hero-creek** (first bake, 2026-09-18, sources 55% / 40%).
+  - Graded by `hero-creek/survey/baseline.py`; rerun it on the LBM's export.
+  - Dante's browser shots of this export show every D8 artifact below.
+
+  | metric | D8 | the LBM should give |
+  |---|---|---|
+  | boulder mound: max level over the creek upstream | **1.14 m** | a few cm of pile-up, water going round |
+  | side outlet: level in its first 11 m over the pond | **+0.45 m** | ≤ 0 (the surface drops over a sill) |
+  | main outlet: dry metres in its first 60 m | **45** | 0 |
+  | pond outflow split main / side | **0 / 100 %** | both carry flow (equal sills) |
+  | depth p10 / p50 / p90 | 0.07 / 0.31 / 0.54 m | |
+  | depth < 5 cm / < 10 cm | 7.0 / 16.3 % | |
+  | overhang > 15 cm, max | 0.28 %, 0.63 m (at the side outlet) | |
+  | sideways > 45° / > 60° | 7.9 / 5.4 % | |
+  | waterfalls | one, 3 m, 22.7 m³/s | same |
+
+  - Why each happens:
+    - The boulder mound: the harmonic surface (5b) pins a channel-line cell on the boulder
+      at its bed + depth.
+    - The outlet climb: the same pin at the sill, and 5c cannot raise the pond because the
+      other outlet drains at exactly that height.
+    - The one-sided split: D8 is single-direction.
+  - Do not patch these in D8 (the pivot decision). They are the LBM's first acceptance test.
+
 ### Round 11 (2026-09-18) — Phase 4 closed: thin water fades, fall placeholder, docs
 
 Commits 1d13687 (fade) and 1d92371 (falls). Headless on the 4090 / ANGLE GL:
