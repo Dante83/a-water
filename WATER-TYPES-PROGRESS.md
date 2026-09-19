@@ -583,6 +583,20 @@ Sky page only.** Measured:
 should connect the two. Agreed, and written into WATER-TYPES.md § Phase 6: the lip is an LBM
 sink seeding particles, the pool is an LBM source receiving them.
 
+### LBM started (2026-09-18)
+
+- **B0 done.**
+  - No uncommitted D8 edits of ours in a-faraway-land: its 13 modified files are the other
+    session's noise / tile-cache / bake-seam work.
+  - Worktree `../a-faraway-land-lbm`, branch `lbm-river-solver`, **base `water-carve-channels`
+    @ bfb9de5**.
+  - The shared tree is untouched.
+- **Design:** `a-faraway-land-lbm/WATER-LBM.md` (ba3ac3f). Awaiting Dante's answers to its
+  three open questions before milestone 1 (CPU reference + physics tests).
+- **Note for the LBM hand-off (Dante, round 13):** the pond and creek still switch
+  height/normal at the join rather than blending. Leave it: the LBM's own surface and waves
+  replace the creek's height there.
+
 ### ⚠ Outstanding — needs Dante
 
 1. **Re-bake island-sholes** with a-faraway-land `water-carve-channels` (cb7f963 or later):
