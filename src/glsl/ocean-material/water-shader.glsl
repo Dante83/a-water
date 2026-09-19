@@ -2447,14 +2447,39 @@ void main(){
       //longer gets a smeared top-down slice. Collapses to the old straight-
       //down look exactly at solar zenith (sunDirInWater vertical ⇒
       //pSurfaceHit.xz == pointXYZ.xz).
-      vec2 causticUV = 0.3 * pSurfaceHit.xz;
-      float causticLightingR = causticShader(causticUV + 0.005, t);
+      #if($flowing_water)
+        //CREEK CAUSTICS (Dante, hero-creek round 1: dark metre-wide blobs with rainbow
+        //rims, darkest in the thinnest water). Three things differ from the ocean:
+        //- SCALE. A caustic cell is about the size of the ripple that focuses it. Creek
+        //  ripples run from a few centimetres to a few decimetres, so the tile is 0.5 m
+        //  (cells of about 10 cm), not the 3.3 m ocean tile. Mips average it away with
+        //  distance, which is right: nobody resolves 10 cm caustics at 30 m.
+        //- FOCUS. Refracted rays need depth to converge. A ripple of curvature k focuses
+        //  at about n / (n - 1) / k = 4 / k below the surface; slope 0.1 over a 3-6 cm
+        //  capillary ripple is k of 10-20 per metre, so the web sharpens over the first
+        //  ~0.25 m. At the waterline there is no pattern at all (the old fade put the
+        //  STRONGEST contrast there).
+        //- DISPERSION. Red and blue refract about 0.6 mm apart per metre of depth at
+        //  slope 0.1 (index 1.331 vs 1.339), not a fixed 1.7 cm: invisible in a creek.
+        const float CREEK_CAUSTIC_UV = 2.0;
+        const float CREEK_CAUSTIC_FOCUS_M = 0.25;
+        const float CREEK_DISPERSION_PER_M = 0.0006;
+        vec2 causticUV = CREEK_CAUSTIC_UV * pSurfaceHit.xz;
+        float causticSplit = CREEK_CAUSTIC_UV * CREEK_DISPERSION_PER_M * downPath;
+      #else
+        vec2 causticUV = 0.3 * pSurfaceHit.xz;
+        float causticSplit = 0.005;
+      #endif
+      float causticLightingR = causticShader(causticUV + causticSplit, t);
       float causticLightingG = causticShader(causticUV, t);
-      float causticLightingB = causticShader(causticUV - 0.005, t);
+      float causticLightingB = causticShader(causticUV - causticSplit, t);
       vec3 causticSampleRaw = vec3(causticLightingR, causticLightingG, causticLightingB);
       vec3 causticSample = smoothstep(vec3(CAUSTIC_THRESHOLD_LO), vec3(CAUSTIC_THRESHOLD_HI), causticSampleRaw);
       dbgCausticSample = causticSample;
       float causticDepthFade = exp(-downPath / CAUSTIC_CONTRAST_DEPTH);
+      #if($flowing_water)
+        causticDepthFade *= smoothstep(0.0, CREEK_CAUSTIC_FOCUS_M, downPath);
+      #endif
       causticMod = vec3(1.0) + causticDepthFade * causticIntensityMultiplier * CAUSTIC_AMP * (causticSample - vec3(CAUSTIC_TEXTURE_MEAN));
     #endif
 
