@@ -600,6 +600,16 @@ sink seeding particles, the pool is an LBM source receiving them.
   - Known limits: dam-break transients; narrow channels run deep.
   - Details in WATER-LBM.md.
   - Next: milestone 2, the GPU stepper checked against it.
+- **Real-terrain check → the core moved to FINITE VOLUME** (a-faraway-land-lbm a2fca2f).
+  - The LBM went unstable on the hero-creek crop: negative populations in thin, fast water on
+    sloping banks.
+  - Dante chose the scheme real-DEM flood models use: hydrostatic reconstruction + HLL,
+    second order (`WaterFVReference.js`, same API, 18 checks pass).
+  - Crop, D8 → FV: side outlet +0.45 → −0.11 m; dead outlet 45 m → 0; split 0/100 → 77/23;
+    overhang 0.32 % → 0.
+  - The river goes overbank and the pond over-tops its rim: correct for 21–23 m³/s in a
+    ~17 m³/s channel. hero-creek needs lower flows or a deeper channel and a taller rim.
+  - CPU: 36 min for 2400 s on 54k cells, hence the GPU (milestone 2, now for FV).
 - **Note for the LBM hand-off (Dante, round 13):** the pond and creek still switch
   height/normal at the join rather than blending. Leave it: the LBM's own surface and waves
   replace the creek's height there.
