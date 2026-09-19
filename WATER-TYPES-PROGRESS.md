@@ -585,22 +585,43 @@ sink seeding particles, the pool is an LBM source receiving them.
 
 ### ▶ RESUME HERE (end of 2026-09-19)
 
-- **Solver work:** `../a-faraway-land-lbm`, branch `lbm-river-solver`. Design and all results
-  are in its `WATER-LBM.md`. The core is **finite volume** (`WaterFVReference.js`, the
-  specification) with a **GPU stepper** (`WaterFVGPU.js`) that matches it. Tests:
-  `tests/test-water-lbm/run.sh` (38 checks, ~90 s, the GPU ones skip without a Chrome).
-- **Test world:** `a-faraway-project/hero-creek/survey/`
-  - `crop-scene.js` / `world-scene.js` are the scene definitions; `lbm-crop.js` runs the crop
-    on the CPU, `fv-gpu.mjs <crop|world>` runs either on the GPU; `compare-crop.py <solver>`
-    grades any of them and `world-view.py` draws the island beside D8;
-  - `baseline.py` / `grade.py` for exports.
-- **Next, Dante picks the order:**
-  - (a) hero-creek in-bank: sources ~45 % / 35 %, or regenerate with a deeper channel and a
-    taller rim (wipes the folder);
-  - (b) **milestone 3**: the editor bake behind `settings.water.params.lbm`, in the D8 slot
-    in `layer-bridge.js`, graded on hero-creek by `baseline.py`.
-- **Uncommitted, deliberately:** a-water's regenerated `water-shader.js` (Dante's regen; it
-  matches the verified build).
+**Milestones 1-3 are done.** The finite-volume solver has a CPU reference (the specification), a
+GPU stepper that matches it, and an editor pass that runs inside a-land's Solve Water behind
+`settings.water.params.lbm`. hero-creek is verified end to end from the SHIPPED tiles
+(`survey/baseline.py`): pond 9.13 m over its 8.66 sill, outflow split **82/18** where D8 gives
+0/100, main outlet 0 dry metres of 60, converged, no flood.
+
+- **Solver work:** `../a-faraway-land-lbm`, branch `lbm-river-solver`. Design and all results in
+  its `WATER-LBM.md`. Tests: `tests/test-water-lbm/run.sh` (40 checks, ~3 min; the GPU ones skip
+  without a Chrome).
+- **To run the editor with it:** dev server from `../a-faraway-land-lbm/editor` (`npm run dev`;
+  the worktree has its own node_modules), then `ALandEditor.setShallowWater(true)` per project.
+- **Test worlds:** `a-faraway-project/hero-creek/survey/` — `crop-scene.js` / `world-scene.js`
+  are the scene definitions, `fv-gpu.mjs <crop|world>` runs either headless, `compare-crop.py
+  <solver>` grades, `world-view.py [right] [left]` draws.
+
+**NEXT, and island-sholes decides the order:**
+- Run it there (several creeks, 4096² at 1 m, and the only world that might trip the
+  `maxCells` ceiling). Watch for `box exceeds maxCells` and the tab OOM that world has hit before.
+- **No warning → skip milestone 4** (windowing large domains); M3 already solves per connected
+  component, so windowing would be machinery for a case that does not occur. Go to **milestone 5,
+  the live a-water window**: the same GLSL running a 512 m window at frame rate, with D8 or the
+  baked solve as edge conditions.
+- **Warning fires → milestone 4 first**, splitting an oversized box into windows solved upstream
+  to downstream.
+
+**Open, not solver bugs:**
+- **Thin water fades to nothing on shallow banks.** The band width is threshold ÷ bank slope:
+  hero-creek's banks rise 0.074 m/m at the water's edge, so a-water's 3 cm cut-off is 0.40 m
+  wide and the full 3→10 cm ramp is 1.35 m — and 4 m in the flattest quarter. Flow tuning does
+  not move it (measured twice). The levers are steeper carved channels and a-water's Phase 9
+  wet-sand albedo; an export min-depth threshold would only move the discontinuity.
+- **Waterfalls clip into the cliff.** The solve carries water over the lip and down the next
+  reach correctly, but a heightfield surface cannot draw a 3 m vertical face across one cell.
+  That is the Phase 6 particle coupling (lip = sink seeding, foot = source receiving).
+- **a-land papercut:** Bake & Export re-solves at `nativeBakeResolution()` and ignores the water
+  panel's resolution, so that setting costs editor time and never reaches the export.
+- **Uncommitted, deliberately:** a-water's regenerated `water-shader.js` (Dante's regen).
 - **Parked:** the lighting-unit seam (a-land lux vs a-water sky units underwater, round 13).
 
 ### LBM started (2026-09-18)
