@@ -687,6 +687,39 @@ measured.
   threshold of its own. Picture: `survey/out/world-d8-vs-fvworld.png`, drawn by
   `world-view.py` (thin water in red).
 
+### Milestone 3 — the editor bake (2026-09-19, awaiting Dante's browser run)
+
+`WaterFVBake.js` runs inside a-land's `generateWaterSolve`, between the D8 worker's result and
+the park, on both paths (interactive Solve and Bake & Export's `carve:false` re-solve). It
+hands back D8's own arrays in D8's units, so the preview, WaterTileExport, the tiles and
+a-water cannot tell it ran. **Behind `settings.water.params.lbm`**; without the flag, without
+float render targets, or on any error, D8's solve stands untouched.
+
+**To try it** (the shared a-land tree holds another session's work — do not switch it):
+1. Point the dev server at the worktree `../a-faraway-land-lbm` instead of `a-faraway-land`.
+2. Open the project, then in the console:
+   `ALandEditor.saveWaterSettings(Object.assign({}, ALandEditor.waterSettings(), { params: Object.assign({}, ALandEditor.waterSettings().params, { lbm: true }) }))`
+3. **Set hero-creek's water resolution to 1024 or 2048 first.** It is 4096 on a 1024 m world —
+   0.25 m cells, finer than the terrain the bed is sampled from, so it costs a minute or two
+   per solve for no new information. island-sholes at 4096 over 4096 m is already 1 m.
+4. Solve Water → ⌘S Save → Bake & Export, then open the a-water page.
+
+The console logs `[a-land] shallow water: N domain(s), X -> Y wet cells (spill Zx), T s,
+converged`, and warns when the spill ratio passes 2.5× — D8's 4√Q ribbon is full by
+construction, so several times more wetted ground means the flow does not fit its channel.
+
+- **It solves the water, not the world:** wet non-ocean cells are dilated by 16 m, labelled
+  into connected components, and each component's box is solved alone. The sea is held, never
+  simulated. hero-creek's creek is one 229k-cell domain, 2.3 s, converged.
+- **The dilation is a correctness fix, not an optimisation.** Labelling D8's wet cells directly
+  splits a creek at its waterfall; the downstream reach then has no inflow, drains and dries
+  up. That is what hero-creek did on the first run here.
+- **Still bodies keep D8's exact zeros**, and held cells (sea, deep lakes) are not written back
+  at all, so the sea stays byte-identical. Energy is recomputed from the real depth and
+  velocity rather than D8's hydraulic-geometry estimate.
+- `tests/test-water-lbm/check-fv-bake.mjs` guards that contract on the real export (units,
+  still bodies, drained cells, untouched sea, pond off its sill, water reaching the coast).
+
 ### ⚠ Outstanding — needs Dante
 
 1. **Re-bake island-sholes** with a-faraway-land `water-carve-channels` (cb7f963 or later):
