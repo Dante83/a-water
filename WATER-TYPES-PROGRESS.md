@@ -489,11 +489,52 @@ Commits 1d13687 (fade) and 1d92371 (falls). Headless on the 4090 / ANGLE GL:
     and decision 2 amended.
   - The local DEBUG_MODES.md (gitignored) documents modes 63–66.
 
+### Round 12 (2026-09-18) — hero-creek browser round 1
+
+Dante's first look at hero-creek produced six shots.
+
+**Image 2 (boulder mound), image 4 (lake exit climbing a ridge), image 5 (dead second
+outlet).** Measured on the export: these are D8 artifacts. They are logged above as the
+LBM's acceptance baseline, and D8 is not to be patched for them.
+
+**Image 6: fall foam was ocean foam.** a646d00. FlowFoamPass decay now depends on
+density:
+- Dense whitewater collapses with a 1 s time constant. Fresh-water bubbles coalesce and
+  burst fast; salt inhibits coalescence, which is why sea foam lingers.
+- The sparse residue keeps 6 s, so streaks still ride the current.
+- A fall's source is a band along its foot: the fall's width, 0.8 × drop metres
+  downstream, 1–5 m.
+- Before: a saturated disc 19 m across that reached back over the lip.
+
+**Images 3 and 4: dark metre-wide caustic blobs with rainbow rims.** 604e1a5, flowing
+variant only. **Needs create-shader.py.**
+- The tile is 0.5 m, so cells are about 10 cm, the size of creek ripples.
+- Contrast rises over the first 0.25 m of depth: rays need depth to focus. The old fade
+  put the strongest pattern at the waterline.
+- The R/B split is 0.6 mm per metre of depth, not a fixed 1.7 cm.
+- The ocean probably shares the waterline-contrast issue. Not touched.
+
+**Image 3: the lake inlet.** This is my terrain: the pond is a smooth bowl. A fanning
+inlet needs momentum (LBM) or a delta (sediment, out of scope).
+
+**Image 7: hard to read the ground.**
+- The plain page's sun is lowered from about 70° to 33° elevation: relief shows.
+- `hero-creek-sky.html` (new, gitignored) adds a-starry-sky, with ACES tone mapping as
+  in a-land's hello-world. Headless, it misbehaves:
+  - atmosphere ON: the near terrain is not drawn (3/3 runs);
+  - atmosphere OFF: the water is not drawn (2/2 runs);
+  - no shader errors.
+  - Needs a browser check. Every other a-land ocean page leaves the sky out, so the
+    a-land + a-starry-sky + ocean seam may never have been exercised.
+- For you in the editor: the default Dirt layer (height mask 0–0.35 of the −20…180 m
+  envelope, i.e. below 50 m) covers the whole island. Max ≈ 0.115 (below 3 m), feather
+  ≈ 0.02 lets Grass show.
+
 ### ⚠ Outstanding — needs Dante
 
 1. **Re-bake island-sholes** with a-faraway-land `water-carve-channels` (cb7f963 or later):
    Solve Water → ⌘S Save → Bake & Export. The current water tiles are the film export.
-2. **Run `create-shader.py`.** Only `water-shader.js` changes. Then open
+2. **Run `create-shader.py`** (again after 604e1a5, creek caustics). Only `water-shader.js` changes. Then open
    `examples/demos/island-sholes-ocean.html`:
    - wtr-6's lower run (≈ 1765, 20, 2115), the lake-14.05 outlet, and the wtr-8 falls
      (≈ 1480, 2525);
