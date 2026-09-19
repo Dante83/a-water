@@ -52,6 +52,9 @@ matters — all three feeding into each other continuously.
    creeks and chutes are extruded ribbon meshes carrying a flow-aligned parameterization
    the clipmap cannot express. Same material family, blended in a band where `|v|` crosses
    the flow threshold.
+   *Amended 2026-09-14/18: Phase 4 shipped a field-grid sheet instead (a-land exports no
+   centrelines), and with the LBM pivot the ribbons of Phase 5 are likely superseded. See
+   § Phase 4 "As built" and § Phase 5.*
 3. **WebGL2 only.** No WebGPU track. (Investigated: compute-in-a-worker *does* coexist with
    a WebGL2 main thread — `navigator.gpu` is exposed in `DedicatedWorkerGlobalScope` — but
    there is no zero-copy interop. Output must round-trip `mapAsync` to a transferable
@@ -161,15 +164,16 @@ Three rules hold the whole thing together:
 ### How the River Editor techniques map onto this
 
 Jean-Philippe Grenier's River Editor (<https://80.lv/articles/river-editor-water-simulation-in-real-time>)
-is the named reference. The mapping is not one-to-one, because half of what it does at
-runtime, a-land already did offline:
+is the named reference. The mapping is not one-to-one. We first assumed a-land's offline
+solve could stand in for its simulation half; **that was reversed on 2026-09-18** (see the
+first row).
 
 | River Editor | Ours |
 | --- | --- |
-| Lattice-Boltzmann shallow-water solve, 9 floats per cell, ping-pong | **Not needed at runtime.** a-land's priority-flood → D8 → Manning → Froude solve is the steady-state equivalent, baked. Live LBM stays shelved (floods, dam breaks, editor terraforming). |
-| LBM velocity field advects foam and UVs | **Phase 4.** Two-phase flow-map advection — the Vlachos/Portal 2 crossfade, two samples offset half a cycle so scrolling never visibly stretches — over foam and detail UVs, driven by `waterFlow`. |
-| Wave particles, later **Wave Profile Buffers** | **Phase 4, the centrepiece.** WPB samples on `(world position, time, wave direction)` with *no UVs*, which is exactly why it survives a curved, banked ribbon where a scrolled normal map tears and pulses. Build it as a shared primitive; the ocean can borrow it later. |
-| Two imaginary infinite plane area lights for volumetric scattering | **Keep ours.** We already run physical Henyey-Greenstein inscatter plus Jerlov absorption, which is strictly better than the approximation. |
+| Lattice-Boltzmann shallow-water solve, 9 floats per cell, ping-pong | **The next milestone, after Phase 4.** It was originally "not needed at runtime", on the assumption that a-land's priority-flood → D8 → Manning → Froude solve was the steady-state equivalent. **It is not.** The D8 disc stamp only approximates a flow simulation, and every Phase 4 browser round patched that approximation: draped banks, sideways currents, 2 cm films, ponds that float, lake outlets that give up. See WATER-TYPES-PROGRESS.md, Phase 4 Round 10 and "NEXT (decided with Dante 2026-09-18)". Plan: a D2Q9 LBM, run first as an a-land editor bake to steady state (warm-started from D8, same tile contract), with its passes written so they can later run live as a 512² camera window in a-water. D8 keeps routing, discharge, lake bodies and carve. |
+| LBM velocity field advects foam and UVs | **Phase 4, built.** Two-phase flow-map advection (the Vlachos/Portal 2 crossfade, two samples offset half a cycle so scrolling never visibly stretches) over foam and ripple UVs, driven by `waterFlow`. The LBM will feed the same channel. |
+| Wave particles, later **Wave Profile Buffers** | **Phase 4, built (step 4)** on the field-grid sheet: ripples and standing waves at k = g/\|v\|². WPB samples on `(world position, time, wave direction)` with *no UVs*, so they survive any surface geometry where a scrolled normal map tears and pulses. |
+| Two imaginary infinite plane area lights for volumetric scattering | **Keep ours** for the colour: physical Henyey-Greenstein inscatter plus Jerlov absorption is strictly better than the approximation. **Adopted** for the thin-water half: the flowing sheet fades out below 10 cm of rendered thickness and is dropped below 3 cm (Phase 4 close-out), because water thinner than the terrain's own detail cannot be drawn as a surface. |
 | Spline authoring with width / depth / flow handles | Lives in a-land's editor (contract §1). We consume the bake. |
 
 "Flow graphs for deep rivers" is the **hydrograph** — Phase 7. It is what makes
@@ -392,7 +396,28 @@ cheapest rung, a terrain-conforming strip with a parallax-shaded bed and no refr
   `atmospheric_perspective_enabled` in `water-shader-template.txt:192-211`.
 - **CPU `queryFlow(x, z)`** so debris, splash ballistics and a-avatar can read the current.
 
+> **As built (closed 2026-09-18, branch `phase-4-flowing-water`; log in WATER-TYPES-PROGRESS.md § Phase 4).**
+> - **A field-grid sheet, not ribbons** (Dante's decision 1). FlowSurfacePass draws the
+>   `$flowing_water` variant of the water material, a flag permutation with FFT and
+>   caustic samplers compiled out, over cascade 0 of the WaterField.
+> - **The flow weight rides in RT0.a.** Wet texels store −w; dry texels store 1 + w of
+>   their nearest water; still water is 0. Decode it before filtering (`FlowHandoff`).
+>   The still/flowing hand-off is an ~8 m blurred alpha cross-fade.
+> - **Foam: FlowFoamPass**, accumulated from our own terms (convergence, bank shear, bed
+>   steps, fall bases) and advected in two phases. Ripples and standing waves come from a
+>   profile buffer (step 4).
+> - **Thin water is not a surface.** The sheet fades from full at 10 cm of rendered
+>   thickness (surface minus the G-buffer ground under the pixel) to dropped below 3 cm.
+>   Debug mode 66.
+> - **Falls: a placeholder** until Phase 6. Plunge spray at `waterfalls[].bottom` via
+>   `emitImpact`, and full foam plus a roughness floor wherever the level falls faster
+>   than tan 30°.
+
 ### Phase 5 — Rivers: ribbons from the flow field
+
+> **Likely superseded (2026-09-18).** The River Editor renders its simulated grid directly,
+> and so does Phase 4's field-grid sheet. Re-plan this phase once the LBM runs; do not
+> start it before then.
 
 - **Centerline extraction** from the field: trace downstream along `flow` from each channel
   head, or consume a-land's optional spline hints where authored.
@@ -411,6 +436,9 @@ cheapest rung, a terrain-conforming strip with a parallax-shaded bed and no refr
 
 a-land already hands us `simulation.waterfalls[]` with `top`, `bottom`, `width`,
 `discharge` and `drop`. Placement is solved; rendering is ours.
+
+> Phase 4 left a placeholder to replace: `OceanSplash._emitFalls` (plunge spray) and the
+> `flowFallSheet` whitewater term in `water-shader.glsl`, both marked `PLACEHOLDER`.
 
 - **Tier 1, the sheet**: a ribbon from lip to plunge, scrolling shredded-noise alpha with
   vertical stretch increasing down the fall, Fresnel-lit edges.
@@ -578,9 +606,12 @@ Per phase, in the browser, against `examples/demos/islands.html` and a new
 
 ## Deferred, deliberately
 
-Runtime LBM and hybrid SWE rivers — floods, dam breaks, terraforming a riverbed in the
-editor and watching the water re-route. The baked river deliberately shares its data
-contract, so a live solver is a backend swap rather than a new feature.
+**Runtime LBM: only half deferred now (2026-09-18).** An LBM river solver is the next
+milestone, as a baked editor solve first (see the River Editor table). What stays deferred
+here is the RUNTIME side: a live camera-window LBM in a-water, and hybrid SWE for floods,
+dam breaks, terraforming a riverbed in the editor and watching the water re-route. The
+baked river deliberately shares its data contract, so a live solver is a backend swap
+rather than a new feature.
 
 Particle-fluid microsims at waterfall lips and plunge pools. "Water Surface Wavelets"-class
 ambient swell that refracts and diffracts around coasts (the shoreline half of that

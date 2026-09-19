@@ -381,26 +381,89 @@ water blobs scattered down the steep island, sheets on the falls.
   directly. Re-plan it once the LBM runs.
 - **Branches:** do NOT `git switch` in a-faraway-land. Another session's uncommitted work lives
   in that tree, and a branch switch would carry it along, then land its next commit on the
-  wrong branch. Use `git worktree add ../a-faraway-land-lbm -b lbm-river-solver` (and the same
-  for a-water, if its tree is shared at the time).
+  wrong branch. Use a worktree, **with its start point named**.
+  - **The LBM warm-starts from the D8 state, so it must branch from the improved D8.** That
+    lives only on a-faraway-land's local `water-carve-channels`: 10b9d46 pyramid, cb7f963
+    WaterSolve 5b–5e with `edgeMinDepthM` 0.15, and bfb9de5 displacement flatten. It is not
+    merged into `multi-water-types` and not pushed. Checked 2026-09-18: the tree's
+    uncommitted diffs are all the other session's (noise, TileCache, TerrainCompositor,
+    bake-seam parts of layer-bridge.js/save.js); none are D8.
+  - Before creating the worktree:
+    1. Re-check for newer D8 edits of ours.
+    2. Commit them to `water-carve-channels`, staging only our hunks.
+    3. Then run `git worktree add ../a-faraway-land-lbm -b lbm-river-solver water-carve-channels`.
+    A bare `-b` takes whatever HEAD happens to be.
+  - For a-water, if its tree is shared at the time:
+    `git worktree add ../a-water-lbm -b lbm-river-solver phase-4-flowing-water`.
 - **Harness to reuse:** the scratch solve.js / audit.py / overhang.py flow. Export mosaic →
   4096² grid → Node solve → metrics (depth distribution, overhang, sideways). Rebuild it in the
   new worktree's tests/ if it is worth keeping.
 - **Later, not now:** LBM on shores with waves (the Phase 3 nine-stage path stays).
+- **Test world (Dante authors it):** a hero-creek world, because island-sholes is the stress
+  test, not the proof. Suggested content:
+  - a valley 400–500 m long (fits the 512² window) with a 1–3% carved floor;
+  - discharge enough for ≥ 0.3 m depth;
+  - a meander, a boulder or two (eddies) and a confluence;
+  - a pond whose rim has two low saddles (the split outlet);
+  - a short steep reach or fall;
+  - a mouth at the sea or the map edge.
+
+### Round 11 (2026-09-18) — Phase 4 closed: thin water fades, fall placeholder, docs
+
+Commits 1d13687 (fade) and 1d92371 (falls). Headless on the 4090 / ANGLE GL:
+- no shader errors;
+- sampler counts unchanged (max 31);
+- 58–60 fps.
+
+- **Thin water is not a surface.** The flowing sheet measures its RENDERED thickness:
+  surface Y minus the refraction G-buffer ground under the same pixel.
+  - It is measured undistorted, from the 32-bit depth texture. The half-float linear depth
+    steps by 3 cm at 50 m.
+  - Alpha fades from 1 at 10 cm to 0 at 3 cm, and below 3 cm the fragment is discarded, so
+    it writes no depth.
+  - Debug mode 66: grey = thickness, yellow = fade band, red = dropped, blue = no ground.
+  - Rendered thickness rather than a-land's depth, because the depth buffer sees the
+    rendered thickness (the bank taper and residual terrain displacement included).
+- **⚠ The current island-sholes export is the round-10 film export.** Water tiles 15:40, while
+  the `edgeMinDepthM` fix cb7f963 is 16:51.
+  - Measured in cascade 0 at wtr-6: 34% of flowing texels < 3 cm and 44% < 10 cm, in the
+    solve data itself. BANK_TAPER only moves < 3 cm to 38%.
+  - So much of wtr-6 now draws as bed, which is right for 1–3 cm films, until a re-bake
+    with cb7f963. Judge the fade after that re-bake, or on the hero-creek world.
+- **Falls (a PLACEHOLDER until Phase 6):**
+  - `OceanSplash._emitFalls` sprays at each `waterfalls[].bottom` from FlowFoamPass's
+    nearest-first list, now kept as `nearFalls`. The water arrives at Torricelli speed along
+    the fall, and emitImpact bounces it off the pool. Rate knob `fallSprayRate` 0.3 per m³/s
+    (FUDGE); plus `fallSprayEnabled` and `fallSprayMinDrop`.
+  - Measured at wtr-8's falls: 13 falls in range, and the spray adds ~4k live particles
+    (pool 24k).
+  - On the sheet, `flowFallSheet` (|∇level| from tan 30° to 45°) gives full foam and a slope
+    variance floor of 0.2, not gated on speed or the foam window.
+- **Docs:**
+  - WATER-TYPES.md: the River Editor table's LBM row (was "Not needed at runtime") now points
+    here; "Deferred" now defers only the runtime LBM.
+  - Phase 4 "As built", a note that Phase 5 is likely superseded, the Phase 6 placeholder,
+    and decision 2 amended.
+  - The local DEBUG_MODES.md (gitignored) documents modes 63–66.
 
 ### ⚠ Outstanding — needs Dante
 
-1. Run `create-shader.py`, then open `examples/demos/island-sholes-ocean.html`.
-   - Fly to wtr-6's lower run (≈ 1765, 20, 2115) and the lake-14.05 outlet.
-   - A/B with `oceanGrid.flowSurfaceEnabled = false`.
-   - Try `setOceanShadowDebug(63)` and `(64)`.
-2. **Still glassy between foam streaks.** Surface waves (WPB) are step 4.
-3. **Known look issues:**
-   - The steep-island falls render as lumpy glass sheets. That is a Phase 6
-     placeholder; a steep-cell foam clamp is step 5.
+1. **Re-bake island-sholes** with a-faraway-land `water-carve-channels` (cb7f963 or later):
+   Solve Water → ⌘S Save → Bake & Export. The current water tiles are the film export.
+2. **Run `create-shader.py`.** Only `water-shader.js` changes. Then open
+   `examples/demos/island-sholes-ocean.html`:
+   - wtr-6's lower run (≈ 1765, 20, 2115), the lake-14.05 outlet, and the wtr-8 falls
+     (≈ 1480, 2525);
+   - A/B with `oceanGrid.flowSurfaceEnabled = false`;
+   - `setOceanShadowDebug(66)` for thickness, `(63)` / `(64)` for foam and current;
+   - spray knobs on `oceanSplash.fallSprayRate` / `.fallSprayEnabled`.
+3. **Author the hero-creek world** (see NEXT). It is the Phase 4 acceptance and the LBM's
+   test bed.
+4. **Known look issues:**
    - A bright white line at the far confluence has not been investigated.
-   - Wet-sand albedo under thin water is Phase 9.
-4. Headless terrain textures sometimes load grey. That is a harness flake, not
+   - Wet-sand albedo under thin water is Phase 9. It matters more now that thin water
+     draws as bed.
+5. Headless terrain textures sometimes load grey. That is a harness flake, not
    ours.
 
 ---
