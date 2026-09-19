@@ -2438,6 +2438,8 @@ void main(){
       //0.3 → ~3.3 m tile, ~0.5-1 m visible caustic scale (real pool shimmer).
       //Previous 0.02 (50 m tile) was invisible at close range; 1.0 (1 m tile) was
       //sub-pixel and averaged to flat. 0.3 is the sweet spot for 1 unit = 1 m world.
+      //(0.3 is now the DEEP-water scale, CAUSTIC_BASE_UV below; shallower beds get finer
+      //cells, by depth.)
       //Project the caustic texture ALONG the refracted sun ray, not straight
       //down. pSurfaceHit (already computed above for the seabed shadow lookup)
       //is where THIS seabed point's refracted sun ray pierces the surface, so
@@ -2447,39 +2449,43 @@ void main(){
       //longer gets a smeared top-down slice. Collapses to the old straight-
       //down look exactly at solar zenith (sunDirInWater vertical ⇒
       //pSurfaceHit.xz == pointXYZ.xz).
-      #if($flowing_water)
-        //CREEK CAUSTICS (Dante, hero-creek round 1: dark metre-wide blobs with rainbow
-        //rims, darkest in the thinnest water). Three things differ from the ocean:
-        //- SCALE. A caustic cell is about the size of the ripple that focuses it. Creek
-        //  ripples run from a few centimetres to a few decimetres, so the tile is 0.5 m
-        //  (cells of about 10 cm), not the 3.3 m ocean tile. Mips average it away with
-        //  distance, which is right: nobody resolves 10 cm caustics at 30 m.
-        //- FOCUS. Refracted rays need depth to converge. A ripple of curvature k focuses
-        //  at about n / (n - 1) / k = 4 / k below the surface; slope 0.1 over a 3-6 cm
-        //  capillary ripple is k of 10-20 per metre, so the web sharpens over the first
-        //  ~0.25 m. At the waterline there is no pattern at all (the old fade put the
-        //  STRONGEST contrast there).
-        //- DISPERSION. Red and blue refract about 0.6 mm apart per metre of depth at
-        //  slope 0.1 (index 1.331 vs 1.339), not a fixed 1.7 cm: invisible in a creek.
-        const float CREEK_CAUSTIC_UV = 2.0;
-        const float CREEK_CAUSTIC_FOCUS_M = 0.25;
-        const float CREEK_DISPERSION_PER_M = 0.0006;
-        vec2 causticUV = CREEK_CAUSTIC_UV * pSurfaceHit.xz;
-        float causticSplit = CREEK_CAUSTIC_UV * CREEK_DISPERSION_PER_M * downPath;
-      #else
-        vec2 causticUV = 0.3 * pSurfaceHit.xz;
-        float causticSplit = 0.005;
-      #endif
-      float causticLightingR = causticShader(causticUV + causticSplit, t);
-      float causticLightingG = causticShader(causticUV, t);
-      float causticLightingB = causticShader(causticUV - causticSplit, t);
-      vec3 causticSampleRaw = vec3(causticLightingR, causticLightingG, causticLightingB);
+      //ONE MODEL FOR EVERY BODY (hero-creek rounds 1-2). Round 1 gave creeks their own
+      //constants and the pond beside them kept the ocean ones, so the two textures clashed
+      //across the hand-off. The physics says a single model covers both:
+      //- SCALE follows DEPTH. The ripples whose rays focus at depth h have curvature about
+      //  4 / h (a lens of index n focuses at n / (n - 1) / curvature), and at slope s a
+      //  ripple of curvature k has wavelength 2 pi s / k, about 0.16 h at s = 0.1. So the
+      //  cells on a bed are about 0.16 x its depth: ~10 cm under a 0.6 m creek, ~0.8 m
+      //  under 5 m of sea, which is where the ocean tile (0.3 UV, 3.3 m, ~4 cells) was
+      //  already tuned. Deep water is unchanged. Two fixed octave scales are blended
+      //  rather than one scale driven by depth, because multiplying world position by a
+      //  depth that varies across the bed would warp the pattern.
+      //- FOCUS. Rays need depth to converge: no pattern at the waterline, sharpening over
+      //  the first ~0.25 m (the finest ripples, a few cm, focus there).
+      //- DISPERSION. Red and blue refract about 0.6 mm apart per metre of depth at slope
+      //  0.1 (index 1.331 vs 1.339): invisible in a creek, millimetres in the sea.
+      const float CAUSTIC_BASE_UV = 0.3;
+      const float CAUSTIC_TILE_PER_DEPTH = 0.65;
+      const float CAUSTIC_MIN_TILE_M = 0.25;
+      const float CAUSTIC_FOCUS_M = 0.25;
+      const float CAUSTIC_DISPERSION_PER_M = 0.0006;
+      float causticTile = clamp(CAUSTIC_TILE_PER_DEPTH * downPath, CAUSTIC_MIN_TILE_M, 1.0 / CAUSTIC_BASE_UV);
+      float causticLevel = log2(1.0 / (causticTile * CAUSTIC_BASE_UV));
+      float causticLevel0 = floor(causticLevel);
+      float causticLevelT = causticLevel - causticLevel0;
+      vec3 causticSampleRaw = vec3(0.0);
+      for(int k = 0; k < 2; k++){
+        float causticScale = CAUSTIC_BASE_UV * exp2(causticLevel0 + float(k));
+        vec2 causticUV = causticScale * pSurfaceHit.xz;
+        float causticSplit = causticScale * CAUSTIC_DISPERSION_PER_M * downPath;
+        vec3 causticOctave = vec3(causticShader(causticUV + causticSplit, t),
+                                  causticShader(causticUV, t),
+                                  causticShader(causticUV - causticSplit, t));
+        causticSampleRaw += (k == 0 ? 1.0 - causticLevelT : causticLevelT) * causticOctave;
+      }
       vec3 causticSample = smoothstep(vec3(CAUSTIC_THRESHOLD_LO), vec3(CAUSTIC_THRESHOLD_HI), causticSampleRaw);
       dbgCausticSample = causticSample;
-      float causticDepthFade = exp(-downPath / CAUSTIC_CONTRAST_DEPTH);
-      #if($flowing_water)
-        causticDepthFade *= smoothstep(0.0, CREEK_CAUSTIC_FOCUS_M, downPath);
-      #endif
+      float causticDepthFade = exp(-downPath / CAUSTIC_CONTRAST_DEPTH) * smoothstep(0.0, CAUSTIC_FOCUS_M, downPath);
       causticMod = vec3(1.0) + causticDepthFade * causticIntensityMultiplier * CAUSTIC_AMP * (causticSample - vec3(CAUSTIC_TEXTURE_MEAN));
     #endif
 
