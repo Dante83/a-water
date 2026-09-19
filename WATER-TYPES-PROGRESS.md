@@ -583,6 +583,23 @@ Sky page only.** Measured:
 should connect the two. Agreed, and written into WATER-TYPES.md § Phase 6: the lip is an LBM
 sink seeding particles, the pool is an LBM source receiving them.
 
+### ▶ RESUME HERE (end of 2026-09-18)
+
+- **Solver work:** `../a-faraway-land-lbm`, branch `lbm-river-solver` (a2fca2f). Design and all
+  results are in its `WATER-LBM.md`. The core is **finite volume** (`WaterFVReference.js`);
+  tests run with `tests/test-water-lbm/run.sh`.
+- **Test world:** `a-faraway-project/hero-creek/survey/`
+  - `lbm-crop.js` + `compare-crop.py` for the crop;
+  - `baseline.py` / `grade.py` for exports.
+- **Next, Dante picks the order:**
+  - (a) hero-creek in-bank: sources ~45 % / 35 %, or regenerate with a deeper channel and a
+    taller rim (wipes the folder);
+  - (b) milestone 2: a GPU stepper for the FV core, checked against the CPU reference, then
+    milestone 3 (editor bake behind the flag, graded on hero-creek).
+- **Uncommitted, deliberately:** a-water's regenerated `water-shader.js` (Dante's regen; it
+  matches the verified build).
+- **Parked:** the lighting-unit seam (a-land lux vs a-water sky units underwater, round 13).
+
 ### LBM started (2026-09-18)
 
 - **B0 done.**
