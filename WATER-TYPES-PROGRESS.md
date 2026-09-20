@@ -654,6 +654,69 @@ sample) should no longer be white, and the pond should show light shafts the way
 page does. `ALand.runtime.TerrainMaterial.offscreenTone()` reports what the last draw resolved,
 so a capture that still looks wrong can say whether the hook fired at all.
 
+### Round 15 (2026-09-19, evening) — the round-14 fix is correct and is NOT the cause
+
+Measured in Dante's browser, underwater in hero-creek-sky, by wrapping
+`TerrainMaterial.resolveOffscreenTone`: **117,183 terrain draws, every one mode 0**
+(`getRenderTarget() === null`), at exposure 1.80e-5. a-land's terrain never enters an a-water
+render target underwater, so round 14's fix cannot be what is blowing the surface out. Above
+water it does fire (2 of 6 draws headless), so the fix is real and stays — it is just not this.
+
+**Round 13's headline measurement does not survive.** "Mirror 171-298 with a sky, 0.06 without"
+was never evidence of unexposed lux, because the terrain is not in that buffer.
+`foreign-terrain-twin.js` explains why: a-land's patches cannot be captured with their own
+material at all (their geometry lives in their vertex shader), so our G-buffer and ortho passes
+render a twin with OUR fragment stage. Two different scenes were being compared.
+
+**Ruled out, in order:**
+- *a-land rewriting the shared sun.* Measured `sunIntensity: 1`, `sunColor: ffffff`. It does not
+  — `_applySun` writes a-land's own `_sunEl`, and it keeps its lux inside its own shaders on
+  purpose (`land-terrain.js:897`).
+- *The round-14 caustic compensation.* `foreignExposureCompensation=()=>1` changed nothing.
+
+**Confirmed: it IS the exposure seam.** With the lux stood down on both families and the
+exposure back at 1 (`setSunLux(null)` on TerrainMaterial and ObjectMaterial,
+`_applyPhotometry` stubbed, exposure 1) the underwater view reads correctly. So some material
+family carries it — and terrain is now excluded. **Next suspect: a-land's OBJECT materials.**
+`ObjectMaterial.applyPhotometry` puts lux into ordinary `MeshStandardMaterial`s, which are
+`toneMapped: true` and hit the identical three.js render-target rule. That family was never
+probed — the probe keyed on `u_sunLuxRGB`, which is terrain only; objects use the `_bus`.
+
+**Found by Dante's instinct, unrelated and real:** `_anchorForeignSun` sets
+**`light.castShadow = false`** on a-starry-sky's directional light (`land-terrain.js:587`) and
+re-targets it to a world-origin anchor. Confirmed live (`sunCastShadow: false`,
+`alandAnchored: true`). a-land does this because it shadows from its horizon bake and
+TerrainSunCSM. We read that light's shadow in three water-shader paths (surface, seabed,
+terrain refraction), so on any sky+land page that map is gone and the gate fails silently.
+Cheaper to fix than the seam, and independent of it.
+
+### New bisect page: `examples/demos/island-sholes-sky.html` (2026-09-19)
+
+Dante's idea, and the right one: island-sholes is the known-good a-land + a-water world, so
+bolting a-starry-sky onto a copy of it asks whether the failure needs ALL THREE LIBRARIES or
+needs hero-creek specifically (generated terrain, sparse materials, baked water bodies).
+
+- Blows out like hero-creek → the three-way combination is sufficient; hero-creek's content is
+  irrelevant.
+- Still looks like island-sholes → the combination is not sufficient and something about
+  hero-creek is the trigger; Dante's materials hypothesis moves to the front.
+
+**Three things move with the sky and none is optional** (documented in the page header):
+a-starry-sky itself, `toneMapping: ACESFilmic` (without it a-land's lux terrain is pure white),
+and `ocean-atmosphere-enabled: true`.
+
+> ⚠ **A REAL a-water BUG, found building that page: AP-off + a-starry-sky fails to LINK.**
+> island-sholes runs `ocean-atmosphere-enabled false`. With AP off the water shader includes the
+> underwater fog chunk AND carries its own `MyAESFilmicToneMapping`, so with a-starry-sky also
+> declaring it there are two bodies in one translation unit: *"function already has a body"*, and
+> the whole water material fails to compile. `underwater-fog-chunk.js:138-145` predicts exactly
+> this but assumes "the two scaffolds are never both installed" — which does not hold for
+> AP-off + sky. The `#ifndef ARO_AES_TONEMAP` guard there does not cover a-starry-sky's own
+> declaration. Worked around in the page by pairing AP with the sky; **not fixed in the library.**
+
+Validated headless: loads clean, 42 terrain patch materials, exposure 1.80e-5, sun lux 123,865.
+Judge it in a real browser — headless loses hero-creek's terrain and is unreliable for looks.
+
 ### ▶ RESUME HERE (end of 2026-09-19)
 
 **Milestones 1-3 are done.** The finite-volume solver has a CPU reference (the specification), a
@@ -693,8 +756,13 @@ GPU stepper that matches it, and an editor pass that runs inside a-land's Solve 
 - **a-land papercut:** Bake & Export re-solves at `nativeBakeResolution()` and ignores the water
   panel's resolution, so that setting costs editor time and never reaches the export.
 - **Uncommitted, deliberately:** a-water's regenerated `water-shader.js` (Dante's regen).
-- **Lighting-unit seam: UNPARKED and FIXED** in round 14 below. Both halves are in; both need
-  a browser check.
+- **Lighting-unit seam: round 14's fix is correct but is NOT the cause** — see round 15.
+  Terrain never enters our RTs underwater (117,183/117,183 mode-0 draws). Next suspect is
+  a-land's OBJECT materials. Bisect page `island-sholes-sky.html` is built and awaiting eyes.
+- **Open a-water bug:** `ocean-atmosphere-enabled false` + a-starry-sky = water material
+  fails to link (duplicate `MyAESFilmicToneMapping`). See round 15.
+- **Open a-land bug:** `_anchorForeignSun` sets `castShadow = false` on the shared sun,
+  silently disabling our three scene-sun-shadow paths on any sky+land page.
 
 ### LBM started (2026-09-18)
 
