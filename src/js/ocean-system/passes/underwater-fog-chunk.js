@@ -128,26 +128,34 @@ ARestlessOcean.Passes.UnderwaterFogChunk.prototype.installStandaloneScaffold = f
     '  vec4 fogLinearTosRGB(vec4 c){',
     '    return vec4(mix(c.rgb * 12.92, 1.055 * pow(c.rgb, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c.rgb)), c.a);',
     '  }',
-    //Narkowicz ACES fit — the SAME operator a-starry-sky and water-shader.glsl
-    //use. The ocean branch tonemaps its fogged result on the sRGB (main-canvas)
-    //path so underwater scene geometry matches the water surface and the
-    //reflection (which both go through MyAES). a-starry-sky declares this itself
-    //on its path, so this copy is standalone-only — the two scaffolds are never
-    //both installed.
+    //Narkowicz ACES fit — the same operator a-starry-sky and water-shader.glsl use, so the
+    //underwater scene geometry matches the water surface and the reflection. PRIVATELY NAMED,
+    //and that is the whole point.
     //
-    //⚠ BUT THE WATER SHADER IS A THIRD DECLARER. water-shader.glsl carries its
-    //own copy, and with atmospheric perspective OFF that shader also includes
-    //this chunk — so the standalone path put two bodies in one translation unit
-    //and the whole water material failed to link ("function already has a
-    //body") the moment scene.fog turned on, i.e. on going underwater. The guard
-    //makes whichever declaration lands first win; water-shader.glsl carries the
-    //matching pair.
-    '  #ifndef ARO_AES_TONEMAP',
-    '  #define ARO_AES_TONEMAP',
+    //⚠ THE NAME IS SHARED ON PURPOSE, and must stay MyAESFilmicToneMapping. fragGLSL below is
+    //injected into WHICHEVER fog_fragment chunk is live — a-starry-sky's when a sky is present,
+    //this standalone scaffold when it is not — and it calls this operator by name. a-starry-sky
+    //declares it too, so one snippet compiles against either provider. Rename it here and the
+    //sky path links against a function nobody declared.
+    //
+    //This scaffold is installed ONLY when sky_provider resolves to standalone, so this
+    //declaration and a-starry-sky's are never both in a translation unit.
+    //
+    //⚠ WATER-SHADER.GLSL IS DIFFERENT and deliberately asymmetric: it declares the same
+    //operator PRIVATELY, as aroAESFilmicToneMapping. It has to, because it is a whole material
+    //rather than an injected snippet and it INCLUDES the active fog chunk — so its own copy sat
+    //in the same unit as the sibling's and failed to link the moment scene.fog turned on, i.e.
+    //on going underwater:
+    //
+    //    ERROR: 0:1326: 'MyAESFilmicToneMapping' : function already has a body
+    //
+    //An #ifndef ARO_AES_TONEMAP guard used to stand where that private name is now. It never
+    //worked: ARO_AES_TONEMAP is OUR define, a-starry-sky has never heard of it and does not set
+    //it, so the guard only covered our own second declaration and let the sibling collision —
+    //the one that actually happens — straight through.
     '  vec3 MyAESFilmicToneMapping(vec3 color){',
     '    return clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), 0.0, 1.0);',
     '  }',
-    '  #endif',
     '#endif'
   ].join('\n');
   THREE.ShaderChunk.fog_fragment = [

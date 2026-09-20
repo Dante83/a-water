@@ -943,19 +943,28 @@ vec4 linearTosRGB(vec4 value ) {
   return vec4( mix( pow( value.rgb, vec3( 0.41666 ) ) * 1.055 - vec3( 0.055 ), value.rgb * 12.92, vec3( lessThanEqual( value.rgb, vec3( 0.0031308 ) ) ) ), value.a );
 }
 
-//Including this because someone removed this in a future versio of THREE. Why?!
+//Narkowicz ACES, ours, PRIVATELY NAMED. three removed its copy at some point, so we carry one.
 //
-//Guarded because UnderwaterFogChunk declares the same operator, and with
-//atmospheric perspective OFF this shader includes that chunk — two bodies in
-//one translation unit, which failed to link the moment scene.fog turned on
-//(going underwater). Whichever lands first wins; the chunk carries the
-//matching guard.
-#ifndef ARO_AES_TONEMAP
-#define ARO_AES_TONEMAP
-vec3 MyAESFilmicToneMapping(vec3 color) {
+//⚠ DO NOT RENAME THIS BACK TO MyAESFilmicToneMapping. That is a-starry-sky's global, declared
+//unguarded in its fog chunk, and this shader includes that chunk whenever the sibling sky is
+//present. Two bodies of one function in one translation unit is a LINK failure, not a warning:
+//
+//    ERROR: 0:1326: 'MyAESFilmicToneMapping' : function already has a body
+//
+//and the whole water material fails to compile. It bites the instant scene.fog turns on, i.e.
+//on going underwater, which is why the surface can look fine right up until you dive.
+//
+//THE OLD #ifndef ARO_AES_TONEMAP GUARD DID NOT HELP, and it is worth saying why so nobody
+//reinstates it: ARO_AES_TONEMAP is OUR define. a-starry-sky has never heard of it and does not
+//set it, so the guard only ever protected us from our own second declaration (UnderwaterFogChunk)
+//and never from the sibling's — the collision that actually happens. A private name cannot
+//collide with anything, which is why this is a rename and not a better guard.
+//
+//The operator is identical to a-starry-sky's and to UnderwaterFogChunk's, so nothing about the
+//look changes; only the symbol does.
+vec3 aroAESFilmicToneMapping(vec3 color) {
   return clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), 0.0, 1.0);
 }
-#endif
 
 //Fresnel reflectance at air->water interface (for light entering the water from above)
 //Schlick approximation with n_water = 1.33 — uses the file-level r0 constant.
@@ -2887,7 +2896,7 @@ void main(){
 
   //Keep the real shaded result around so translucent debug overlays (mode 40)
   //can blend over it instead of replacing it (debugBlend opacity).
-  vec4 finalRenderedColor = linearTosRGB(vec4(MyAESFilmicToneMapping(totalLight), 1.0));
+  vec4 finalRenderedColor = linearTosRGB(vec4(aroAESFilmicToneMapping(totalLight), 1.0));
   gl_FragColor = finalRenderedColor;
 
   //$DEBUG_START$
@@ -3173,7 +3182,7 @@ void main(){
   //BRDF is silent and we have a normal/lobe problem; if it's bright but
   //scattered as fleck noise, the spec normal is too high-frequency.
   else if(oceanShadowDebugMode == 22){
-    gl_FragColor = linearTosRGB(vec4(MyAESFilmicToneMapping(specular), 1.0));
+    gl_FragColor = linearTosRGB(vec4(aroAESFilmicToneMapping(specular), 1.0));
   }
   //Mode 23: NdotH grayscale, raised to a strong contrast so the lobe-firing
   //zone reads. White (≈1.0) where specNormal aligns with the half-vector
@@ -3242,7 +3251,7 @@ void main(){
   //pixel — if foam color barely beats water radiance, the INV_PI scale is
   //too aggressive and the mix has no headroom to read as "white".
   else if(oceanShadowDebugMode == 33){
-    gl_FragColor = linearTosRGB(vec4(MyAESFilmicToneMapping(dbgFoamColor), 1.0));
+    gl_FragColor = linearTosRGB(vec4(aroAESFilmicToneMapping(dbgFoamColor), 1.0));
   }
   //Mode 30: per-cascade Jacobian computed in-shader from each cascade's
   //displacement (per-cascade only, no summing). Six vertical strips: C0 left
