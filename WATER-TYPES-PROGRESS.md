@@ -583,6 +583,77 @@ Sky page only.** Measured:
 should connect the two. Agreed, and written into WATER-TYPES.md § Phase 6: the lip is an LBM
 sink seeding particles, the pool is an LBM source receiving them.
 
+### Round 14 (2026-09-19) — the lighting seam was never about physical lighting
+
+**Dante's observation is what cracked it:** island-sholes (a-land + a-water, no sky) renders
+underwater *beautifully* — caustics, seabed, depth falloff — and peaceful-island (a-land + sky,
+no water) is fine too. Only the triple dies. A units philosophy argument cannot explain that
+shape; a switch can.
+
+**The switch is one `if` in three r173.** `WebGLRenderer.js:16147`, and the same test in
+`WebGLPrograms.js:6906`:
+
+```js
+let toneMapping = NoToneMapping;
+if ( material.toneMapped ) {
+  if ( _currentRenderTarget === null || _currentRenderTarget.isXRRenderTarget === true ) {
+    toneMapping = _this.toneMapping;
+  }
+}
+```
+
+Tone mapping — and therefore `toneMappingExposure` — is applied **only when the draw target is
+the canvas.** Inside any render target `TONE_MAPPING` is undefined, so a-land's terrain, which
+opts in by hand at `terrain.frag`'s `#ifdef TONE_MAPPING`, compiles that line out entirely and
+emits raw lux.
+
+| Scene | `_applyPhotometry` | Exposure | Why it looked the way it did |
+| --- | --- | --- | --- |
+| island-sholes (land + water) | bails at `alt === null` | 1 | terrain never goes to lux — consistent |
+| peaceful-island (land + sky) | runs | 1.8e-5 | screen only, no offscreen consumer |
+| hero-creek-sky (all three) | runs | 1.8e-5 | our RTs get lux with no exposure → ~30,000× |
+
+The sky never broke the water. The sky is the only thing that makes a-land's sun altitude
+non-null, which flips it into lux — and lux is silently right on screen and silently wrong in
+everyone else's render target. So this was an a-land-internal consistency bug that we were
+merely the first library to trip, not the physically-based-lighting question, which stays
+deferred and untouched.
+
+**Fixed, both directions:**
+
+- **Outbound** (a-land → our captures) — a-faraway-land `27c96a5`. `u_offscreenTone` carries
+  (exposure, mode), written per draw from `material.onBeforeRender`, which three calls with the
+  target already bound and before any uniform upload. The shader keeps three's path under
+  `#ifdef TONE_MAPPING` and runs a transcribed copy of their curve in a new `#else`, so
+  on-screen rendering is byte-for-byte unchanged. Mode 0 stands down, covering both the canvas
+  and any capture made under `NoToneMapping` — which is what `PMREMGenerator` forces while
+  grabbing an environment, so a captured dome is still never graded twice.
+  `tests/test-lighting/offscreen-tone.test.js`, 17 checks, registered in that suite's `run.sh`.
+  **Needs `create-shader.py` in a-faraway-land** — `check-shader-regen` fails loudly until then,
+  by design.
+- **Inbound** (our light → a-land's screen shaders) — a-water `edb3c5d`. The caustic SpotLight
+  is a real light in three's list carrying an intensity tuned against exposure 1, so it arrived
+  ~55,000× under and the seabed caustics were absent. Now divided by the renderer's exposure;
+  no-op at exposure 1. Safe only because the ocean material never samples `spotLights[]` — noted
+  in the comment for whoever changes that. JS only, **no regen needed.**
+
+**Round 13 got one thing wrong, and it is worth correcting rather than quietly dropping:** it
+listed the underwater fog colour as crushed alongside the SpotLight, flagged as *inferred, not
+measured*. It is not crushed. a-land runs the sibling-ocean fog block **after** its tone map and
+after `linearToOutputTexel` (`terrain.frag:2114`), so that colour was always display-referred.
+No fix was needed and none was made.
+
+**Round 13's option A was also the wrong shape** and should not be revived: scaling the mirror
+sample on our side cannot work, because that buffer is *mixed units* — a-land terrain in lux,
+our own foam and splash in sky units, the sky dome already graded with `toneMapped:false`. One
+scale fixes a third of it and wrecks the rest. The library that moved the exposure owns the
+consequence.
+
+**Still to verify in a browser:** `hero-creek-sky.html` underwater — debug 50 (the raw mirror
+sample) should no longer be white, and the pond should show light shafts the way the sky-less
+page does. `ALand.runtime.TerrainMaterial.offscreenTone()` reports what the last draw resolved,
+so a capture that still looks wrong can say whether the hook fired at all.
+
 ### ▶ RESUME HERE (end of 2026-09-19)
 
 **Milestones 1-3 are done.** The finite-volume solver has a CPU reference (the specification), a
@@ -622,7 +693,8 @@ GPU stepper that matches it, and an editor pass that runs inside a-land's Solve 
 - **a-land papercut:** Bake & Export re-solves at `nativeBakeResolution()` and ignores the water
   panel's resolution, so that setting costs editor time and never reaches the export.
 - **Uncommitted, deliberately:** a-water's regenerated `water-shader.js` (Dante's regen).
-- **Parked:** the lighting-unit seam (a-land lux vs a-water sky units underwater, round 13).
+- **Lighting-unit seam: UNPARKED and FIXED** in round 14 below. Both halves are in; both need
+  a browser check.
 
 ### LBM started (2026-09-18)
 
