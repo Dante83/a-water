@@ -384,9 +384,92 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     return v < 0.04045 ? v * 0.0773993808 : Math.pow(v * 0.9478672986 + 0.0521327014, 2.4);
   };
 
+  //── A SIBLING'S PHOTOMETRIC BUDGET ────────────────────────────────────────
+  //WHAT BREAKS WITHOUT THIS. a-faraway-land meters the world in SI: it substitutes the sun's
+  //real illuminance (~124,000 lux at noon) into its OWN shaders and buys that back by driving
+  //renderer.toneMappingExposure to ~1.8e-5. Our ocean material is a ShaderMaterial that never
+  //includes <tonemapping_fragment> (verified: no tone-map call in its source), so the exposure
+  //never reaches us and the uplift never reaches us either. We keep reading the sibling sun's
+  //RAW intensity — measured at 1.0 — while the land beside us renders at 124000 x 1.8e-5.
+  //Two scales in one frame, and we are the small one: the water goes dark against correctly
+  //lit ground, and the shore foam with it. Measured 2026-09-19 on island-sholes-sky.html,
+  //which is island-sholes and its sky-less twin built to differ in nothing else.
+  //
+  //WHAT THIS IS NOT. It does not make a-water physically based and does not touch our units
+  //or our own tone curve. It changes WHICH NUMBER we read for the sun and the sky: the
+  //sibling's metered value brought back through its own exposure, which is the scale it is
+  //actually drawing at. Everything downstream is unchanged.
+  //
+  //THE SANITY CHECK THAT SOLD IT: 124000 lux x 1.8e-5 = ~2.2, against the 3.0 hand-tuned for
+  //island-sholes-ocean.html before any of this existed. Two independent routes to the same
+  //ballpark; a wrong reconciliation would miss by orders of magnitude, not by 30%.
+  //
+  //WHO WE ASK, IN ORDER. a-starry-sky owns the sun and is the right authority, and its
+  //unmerged `lighting-adjustments` branch already publishes exactly this — its README says a
+  //sibling that grades its own surfaces should read `exposure` from there rather than
+  //re-deriving it. The shipped v1.2.0 has no such method, so we fall back to a-faraway-land,
+  //which publishes the SAME FIELD NAMES deliberately (land-terrain.js:977 says so) so a
+  //consumer can read either source without knowing which one it got. When the sky branch
+  //lands, this starts preferring it with no change here.
+  //
+  //⚠ RETURNS DISPLAY-REFERRED VALUES, already multiplied by the exposure. Callers must not
+  //apply it a second time.
+  this._siblingPhotometryScratch = {sun: new THREE.Vector3(), sky: new THREE.Vector3(), exposure: 1};
+  this.siblingPhotometryEnabled = true;   //A/B lever: false restores the raw-light read
+  this._readSiblingPhotometry = function(){
+    if(!self.siblingPhotometryEnabled) return null;
+    var b = null;
+    try {
+      if(typeof StarrySky !== 'undefined' && StarrySky.Methods &&
+         typeof StarrySky.Methods.getLightingBudget === 'function'){
+        b = StarrySky.Methods.getLightingBudget();
+      }
+    } catch(e){ b = null; }
+    if(!b){
+      try {
+        var el = document.querySelector('[land-terrain]');
+        var comp = el && el.components && el.components['land-terrain'];
+        if(comp && typeof comp.lightingBudget === 'function') b = comp.lightingBudget();
+      } catch(e){ b = null; }
+    }
+    if(!b) return null;
+    //Both spellings: a-starry-sky's README documents directLux/skyLux, a-land publishes
+    //directLuxRGB/skyLuxRGB. Take whichever is there rather than guessing which sibling won.
+    var d = b.directLuxRGB || b.directLux, k = b.skyLuxRGB || b.skyLux, e = b.exposure;
+    if(!d || !isFinite(e) || e <= 0) return null;
+    //A budget whose exposure is 1 is a sibling that is not metering anything. Standing down
+    //there leaves every scene that looks right today exactly as it is.
+    if(Math.abs(e - 1) < 1e-6) return null;
+    var out = self._siblingPhotometryScratch;
+    var dx = (d.x !== undefined ? d.x : d[0]);
+    var dy = (d.y !== undefined ? d.y : d[1]);
+    var dz = (d.z !== undefined ? d.z : d[2]);
+    if(!isFinite(dx) || !isFinite(dy) || !isFinite(dz)) return null;
+    out.sun.set(dx * e, dy * e, dz * e);
+    if(k){
+      var kx = (k.x !== undefined ? k.x : k[0]);
+      var ky = (k.y !== undefined ? k.y : k[1]);
+      var kz = (k.z !== undefined ? k.z : k[2]);
+      out.sky.set(isFinite(kx) ? kx * e : 0, isFinite(ky) ? ky * e : 0, isFinite(kz) ? kz * e : 0);
+    } else {
+      out.sky.set(0, 0, 0);
+    }
+    out.exposure = e;
+    return out;
+  };
+
   this._skyAmbientScratch = new THREE.Vector3();
   this._readSkyAmbient = function(){
     const out = self._skyAmbientScratch;
+    //A metered sibling wins over the hemisphere sum below. It is the same quantity from a
+    //better source, and it sidesteps a known a-starry-sky defect on the way: its +Y zenith
+    //hemisphere reads #000000, which starves the dominant term of that sum (measured again
+    //2026-09-19 — three hemispheres at 0.3, one with sky colour literally black).
+    const budget = self._readSiblingPhotometry();
+    if(budget && (budget.sky.x > 0 || budget.sky.y > 0 || budget.sky.z > 0)){
+      out.copy(budget.sky);
+      return true;
+    }
     if(self.skyDirector && self.skyDirector.lightingManager){
       const lm = self.skyDirector.lightingManager;
       const xL = lm.xAxisHemisphericalLight;
@@ -2156,7 +2239,18 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         const mainLight = self.directionalLights[0];
         const intensity = mainLight.intensity;
         const color = mainLight.color;
-        uniformsRef.brightestDirectionalLight.value.set(color.r * intensity, color.g * intensity, color.b * intensity);
+        //The sibling's METERED sun when one is metering, this light's raw magnitude otherwise.
+        //See _readSiblingPhotometry: on a page where a-land drives the exposure, this light
+        //still carries the pre-SI intensity it was built with (measured: 1.0) while the land
+        //around us is drawn at ~124,000 lux x 1.8e-5. Reading the raw value there is what made
+        //the water and its shore foam go dark. Direction is untouched and still comes from the
+        //light itself; only magnitude moves.
+        const photometry = self._readSiblingPhotometry();
+        if(photometry){
+          uniformsRef.brightestDirectionalLight.value.copy(photometry.sun);
+        } else {
+          uniformsRef.brightestDirectionalLight.value.set(color.r * intensity, color.g * intensity, color.b * intensity);
+        }
         directionalLightDirection.set(mainLight.position.x, mainLight.position.y, mainLight.position.z);
         directionalLightDirection.sub(mainLight.target.position).negate().normalize();
         uniformsRef.brightestDirectionalLightDirection.value.set(directionalLightDirection.x, directionalLightDirection.y, directionalLightDirection.z);
