@@ -223,7 +223,9 @@ ARestlessOcean.Passes.CausticProjectionPass.prototype.foreignExposureCompensatio
 //slide content, so no snapping and no envelope/shadow jumps. Skipped entirely
 //above water.
 //
-//ctx: {time, waterSurfaceY, underwaterFactor, causticMap, cameraX, cameraZ, sunLight}
+//ctx: {time, underwaterFactor, causticMap, cameraX, cameraZ, sunLight}
+//(ctx.waterSurfaceY is deliberately NOT used: the pose rides the STILL level from
+//grid.waterLevelAt, or the pattern swims across the seabed with every wave. See below.)
 ARestlessOcean.Passes.CausticProjectionPass.prototype.tick = function(ctx){
   const grid = this.oceanGrid;
   const light = this.light;
@@ -310,7 +312,28 @@ ARestlessOcean.Passes.CausticProjectionPass.prototype.tick = function(ctx){
   //axis is the refracted sun ray, and a surface-level fragment stays exactly
   //causticLightHeight from the projector (keeps decayCompensation valid).
   const h = grid.causticLightHeight;
-  const waterSurfaceY = ctx.waterSurfaceY;
+  //THE STILL LEVEL, NOT THE WAVE-DISPLACED ONE, and the distinction is the whole reason the
+  //caustics used to swim.
+  //
+  //ctx.waterSurfaceY is probeWaterSurfaceY(): the instantaneous displaced surface AT THE
+  //CAMERA, which bobs by tens of centimetres as each crest passes (measured: 79 steps of up to
+  //0.22 m in 12 s). Riding it looks harmless at the surface, because uSurfaceY below moves with
+  //the projector and the surface anchoring cancels exactly. It is not harmless at the SEABED.
+  //The seabed does not bob. Translate the projector up by d and every cookie ray translates
+  //with it, so its intersection with the static bed slides sideways by d * (rd.xz / rd.y) —
+  //metres of lateral swim per wave, at the swell period. That read as "caustics drift, stop,
+  //jitter, continue" on a roughly 3 s cycle, which is a wave period, not a frame problem:
+  //measured zero frame hitches and zero movement in projector XZ, camera XZ and sun direction
+  //while this alone moved.
+  //
+  //The still level is also the more honest anchor. This projector approximates refraction
+  //through a MEAN surface (refr is Snell at a flat +Y plane); the actual wave shape is already
+  //carried by the caustic pattern's own animation. Letting the pose bob was double-counting it.
+  //
+  //⚠ uSurfaceY MUST USE THE SAME VALUE (see the slide uniforms below). The two cancel in
+  //(uSurfaceY - ro.y), which is what keeps the pattern anchored where the cone pierces the
+  //surface; feeding them different planes would un-anchor the pattern instead of steadying it.
+  const waterSurfaceY = grid.waterLevelAt(anchorX, anchorZ);
   light.position.set(anchorX - refr.x * h, waterSurfaceY - refr.y * h, anchorZ - refr.z * h);
   light.target.position.set(anchorX + refr.x * 100.0, waterSurfaceY + refr.y * 100.0, anchorZ + refr.z * 100.0);
   light.target.updateMatrixWorld();
@@ -356,6 +379,8 @@ ARestlessOcean.Passes.CausticProjectionPass.prototype.tick = function(ctx){
   const mat = this._projectionMaterial;
   mat.uniforms.causticMap.value = ctx.causticMap;
   mat.uniforms.uTime.value = ctx.time * 0.001;
+  //The SAME still level the pose above used — see the note there. These two cancel in
+  //(uSurfaceY - ro.y); splitting them un-anchors the pattern.
   mat.uniforms.uSurfaceY.value = waterSurfaceY;
   mat.uniforms.uInvVP.value.copy(shadowCam.matrixWorld).multiply(shadowCam.projectionMatrixInverse);
   const prevRT = this.renderer.getRenderTarget();
