@@ -197,6 +197,23 @@ ARestlessOcean.Passes.CausticProjectionPass.prototype.init = function(){
 //Screen-resolution independent — the slide RT is a fixed square.
 ARestlessOcean.Passes.CausticProjectionPass.prototype.resize = function(){};
 
+//How much to scale light we hand to FOREIGN materials, so a sibling's global exposure does not
+//crush it. 1 whenever nobody is driving the exposure, which is the common case.
+//
+//Guarded on the tone-mapping MODE and not just the value: with NoToneMapping the exposure is
+//never applied by anyone, so compensating for it would be a straight brightness bug. The bounds
+//are a refusal to trust a number we do not own — a sibling mid-initialisation can publish an
+//exposure of 0 or NaN, and an intensity of Infinity is a white screen with nothing in the
+//console.
+ARestlessOcean.Passes.CausticProjectionPass.prototype.foreignExposureCompensation = function(){
+  const r = this.renderer;
+  if(!r || r.toneMapping === THREE.NoToneMapping) return 1.0;
+  const e = r.toneMappingExposure;
+  if(!isFinite(e) || e <= 0.0) return 1.0;
+  const c = 1.0 / e;
+  return (c > 1e6) ? 1e6 : c;
+};
+
 //Refresh the underwater caustic projector. Positions the SpotLight high above
 //the camera down the refracted sun ray (a near-parallel cast so caustic cell
 //size barely changes with seabed depth), re-renders the animated caustic slide
@@ -305,8 +322,29 @@ ARestlessOcean.Passes.CausticProjectionPass.prototype.tick = function(ctx){
   //than the surface still attenuate (their distance to the projector is
   //larger), producing the depth falloff this decay was added for.
   const decayCompensation = Math.pow(grid.causticLightHeight, light.decay);
+  //AND COMPENSATE FOR A SIBLING'S EXPOSURE, if one is driving it.
+  //
+  //This is the inbound half of the a-land lighting seam (the outbound half is a-land's
+  //u_offscreenTone: our captures of its terrain were getting lux with no exposure). Here the
+  //arrow points the other way. a-land meters the world in lux and pays for it by driving
+  //renderer.toneMappingExposure to ~1.8e-5 at noon (land-terrain.js _applyPhotometry), and
+  //every stock lit material applies that exposure through three's tone map. Our projector is a
+  //real THREE.SpotLight in that same list, carried at an intensity tuned against exposure 1 —
+  //so on any page with a-land AND a sky it arrives ~55,000x under and the seabed caustics
+  //simply are not there. Measured: the sky-less pond shows light shafts, the sky pond none.
+  //
+  //Dividing by the exposure puts our contribution back on the scale the surface it lands on
+  //will be graded at. It is a no-op at exposure 1, which is every scene without a-land
+  //photometry, so nothing that looks right today moves.
+  //
+  //⚠ SAFE ONLY BECAUSE NOTHING OF OURS READS SPOT LIGHTS. The ocean material is a raw
+  //ShaderMaterial that never includes <tonemapping_fragment> and never samples spotLights[] —
+  //grep src/glsl — so this boost reaches exactly the tone-mapped materials it is correcting
+  //for and cannot leak into our own shading. If the ocean ever starts reading spot lights,
+  //this has to move behind a per-material split.
   light.intensity = grid.causticLightIntensity * grid.causticsStrength
-                  * ctx.underwaterFactor * sunMult * decayCompensation;
+                  * ctx.underwaterFactor * sunMult * decayCompensation
+                  * this.foreignExposureCompensation();
 
   //Re-render the animated caustic slide LAST, through the projector pose
   //set above. shadow.updateMatrices is the same call WebGLLights makes when
