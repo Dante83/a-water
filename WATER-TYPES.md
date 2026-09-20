@@ -517,14 +517,25 @@ Close the loop the other way, through a-land's `material-extensions.js` sockets:
 
 Both sockets are specified in contract §4 and **not yet placed** in a-land's shaders.
 
-### Phase 10 — The sampler budget *(portability, and what buys caustics back)*
+### Phase 10 — The sampler budget *(headroom: what buys caustics back)*
 
-> **Scoped 2026-09-19.** Opened by a concrete symptom — caustics are compiled out of the
-> `$flowing_water` variant, so rivers and creeks cannot have them — and turned out to be a
-> portability bug in all three libraries.
+> **Scoped 2026-09-19.** This is about BUYING ROOM, not about performance and not about phones.
+> The ocean program sits at 31 of 32 texture units, and being one slot from the ceiling is what
+> forces features to be traded against each other:
+>
+> - **Caustics do not exist in rivers or creeks.** They are compiled out of the
+>   `$flowing_water` variant (`flow-surface-pass.js:21`) purely to make room for flow. That is a
+>   missing feature on a 4090, with no portability argument attached.
+> - **Phase 6 (waterfalls) is a genuinely new surface** and will want units of its own. The
+>   budget only tightens from here, so this gets more expensive the longer it waits.
+>
+> Dante, 2026-09-19: *"We're just buying ourselves more room with those arrays, don't worry
+> about performance right now."* Running on weak hardware has never been a goal of this project
+> — it deliberately hunts the ceiling of what a browser can do, and a struggling 4090 is a
+> stated design position, not a defect. Treat everything below the table as a side effect.
 
-**The ceiling.** WebGL2 only guarantees `MAX_TEXTURE_IMAGE_UNITS >= 16`. Desktop GPUs typically
-report 32, which is why none of us have seen this. Measured 2026-09-19:
+**The ceiling, for reference.** WebGL2 only guarantees `MAX_TEXTURE_IMAGE_UNITS >= 16`. Measured
+2026-09-19:
 
 | Shader | Fragment samplers |
 | --- | --- |
@@ -532,10 +543,14 @@ report 32, which is why none of us have seen this. Measured 2026-09-19:
 | a-faraway-land `terrain.frag` | 28 |
 | a-starry-sky `atmosphere-pass.glsl` | 21 |
 
-**Any device reporting the minimum cannot link any of the three.** It fails as a link error with
-no program and no pixels — the same silent class as the `MyAESFilmicToneMapping` collision — so a
-user experiences "it doesn't work on my computer" and can describe nothing further. Dante has had
-exactly those reports about a-starry-sky. This is not a nice-to-have.
+A device reporting the minimum links none of the three. Worth knowing, but NOT the reason to do
+this work — and the profile is not phones: 16 units is common on Intel integrated laptop GPUs,
+older ANGLE/D3D11 feature-level paths and software fallbacks. Dante has had "my computer cannot
+run a-starry-sky" reports, and those are the plausible machines. What makes it worth a footnote
+is that a link failure leaves no degraded path: someone on integrated graphics would happily take
+15 fps and a beautiful sky, but a shader needing 21 units does not compile at 16 no matter how
+patient they are. Slow is a tradeoff a user can accept; not linking removes the choice. Fixed for
+free here, since the array work is happening anyway.
 
 **Arrays, not atlases.** An atlas is the wrong instrument for the big consumers: the FFT cascades
 need REPEAT wrapping and mipmaps, and an atlas gives neither — sub-rects bleed at every mip level,
@@ -570,8 +585,9 @@ link. Then force the low path on capable hardware to test it — the headless ha
 Chrome with `--use-angle=swiftshader`, which is where a 16-unit target can be exercised without
 owning the hardware.
 
-> **Not deferred.** Phase 6 (waterfalls) adds surfaces and will want units of its own, so the
-> budget only gets tighter from here. Doing this first makes Phase 6 cheaper, not more expensive.
+> **Not deferred, and not for performance reasons.** Phase 6 adds surfaces that will want units
+> of its own. Every phase from here is cheaper with ~12 units in hand than without, and the
+> conversion is the same size whenever it happens — so it is strictly cheapest now.
 
 ---
 
