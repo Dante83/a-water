@@ -517,6 +517,62 @@ Close the loop the other way, through a-land's `material-extensions.js` sockets:
 
 Both sockets are specified in contract §4 and **not yet placed** in a-land's shaders.
 
+### Phase 10 — The sampler budget *(portability, and what buys caustics back)*
+
+> **Scoped 2026-09-19.** Opened by a concrete symptom — caustics are compiled out of the
+> `$flowing_water` variant, so rivers and creeks cannot have them — and turned out to be a
+> portability bug in all three libraries.
+
+**The ceiling.** WebGL2 only guarantees `MAX_TEXTURE_IMAGE_UNITS >= 16`. Desktop GPUs typically
+report 32, which is why none of us have seen this. Measured 2026-09-19:
+
+| Shader | Fragment samplers |
+| --- | --- |
+| a-water ocean material | ~31 (`flow-surface-pass.js:21` says 31 of 32) |
+| a-faraway-land `terrain.frag` | 28 |
+| a-starry-sky `atmosphere-pass.glsl` | 21 |
+
+**Any device reporting the minimum cannot link any of the three.** It fails as a link error with
+no program and no pixels — the same silent class as the `MyAESFilmicToneMapping` collision — so a
+user experiences "it doesn't work on my computer" and can describe nothing further. Dante has had
+exactly those reports about a-starry-sky. This is not a nice-to-have.
+
+**Arrays, not atlases.** An atlas is the wrong instrument for the big consumers: the FFT cascades
+need REPEAT wrapping and mipmaps, and an atlas gives neither — sub-rects bleed at every mip level,
+and tiling one needs hand-rolled `fract()` that also defeats anisotropic filtering. That trades a
+sampler-count problem for a filtering-quality problem in the places the ocean already looks worst.
+`sampler2DArray` keeps per-layer wrapping and mips, costs one extra coordinate, and is already
+proven in this stack: a-land uses it for its per-material PBR arrays.
+
+**a-water, ranked by payoff** (~12 units, 31 → ~19):
+
+| Change | Units | Notes |
+| --- | --- | --- |
+| `cascadeDisplacementTextures[6]` → `sampler2DArray` | **6 → 1** | **Verified mechanical**: `ocean-height-composer.js:94` builds every cascade RT at the same `baseTextureWidth/Height` and format. Crest banding varies patch SIZE, not resolution. |
+| `oceanShadowMap[4]` (EVSM CSM) → array | 4 → 1 | Same size and format by construction. |
+| `waterFieldCascade0/1/2` → array | 3 → 1 | Same shape. |
+| foam quartet → channel packing | 4 → 2 | `foamOpacityMap` is single-channel and can ride in an alpha; normals are 2-channel. Packing, not arrays. |
+
+Do the cascades first: biggest win, lowest risk, and it alone frees enough to put **caustics back
+in the flowing-water variant**, which is the user-visible reason to start.
+
+**The siblings** (their call, not ours, but the measurement is done and the finding is theirs to
+have):
+- **a-starry-sky** — `atmosphere-pass.glsl` at 21 is the one with real-world reports against it.
+- **a-faraway-land** — `terrain.frag` at 28, and it has the same obvious consolidations: three
+  heightmaps (self/parent/grand), four splatmaps, four splat indices and three CSM maps are all
+  same-shape families, ~9 units for four array conversions. Note 28 − 9 = 19, still over 16, so
+  it needs a real budget pass rather than one change.
+
+**Verification, and it must be a real gate.** `gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS)` and
+fail loudly at startup with the count and the limit, rather than letting a program silently not
+link. Then force the low path on capable hardware to test it — the headless harness already runs
+Chrome with `--use-angle=swiftshader`, which is where a 16-unit target can be exercised without
+owning the hardware.
+
+> **Not deferred.** Phase 6 (waterfalls) adds surfaces and will want units of its own, so the
+> budget only gets tighter from here. Doing this first makes Phase 6 cheaper, not more expensive.
+
 ---
 
 ## Amendments to negotiate with a-land
