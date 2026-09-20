@@ -717,6 +717,73 @@ and `ocean-atmosphere-enabled: true`.
 Validated headless: loads clean, 42 terrain patch materials, exposure 1.80e-5, sun lux 123,865.
 Judge it in a real browser — headless loses hero-creek's terrain and is unreliable for looks.
 
+### Round 16 (2026-09-19, late) — SOLVED. Three bugs, stacked
+
+Dante's verdict: fixed. The underwater ceiling no longer glows.
+
+**It was never one bug.** Each one masked the next, which is why every clean theory kept
+dying:
+
+1. **The water material was not linking at all underwater.** `water-shader.glsl` declared
+   `MyAESFilmicToneMapping` and also includes whichever `fog_fragment` chunk is live; with a
+   sibling sky that chunk is a-starry-sky's, which declares the same function unguarded. Two
+   bodies, one translation unit, no program — and it bites the moment `scene.fog` turns on,
+   i.e. on diving. The `#ifndef ARO_AES_TONEMAP` guard never covered it: that define is OURS
+   and a-starry-sky has never heard of it, so it only ever protected us from our own second
+   declaration. Fixed by renaming our copy private (`aroAESFilmicToneMapping`, a-water
+   `dff89eb`). **Dante found this in the console**; it had been sitting in plain sight since
+   the island-sholes-sky page was built, written up as a footnote instead of the headline.
+   ⚠ `UnderwaterFogChunk` keeps the shared name on purpose — its `fragGLSL` is injected into
+   whichever chunk is live and calls the operator by name, so renaming it there would leave
+   every sky page linking against an undeclared function.
+2. **The round-14 fix was right and never fired.** `resolveOffscreenTone` gated on
+   `getRenderTarget() === null`, which was redundant — `#ifdef TONE_MAPPING` is three's own
+   screen-vs-target answer, so the shader already knows — and it answered mode 0 on every
+   draw. Gate removed (a-land `c75b624`).
+3. **And the real reason it still stood down: a-water captures LINEAR.**
+   `reflection-pass.js:293, :439` set `renderer.toneMapping = NoToneMapping` around the mirror
+   and Snell-window targets, because a-water applies its own ACES when it samples them. The
+   rule `NoToneMapping -> stand down` conflated *nobody is metering* with *someone is
+   capturing linear and will grade it later*. The second still needs the exposure paid, just
+   not the curve. **Mode 3** — exposure, no curve, unclamped — a-land `60d75d7`. Unclamped
+   because the consumer is about to tone-map it.
+
+**Separately real, and it shipped:** a-water now reads the sibling's metered sun and sky
+(`lux x exposure`) instead of the raw light object, which a-land had quietly stopped using
+(`8f51a52`). Metered sun `[2.23, 1.84, 1.50]` against the `[3.0, 2.71, 2.28]` hand-tuned for
+island-sholes. Fixed the dark shore foam and the above-water darkening. No-op at exposure 1,
+so no sky-less page moves.
+
+**What actually broke the deadlock was bisection, not reasoning.** island-sholes-sky.html
+(known-good world + sky, one variable) proved the three-way combination was sufficient and
+hero-creek's content irrelevant. island-sholes-sky-night.html proved it was scale-driven. And
+`aroForceOffscreenTone(true)` in `examples/demos/probe.js` was the only test that compared
+BEHAVIOUR DURING THE DRAW rather than state sampled around it — every console and headless
+reading was taken outside the capture passes, where `toneMapping` is ACES, and so never
+observed the one moment that mattered.
+
+> **Method note worth keeping.** Long stretches of this were spent reasoning from measurements
+> taken with a broken instrument: the hook's own `mode0` report was used as evidence that the
+> hook was fine. Prefer an A/B that changes behaviour (force it and look) over a probe that
+> reports state.
+
+**Tools left behind:**
+- `examples/demos/probe.js` — load with `fetch('./probe.js?'+Date.now()).then(r=>r.text()).then(eval)`.
+  Reports whether our materials have compiled programs, whether a regen landed, what fills the
+  mirror/Snell buffers by owner, the hook's mode counts, and `aroForceOffscreenTone(on)`.
+- `examples/demos/island-sholes-sky.html` and its `-night` twin — the bisect pair.
+
+**Residual, accepted by Dante:** horizon darkness does not quite match at infinity. The ocean
+fades back and forth there anyway.
+
+**Still open, both independent of all of the above:**
+- **a-land sets `castShadow = false` on the shared sun** (`land-terrain.js:587`), silently
+  disabling our three scene-sun-shadow paths on any sky+land page. Found via Dante's hunch.
+- **`ocean-atmosphere-enabled false` + a-starry-sky fails to link** — same collision class as
+  bug 1, different symbols (`fogLinearTosRGB`, `fogsRGBToLinear`, `sRGBToLinear`, all shared
+  with a-starry-sky by design). Only collides when both fog scaffolds install. Worked around
+  in the bisect page by pairing AP with the sky; not fixed in the library.
+
 ### ▶ RESUME HERE (end of 2026-09-19)
 
 **Milestones 1-3 are done.** The finite-volume solver has a CPU reference (the specification), a
@@ -756,9 +823,8 @@ GPU stepper that matches it, and an editor pass that runs inside a-land's Solve 
 - **a-land papercut:** Bake & Export re-solves at `nativeBakeResolution()` and ignores the water
   panel's resolution, so that setting costs editor time and never reaches the export.
 - **Uncommitted, deliberately:** a-water's regenerated `water-shader.js` (Dante's regen).
-- **Lighting-unit seam: round 14's fix is correct but is NOT the cause** — see round 15.
-  Terrain never enters our RTs underwater (117,183/117,183 mode-0 draws). Next suspect is
-  a-land's OBJECT materials. Bisect page `island-sholes-sky.html` is built and awaiting eyes.
+- **Lighting-unit seam: SOLVED 2026-09-19** — see round 16. Three stacked bugs; browser-verified
+  by Dante. a-land needs `create-shader.py` for `60d75d7`.
 - **Open a-water bug:** `ocean-atmosphere-enabled false` + a-starry-sky = water material
   fails to link (duplicate `MyAESFilmicToneMapping`). See round 15.
 - **Open a-land bug:** `_anchorForeignSun` sets `castShadow = false` on the shared sun,
