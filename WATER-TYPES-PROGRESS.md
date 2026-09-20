@@ -784,6 +784,40 @@ fades back and forth there anyway.
   with a-starry-sky by design). Only collides when both fog scaffolds install. Worked around
   in the bisect page by pairing AP with the sky; not fixed in the library.
 
+### Round 17 (2026-09-19, late) — caustics swimming across the seabed (a-water `9f2866b`)
+
+Underwater caustics drifted smoothly, then stopped, jittered and continued on a ~3 s cycle.
+Measured, not guessed — and none of the obvious suspects:
+
+- **Not frame stalls.** 209 frames in 10 s, worst only 1.6x the median, zero hitches.
+- **Not the sun, the camera or the projector XZ.** 12 s standing still: zero movement in any.
+- **One input moved:** `uSurfaceY`, 79 steps of up to 0.22 m.
+
+That is `probeWaterSurfaceY()`, the wave-displaced surface at the camera, and the projector pose
+was riding it. **At the surface that is harmless** — `uSurfaceY` moves with the projector so
+`(uSurfaceY - ro.y)` is constant and the pattern stays anchored where the cone pierces the
+surface. I read that as innocent, and it is, *at the surface*. **The seabed does not bob.**
+Translate the projector up by d and every cookie ray goes with it, so its intersection with the
+static bed slides sideways by `d * (rd.xz / rd.y)` — metres of lateral swim per wave, at the
+swell period. 3 seconds is a wave period.
+
+Fixed: the pose rides `grid.waterLevelAt()`, the still level, and `uSurfaceY` takes the same
+value (they must agree or the surface anchoring breaks). Also the more honest anchor — `refr` is
+Snell through a flat +Y plane, so this projector already approximates a MEAN surface, and the
+real wave shape is carried by the pattern's own animation. Letting the pose bob double-counted it.
+JS only, no regen.
+
+> The same method note as round 16 applies, and it worked the second time: every hypothesis I
+> formed by reading the code was wrong (frame stall, then sun-direction stepping via the 400 m
+> lever, then "uSurfaceY cancels so it is innocent"). The per-frame recording named it in one run.
+
+**Known and deliberately not chased:** ~21 fps on island-sholes-sky (median 47 ms) — even, no
+hitches, so it did not cause this. Lead for a future session is in
+`project_perf_over_time_2026_05_30` (a-starry-sky program churn bleeding into our offscreen
+passes). Also latent, not hit: the caustic slide scrolls `uv + 0.8 * uTime/8` unbounded, so on a
+page left running for many hours the increments fall below float32 resolution and the pattern
+starts stepping. Hours, not seconds. Fix if it ever shows: wrap the scroll to the texture period.
+
 ### ▶ RESUME HERE (end of 2026-09-19)
 
 **Milestones 1-3 are done.** The finite-volume solver has a CPU reference (the specification), a
