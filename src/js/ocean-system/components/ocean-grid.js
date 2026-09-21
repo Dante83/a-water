@@ -1531,6 +1531,73 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
 
 
+  //── The texture-unit gate ───────────────────────────────────────────────────
+  //WebGL2 only guarantees MAX_TEXTURE_IMAGE_UNITS >= 16. A program that asks for
+  //more than the device offers does not LINK, and three reports that once and
+  //then goes quiet — so the ocean simply does not draw and nothing says why.
+  //This counts the real number on the linked program and says so out loud.
+  //
+  //Counting `uniform sampler` lines in the GLSL is the wrong instrument: the
+  //water shader is specialized by $flowing_water / $caustics_enabled / $foam_enabled
+  //and $horizon_skirt, so the source count belongs to no program that actually runs.
+  //getActiveUniform().size is per ELEMENT, so an array of samplers is counted
+  //once per unit it really occupies, which is the whole point of Phase 10.
+  //
+  //Ported from A-Starry-Sky's SkyDirector.auditTextureUnitBudget (see that repo's
+  //TEXTURE-ARRAYS.md). Must run AFTER the first render: three compiles lazily, so
+  //renderer.info.programs is still empty at construction time.
+  this.auditTextureUnitBudget = function(){
+    const renderer = self.renderer;
+    if(!renderer) return null;
+    const gl = renderer.getContext();
+    const textureUnitLimit = gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS);
+
+    const samplerTypes = [gl.SAMPLER_2D, gl.SAMPLER_CUBE, gl.SAMPLER_3D, gl.SAMPLER_2D_ARRAY,
+      gl.SAMPLER_2D_SHADOW, gl.SAMPLER_2D_ARRAY_SHADOW, gl.SAMPLER_CUBE_SHADOW,
+      gl.INT_SAMPLER_2D, gl.INT_SAMPLER_3D, gl.INT_SAMPLER_CUBE, gl.INT_SAMPLER_2D_ARRAY,
+      gl.UNSIGNED_INT_SAMPLER_2D, gl.UNSIGNED_INT_SAMPLER_3D, gl.UNSIGNED_INT_SAMPLER_CUBE,
+      gl.UNSIGNED_INT_SAMPLER_2D_ARRAY];
+
+    const countSamplers = function(program){
+      let samplerCount = 0;
+      const numberOfUniforms = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS);
+      for(let i = 0; i < numberOfUniforms; ++i){
+        const uniformInfo = gl.getActiveUniform(program, i);
+        //An array of samplers occupies one unit per element.
+        if(uniformInfo !== null && samplerTypes.indexOf(uniformInfo.type) !== -1){
+          samplerCount += uniformInfo.size;
+        }
+      }
+      return samplerCount;
+    };
+
+    const report = [];
+    let worstCount = 0;
+    const programs = renderer.info.programs || [];
+    for(let i = 0, numberOfPrograms = programs.length; i < numberOfPrograms; ++i){
+      const programInfo = programs[i];
+      if(programInfo.program === undefined || programInfo.program === null) continue;
+      const samplerCount = countSamplers(programInfo.program);
+      worstCount = Math.max(worstCount, samplerCount);
+      report.push({program: programInfo.name, samplers: samplerCount});
+    }
+
+    report.sort(function(a, b){ return b.samplers - a.samplers; });
+    self.textureUnitAudit = {limit: textureUnitLimit, worstCount: worstCount, programs: report};
+
+    if(worstCount > textureUnitLimit){
+      console.error('[a-restless-ocean] a shader program needs ' + worstCount +
+        ' texture units but this device only offers ' + textureUnitLimit +
+        '. It will not link, and the water will not draw.', report);
+    }
+
+    return self.textureUnitAudit;
+  };
+  //Tick count at which the audit runs itself. The offscreen passes each compile
+  //their own program on first use, so a couple of frames have to go by before
+  //info.programs holds the whole set.
+  this._textureUnitAuditTick = 0;
+
   this.tick = function(time){
 
     //Late sky discovery — a-starry-sky can initialize after this component
@@ -2158,9 +2225,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         if(uniformsRef.shoreBreakerEnabled) uniformsRef.shoreBreakerEnabled.value = 0.0;
         if(uniformsRef.shoreReflectionEnabled) uniformsRef.shoreReflectionEnabled.value = 0.0;
       }
-      for(let c = 0; c < 6; c++){
-        uniformsRef.cascadeDisplacementTextures.value[c] = self.oceanHeightComposer.cascadeDisplacementTextures[c];
-      }
+      uniformsRef.cascadeDisplacementArray.value = self.oceanHeightComposer.cascadeDisplacementTexture;
       uniformsRef.cascadePatchSizes.value = self.oceanHeightComposer._cascadePatchSizes;
       //Per-cascade slope variance σ² — sourced from the height-band library.
       //Re-pushed every frame because regenerateH0() (called when wind changes
@@ -2539,6 +2604,23 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       //main pass and do not depth-interact with the from-below surface). _wasUnderwater is the same
       //committed submersion state that drives the underwater fog/ceiling swap.
       sp.mesh.visible = sp.enabled && !self._wasUnderwater;
+    }
+
+    //Sampler budget, once, a few frames in. Each offscreen pass links its own
+    //program on first use, so counting on frame 1 would miss most of them.
+    if(self._textureUnitAuditTick >= 0){
+      self._textureUnitAuditTick++;
+      if(self._textureUnitAuditTick > 8){
+        self._textureUnitAuditTick = -1;
+        const audit = self.auditTextureUnitBudget();
+        //One quiet line with the number, so the budget is visible in any session
+        //log without anyone having to go looking for it. auditTextureUnitBudget
+        //itself only speaks up when a program is actually over the limit.
+        if(audit){
+          console.log('[a-restless-ocean] texture units: worst program uses ' +
+            audit.worstCount + ' of ' + audit.limit + ' available.');
+        }
+      }
     }
   };
 }

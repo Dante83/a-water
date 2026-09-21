@@ -301,6 +301,23 @@ ARestlessOcean.installOceanDebugControls = function(grid){
       //Direct handle on the grid instance for console probes (RT readback etc.).
       window.oceanGrid = self;
 
+      //── The sampler budget ────────────────────────────────────────────────
+      //auditOceanTextureUnits() -> what every linked program really costs in
+      //texture units, worst first, against this device's MAX_TEXTURE_IMAGE_UNITS.
+      //The grid also runs this by itself a few frames in and shouts if a program
+      //is over the limit; this is the handle for reading the numbers by hand,
+      //which is how Phase 10's before/after is measured. Counted on the LINKED
+      //program, never from the GLSL source — see OceanGrid.auditTextureUnitBudget.
+      window.auditOceanTextureUnits = function(){
+        const audit = grid.auditTextureUnitBudget();
+        if(!audit){ console.log('[textureUnits] no renderer yet'); return; }
+        console.log('[textureUnits] device limit ' + audit.limit +
+                    ', worst program ' + audit.worstCount);
+        if(console.table) console.table(audit.programs);
+        else console.log(audit.programs);
+        return audit;
+      };
+
       //── WaterField probes (Phase 1) ───────────────────────────────────────
       //probeWaterField()      -> field under the camera
       //probeWaterField(x, z)  -> field at a world position

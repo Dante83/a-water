@@ -80,12 +80,13 @@ ARestlessOcean.Passes.OceanShadowPass.prototype.tick = function(ctx){
     } else {
       u.oceanShadowEnabled.value = 1;
     }
-    //Push every cascade's moment texture (RGBA32F, post-blur), shadow
-    //matrix, and map size. Matrices live as separate uniform names
-    //(oceanShadowMatrix0..3) and must be projected per-vertex;
-    //texture/mapSize are arrays sampled in the fragment cascade walk.
+    //Push the moment array (RGBA32F, post-blur), the shadow matrices and the map
+    //sizes. Phase 10: the four cascades are layers of ONE sampler2DArray, so the
+    //texture is a single assignment; the fragment cascade walk picks the layer.
+    //Matrices live as separate uniform names (oceanShadowMatrix0..3) and must be
+    //projected per-vertex; mapSize stays a plain vec2 array.
+    u.oceanShadowMap.value = this.csm.cascadeArray.texture;
     for(let c = 0; c < numCascades; c++){
-      u.oceanShadowMap.value[c] = cascades[c].renderTarget.texture;
       u.oceanShadowMapSize.value[c].set(cascades[c].cfg.mapSize, cascades[c].cfg.mapSize);
     }
     u.oceanShadowMatrix0.value.copy(cascades[0].shadowMatrix);
@@ -96,11 +97,10 @@ ARestlessOcean.Passes.OceanShadowPass.prototype.tick = function(ctx){
 };
 
 ARestlessOcean.Passes.OceanShadowPass.prototype.dispose = function(){
-  if(this.csm && this.csm.cascades){
-    for(let i = 0; i < this.csm.cascades.length; i++){
-      const rt = this.csm.cascades[i].renderTarget;
-      if(rt) rt.dispose();
-    }
+  if(this.csm){
+    //Phase 10: one array target for all four cascades, plus the blur scratch.
+    if(this.csm.cascadeArray) this.csm.cascadeArray.dispose();
+    if(this.csm._blurTarget) this.csm._blurTarget.dispose();
   }
   this.csm = null;
 };

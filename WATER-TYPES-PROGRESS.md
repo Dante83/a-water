@@ -8,6 +8,136 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
+## Phase 10 — the sampler budget: cascades + ocean CSM become texture arrays — **written, headless-verified, awaiting regen + browser** (2026-09-20)
+
+Branch `convert-textures-to-texture-arrays`, off `multi-water-types` at `e3f0f00`. Plan:
+`~/.claude/plans/okies-we-should-have-humming-shannon.md`.
+**GLSL changed: run `create-shader.py`** (water-shader.js + ocean-shadow.js).
+
+**Measured 30 -> 22 texture units of 32**, on the linked program, on
+`examples/demos/islands.html` under headless SwiftShader. Not counted in the GLSL: source
+counting is wrong the moment a shader is specialised by flag, which is exactly when the count
+matters.
+
+### The premise in the Phase 10 scoping was wrong, and it was the headline
+
+`WATER-TYPES.md` and `flow-surface-pass.js:21` both said caustics were compiled out of the
+`$flowing_water` variant to make room for flow, so rivers had none. They had been switched back
+ON five days earlier, in round 7 (2026-09-15): `$caustics_enabled` is independent of
+`$flowing_water`, and `ocean-grid.js:1016` records why (the in-shader seabed caustic is
+world-space, so it works on a creek bed 20 m up; with it off, a lake and the creek running into
+it lit their beds differently). Rivers already had caustics. Both comments are corrected.
+
+This does not change the decision, only the justification: the reason is Phase 6 wanting units
+of its own, which was always the second bullet.
+
+### What changed
+
+- **`ARestlessOcean.createArrayRenderTarget` / `assertArrayRenderTarget`** (`ARestlessOcean.js`),
+  next to `cloneUniforms` rather than in a new file, so nothing had to be registered in
+  `make-combined.py` and six example pages.
+- **Cascades 6 -> 1.** `ocean-height-composer.js` builds one `WebGLArrayRenderTarget` with a
+  layer per cascade. Consumers: `water-shader.glsl`, `water-vertex.glsl`,
+  `ocean-shadow-vertex.glsl` (the uniform is `cascadeDisplacementArray` now — renamed so a
+  missed site fails loudly rather than silently changing type). This is one unit in the VERTEX
+  stage too, which has its own limit.
+- **Ocean CSM 4 -> 1.** `ocean-shadow-csm.js` renders each cascade into a layer. The separable
+  blur keeps its shared 2D scratch and gained a second material for the horizontal pass, which
+  is the only one whose source is the array (a target cannot be sampled while it is bound).
+- **Three passes were pulled along**, because they read the same composer textures under other
+  names: the height-readback bake (`hfCascadeTex[6]`), the shore-reflection step
+  (`srCascade0..5`, six discrete uniforms), and the CSM caster's vertex stage.
+- **The gate.** `OceanGrid.auditTextureUnitBudget()` counts samplers on every linked program and
+  `console.error`s when one is over `MAX_TEXTURE_IMAGE_UNITS` — that failure used to be silent.
+  Runs itself a few ticks in; `auditOceanTextureUnits()` is the console handle.
+- **Two if/else chains collapsed.** A `sampler2DArray` takes its layer as a coordinate, while an
+  array of samplers demands a constant index. The per-cascade Jacobian strip (debug mode 30) and
+  the EVSM cascade thumbnail were both written out only to dodge that rule.
+
+### three r173: three findings, all verified in the super-three 0.173 source
+
+A-Starry-Sky's `TEXTURE-ARRAYS.md` was written against r185, so every load-bearing claim was
+re-checked rather than inherited.
+
+1. **`WebGLArrayRenderTarget` silently discards its options.** It builds a correct texture from
+   `options`, then overwrites it with a bare `DataArrayTexture`: Nearest filters, ClampToEdge,
+   no mips, RGBA **UnsignedByte**. `type: FloatType` in the options object does nothing. This is
+   why the wrapper exists. Undetected it would not have looked like a bug — the waves would have
+   drawn, merely stepped, because the displacement had been quantised to 8 bits.
+   ⚠ **A-Starry-Sky has this latent**: `TextureArrayBuilder.build()` passes format/type/filters
+   in options and only re-applies `generateMipmaps` and `anisotropy`. Its defaults happen to
+   match `DataArrayTexture`'s, so nothing is broken there today — but the first family that
+   wants Linear or Repeat or float will get Nearest, Clamp and bytes instead.
+2. **`sampler2DArray` is available even though the ocean material sets no `glslVersion`.** three
+   upgrades every non-`RawShaderMaterial` to `#version 300 es` unconditionally and adds
+   `#define texture2D texture`, which is also why the existing `texelFetch` calls compile. And
+   `generatePrecision` emits `precision highp sampler2DArray`, so the precision trap that cost a
+   day on the river solver does not apply here. (There is no `RawShaderMaterial` anywhere in
+   `src/`.) The shaders declare the precision anyway, to state the requirement.
+3. **`readRenderTargetPixels` has no layer argument** — only a cube face. But
+   `setRenderTarget(rt, layer)` attaches the layer to that target's own framebuffer and the read
+   binds the same framebuffer, so binding the layer immediately before the read is exact. The
+   async variant issues its `readPixels` before its first `await`, so rebinding for the next
+   cascade cannot disturb a read already in flight. This is what the three buoyancy/submersion
+   readbacks in `height-readback-pass.js` do now.
+
+Also confirmed good at r173: `updateRenderTargetMipmap` resolves through `getTargetType` to
+`TEXTURE_2D_ARRAY`, so mipmaps need no hand-rolled `generateMipmap`.
+
+**One cost that is real.** three regenerates mipmaps at the end of every render into a target
+that asks for them, and for an array target that rebuilds the chain for EVERY layer. Left alone,
+six layer renders would do six full-array chain builds a frame where six separate targets did one
+each. `ocean-height-composer.tick()` holds `generateMipmaps` down until the last layer, which
+leaves exactly one chain build per frame covering every layer written — inside three's own path,
+not behind its state cache.
+
+### How it was verified without running create-shader.py
+
+The house rule is that Dante runs the regen, and `create-shader.py` cannot be imported to
+dry-run it (its watcher loop is at module level and starts rewriting generated JS immediately).
+So the transform was reimplemented into a scratchpad directory and **proved faithful by
+regenerating three untouched shaders — `ocean-splash.js`, `position-pass.js`, `horizon-skirt.js`
+— and diffing them byte-for-byte against the committed output**. A temporary page loaded the
+scratchpad-generated `water-shader.js` / `ocean-shadow.js` in place of the repo's; nothing
+generated was written into the repo.
+
+Before/after was then taken against a **detached HEAD worktree**, so the comparison ran the real
+old code rather than a remembered version of it:
+
+| Check | HEAD | After |
+| --- | --- | --- |
+| Worst program | **30** of 32 | **22** of 32 |
+| Cascade texture tuple | Float / RGBA / LinearMipmapLinear / Repeat / mips | identical |
+| Per-cascade row RMS (C0..C5) | 0, 0, 0.00012, 0.224, 0.410, 0.075 | 0, 0, 0.00009, 0.220, 0.373, 0.076 |
+| EVSM M1 per cascade | 12.503, 12.372, 12.196, 12.208 | 12.490, 12.359, 12.191, 12.207 |
+| Console output | — | identical apart from the count |
+
+(Row RMS differs in the last digits because the FFT is time-varying and the two runs sample
+different phases; the per-cascade profile is the same.)
+
+**Cascades 0 and 1 read exactly zero, and that is pre-existing** — HEAD does the same. Those two
+bands cover 1–4 km wavelengths, which carry no energy at these wind speeds. Worth knowing before
+anyone reads it as a conversion bug: two of the six cascades appear to be costing memory and a
+pack pass for nothing. Not investigated here.
+
+### Still to do
+
+- **Dante's browser check.** Waves have shape and distant water is neither shimmering (mips
+  alive) nor over-blurred; ocean self-shadow via debug 25/26 and the cascade-band overlay 40;
+  the boat floats, which is the only check that exercises the layer-bound CPU readback; and
+  `hero-creek-ocean.html` for the `$flowing_water` variant, which takes a different path through
+  the same declarations and was not compiled by the headless page.
+- **`waterFieldCascade0/1/2` (3 -> 1)** — left alone deliberately. a-faraway-land's
+  `terrain.frag:642-679` and `TerrainMaterial.js:134-136` read the same three textures we
+  publish, so it has to land in both repos together.
+- **Foam packing (4 -> 2)** — needs a regenerated asset.
+- The dead `horizon-skirt.*` material still declares `cascadeDisplacementTextures[2]`. Left
+  untouched by decision: `horizonSkirtMaterial` is never instantiated (the real skirt clones the
+  ocean material) and `make-combined.py` already excludes it from `dist` as drifting dead code,
+  so it links no program and costs no units.
+
+---
+
 ## Phase 4 — flowing water, proven on creeks — **steps 1–3 written, headless-verified, awaiting regen + browser** (2026-09-14)
 
 Branch `phase-4-flowing-water`, off `multi-water-types` at `c0f12e6`. Plan:

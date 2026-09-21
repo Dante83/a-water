@@ -361,10 +361,12 @@ ARestlessOcean.Passes.ShoreReflectionPass.prototype._buildMaterials = function()
   let incLines = '';
   for(let c = 0; c < N; ++c){
     const m = c < 3 ? 'ma.' + 'xyz'[c] : 'mb.' + 'xyz'[c - 3];
-    incLines += '  h += srCascadeWeight[' + c + '] * ' + m + ' * textureLod(srCascade' + c + ', (xz + srCascadeOffset[' + c + ']) / srCascadePatch[' + c + '], srCascadeLod[' + c + ']).y;\n';
+    incLines += '  h += srCascadeWeight[' + c + '] * ' + m + ' * textureLod(srCascadeArray, vec3((xz + srCascadeOffset[' + c + ']) / srCascadePatch[' + c + '], ' + c + '.0), srCascadeLod[' + c + ']).y;\n';
   }
-  let cascadeDecl = '';
-  for(let c = 0; c < N; ++c) cascadeDecl += 'uniform sampler2D srCascade' + c + ';\n';
+  //Phase 10: the composer's cascades are one sampler2DArray, so this pass reads a
+  //layer per cascade instead of declaring six samplers of its own. That is six
+  //texture units back in a program that already carries the field and the medium.
+  const cascadeDecl = 'precision highp sampler2DArray;\nuniform sampler2DArray srCascadeArray;\n';
   const stepFrag = [
     common,
     'uniform sampler2D srState;',
@@ -478,7 +480,7 @@ ARestlessOcean.Passes.ShoreReflectionPass.prototype._buildMaterials = function()
     srCascadeLod: {value: [0, 0, 0, 0, 0, 0]},
     srCascadeWeight: {value: [0, 0, 0, 0, 0, 0]}
   }, WF.createSampleUniforms(), ARestlessOcean.WaveMask.createUniforms());
-  for(let c = 0; c < N; ++c) stepUniforms['srCascade' + c] = {value: null};
+  stepUniforms.srCascadeArray = {value: null};
   this._stepMaterial = new THREE.ShaderMaterial({
     glslVersion: THREE.GLSL3, uniforms: stepUniforms,
     vertexShader: vert, fragmentShader: stepFrag, depthTest: false, depthWrite: false
@@ -548,8 +550,7 @@ ARestlessOcean.Passes.ShoreReflectionPass.prototype.tick = function(ctx){
   const lastTime = this._lastTimeMs;
   this._lastTimeMs = ctx.timeMs;
   this.active = !!(this.supported && this.enabled && ctx.enabled && sbp && sbp.enabled && sbp.Hs >= SR.MIN_HS
-    && field && field.cascades.length === 3 && composer && composer.cascadeDisplacementTextures
-    && composer.cascadeDisplacementTextures[0]);
+    && field && field.cascades.length === 3 && composer && composer.cascadeDisplacementTexture);
   if(!this.active){
     //Frozen, not cleared: switching the layer back on (or a sea briefly under
     //MIN_HS) resumes the field instead of waiting tens of seconds for it to
@@ -633,9 +634,9 @@ ARestlessOcean.Passes.ShoreReflectionPass.prototype.tick = function(ctx){
   const bandHi = ctx.waveMaskParams && ctx.waveMaskParams.bandKHi;
   const kp = this.grid.omega * this.grid.omega / SR.G;
   const texRes = composer.baseTextureWidth || 512;
+  su.srCascadeArray.value = composer.cascadeDisplacementTexture;
   for(let c = 0; c < 6; ++c){
     const patch = composer._cascadePatchSizes[c];
-    su['srCascade' + c].value = composer.cascadeDisplacementTextures[c];
     su.srCascadeOffset.value[c].copy(offsets[c]);
     su.srCascadePatch.value[c] = patch;
     su.srCascadeLod.value[c] = Math.max(0.0, Math.log2(dx / (patch / texRes)));

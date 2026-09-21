@@ -123,7 +123,13 @@ uniform float sizeOfOceanPatch;
 uniform int ringIndex;
 uniform float chop;
 uniform float baseHeightOffset;
-uniform sampler2D cascadeDisplacementTextures[6];
+//Phase 10: the six per-cascade displacement maps are ONE sampler2DArray, a layer
+//per cascade, so they cost one texture unit here instead of six. They were always
+//the same resolution and format — Crest-style banding varies the world patch SIZE,
+//not the texel count. highp is what three already gives a ShaderMaterial, stated
+//here because this data is metres of displacement and mediump would quantise it.
+precision highp sampler2DArray;
+uniform sampler2DArray cascadeDisplacementArray;
 uniform float cascadePatchSizes[6];
 uniform vec2 cascadeSpatialOffsets[6];
 //Per-cascade slope variance σ² (in slope² units). Precomputed from JONSWAP +
@@ -256,7 +262,13 @@ uniform mat4 sunShadowMatrix;
 //0→3 and uses the first cascade whose UVs fall inside [0,1], with a
 //narrow fade band into the next coarser cascade so the boundary is not
 //visible.
-uniform sampler2D oceanShadowMap[4];
+//Phase 10: the four moment maps are ONE sampler2DArray, a layer per cascade, so
+//they cost one texture unit instead of four. They were already identical 2048²
+//RGBA32F targets — only the ortho extent differs, and that lives in the matrix,
+//not the texture. highp is stated because the warped second moment reaches
+//~22000 and mediump would throw the variance term away (declared once for the
+//whole fragment stage, up with cascadeDisplacementArray).
+uniform sampler2DArray oceanShadowMap;
 uniform vec2 oceanShadowMapSize[4];
 uniform int oceanShadowEnabled;
 //EVSM warp constant. MUST match the caster's evsmExpC exactly. Larger
@@ -520,10 +532,13 @@ float getSunShadow(vec4 shadowCoord){
 //old depth-comparison path on smooth ocean meshes — becomes a soft
 //gradient instead of binary flips between adjacent triangles.
 //
-//Sampler-array indices in GLSL ES must be constant integral expressions,
-//so the 4-cascade selection is unrolled rather than written as a for-loop.
-//The `if(found) return` pattern short-circuits the texture read once a
-//covering cascade is found — typically C0 near camera, C3 at horizon.
+//The 4-cascade selection is written out rather than looped so that each step
+//can fade into the next coarser cascade with its own pair of coordinates.
+//(Before Phase 10 it had no choice: the maps were an array of samplers, whose
+//indices GLSL ES requires to be constant. They are one sampler2DArray now, so
+//this shape is a deliberate one.) The `if(found) return` pattern short-circuits
+//the texture read once a covering cascade is found — typically C0 near camera,
+//C3 at horizon.
 
 float chebyshevUpperBound(vec2 moments, float d){
   //moments.x = E[d_warp], moments.y = E[d_warp^2]. Variance = M2 - M1^2.
@@ -545,14 +560,17 @@ float reduceLightBleed(float pmax){
   return clamp((pmax - evsmLightBleedReduction) / (1.0 - evsmLightBleedReduction), 0.0, 1.0);
 }
 
-float sampleOceanCascadeEVSM(sampler2D momentMap, vec3 sc){
+//Takes the cascade's LAYER rather than a sampler. Phase 10: a sampler2DArray
+//cannot be passed around the way a sampler2D was, and does not need to be —
+//the cascade is a coordinate now.
+float sampleOceanCascadeEVSM(int cascadeLayer, vec3 sc){
   //Sample the 4 moments with hardware bilinear (LinearFilter on the float
   //target), warp the fragment depth into the same domain, and take the
   //min of the two Chebyshev bounds. Linear filtering of warped moments
   //is mathematically valid because the warp is monotonic — bilinear
   //interpolation of moments equals the moments of the bilinear-
   //interpolated warped depth.
-  vec4 moments = texture2D(momentMap, sc.xy);
+  vec4 moments = texture(oceanShadowMap, vec3(sc.xy, float(cascadeLayer)));
   //No-caster guard. A real occluder warps to M1 = E[exp(evsmExpC·z)] with
   //z in [0,1], so M1 >= exp(0) = 1 always; the separable Gaussian blur is a
   //convex average and preserves M1 >= 1. Therefore M1 < 1 is impossible for
@@ -636,13 +654,13 @@ float getOceanShadow(vec4 shadowCoord0, vec4 shadowCoord1, vec4 shadowCoord2, ve
   vec3 sc0 = shadowCoord0.xyz / shadowCoord0.w;
   float margin0 = oceanCascadeMarginUV(0);
   if(oceanCascadeContains(sc0, margin0)){
-    float shadow0 = sampleOceanCascadeEVSM(oceanShadowMap[0], sc0);
+    float shadow0 = sampleOceanCascadeEVSM(0, sc0);
     float w0 = oceanCascadeFadeWeight(sc0, margin0);
     if(w0 >= 1.0) return shadow0;
     vec3 sc1 = shadowCoord1.xyz / shadowCoord1.w;
     float margin1 = oceanCascadeMarginUV(1);
     if(oceanCascadeContains(sc1, margin1)){
-      float shadow1 = sampleOceanCascadeEVSM(oceanShadowMap[1], sc1);
+      float shadow1 = sampleOceanCascadeEVSM(1, sc1);
       return mix(shadow1, shadow0, w0);
     }
     return shadow0;
@@ -652,13 +670,13 @@ float getOceanShadow(vec4 shadowCoord0, vec4 shadowCoord1, vec4 shadowCoord2, ve
   vec3 sc1 = shadowCoord1.xyz / shadowCoord1.w;
   float margin1 = oceanCascadeMarginUV(1);
   if(oceanCascadeContains(sc1, margin1)){
-    float shadow1 = sampleOceanCascadeEVSM(oceanShadowMap[1], sc1);
+    float shadow1 = sampleOceanCascadeEVSM(1, sc1);
     float w1 = oceanCascadeFadeWeight(sc1, margin1);
     if(w1 >= 1.0) return shadow1;
     vec3 sc2 = shadowCoord2.xyz / shadowCoord2.w;
     float margin2 = oceanCascadeMarginUV(2);
     if(oceanCascadeContains(sc2, margin2)){
-      float shadow2 = sampleOceanCascadeEVSM(oceanShadowMap[2], sc2);
+      float shadow2 = sampleOceanCascadeEVSM(2, sc2);
       return mix(shadow2, shadow1, w1);
     }
     return shadow1;
@@ -668,13 +686,13 @@ float getOceanShadow(vec4 shadowCoord0, vec4 shadowCoord1, vec4 shadowCoord2, ve
   vec3 sc2 = shadowCoord2.xyz / shadowCoord2.w;
   float margin2 = oceanCascadeMarginUV(2);
   if(oceanCascadeContains(sc2, margin2)){
-    float shadow2 = sampleOceanCascadeEVSM(oceanShadowMap[2], sc2);
+    float shadow2 = sampleOceanCascadeEVSM(2, sc2);
     float w2 = oceanCascadeFadeWeight(sc2, margin2);
     if(w2 >= 1.0) return shadow2;
     vec3 sc3 = shadowCoord3.xyz / shadowCoord3.w;
     float margin3 = oceanCascadeMarginUV(3);
     if(oceanCascadeContains(sc3, margin3)){
-      float shadow3 = sampleOceanCascadeEVSM(oceanShadowMap[3], sc3);
+      float shadow3 = sampleOceanCascadeEVSM(3, sc3);
       return mix(shadow3, shadow2, w2);
     }
     return shadow2;
@@ -686,7 +704,7 @@ float getOceanShadow(vec4 shadowCoord0, vec4 shadowCoord1, vec4 shadowCoord2, ve
   vec3 sc3 = shadowCoord3.xyz / shadowCoord3.w;
   float margin3 = oceanCascadeMarginUV(3);
   if(oceanCascadeContains(sc3, margin3)){
-    return sampleOceanCascadeEVSM(oceanShadowMap[3], sc3);
+    return sampleOceanCascadeEVSM(3, sc3);
   }
   return 1.0;
 }
@@ -1620,10 +1638,10 @@ void main(){
     float eps = 1.0 / patchDataSize;
     float worldStep = cascadePatchSizes[0] / patchDataSize;
     vec2 uv = (vWorldXZ + cascadeSpatialOffsets[0]) / cascadePatchSizes[0];
-    vec3 rawL = texture2D(cascadeDisplacementTextures[0], uv + vec2(-eps,  0.0)).xyz;
-    vec3 rawR = texture2D(cascadeDisplacementTextures[0], uv + vec2( eps,  0.0)).xyz;
-    vec3 rawB = texture2D(cascadeDisplacementTextures[0], uv + vec2( 0.0, -eps)).xyz;
-    vec3 rawT = texture2D(cascadeDisplacementTextures[0], uv + vec2( 0.0,  eps)).xyz;
+    vec3 rawL = texture(cascadeDisplacementArray, vec3(uv + vec2(-eps,  0.0), 0.0)).xyz;
+    vec3 rawR = texture(cascadeDisplacementArray, vec3(uv + vec2( eps,  0.0), 0.0)).xyz;
+    vec3 rawB = texture(cascadeDisplacementArray, vec3(uv + vec2( 0.0, -eps), 0.0)).xyz;
+    vec3 rawT = texture(cascadeDisplacementArray, vec3(uv + vec2( 0.0,  eps), 0.0)).xyz;
     rawDdx += waveMask0 * (rawR - rawL) / (2.0 * worldStep);
     rawDdz += waveMask0 * (rawT - rawB) / (2.0 * worldStep);
     cascade0HeightSlope = vec2(rawDdx.y, rawDdz.y);
@@ -1632,10 +1650,10 @@ void main(){
     float eps = 1.0 / patchDataSize;
     float worldStep = cascadePatchSizes[1] / patchDataSize;
     vec2 uv = (vWorldXZ + cascadeSpatialOffsets[1]) / cascadePatchSizes[1];
-    vec3 rawL = texture2D(cascadeDisplacementTextures[1], uv + vec2(-eps,  0.0)).xyz;
-    vec3 rawR = texture2D(cascadeDisplacementTextures[1], uv + vec2( eps,  0.0)).xyz;
-    vec3 rawB = texture2D(cascadeDisplacementTextures[1], uv + vec2( 0.0, -eps)).xyz;
-    vec3 rawT = texture2D(cascadeDisplacementTextures[1], uv + vec2( 0.0,  eps)).xyz;
+    vec3 rawL = texture(cascadeDisplacementArray, vec3(uv + vec2(-eps,  0.0), 1.0)).xyz;
+    vec3 rawR = texture(cascadeDisplacementArray, vec3(uv + vec2( eps,  0.0), 1.0)).xyz;
+    vec3 rawB = texture(cascadeDisplacementArray, vec3(uv + vec2( 0.0, -eps), 1.0)).xyz;
+    vec3 rawT = texture(cascadeDisplacementArray, vec3(uv + vec2( 0.0,  eps), 1.0)).xyz;
     rawDdx += waveMask1 * (rawR - rawL) / (2.0 * worldStep);
     rawDdz += waveMask1 * (rawT - rawB) / (2.0 * worldStep);
   }
@@ -1654,10 +1672,10 @@ void main(){
     //scales the resolved slope and the lost variance alike.
     float waveMask = waveMask2;
     vec2 uv = (vWorldXZ + cascadeSpatialOffsets[2]) / cascadePatchSizes[2];
-    vec3 rawL = texture2D(cascadeDisplacementTextures[2], uv + vec2(-eps,  0.0)).xyz;
-    vec3 rawR = texture2D(cascadeDisplacementTextures[2], uv + vec2( eps,  0.0)).xyz;
-    vec3 rawB = texture2D(cascadeDisplacementTextures[2], uv + vec2( 0.0, -eps)).xyz;
-    vec3 rawT = texture2D(cascadeDisplacementTextures[2], uv + vec2( 0.0,  eps)).xyz;
+    vec3 rawL = texture(cascadeDisplacementArray, vec3(uv + vec2(-eps,  0.0), 2.0)).xyz;
+    vec3 rawR = texture(cascadeDisplacementArray, vec3(uv + vec2( eps,  0.0), 2.0)).xyz;
+    vec3 rawB = texture(cascadeDisplacementArray, vec3(uv + vec2( 0.0, -eps), 2.0)).xyz;
+    vec3 rawT = texture(cascadeDisplacementArray, vec3(uv + vec2( 0.0,  eps), 2.0)).xyz;
     vec3 cDdx = (rawR - rawL) / (2.0 * worldStep);
     vec3 cDdz = (rawT - rawB) / (2.0 * worldStep);
     rawDdx += waveMask * fade * cDdx;
@@ -1673,10 +1691,10 @@ void main(){
     //scales the resolved slope and the lost variance alike.
     float waveMask = waveMask3;
     vec2 uv = (vWorldXZ + cascadeSpatialOffsets[3]) / cascadePatchSizes[3];
-    vec3 rawL = texture2D(cascadeDisplacementTextures[3], uv + vec2(-eps,  0.0)).xyz;
-    vec3 rawR = texture2D(cascadeDisplacementTextures[3], uv + vec2( eps,  0.0)).xyz;
-    vec3 rawB = texture2D(cascadeDisplacementTextures[3], uv + vec2( 0.0, -eps)).xyz;
-    vec3 rawT = texture2D(cascadeDisplacementTextures[3], uv + vec2( 0.0,  eps)).xyz;
+    vec3 rawL = texture(cascadeDisplacementArray, vec3(uv + vec2(-eps,  0.0), 3.0)).xyz;
+    vec3 rawR = texture(cascadeDisplacementArray, vec3(uv + vec2( eps,  0.0), 3.0)).xyz;
+    vec3 rawB = texture(cascadeDisplacementArray, vec3(uv + vec2( 0.0, -eps), 3.0)).xyz;
+    vec3 rawT = texture(cascadeDisplacementArray, vec3(uv + vec2( 0.0,  eps), 3.0)).xyz;
     vec3 cDdx = (rawR - rawL) / (2.0 * worldStep);
     vec3 cDdz = (rawT - rawB) / (2.0 * worldStep);
     rawDdx += waveMask * fade * cDdx;
@@ -1692,10 +1710,10 @@ void main(){
     //scales the resolved slope and the lost variance alike.
     float waveMask = waveMask4;
     vec2 uv = (vWorldXZ + cascadeSpatialOffsets[4]) / cascadePatchSizes[4];
-    vec3 rawL = texture2D(cascadeDisplacementTextures[4], uv + vec2(-eps,  0.0)).xyz;
-    vec3 rawR = texture2D(cascadeDisplacementTextures[4], uv + vec2( eps,  0.0)).xyz;
-    vec3 rawB = texture2D(cascadeDisplacementTextures[4], uv + vec2( 0.0, -eps)).xyz;
-    vec3 rawT = texture2D(cascadeDisplacementTextures[4], uv + vec2( 0.0,  eps)).xyz;
+    vec3 rawL = texture(cascadeDisplacementArray, vec3(uv + vec2(-eps,  0.0), 4.0)).xyz;
+    vec3 rawR = texture(cascadeDisplacementArray, vec3(uv + vec2( eps,  0.0), 4.0)).xyz;
+    vec3 rawB = texture(cascadeDisplacementArray, vec3(uv + vec2( 0.0, -eps), 4.0)).xyz;
+    vec3 rawT = texture(cascadeDisplacementArray, vec3(uv + vec2( 0.0,  eps), 4.0)).xyz;
     vec3 cDdx = (rawR - rawL) / (2.0 * worldStep);
     vec3 cDdz = (rawT - rawB) / (2.0 * worldStep);
     rawDdx += waveMask * fade * cDdx;
@@ -1711,10 +1729,10 @@ void main(){
     //scales the resolved slope and the lost variance alike.
     float waveMask = waveMask5;
     vec2 uv = (vWorldXZ + cascadeSpatialOffsets[5]) / cascadePatchSizes[5];
-    vec3 rawL = texture2D(cascadeDisplacementTextures[5], uv + vec2(-eps,  0.0)).xyz;
-    vec3 rawR = texture2D(cascadeDisplacementTextures[5], uv + vec2( eps,  0.0)).xyz;
-    vec3 rawB = texture2D(cascadeDisplacementTextures[5], uv + vec2( 0.0, -eps)).xyz;
-    vec3 rawT = texture2D(cascadeDisplacementTextures[5], uv + vec2( 0.0,  eps)).xyz;
+    vec3 rawL = texture(cascadeDisplacementArray, vec3(uv + vec2(-eps,  0.0), 5.0)).xyz;
+    vec3 rawR = texture(cascadeDisplacementArray, vec3(uv + vec2( eps,  0.0), 5.0)).xyz;
+    vec3 rawB = texture(cascadeDisplacementArray, vec3(uv + vec2( 0.0, -eps), 5.0)).xyz;
+    vec3 rawT = texture(cascadeDisplacementArray, vec3(uv + vec2( 0.0,  eps), 5.0)).xyz;
     vec3 cDdx = (rawR - rawL) / (2.0 * worldStep);
     vec3 cDdz = (rawT - rawB) / (2.0 * worldStep);
     rawDdx += waveMask * fade * cDdx;
@@ -2650,10 +2668,10 @@ void main(){
     float specWorldStep = cascadePatchSizes[5] * 8.0 / patchDataSize;
     float fade5 = smoothstep(cascadePatchSizes[5] * 500.0, 0.0, distanceToWorldPosition);
     vec2 uv5 = (vWorldXZ + cascadeSpatialOffsets[5]) / cascadePatchSizes[5];
-    float hL = texture2D(cascadeDisplacementTextures[5], uv5 + vec2(-specEps, 0.0)).y;
-    float hR = texture2D(cascadeDisplacementTextures[5], uv5 + vec2( specEps, 0.0)).y;
-    float hB = texture2D(cascadeDisplacementTextures[5], uv5 + vec2( 0.0, -specEps)).y;
-    float hT = texture2D(cascadeDisplacementTextures[5], uv5 + vec2( 0.0,  specEps)).y;
+    float hL = texture(cascadeDisplacementArray, vec3(uv5 + vec2(-specEps, 0.0), 5.0)).y;
+    float hR = texture(cascadeDisplacementArray, vec3(uv5 + vec2( specEps, 0.0), 5.0)).y;
+    float hB = texture(cascadeDisplacementArray, vec3(uv5 + vec2( 0.0, -specEps), 5.0)).y;
+    float hT = texture(cascadeDisplacementArray, vec3(uv5 + vec2( 0.0,  specEps), 5.0)).y;
     c5FilteredHeightSlope = vec2(hR - hL, hT - hB) / (2.0 * specWorldStep);
     c5FilteredHeightSlope *= waveMask5 * fade5 * waveHeightMultiplier;
   }
@@ -2951,16 +2969,16 @@ void main(){
     float storedDepth = -1.0;
     if(oceanCascadeContains(sc0d, dbgMargin0)){
       refDepth = sc0d.z;
-      storedDepth = log(max(texture2D(oceanShadowMap[0], sc0d.xy).r, 1.0)) / evsmExpC;
+      storedDepth = log(max(texture(oceanShadowMap, vec3(sc0d.xy, 0.0)).r, 1.0)) / evsmExpC;
     } else if(oceanCascadeContains(sc1d, dbgMargin1)){
       refDepth = sc1d.z;
-      storedDepth = log(max(texture2D(oceanShadowMap[1], sc1d.xy).r, 1.0)) / evsmExpC;
+      storedDepth = log(max(texture(oceanShadowMap, vec3(sc1d.xy, 1.0)).r, 1.0)) / evsmExpC;
     } else if(oceanCascadeContains(sc2d, dbgMargin2)){
       refDepth = sc2d.z;
-      storedDepth = log(max(texture2D(oceanShadowMap[2], sc2d.xy).r, 1.0)) / evsmExpC;
+      storedDepth = log(max(texture(oceanShadowMap, vec3(sc2d.xy, 2.0)).r, 1.0)) / evsmExpC;
     } else if(oceanCascadeContains(sc3d, dbgMargin3)){
       refDepth = sc3d.z;
-      storedDepth = log(max(texture2D(oceanShadowMap[3], sc3d.xy).r, 1.0)) / evsmExpC;
+      storedDepth = log(max(texture(oceanShadowMap, vec3(sc3d.xy, 3.0)).r, 1.0)) / evsmExpC;
     }
     if(refDepth < 0.0){
       gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0);
@@ -3268,38 +3286,15 @@ void main(){
       float patchL = cascadePatchSizes[idx];
       float worldStep = patchL / patchDataSize;
       vec2 uv = (vWorldXZ + cascadeSpatialOffsets[idx]) / patchL;
-      vec2 dL, dR, dB, dT;
-      if(idx == 0){
-        dL = texture2D(cascadeDisplacementTextures[0], uv + vec2(-eps, 0.0)).xz;
-        dR = texture2D(cascadeDisplacementTextures[0], uv + vec2( eps, 0.0)).xz;
-        dB = texture2D(cascadeDisplacementTextures[0], uv + vec2(0.0,-eps)).xz;
-        dT = texture2D(cascadeDisplacementTextures[0], uv + vec2(0.0, eps)).xz;
-      } else if(idx == 1){
-        dL = texture2D(cascadeDisplacementTextures[1], uv + vec2(-eps, 0.0)).xz;
-        dR = texture2D(cascadeDisplacementTextures[1], uv + vec2( eps, 0.0)).xz;
-        dB = texture2D(cascadeDisplacementTextures[1], uv + vec2(0.0,-eps)).xz;
-        dT = texture2D(cascadeDisplacementTextures[1], uv + vec2(0.0, eps)).xz;
-      } else if(idx == 2){
-        dL = texture2D(cascadeDisplacementTextures[2], uv + vec2(-eps, 0.0)).xz;
-        dR = texture2D(cascadeDisplacementTextures[2], uv + vec2( eps, 0.0)).xz;
-        dB = texture2D(cascadeDisplacementTextures[2], uv + vec2(0.0,-eps)).xz;
-        dT = texture2D(cascadeDisplacementTextures[2], uv + vec2(0.0, eps)).xz;
-      } else if(idx == 3){
-        dL = texture2D(cascadeDisplacementTextures[3], uv + vec2(-eps, 0.0)).xz;
-        dR = texture2D(cascadeDisplacementTextures[3], uv + vec2( eps, 0.0)).xz;
-        dB = texture2D(cascadeDisplacementTextures[3], uv + vec2(0.0,-eps)).xz;
-        dT = texture2D(cascadeDisplacementTextures[3], uv + vec2(0.0, eps)).xz;
-      } else if(idx == 4){
-        dL = texture2D(cascadeDisplacementTextures[4], uv + vec2(-eps, 0.0)).xz;
-        dR = texture2D(cascadeDisplacementTextures[4], uv + vec2( eps, 0.0)).xz;
-        dB = texture2D(cascadeDisplacementTextures[4], uv + vec2(0.0,-eps)).xz;
-        dT = texture2D(cascadeDisplacementTextures[4], uv + vec2(0.0, eps)).xz;
-      } else {
-        dL = texture2D(cascadeDisplacementTextures[5], uv + vec2(-eps, 0.0)).xz;
-        dR = texture2D(cascadeDisplacementTextures[5], uv + vec2( eps, 0.0)).xz;
-        dB = texture2D(cascadeDisplacementTextures[5], uv + vec2(0.0,-eps)).xz;
-        dT = texture2D(cascadeDisplacementTextures[5], uv + vec2(0.0, eps)).xz;
-      }
+      //One sample set with a runtime layer. This was a six-branch if/else chain
+      //until Phase 10, for one reason only: GLSL ES forbids indexing an ARRAY OF
+      //SAMPLERS with a non-constant expression. A sampler2DArray has no such
+      //restriction — the layer is just a coordinate — so the chain collapses.
+      float layer = float(idx);
+      vec2 dL = texture(cascadeDisplacementArray, vec3(uv + vec2(-eps, 0.0), layer)).xz;
+      vec2 dR = texture(cascadeDisplacementArray, vec3(uv + vec2( eps, 0.0), layer)).xz;
+      vec2 dB = texture(cascadeDisplacementArray, vec3(uv + vec2(0.0,-eps), layer)).xz;
+      vec2 dT = texture(cascadeDisplacementArray, vec3(uv + vec2(0.0, eps), layer)).xz;
       float dDxdx = (dR.x - dL.x) / (2.0 * worldStep);
       float dDzdz = (dT.y - dB.y) / (2.0 * worldStep);
       float dDxdz = (dT.x - dB.x) / (2.0 * worldStep);
@@ -3512,15 +3507,12 @@ void main(){
       int cascadeIndex = int(fc.x / thumbSize);
       vec2 thumbUV = vec2((fc.x - float(cascadeIndex) * thumbSize) / thumbSize,
                           (fc.y - topY) / thumbSize);
-      //Sampler2D arrays demand a constant integral index; unroll the four
-      //selections rather than dynamic-indexing the array. Recover the
+      //One read with a runtime layer. This was a four-branch chain until Phase 10
+      //because an ARRAY OF SAMPLERS demands a constant integral index; a
+      //sampler2DArray takes the cascade as a coordinate instead. Recover the
       //blurred mean depth from the M1_pos moment (R channel) via
       //z = log(M1) / c — the inverse of the caster's exp(c·z) warp.
-      float m1 = 1.0;
-      if(cascadeIndex == 0)      m1 = texture2D(oceanShadowMap[0], thumbUV).r;
-      else if(cascadeIndex == 1) m1 = texture2D(oceanShadowMap[1], thumbUV).r;
-      else if(cascadeIndex == 2) m1 = texture2D(oceanShadowMap[2], thumbUV).r;
-      else                       m1 = texture2D(oceanShadowMap[3], thumbUV).r;
+      float m1 = texture(oceanShadowMap, vec3(thumbUV, float(cascadeIndex))).r;
       float d = log(max(m1, 1.0)) / evsmExpC;
       //Sea-surface depths cluster in [0.3, 0.7]; stretch that band so wave
       //structure shows as gray gradients; cleared/no-caster texels (d=1)

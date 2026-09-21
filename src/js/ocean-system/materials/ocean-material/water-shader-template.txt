@@ -3,7 +3,9 @@
 //https://github.com/mrdoob/three.js/wiki/Uniforms-types
 ARestlessOcean.Materials.Ocean.waterMaterial = {
   uniforms: {
-    cascadeDisplacementTextures: {value: [null, null, null, null, null, null]},
+    //Phase 10: one sampler2DArray, a layer per cascade, instead of six separate
+    //sampler2D units. Filled from OceanHeightComposer.cascadeDisplacementTexture.
+    cascadeDisplacementArray: {type: 't', value: null},
     cascadePatchSizes: {value: [4096.0, 1024.0, 256.0, 64.0, 16.0, 4.0]},
     //Per-cascade slope variance σ² (units of slope²). Precomputed from JONSWAP
     //+ directional spread for each cascade's k-band in ocean-height-band-library.
@@ -115,7 +117,8 @@ ARestlessOcean.Materials.Ocean.waterMaterial = {
     //the first cascade whose UVs fall inside [0,1]. Per-cascade matrices
     //are split as oceanShadowMatrix0..3 so vertex-shader array-uniform
     //packing is not relied on.
-    oceanShadowMap: {type: 't', value: [null, null, null, null]},
+    //Phase 10: one sampler2DArray, a layer per cascade, instead of four units.
+    oceanShadowMap: {type: 't', value: null},
     oceanShadowMatrix0: {type: 'mat4', value: new THREE.Matrix4()},
     oceanShadowMatrix1: {type: 'mat4', value: new THREE.Matrix4()},
     oceanShadowMatrix2: {type: 'mat4', value: new THREE.Matrix4()},

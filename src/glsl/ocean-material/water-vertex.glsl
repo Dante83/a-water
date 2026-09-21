@@ -24,7 +24,13 @@ varying vec4 vOceanShadowCoord3;
 
 uniform float sizeOfOceanPatch;
 uniform int ringIndex;
-uniform sampler2D cascadeDisplacementTextures[6];
+//Phase 10: the six per-cascade displacement maps are ONE sampler2DArray, a layer
+//per cascade, so they cost one texture unit here instead of six. They were always
+//the same resolution and format — Crest-style banding varies the world patch SIZE,
+//not the texel count. highp is what three already gives a ShaderMaterial, stated
+//here because this data is metres of displacement and mediump would quantise it.
+precision highp sampler2DArray;
+uniform sampler2DArray cascadeDisplacementArray;
 uniform float cascadePatchSizes[6];
 uniform vec2 cascadeSpatialOffsets[6];
 uniform float waveHeightMultiplier;
@@ -33,7 +39,7 @@ uniform float chop;
 //WaterField cascades (Phase 1b) — see water-shader.glsl's waterFieldAt
 //for the full explanation. Duplicated here rather than shared: vertex and
 //fragment are separate GLSL compilation units in three.js, and this file
-//already duplicates cascadeDisplacementTextures/cascadePatchSizes/
+//already duplicates cascadeDisplacementArray/cascadePatchSizes/
 //cascadeSpatialOffsets the same way, so this follows the existing pattern
 //rather than inventing a new one.
 //
@@ -206,12 +212,12 @@ void main() {
   waveMaskB *= stillKeep;
 
   vec3 displacement = vec3(0.0);
-  displacement += waveMaskA.x * texture2D(cascadeDisplacementTextures[0], (worldXZ + cascadeSpatialOffsets[0]) / cascadePatchSizes[0]).xyz;
-  displacement += waveMaskA.y * texture2D(cascadeDisplacementTextures[1], (worldXZ + cascadeSpatialOffsets[1]) / cascadePatchSizes[1]).xyz;
-  displacement += waveMaskA.z * smoothstep(cascadePatchSizes[2] *  50.0, 0.0, distanceToVertex) * texture2D(cascadeDisplacementTextures[2], (worldXZ + cascadeSpatialOffsets[2]) / cascadePatchSizes[2]).xyz;
-  displacement += waveMaskB.x * smoothstep(cascadePatchSizes[3] * 100.0, 0.0, distanceToVertex) * texture2D(cascadeDisplacementTextures[3], (worldXZ + cascadeSpatialOffsets[3]) / cascadePatchSizes[3]).xyz;
-  displacement += waveMaskB.y * smoothstep(cascadePatchSizes[4] * 250.0, 0.0, distanceToVertex) * texture2D(cascadeDisplacementTextures[4], (worldXZ + cascadeSpatialOffsets[4]) / cascadePatchSizes[4]).xyz;
-  displacement += waveMaskB.z * smoothstep(cascadePatchSizes[5] * 500.0, 0.0, distanceToVertex) * texture2D(cascadeDisplacementTextures[5], (worldXZ + cascadeSpatialOffsets[5]) / cascadePatchSizes[5]).xyz;
+  displacement += waveMaskA.x * texture(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[0]) / cascadePatchSizes[0], 0.0)).xyz;
+  displacement += waveMaskA.y * texture(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[1]) / cascadePatchSizes[1], 1.0)).xyz;
+  displacement += waveMaskA.z * smoothstep(cascadePatchSizes[2] *  50.0, 0.0, distanceToVertex) * texture(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[2]) / cascadePatchSizes[2], 2.0)).xyz;
+  displacement += waveMaskB.x * smoothstep(cascadePatchSizes[3] * 100.0, 0.0, distanceToVertex) * texture(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[3]) / cascadePatchSizes[3], 3.0)).xyz;
+  displacement += waveMaskB.y * smoothstep(cascadePatchSizes[4] * 250.0, 0.0, distanceToVertex) * texture(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[4]) / cascadePatchSizes[4], 4.0)).xyz;
+  displacement += waveMaskB.z * smoothstep(cascadePatchSizes[5] * 500.0, 0.0, distanceToVertex) * texture(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[5]) / cascadePatchSizes[5], 5.0)).xyz;
   displacement *= waveHeightMultiplier;
   displacement.x *= -chop;
   displacement.z *= -chop;
@@ -273,10 +279,10 @@ void main() {
   vec2 ndUV = (worldXZ + cascadeSpatialOffsets[0]) / cascadePatchSizes[0];
   float ndEps = 1.0 / patchDataSize;
   float ndStep = cascadePatchSizes[0] / patchDataSize;
-  float hL = texture2D(cascadeDisplacementTextures[0], ndUV + vec2(-ndEps, 0.0)).y;
-  float hR = texture2D(cascadeDisplacementTextures[0], ndUV + vec2( ndEps, 0.0)).y;
-  float hB = texture2D(cascadeDisplacementTextures[0], ndUV + vec2( 0.0, -ndEps)).y;
-  float hT = texture2D(cascadeDisplacementTextures[0], ndUV + vec2( 0.0,  ndEps)).y;
+  float hL = texture(cascadeDisplacementArray, vec3(ndUV + vec2(-ndEps, 0.0), 0.0)).y;
+  float hR = texture(cascadeDisplacementArray, vec3(ndUV + vec2( ndEps, 0.0), 0.0)).y;
+  float hB = texture(cascadeDisplacementArray, vec3(ndUV + vec2( 0.0, -ndEps), 0.0)).y;
+  float hT = texture(cascadeDisplacementArray, vec3(ndUV + vec2( 0.0,  ndEps), 0.0)).y;
   float dHdX = waveMaskA.x * (hR - hL) / (2.0 * ndStep) * waveHeightMultiplier;
   float dHdZ = waveMaskA.x * (hT - hB) / (2.0 * ndStep) * waveHeightMultiplier;
   vec3 normalOffsetN = normalize(vec3(-dHdX, 1.0, -dHdZ));

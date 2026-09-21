@@ -4,7 +4,9 @@
 //wave-height multiplier, and chop.
 ARestlessOcean.Materials.Ocean.oceanShadowMaterial = {
   uniforms: {
-    cascadeDisplacementTextures: {value: [null, null, null, null, null, null]},
+    //Phase 10: one sampler2DArray, a layer per cascade, instead of six separate
+    //sampler2D units. Filled from OceanHeightComposer.cascadeDisplacementTexture.
+    cascadeDisplacementArray: {type: 't', value: null},
     cascadePatchSizes: {value: [4096.0, 1024.0, 256.0, 64.0, 16.0, 4.0]},
     cascadeSpatialOffsets: {value: [
       new THREE.Vector2(1564.7, 2531.3),

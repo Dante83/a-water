@@ -4,7 +4,9 @@
 //wave-height multiplier, and chop.
 ARestlessOcean.Materials.Ocean.oceanShadowMaterial = {
   uniforms: {
-    cascadeDisplacementTextures: {value: [null, null, null, null, null, null]},
+    //Phase 10: one sampler2DArray, a layer per cascade, instead of six separate
+    //sampler2D units. Filled from OceanHeightComposer.cascadeDisplacementTexture.
+    cascadeDisplacementArray: {type: 't', value: null},
     cascadePatchSizes: {value: [4096.0, 1024.0, 256.0, 64.0, 16.0, 4.0]},
     cascadeSpatialOffsets: {value: [
       new THREE.Vector2(1564.7, 2531.3),
@@ -83,7 +85,13 @@ ARestlessOcean.Materials.Ocean.oceanShadowMaterial = {
 
     'uniform float sizeOfOceanPatch;',
     'uniform int ringIndex;',
-    'uniform sampler2D cascadeDisplacementTextures[6];',
+    '//Phase 10: the six per-cascade displacement maps are ONE sampler2DArray, a layer',
+    '//per cascade, so they cost one texture unit here instead of six. They were always',
+    '//the same resolution and format — Crest-style banding varies the world patch SIZE,',
+    '//not the texel count. highp is what three already gives a ShaderMaterial, stated',
+    '//here because this data is metres of displacement and mediump would quantise it.',
+    'precision highp sampler2DArray;',
+    'uniform sampler2DArray cascadeDisplacementArray;',
     'uniform float cascadePatchSizes[6];',
     'uniform vec2 cascadeSpatialOffsets[6];',
     'uniform float waveHeightMultiplier;',
@@ -166,12 +174,12 @@ ARestlessOcean.Materials.Ocean.oceanShadowMaterial = {
       'waveMaskB *= stillKeep;',
 
       'vec3 displacement = vec3(0.0);',
-      'displacement += waveMaskA.x * texture2D(cascadeDisplacementTextures[0], (worldXZ + cascadeSpatialOffsets[0]) / cascadePatchSizes[0]).xyz;',
-      'displacement += waveMaskA.y * texture2D(cascadeDisplacementTextures[1], (worldXZ + cascadeSpatialOffsets[1]) / cascadePatchSizes[1]).xyz;',
-      'displacement += waveMaskA.z * smoothstep(cascadePatchSizes[2] *  50.0, 0.0, distanceToVertex) * texture2D(cascadeDisplacementTextures[2], (worldXZ + cascadeSpatialOffsets[2]) / cascadePatchSizes[2]).xyz;',
-      'displacement += waveMaskB.x * smoothstep(cascadePatchSizes[3] * 100.0, 0.0, distanceToVertex) * texture2D(cascadeDisplacementTextures[3], (worldXZ + cascadeSpatialOffsets[3]) / cascadePatchSizes[3]).xyz;',
-      'displacement += waveMaskB.y * smoothstep(cascadePatchSizes[4] * 250.0, 0.0, distanceToVertex) * texture2D(cascadeDisplacementTextures[4], (worldXZ + cascadeSpatialOffsets[4]) / cascadePatchSizes[4]).xyz;',
-      'displacement += waveMaskB.z * smoothstep(cascadePatchSizes[5] * 500.0, 0.0, distanceToVertex) * texture2D(cascadeDisplacementTextures[5], (worldXZ + cascadeSpatialOffsets[5]) / cascadePatchSizes[5]).xyz;',
+      'displacement += waveMaskA.x * texture(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[0]) / cascadePatchSizes[0], 0.0)).xyz;',
+      'displacement += waveMaskA.y * texture(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[1]) / cascadePatchSizes[1], 1.0)).xyz;',
+      'displacement += waveMaskA.z * smoothstep(cascadePatchSizes[2] *  50.0, 0.0, distanceToVertex) * texture(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[2]) / cascadePatchSizes[2], 2.0)).xyz;',
+      'displacement += waveMaskB.x * smoothstep(cascadePatchSizes[3] * 100.0, 0.0, distanceToVertex) * texture(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[3]) / cascadePatchSizes[3], 3.0)).xyz;',
+      'displacement += waveMaskB.y * smoothstep(cascadePatchSizes[4] * 250.0, 0.0, distanceToVertex) * texture(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[4]) / cascadePatchSizes[4], 4.0)).xyz;',
+      'displacement += waveMaskB.z * smoothstep(cascadePatchSizes[5] * 500.0, 0.0, distanceToVertex) * texture(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[5]) / cascadePatchSizes[5], 5.0)).xyz;',
       'displacement *= waveHeightMultiplier;',
       'displacement.x *= -chop;',
       'displacement.z *= -chop;',

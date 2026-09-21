@@ -18,10 +18,20 @@
 //THE MATERIAL
 //A clone of the water material with the $flowing_water variant
 //(OceanGrid.createFlowingWaterMaterial), registered with the grid so it gets
-//the whole per-frame uniform stream. The variant compiles out the six FFT cascade
-//samplers, caustics, the ocean's fold/shore foam drive and the ocean CSM, which
-//is what makes room for flow at all: the ocean program is at 31 of 32 texture
-//units. Its foam and current come from FlowFoamPass (one sampler for both).
+//the whole per-frame uniform stream. The variant compiles out the FFT cascade
+//sampling, the ocean's fold/shore foam drive and the ocean CSM lookup. Its foam
+//and current come from FlowFoamPass (one sampler for both).
+//
+//CAUSTICS ARE NOT COMPILED OUT, and this comment used to say they were. They
+//were switched back on for the flowing variant in round 7 (2026-09-15) —
+//$caustics_enabled is an independent flag, and ocean-grid.js:1016 explains why:
+//the in-shader seabed caustic is world-space, so it works on a creek bed 20 m up
+//exactly as it does on the seabed, and without it a lake and the creek running
+//into it lit their beds differently.
+//
+//The budget line this used to carry ("31 of 32 texture units") is also out of
+//date. Phase 10 collapsed the six cascade maps and the four ocean-CSM cascades
+//into two sampler2DArrays; the still-water ocean program measures 22 of 32 now.
 //
 //GEOMETRY AND LOD (declared here, per the cross-cutting rules)
 //  near  1 m cells  over ±128 m

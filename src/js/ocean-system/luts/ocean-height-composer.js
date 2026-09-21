@@ -77,11 +77,37 @@ ARestlessOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
     generateMipmaps: true
   };
 
-  //One displacement RT per cascade. The pack pass fully rewrites every texel
-  //each frame from the band library's FFT output, so there's no history to
-  //keep — the ping-pong this used to need died with the alpha-channel foam.
-  this.cascadeDisplacementTargets = [];
-  this.cascadeDisplacementTextures = [];
+  //ONE displacement target, with a layer per cascade (Phase 10). Every cascade
+  //RT was already identical — same patch_data_size resolution, same RGBA32F,
+  //same filters and wrapping; Crest-style banding varies the world-space patch
+  //SIZE, not the texel count — so the six of them were a textbook texture-array
+  //family. As six separate sampler2D uniforms they cost six of the water
+  //program's texture units in BOTH the fragment and the vertex stage; as one
+  //sampler2DArray they cost one each. See WATER-TYPES.md Phase 10.
+  //
+  //An array rather than an atlas specifically because of the two properties
+  //above: cascades tile, so they need REPEAT wrapping, and they are mipmapped
+  //to stabilise the central-difference normals at distance. Atlas sub-rects
+  //give neither — they bleed at every mip level and need hand-rolled fract().
+  //
+  //The pack pass fully rewrites every texel each frame from the band library's
+  //FFT output, so there's no history to keep — the ping-pong this used to need
+  //died with the alpha-channel foam.
+  this.cascadeDisplacementArray = ARestlessOcean.createArrayRenderTarget(
+    this.baseTextureWidth, this.baseTextureHeight, this.numCascades, cascadeRTOptions);
+  this.cascadeDisplacementTexture = this.cascadeDisplacementArray.texture;
+  //The failure this guards is silent and looks like a shading bug: in three r173
+  //WebGLArrayRenderTarget discards its options, and an unnoticed UnsignedByteType
+  //would quantise metres of wave displacement to 8 bits. See
+  //ARestlessOcean.createArrayRenderTarget.
+  ARestlessOcean.assertArrayRenderTarget('cascadeDisplacement', this.cascadeDisplacementArray, {
+    type: THREE.FloatType,
+    format: THREE.RGBAFormat,
+    minFilter: THREE.LinearMipMapLinearFilter,
+    wrapS: THREE.RepeatWrapping,
+    generateMipmaps: true
+  });
+
   //Zero-clear at construction so any sample taken before the first tick() (or
   //a driver that returns NaN for uninitialized FloatType RTs) reads defined
   //data rather than garbage displacement.
@@ -91,27 +117,38 @@ ARestlessOcean.LUTlibraries.OceanHeightComposer = function(parentOceanGrid){
   const prevClearAlpha = this.renderer.getClearAlpha();
   this.renderer.setClearColor(0x000000, 0.0);
   for(let c = 0; c < this.numCascades; c++){
-    const rt = new THREE.WebGLRenderTarget(this.baseTextureWidth, this.baseTextureHeight, cascadeRTOptions);
-    rt.texture.wrapS = THREE.RepeatWrapping;
-    rt.texture.wrapT = THREE.RepeatWrapping;
-    this.renderer.setRenderTarget(rt);
+    //Second argument is the layer — three routes it to framebufferTextureLayer
+    //for an array target.
+    this.renderer.setRenderTarget(this.cascadeDisplacementArray, c);
     this.renderer.clear(true, false, false);
-    this.cascadeDisplacementTargets.push(rt);
-    this.cascadeDisplacementTextures.push(rt.texture);
   }
   this.renderer.setClearColor(prevClearColor, prevClearAlpha);
   this.renderer.setRenderTarget(prevRenderTarget);
 
   let self = this;
   this.tick = function(){
-    //Pack each cascade's xyz displacement into the RGB of its render target.
-    //Single RT per cascade (no ping-pong): the band library regenerates the
-    //FFT output every frame, so the displacement is always fully rewritten.
+    //Pack each cascade's xyz displacement into the RGB of one layer of the
+    //displacement array. Single target per cascade (no ping-pong): the band
+    //library regenerates the FFT output every frame, so the displacement is
+    //always fully rewritten.
+    //
+    //MIPMAPS, AND WHY THE FLAG IS TOGGLED. three regenerates mipmaps at the end
+    //of every render() into a target whose texture asks for them — and for an
+    //array target that rebuilds the chain for EVERY layer, not just the one
+    //just drawn. Left alone, six layer renders would do six full-array chain
+    //builds a frame where the six separate targets did one each. So the flag is
+    //held down until the last layer, which leaves exactly one chain build per
+    //frame, covering every layer written this pass. This stays inside three's
+    //own path (textureNeedsGenerateMipmaps is re-read per render) rather than
+    //calling gl.generateMipmap behind three's state cache.
+    const displacementTexture = self.cascadeDisplacementTexture;
+    const lastCascade = self.numCascades - 1;
     for(let c = 0; c < self.numCascades; c++){
       self._packMaterial.uniforms.xTexture.value = self.OceanMaterialHeightBandLibrary.wavesPerCascade[c][0];
       self._packMaterial.uniforms.yTexture.value = self.OceanMaterialHeightBandLibrary.wavesPerCascade[c][1];
       self._packMaterial.uniforms.zTexture.value = self.OceanMaterialHeightBandLibrary.wavesPerCascade[c][2];
-      self.renderer.setRenderTarget(self.cascadeDisplacementTargets[c]);
+      displacementTexture.generateMipmaps = (c === lastCascade);
+      self.renderer.setRenderTarget(self.cascadeDisplacementArray, c);
       self.renderer.render(self._packScene, self._cascadeCamera);
     }
 

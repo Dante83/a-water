@@ -107,7 +107,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
   let hfSumLines = '';
   for(let c = 0; c < HF_N; c++){
     const w = c < maskSwizzle.length ? maskSwizzle[c] + ' * ' : '';
-    hfSumLines += 'dy += ' + w + 'texture2D(hfCascadeTex[' + c + '], (worldXZ + hfCascadeOffset[' + c + ']) / hfCascadePatch[' + c + ']).y;\n';
+    hfSumLines += 'dy += ' + w + 'texture(hfCascadeArray, vec3((worldXZ + hfCascadeOffset[' + c + ']) / hfCascadePatch[' + c + '], ' + c + '.0)).y;\n';
   }
   const fieldReady = !!(ARestlessOcean.Passes.WaterFieldPass && ARestlessOcean.WaveMask);
   const reflectionReady = !!(ARestlessOcean.ShoreReflection && ARestlessOcean.ShoreReflection.ENABLED);
@@ -115,7 +115,11 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
   const hfFrag = [
     'precision highp float;',
     'varying vec2 vHfUv;',
-    'uniform sampler2D hfCascadeTex[' + HF_N + '];',
+    //Phase 10: the composer publishes one sampler2DArray rather than HF_N
+    //separate maps, so this bake reads a layer per cascade. highp because this
+    //is the buoyancy height field, in metres.
+    'precision highp sampler2DArray;',
+    'uniform sampler2DArray hfCascadeArray;',
     'uniform vec2 hfCascadeOffset[' + HF_N + '];',
     'uniform float hfCascadePatch[' + HF_N + '];',
     'uniform float hfWhm;',
@@ -178,7 +182,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
     '}'
   ].join('\n');
   const hfUniforms = {
-    hfCascadeTex: {value: new Array(HF_N).fill(null)},
+    hfCascadeArray: {value: null},
     hfCascadeOffset: {value: (function(){ const a = []; for(let i = 0; i < HF_N; i++) a.push(new THREE.Vector2()); return a; })()},
     hfCascadePatch: {value: new Array(HF_N).fill(1.0)},
     hfWhm: {value: 1.0},
@@ -227,7 +231,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.request = function(){
 ARestlessOcean.Passes.HeightReadbackPass.prototype.sampleFFTHeightAt = function(x, z){
   const grid = this.oceanGrid;
   const composer = grid.oceanHeightComposer;
-  if(!composer || !composer.cascadeDisplacementTargets || !composer.cascadeDisplacementTargets[0]) return null;
+  if(!composer || !composer.cascadeDisplacementArray) return null;
   this._fftProbeBuf = this._fftProbeBuf || new Float32Array(4);
   const buf = this._fftProbeBuf;
   const res = composer.baseTextureWidth;
@@ -235,16 +239,24 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.sampleFFTHeightAt = function(
   const whm = composer.waveHeightMultiplier;
   let h = grid.waterLevelAt(x, z);
   const mask = grid.waveMasksAt ? grid.waveMasksAt(x, z, this._maskScratch) : null;
-  for(let c = 0; c < composer.cascadeDisplacementTargets.length; c++){
+  //Phase 10: one array target, so the cascade is chosen by BINDING ITS LAYER
+  //first. readRenderTargetPixels has no layer argument in three r173 — it reads
+  //whatever is attached to the target's own framebuffer — but setRenderTarget's
+  //second argument attaches the layer to exactly that framebuffer, so binding
+  //immediately before the read is exact rather than a trick.
+  const prevTarget = this.renderer.getRenderTarget();
+  for(let c = 0; c < composer.numCascades; c++){
     const patch = composer._cascadePatchSizes[c];
     let u = (x + offsets[c].x) / patch;
     let v = (z + offsets[c].y) / patch;
     u -= Math.floor(u); v -= Math.floor(v);
     const px = Math.min(res - 1, Math.max(0, Math.floor(u * res)));
     const py = Math.min(res - 1, Math.max(0, Math.floor(v * res)));
-    this.renderer.readRenderTargetPixels(composer.cascadeDisplacementTargets[c], px, py, 1, 1, buf);
+    this.renderer.setRenderTarget(composer.cascadeDisplacementArray, c);
+    this.renderer.readRenderTargetPixels(composer.cascadeDisplacementArray, px, py, 1, 1, buf);
     h += (mask && c < 6 ? mask[c] : 1.0) * buf[1] * whm; //.y (green) = vertical displacement.
   }
+  this.renderer.setRenderTarget(prevTarget);
   return h;
 };
 
@@ -260,7 +272,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.updateHeightField = function(
   if(this._hfPending) return;
   if(now - this._hfLastIssue < this.HEIGHT_FIELD_INTERVAL_MS) return;
   const composer = grid.oceanHeightComposer;
-  if(!composer || !composer.cascadeDisplacementTextures || !composer.cascadeDisplacementTextures[0]) return;
+  if(!composer || !composer.cascadeDisplacementTexture) return;
   if(typeof this.renderer.readRenderTargetPixelsAsync !== 'function') return;
 
   const texel = HEIGHT_FIELD_SIZE / HEIGHT_FIELD_RES;
@@ -268,8 +280,8 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.updateHeightField = function(
   const originZ = Math.floor((grid.globalCameraPosition.z - HEIGHT_FIELD_SIZE * 0.5) / texel) * texel;
   const u = this._heightFieldMaterial.uniforms;
   const offsets = grid.oceanMaterial.uniforms.cascadeSpatialOffsets.value;
+  u.hfCascadeArray.value = composer.cascadeDisplacementTexture;
   for(let c = 0; c < this._hfN; c++){
-    u.hfCascadeTex.value[c] = composer.cascadeDisplacementTextures[c];
     u.hfCascadePatch.value[c] = composer._cascadePatchSizes[c];
     u.hfCascadeOffset.value[c].copy(offsets[c]);
   }
@@ -473,7 +485,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.probeWaterSurfaceY = function
   const self = this;
   const grid = this.oceanGrid;
   const composer = grid.oceanHeightComposer;
-  const probeReady = composer && composer.cascadeDisplacementTextures && composer.cascadeDisplacementTextures[1];
+  const probeReady = composer && composer.cascadeDisplacementArray && composer.numCascades > 1;
   const canAsyncProbe = typeof this.renderer.readRenderTargetPixelsAsync === 'function';
   if(this._probeWaterSurfaceY === undefined){ this._probeWaterSurfaceY = grid.waterLevelAt(grid.globalCameraPosition.x, grid.globalCameraPosition.z); }
   let waterSurfaceY = this._probeWaterSurfaceY;
@@ -492,6 +504,12 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.probeWaterSurfaceY = function
       //pixel-pack buffer bound across readRenderTargetPixelsAsync's await, so keep
       //every draw of this pass ahead of the reads (NEARSHORE-WAVES.md § 5.7).
       const breakerProbeDrawn = this._renderBreakerProbe();
+      //Phase 10: cascades 0 and 1 are layers of one array target, so each read is
+      //preceded by binding its layer. readRenderTargetPixelsAsync issues its
+      //readPixels synchronously (only the fence is awaited), so the layer bound at
+      //issue time is the layer that gets captured — rebinding for the next cascade
+      //cannot disturb a read already in flight.
+      const prevProbeTarget = this.renderer.getRenderTarget();
       for(let c = 0; c < 2; ++c){
         const patch = composer._cascadePatchSizes[c];
         let u = (grid.globalCameraPosition.x + offsets[c].x) / patch;
@@ -500,9 +518,11 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.probeWaterSurfaceY = function
         v -= Math.floor(v);
         const px = Math.min(res - 1, Math.max(0, Math.floor(u * res)));
         const py = Math.min(res - 1, Math.max(0, Math.floor(v * res)));
-        const rt = composer.cascadeDisplacementTargets[c];
+        const rt = composer.cascadeDisplacementArray;
+        this.renderer.setRenderTarget(rt, c);
         promises.push(this.renderer.readRenderTargetPixelsAsync(rt, px, py, 1, 1, bufs[c]));
       }
+      this.renderer.setRenderTarget(prevProbeTarget);
       //Phase 3a: breaker + swash at the camera, from the same GLSL as the geometry.
       this._breakerProbeBuf = this._breakerProbeBuf || new Float32Array(4);
       const breakerBuf = this._breakerProbeBuf;
@@ -530,6 +550,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.probeWaterSurfaceY = function
     const offsets = grid.oceanMaterial.uniforms.cascadeSpatialOffsets.value;
     const whm = composer.waveHeightMultiplier;
     waterSurfaceY = grid.waterLevelAt(grid.globalCameraPosition.x, grid.globalCameraPosition.z);
+    const prevProbeTarget = this.renderer.getRenderTarget();
     const mask = grid.waveMasksAt
       ? grid.waveMasksAt(grid.globalCameraPosition.x, grid.globalCameraPosition.z, this._maskScratch) : [1, 1];
     for(let c = 0; c < 2; ++c){
@@ -540,10 +561,12 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.probeWaterSurfaceY = function
       v -= Math.floor(v);
       const px = Math.min(res - 1, Math.max(0, Math.floor(u * res)));
       const py = Math.min(res - 1, Math.max(0, Math.floor(v * res)));
-      const rt = composer.cascadeDisplacementTargets[c];
+      const rt = composer.cascadeDisplacementArray;
+      this.renderer.setRenderTarget(rt, c);   //Phase 10: pick the cascade's layer.
       this.renderer.readRenderTargetPixels(rt, px, py, 1, 1, buf);
       waterSurfaceY += mask[c] * buf[1] * whm;   //.y (green) channel = vertical displacement
     }
+    this.renderer.setRenderTarget(prevProbeTarget);
     if(this._renderBreakerProbe()){
       this.renderer.readRenderTargetPixels(this._breakerProbeRT, 0, 0, 1, 1, buf);
       waterSurfaceY += buf[0];

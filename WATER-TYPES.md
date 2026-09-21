@@ -519,15 +519,20 @@ Both sockets are specified in contract §4 and **not yet placed** in a-land's sh
 
 ### Phase 10 — The sampler budget *(headroom: what buys caustics back)*
 
-> **Scoped 2026-09-19.** This is about BUYING ROOM, not about performance and not about phones.
-> The ocean program sits at 31 of 32 texture units, and being one slot from the ceiling is what
-> forces features to be traded against each other:
+> **Scoped 2026-09-19. Cascades + ocean CSM landed 2026-09-20 — measured 30 → 22 units.**
+> This is about BUYING ROOM, not about performance and not about phones. The ocean program sat
+> one slot from the ceiling, and that is what forces features to be traded against each other:
 >
-> - **Caustics do not exist in rivers or creeks.** They are compiled out of the
->   `$flowing_water` variant (`flow-surface-pass.js:21`) purely to make room for flow. That is a
->   missing feature on a 4090, with no portability argument attached.
+> - ~~**Caustics do not exist in rivers or creeks.**~~ **This premise was wrong when it was
+>   written.** `flow-surface-pass.js:21` said caustics were compiled out of the `$flowing_water`
+>   variant to make room, but they had already been switched back ON in round 7 (2026-09-15):
+>   `$caustics_enabled` is independent of `$flowing_water`, and `ocean-grid.js:1016` records the
+>   reasoning. Rivers already had caustics. The stale comment is now corrected at both sites.
+>   **This does not change the decision** — it changes the headline, from "restore a missing
+>   feature" to "stop rationing units", which is what the next point was always about.
 > - **Phase 6 (waterfalls) is a genuinely new surface** and will want units of its own. The
->   budget only tightens from here, so this gets more expensive the longer it waits.
+>   budget only tightens from here, so this gets more expensive the longer it waits. This is now
+>   the reason.
 >
 > Dante, 2026-09-19: *"We're just buying ourselves more room with those arrays, don't worry
 > about performance right now."* Running on weak hardware has never been a goal of this project
@@ -537,13 +542,13 @@ Both sockets are specified in contract §4 and **not yet placed** in a-land's sh
 **The ceiling, for reference.** WebGL2 only guarantees `MAX_TEXTURE_IMAGE_UNITS >= 16`. Measured
 2026-09-19:
 
-| Shader | Fragment samplers |
+| Shader | Texture units |
 | --- | --- |
-| a-water ocean material | ~31 (`flow-surface-pass.js:21` says 31 of 32) |
-| a-faraway-land `terrain.frag` | 28 |
-| a-starry-sky `atmosphere-pass.glsl` | 21 |
+| a-water ocean material | ~31 estimated from source; **30 measured, now 22** |
+| a-faraway-land `terrain.frag` | 28 (estimated from source) |
+| a-starry-sky `atmosphere-pass.glsl` | 21 (estimated from source) |
 
-A device reporting the minimum links none of the three. Worth knowing, but NOT the reason to do
+A device reporting the minimum linked none of the three; a-water now clears it. Worth knowing, but NOT the reason to do
 this work — and the profile is not phones: 16 units is common on Intel integrated laptop GPUs,
 older ANGLE/D3D11 feature-level paths and software fallbacks. Dante has had "my computer cannot
 run a-starry-sky" reports, and those are the plausible machines. What makes it worth a footnote
@@ -559,17 +564,31 @@ sampler-count problem for a filtering-quality problem in the places the ocean al
 `sampler2DArray` keeps per-layer wrapping and mips, costs one extra coordinate, and is already
 proven in this stack: a-land uses it for its per-material PBR arrays.
 
-**a-water, ranked by payoff** (~12 units, 31 → ~19):
+**a-water, ranked by payoff.** Counts are measured on the LINKED program, by
+`OceanGrid.auditTextureUnitBudget()` (console: `auditOceanTextureUnits()`), not counted in the
+GLSL — source counting is wrong the moment a shader is specialised by flag, which is exactly
+when the count matters. Baseline and result both taken on `examples/demos/islands.html` under
+headless SwiftShader:
 
-| Change | Units | Notes |
+| Change | Units | Status |
 | --- | --- | --- |
-| `cascadeDisplacementTextures[6]` → `sampler2DArray` | **6 → 1** | **Verified mechanical**: `ocean-height-composer.js:94` builds every cascade RT at the same `baseTextureWidth/Height` and format. Crest banding varies patch SIZE, not resolution. |
-| `oceanShadowMap[4]` (EVSM CSM) → array | 4 → 1 | Same size and format by construction. |
-| `waterFieldCascade0/1/2` → array | 3 → 1 | Same shape. |
-| foam quartet → channel packing | 4 → 2 | `foamOpacityMap` is single-channel and can ride in an alpha; normals are 2-channel. Packing, not arrays. |
+| `cascadeDisplacementTextures[6]` → `cascadeDisplacementArray` | **6 → 1** | **DONE 2026-09-20.** Every cascade RT was already built at the same `baseTextureWidth/Height` and format (`ocean-height-composer.js`); Crest banding varies patch SIZE, not resolution. Costs one unit in the vertex stage too. |
+| `oceanShadowMap[4]` (EVSM CSM) → array | 4 → 1 | **DONE 2026-09-20.** Same size and format by construction. |
+| `waterFieldCascade0/1/2` → array | 3 → 1 | Not done — see below, this one is cross-repo. |
+| foam quartet → channel packing | 4 → 2 | Not done. `foamOpacityMap` reads only `.r` and `foamNormalMap` only `.xy`, so opacity can ride in the normal map's alpha. Packing, not arrays, and it needs a regenerated asset. |
 
-Do the cascades first: biggest win, lowest risk, and it alone frees enough to put **caustics back
-in the flowing-water variant**, which is the user-visible reason to start.
+**Measured: 30 → 22 of 32.** The two conversions also pulled three passes along with them, because
+they read the same composer textures under other names: the height-readback bake (`hfCascadeTex[6]`),
+the shore-reflection step (`srCascade0..5`, six discrete uniforms), and the CSM caster's vertex stage.
+
+**`waterFieldCascade0/1/2` is deliberately left for a coordinated change.** It is not ours alone:
+a-faraway-land's `terrain.frag:642-679` and `TerrainMaterial.js:134-136` read the same three
+textures we publish, so converting them here breaks terrain water unless both land together.
+
+**What the array conversion also bought, for free.** A `sampler2DArray` takes its layer as a
+coordinate, while an array of samplers demands a constant index. Two if/else chains that existed
+only to dodge that rule are now single reads (the per-cascade Jacobian strip in debug mode 30, and
+the cascade thumbnail in the EVSM debug view).
 
 **The siblings** (their call, not ours, but the measurement is done and the finding is theirs to
 have):
@@ -579,15 +598,42 @@ have):
   same-shape families, ~9 units for four array conversions. Note 28 − 9 = 19, still over 16, so
   it needs a real budget pass rather than one change.
 
-**Verification, and it must be a real gate.** `gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS)` and
-fail loudly at startup with the count and the limit, rather than letting a program silently not
-link. Then force the low path on capable hardware to test it — the headless harness already runs
-Chrome with `--use-angle=swiftshader`, which is where a 16-unit target can be exercised without
-owning the hardware.
+**Verification, and it is a real gate now.** `OceanGrid.auditTextureUnitBudget()` walks
+`renderer.info.programs`, sums `getActiveUniform().size` over every sampler type (so an array of
+samplers counts per unit it really occupies), and `console.error`s with the count and
+`MAX_TEXTURE_IMAGE_UNITS` when a program is over — that failure used to be entirely silent. It
+runs itself a few ticks in (three compiles lazily, so `info.programs` is empty at construction)
+and logs one line with the number; `auditOceanTextureUnits()` is the console handle.
+
+The low path is exercised without owning the hardware by running Chrome with
+`--use-angle=swiftshader --enable-unsafe-swiftshader`.
+
+**Three three-r173 findings came out of doing this**, all verified against the super-three 0.173
+source rather than assumed from A-Starry-Sky's r185 write-up:
+
+1. **`WebGLArrayRenderTarget` silently discards its options.** Its constructor builds a correct
+   texture from `options` and then overwrites it with a bare `DataArrayTexture` — Nearest filters,
+   ClampToEdge, no mips, RGBA **UnsignedByte**. `type: FloatType` in the options object does
+   nothing. Undetected, the displacement cascades would have come back 8-bit and the waves would
+   have looked merely *stepped*, not broken. `ARestlessOcean.createArrayRenderTarget` re-applies
+   the whole tuple by hand and `assertArrayRenderTarget` shouts if it ever fails to take.
+2. **`sampler2DArray` is available even though the ocean material sets no `glslVersion`.** three
+   upgrades every non-`RawShaderMaterial` to `#version 300 es` unconditionally, which is also why
+   the existing `texelFetch` calls compile. `generatePrecision` emits `precision highp
+   sampler2DArray`, so the precision trap that cost a day on the river solver does not apply here.
+3. **`readRenderTargetPixels` has no layer argument** — only a cube face. But `setRenderTarget(rt,
+   layer)` attaches the layer to that render target's own framebuffer, and the read binds that same
+   framebuffer, so binding the layer immediately before the read is exact rather than a trick. The
+   async variant issues its `readPixels` before its first `await`, so rebinding for the next
+   cascade cannot disturb a read already in flight.
 
 > **Not deferred, and not for performance reasons.** Phase 6 adds surfaces that will want units
-> of its own. Every phase from here is cheaper with ~12 units in hand than without, and the
-> conversion is the same size whenever it happens — so it is strictly cheapest now.
+> of its own. Every phase from here is cheaper with units in hand than without, and the
+> conversion is the same size whenever it happens — so it was strictly cheapest now.
+>
+> **Status 2026-09-20:** cascades and ocean CSM done, 30 → 22 measured. The water field (3 → 1)
+> waits on a coordinated change with a-faraway-land; the foam packing (4 → 2) waits on a
+> regenerated asset. Together those would land it near 18.
 
 ---
 

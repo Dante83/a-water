@@ -123,18 +123,56 @@ ARestlessOcean.OceanShadowCSM = function(oceanGrid, scene, configOverrides){
   //Build per-cascade resources: RGBA32F color target with depth renderbuffer
   //(depth used for caster z-test, never read back), linear filtering enabled
   //so the EVSM Chebyshev bound benefits from hardware bilinear interp.
+  //Phase 10: ONE moment target with a layer per cascade. All four were already
+  //2048² RGBA32F with the same filtering by construction — only the ortho extent
+  //and the caster layer differ, and neither lives in the texture — so they were a
+  //texture-array family in everything but declaration. Four sampler2D units in
+  //the water program become one sampler2DArray. See WATER-TYPES.md Phase 10.
+  //
+  //One depth renderbuffer is shared across the layers: it is attached to this
+  //target's framebuffer and stays there while setRenderTarget re-points only the
+  //colour attachment at the next layer. That is correct here because the cascades
+  //render one after another, each clearing depth first.
+  //An array has ONE size for every layer, so a config that asks for different
+  //mapSizes per cascade cannot be honoured. Say so and normalise to the largest,
+  //rather than quietly building the array at cascade 0's size while the blur
+  //stride and texel size below keep reading each cascade's own number — which
+  //would blur the wrong distance and misplace every texel.
+  let mapSize = 0;
+  let mixedMapSizes = false;
+  for(let i = 0; i < this.numCascades; i++){
+    const size = this.cascadeConfigs[i].mapSize;
+    if(mapSize !== 0 && size !== mapSize) mixedMapSizes = true;
+    mapSize = Math.max(mapSize, size);
+  }
+  if(mixedMapSizes){
+    console.warn('[a-restless-ocean] ocean CSM cascades were configured with different ' +
+      'mapSizes; they share one sampler2DArray now, so every cascade is being built at ' +
+      mapSize + '. Give them all the same mapSize to silence this.');
+    for(let i = 0; i < this.numCascades; i++) this.cascadeConfigs[i].mapSize = mapSize;
+  }
+  this.cascadeArray = ARestlessOcean.createArrayRenderTarget(mapSize, mapSize, this.numCascades, {
+    format: THREE.RGBAFormat,
+    type: THREE.FloatType,
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+    depthBuffer: true,
+    stencilBuffer: false,
+    generateMipmaps: false
+  });
+  ARestlessOcean.assertArrayRenderTarget('oceanShadowMoments', this.cascadeArray, {
+    type: THREE.FloatType,
+    format: THREE.RGBAFormat,
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter
+  });
+
   this.cascades = [];
   for(let i = 0; i < this.numCascades; i++){
     const c = this.cascadeConfigs[i];
-    const renderTarget = new THREE.WebGLRenderTarget(c.mapSize, c.mapSize, {
-      format: THREE.RGBAFormat,
-      type: THREE.FloatType,
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
-      depthBuffer: true,
-      stencilBuffer: false,
-      generateMipmaps: false
-    });
+    //The blur reads a cascade back by layer, and the receiver indexes the array
+    //the same way, so the layer index IS the cascade's identity now.
+    const layerIndex = i;
     const lightCamera = new THREE.OrthographicCamera(
       -c.extent * 0.5, c.extent * 0.5,
        c.extent * 0.5, -c.extent * 0.5,
@@ -144,18 +182,17 @@ ARestlessOcean.OceanShadowCSM = function(oceanGrid, scene, configOverrides){
 
     this.cascades.push({
       cfg: c,
-      renderTarget: renderTarget,
+      layer: layerIndex,
       lightCamera: lightCamera,
       shadowMatrix: new THREE.Matrix4(),
       depthRange: 0.0
     });
   }
 
-  //Shared blur ping-pong buffer. All cascades currently use 2048² so a single
-  //buffer is sufficient (we never blur two cascades simultaneously). If a
-  //future config introduces a larger cascade, gate this on max(cascade
-  //mapSize) and reintroduce per-size-class buffers.
-  this._blurTarget = new THREE.WebGLRenderTarget(2048, 2048, {
+  //Shared blur ping-pong buffer — one is sufficient because no two cascades blur
+  //simultaneously. Sized from the cascades rather than the old hard-coded 2048,
+  //which would have silently half-blurred a larger configured cascade.
+  this._blurTarget = new THREE.WebGLRenderTarget(mapSize, mapSize, {
     format: THREE.RGBAFormat,
     type: THREE.FloatType,
     minFilter: THREE.LinearFilter,
@@ -207,10 +244,60 @@ ARestlessOcean.OceanShadowCSM = function(oceanGrid, scene, configOverrides){
     depthTest: false,
     depthWrite: false
   });
+  //The same 9-tap kernel reading one LAYER of the moment array. Only the
+  //horizontal pass needs this: it is the pass whose source is the array.
+  this._blurArrayMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+      sourceArray: {value: null},
+      sourceLayer: {value: 0},
+      blurDirection: {value: new THREE.Vector2(0.0, 0.0)}
+    },
+    vertexShader: [
+      'varying vec2 vUv;',
+      'void main(){',
+      '  vUv = position.xy * 0.5 + 0.5;',
+      '  gl_Position = vec4(position.xy, 0.0, 1.0);',
+      '}'
+    ].join('\n'),
+    fragmentShader: [
+      'precision highp float;',
+      //EVSM moments reach ~22000 in the second channel; mediump would lose the
+      //variance term outright, so say highp for the array too.
+      'precision highp sampler2DArray;',
+      'uniform sampler2DArray sourceArray;',
+      'uniform int sourceLayer;',
+      'uniform vec2 blurDirection;',
+      'varying vec2 vUv;',
+      'const float W0 = 0.227027;',
+      'const float W1 = 0.194595;',
+      'const float W2 = 0.121622;',
+      'const float W3 = 0.054054;',
+      'const float W4 = 0.016216;',
+      'vec4 tap(vec2 uv){ return texture(sourceArray, vec3(uv, float(sourceLayer))); }',
+      'void main(){',
+      '  vec4 result = tap(vUv) * W0;',
+      '  result += tap(vUv + blurDirection * 1.0) * W1;',
+      '  result += tap(vUv - blurDirection * 1.0) * W1;',
+      '  result += tap(vUv + blurDirection * 2.0) * W2;',
+      '  result += tap(vUv - blurDirection * 2.0) * W2;',
+      '  result += tap(vUv + blurDirection * 3.0) * W3;',
+      '  result += tap(vUv - blurDirection * 3.0) * W3;',
+      '  result += tap(vUv + blurDirection * 4.0) * W4;',
+      '  result += tap(vUv - blurDirection * 4.0) * W4;',
+      '  gl_FragColor = result;',
+      '}'
+    ].join('\n'),
+    depthTest: false,
+    depthWrite: false
+  });
+
   this._blurScene = new THREE.Scene();
   this._blurCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   this._blurQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this._blurMaterial);
   this._blurScene.add(this._blurQuad);
+  this._blurArrayScene = new THREE.Scene();
+  this._blurArrayQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this._blurArrayMaterial);
+  this._blurArrayScene.add(this._blurArrayQuad);
 
   //Static bias/shadow matrix constant — converts light clip space [-1,1]
   //into texture UV space [0,1] + depth [0,1].
@@ -299,7 +386,7 @@ ARestlessOcean.OceanShadowCSM.prototype.render = function(renderer, mainCamera, 
 
   for(let i = 0, L = this.shadowMaterials.length; i < L; i++){
     const u = this.shadowMaterials[i].uniforms;
-    u.cascadeDisplacementTextures.value = sharedOceanUniforms.cascadeDisplacementTextures.value;
+    u.cascadeDisplacementArray.value = sharedOceanUniforms.cascadeDisplacementArray.value;
     u.cascadePatchSizes.value = sharedOceanUniforms.cascadePatchSizes.value;
     u.cascadeSpatialOffsets.value = sharedOceanUniforms.cascadeSpatialOffsets.value;
     u.waveHeightMultiplier.value = sharedOceanUniforms.waveHeightMultiplier.value;
@@ -414,7 +501,7 @@ ARestlessOcean.OceanShadowCSM.prototype.render = function(renderer, mainCamera, 
     //Chebyshev evaluation in the receiver. clearColor is unclamped on
     //float color buffers (WebGL2 spec), so the large positive R/G values
     //(~148, ~22000) pass through unchanged.
-    renderer.setRenderTarget(cascade.renderTarget);
+    renderer.setRenderTarget(this.cascadeArray, cascade.layer);
     renderer.setClearColor(this._evsmClearColor, this._evsmClearAlpha);
     renderer.clear(true, true, false);
     renderer.render(this.scene, lightCamera);
@@ -431,14 +518,19 @@ ARestlessOcean.OceanShadowCSM.prototype.render = function(renderer, mainCamera, 
     const blurTarget = this._blurTarget;
     const texelUv = 2.0 / cfg.mapSize;
 
-    this._blurMaterial.uniforms.sourceTexture.value = cascade.renderTarget.texture;
-    this._blurMaterial.uniforms.blurDirection.value.set(texelUv, 0.0);
+    //Horizontal: read this cascade's LAYER of the moment array, write the shared
+    //2D scratch. Vertical: read the scratch, write the layer back. Two materials
+    //rather than one because only the first source is an array — a target cannot
+    //be sampled while it is bound, so the scratch has to stay a plain 2D texture.
+    this._blurArrayMaterial.uniforms.sourceArray.value = this.cascadeArray.texture;
+    this._blurArrayMaterial.uniforms.sourceLayer.value = cascade.layer;
+    this._blurArrayMaterial.uniforms.blurDirection.value.set(texelUv, 0.0);
     renderer.setRenderTarget(blurTarget);
-    renderer.render(this._blurScene, this._blurCamera);
+    renderer.render(this._blurArrayScene, this._blurCamera);
 
     this._blurMaterial.uniforms.sourceTexture.value = blurTarget.texture;
     this._blurMaterial.uniforms.blurDirection.value.set(0.0, texelUv);
-    renderer.setRenderTarget(cascade.renderTarget);
+    renderer.setRenderTarget(this.cascadeArray, cascade.layer);
     renderer.render(this._blurScene, this._blurCamera);
   }
 
