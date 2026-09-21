@@ -48,3 +48,8 @@ groups:
         vertex:   'ocean-splash-vertex.glsl'
         template: 'ocean-splash-template.txt'
         material: 'ocean-splash.js'
+      -
+        fragment: 'waterfall-sheet.glsl'
+        vertex:   'waterfall-sheet-vertex.glsl'
+        template: 'waterfall-sheet-template.txt'
+        material: 'waterfall-sheet.js'

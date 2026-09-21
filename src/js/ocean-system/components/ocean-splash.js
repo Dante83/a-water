@@ -992,17 +992,47 @@ ARestlessOcean.OceanSplash.prototype._emitBreakers = function(field, t, camX, ca
   }
 };
 
-//Spray where a-land's waterfalls land (Phase 4 step 5). PLACEHOLDER: Phase 6 draws real
-//falls; this only marks the plunge pools. The water arrives at Torricelli speed √(2 g drop),
-//moving along the fall (top to bottom) at the horizontal speed that covers the fall's run
-//in its free-fall time, and emitImpact bounces it off the pool, so a tall fall throws a
-//taller, faster plume. The burst is smeared across the fall's width. Rate ∝ discharge.
+//Spray where falls land.
+//
+//Phase 6: with traced nappes (WaterfallSheetPass.liveNappes) every impact the trace
+//recorded throws spray — each ledge a cascade bounces off, and the plunge — at the point
+//the water really lands, with the velocity it really arrives at, bounced off the surface
+//it lands on (emitImpact reflects the incoming velocity about that normal). The burst is
+//smeared across the fall's width. Rate ∝ discharge × the normal speed lost there, over
+//IMPACT_REF_SPEED: a glancing touchdown on a chute sprays less than a plunge.
+//
+//Without nappes (no a-land director yet, or the sheets are off), the Phase 4 placeholder:
+//Torricelli speed √(2 g drop) at each fall's `bottom` bed point, moving top → bottom at the
+//speed that covers the run in its free-fall time.
 //falls: FlowFoamPass.nearFalls (nearest first, inside its window); .fall is the entry.
-ARestlessOcean.OceanSplash.prototype._emitFalls = function(falls, dt, camX, camZ){
-  if(!this.fallSprayEnabled || !falls) return;
+ARestlessOcean.OceanSplash.IMPACT_REF_SPEED = 5.0;
+ARestlessOcean.OceanSplash.prototype._emitFalls = function(falls, dt, camX, camZ, nappes){
+  if(!this.fallSprayEnabled) return;
   const maxD2 = this.maxEmitDistance * this.maxEmitDistance;
+  if(nappes){
+    const ref = ARestlessOcean.OceanSplash.IMPACT_REF_SPEED;
+    for(let n = 0; n < nappes.length; ++n){
+      const nap = nappes[n];
+      for(let i = 0; i < nap.impacts.length; ++i){
+        const im = nap.impacts[i];
+        const dx = im.x - camX, dz = im.z - camZ;
+        if(dx * dx + dz * dz > maxD2) continue;
+        const speed = Math.sqrt(im.vx * im.vx + im.vy * im.vy + im.vz * im.vz);
+        let hx = im.vx, hz = im.vz;
+        const hl = Math.sqrt(hx * hx + hz * hz);
+        if(hl > 1e-3){ hx /= hl; hz /= hl; } else { hx = 1.0; hz = 0.0; }
+        const share = Math.min(Math.max(im.vn / ref, 0.1), 1.5);
+        this.emitImpact(im.x, im.y + 0.05, im.z, im.nx, im.ny, im.nz, speed,
+          -hz, hx, nap.width, this.fallSprayRate * nap.discharge * share * dt,
+          im.vx, im.vy, im.vz);
+      }
+    }
+    return;
+  }
+  if(!falls) return;
   for(let i = 0; i < falls.length; ++i){
     const f = falls[i].fall;
+    if(!f) continue;
     const top = f.top, bot = f.bottom;
     if(!top || !bot) continue;
     const dx = bot[0] - camX, dz = bot[2] - camZ;
@@ -1157,7 +1187,7 @@ ARestlessOcean.OceanSplash.prototype.tick = function(ctx){
                       ctx.camFwdX || 0.0, ctx.camFwdZ || 1.0);
       this._emitBreakers(field, field.currentTimeSeconds, ctx.camX, ctx.camZ,
                          ctx.camFwdX || 0.0, ctx.camFwdZ || 1.0);
-      this._emitFalls(ctx.falls, dt, ctx.camX, ctx.camZ);
+      this._emitFalls(ctx.falls, dt, ctx.camX, ctx.camZ, ctx.nappes);
     }
   }
 

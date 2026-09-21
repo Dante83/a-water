@@ -236,35 +236,58 @@ ARestlessOcean.Passes.FlowFoamPass.prototype.init = function(){
   this.renderer.setRenderTarget(prevRT);
 };
 
-//Waterfall bases from a-land's simulation block, nearest first, into uFalls/uFallsB.
-//The source is a band along the foot: half-width = half the fall width (a-land's
-//width is the channel's 4·√Q), running fallDepthPerDrop·drop metres downstream
-//(clamped 1..5 m), downstream = top → bottom in plan.
+//Where falls land, into uFalls/uFallsB, nearest first. Each source is a band along the
+//landing: half-width = half the fall width, running fallDepthPerDrop·drop metres downstream
+//(clamped 1..5 m).
+//
+//Phase 6: with traced nappes (WaterfallSheetPass.liveNappes) every IMPACT is a source —
+//each ledge a cascade bounces off, and the plunge — at the point the water actually lands,
+//heading the way it was moving, with drop = v_n²/2g (the height that normal speed was
+//gained over). Without them, the Phase 4 placeholder: one band at each fall's `bottom`
+//BED point, downstream = top → bottom.
 ARestlessOcean.Passes.FlowFoamPass.prototype._updateFalls = function(ctx){
   const MAX_FALLS = ARestlessOcean.Passes.FlowFoamPass.MAX_FALLS;
-  const falls = ctx.waterfalls || [];
   const u = this.material.uniforms;
   const hw = ARestlessOcean.Passes.FlowFoamPass.HALF_WIDTH;
   const near = [];
-  for(let i = 0; i < falls.length; ++i){
-    const b = falls[i].bottom;
-    if(!b) continue;
-    const dx = b[0] - this.centerX, dz = b[2] - this.centerZ;
-    const r = 0.5 * (falls[i].width || 4.0);
-    if(Math.abs(dx) > hw + r || Math.abs(dz) > hw + r) continue;
-    near.push({d: dx * dx + dz * dz, x: b[0], z: b[2], r: r, q: falls[i].discharge || 0.0, fall: falls[i]});
+  const self = this;
+  const consider = function(x, z, r, q, dx, dz, drop, fall){
+    const ox = x - self.centerX, oz = z - self.centerZ;
+    if(Math.abs(ox) > hw + r || Math.abs(oz) > hw + r) return;
+    near.push({d: ox * ox + oz * oz, x: x, z: z, r: r, q: q, dx: dx, dz: dz, drop: drop, fall: fall});
+  };
+  if(ctx.nappes){
+    for(let n = 0; n < ctx.nappes.length; ++n){
+      const nap = ctx.nappes[n];
+      for(let i = 0; i < nap.impacts.length; ++i){
+        const im = nap.impacts[i];
+        let dx = im.vx, dz = im.vz;
+        const len = Math.sqrt(dx * dx + dz * dz);
+        if(len > 1e-3){ dx /= len; dz /= len; } else { dx = 0.0; dz = 1.0; }
+        consider(im.x, im.z, 0.5 * nap.width, nap.discharge, dx, dz, im.vn * im.vn / (2.0 * 9.81), null);
+      }
+    }
+  }
+  else {
+    const falls = ctx.waterfalls || [];
+    for(let i = 0; i < falls.length; ++i){
+      const f = falls[i], b = f.bottom;
+      if(!b) continue;
+      const t = f.top || b;
+      let dx = b[0] - t[0], dz = b[2] - t[2];
+      const len = Math.sqrt(dx * dx + dz * dz);
+      if(len > 1e-3){ dx /= len; dz /= len; } else { dx = 0.0; dz = 1.0; }
+      const drop = f.drop !== undefined ? f.drop : Math.max(t[1] - b[1], 0.0);
+      consider(b[0], b[2], 0.5 * (f.width || 4.0), f.discharge || 0.0, dx, dz, drop, f);
+    }
   }
   near.sort(function(a, b){ return a.d - b.d; });
   const n = Math.min(near.length, MAX_FALLS);
   for(let i = 0; i < n; ++i){
-    const f = near[i].fall, t = f.top || f.bottom;
-    let dx = f.bottom[0] - t[0], dz = f.bottom[2] - t[2];
-    const len = Math.sqrt(dx * dx + dz * dz);
-    if(len > 1e-3){ dx /= len; dz /= len; } else { dx = 0.0; dz = 1.0; }
-    const drop = f.drop !== undefined ? f.drop : Math.max(t[1] - f.bottom[1], 0.0);
-    const depth = Math.min(Math.max(this.fallDepthPerDrop * drop, 1.0), 5.0);
-    u.uFalls.value[i].set(near[i].x, near[i].z, near[i].r, this.fallGain * near[i].q);
-    u.uFallsB.value[i].set(dx, dz, depth, 0.0);
+    const s = near[i];
+    const depth = Math.min(Math.max(this.fallDepthPerDrop * s.drop, 1.0), 5.0);
+    u.uFalls.value[i].set(s.x, s.z, s.r, this.fallGain * s.q);
+    u.uFallsB.value[i].set(s.dx, s.dz, depth, 0.0);
   }
   u.uFallCount.value = n;
   if(near.length > n) near.length = n;

@@ -258,7 +258,9 @@ ARestlessOcean.Passes.FlowSurfacePass.prototype.tick = function(ctx){
       cameraX: ctx.cameraX,
       cameraZ: ctx.cameraZ,
       fieldCascade: og.waterFieldPass.cascades[0],
-      waterfalls: (mj && mj.simulation && mj.simulation.waterfalls) || null
+      waterfalls: (mj && mj.simulation && mj.simulation.waterfalls) || null,
+      //Phase 6: traced falls (last frame's; WaterfallSheetPass ticks after this pass).
+      nappes: og.waterfallSheetPass ? og.waterfallSheetPass.liveNappes() : null
     });
   }
   const foamTex = fp ? fp.texture() : null;

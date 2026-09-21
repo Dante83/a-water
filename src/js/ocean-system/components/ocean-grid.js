@@ -610,6 +610,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       self._terrainEditLastForceMs = now;
       if(self.terrainOrthoPass) self.terrainOrthoPass.invalidate();
       if(self.waterFieldPass) self.waterFieldPass.invalidate();
+      if(self.waterfallSheetPass) self.waterfallSheetPass.invalidate();
     };
     if(now - self._terrainEditLastEventMs >= ARestlessOcean.OceanGrid.TERRAIN_EDIT_SETTLE_MS){
       self._terrainEditTrailingPending = false;   //the trailing refresh
@@ -1326,6 +1327,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //a-faraway-land is present; see FlowSurfacePass.
   this.flowSurfaceEnabled = data.river_enabled !== false;
   this.flowSurfacePass = null;
+  this.waterfallSheetPass = null;
   if(ARestlessOcean.Passes && ARestlessOcean.Passes.ShoreReflectionPass && ARestlessOcean.ShoreReflection.ENABLED){
     this.shoreReflectionPass = new ARestlessOcean.Passes.ShoreReflectionPass(this);
     this.shoreReflectionPass.init();
@@ -1430,6 +1432,12 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //Step 4: ripple profile buffer (FlowSurfacePass) and its live slope knob.
     mat.uniforms.flowWaveProfile = {value: null};
     mat.uniforms.flowRippleScale = {value: 1.0};
+    //Phase 6: the waterfall corridors this surface steps aside in (WaterfallSheetPass).
+    const nCorr = ARestlessOcean.Passes && ARestlessOcean.Passes.WaterfallSheetPass
+      ? ARestlessOcean.Passes.WaterfallSheetPass.MAX_CORRIDORS : 24;
+    mat.uniforms.fallCorridorA = {value: Array.from({length: nCorr}, function(){ return new THREE.Vector4(); })};
+    mat.uniforms.fallCorridorB = {value: Array.from({length: nCorr}, function(){ return new THREE.Vector4(); })};
+    mat.uniforms.fallCorridorCount = {value: 0};
     return mat;
   };
   //Register a water mesh built outside this constructor into the per-frame
@@ -1804,6 +1812,19 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         cameraZ: self.globalCameraPosition.z,
         heightOffset: self.heightOffset,
         enabled: self.flowSurfaceEnabled
+      });
+    }
+    //Phase 6: the waterfall sheets. They alias the flowing material's uniforms, so they
+    //are built after it and ride its per-frame stream (WaterfallSheetPass header).
+    if(!self.waterfallSheetPass && self.flowSurfacePass && ARestlessOcean.Passes.WaterfallSheetPass
+       && ARestlessOcean.WaterfallNappe && ARestlessOcean.Materials.Ocean.waterfallSheetMaterial){
+      self.waterfallSheetPass = new ARestlessOcean.Passes.WaterfallSheetPass(self);
+      self.waterfallSheetPass.init(scene);
+    }
+    if(self.waterfallSheetPass){
+      self.waterfallSheetPass.tick({
+        timeMs: time,
+        enabled: self.flowSurfaceEnabled && self.flowSurfacePass.enabled
       });
     }
 
@@ -2597,7 +2618,9 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         linearDepthTexture: self.refractionGBufferTarget.textures[2],
         //Phase 4: the waterfalls FlowFoamPass found near the camera (plunge spray).
         falls: (self.flowSurfacePass && self.flowSurfacePass.enabled && self.flowSurfacePass.foamPass)
-          ? self.flowSurfacePass.foamPass.nearFalls : null
+          ? self.flowSurfacePass.foamPass.nearFalls : null,
+        //Phase 6: traced falls, whose impacts replace the bed-point placeholder above.
+        nappes: self.waterfallSheetPass ? self.waterfallSheetPass.liveNappes() : null
       });
       //Airborne spray is an above-water phenomenon: hide it whenever the camera is submerged, or the
       //mist/foam billboards punch through the underwater ceiling (they render on OCEAN_LAYER in the

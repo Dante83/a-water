@@ -40,9 +40,11 @@ JS_FILE_NAMES = [
     #was never instantiated (the real skirt clones the FFT water material in
     #ocean-grid.js) and its copy of the atmospheric-perspective GLSL drifts.
     'ocean-system/materials/ocean-material/ocean-splash.js',
+    'ocean-system/materials/ocean-material/waterfall-sheet.js',
     'ocean-system/luts/ocean-height-band-library.js',
     'ocean-system/luts/ocean-wave-field.js',
     'ocean-system/luts/ocean-height-composer.js',
+    'ocean-system/luts/waterfall-nappe.js',
     'ocean-system/components/ocean-patch-geometry.js',
     'ocean-system/components/ocean-patch.js',
     'ocean-system/components/ocean-shadow-csm.js',
@@ -59,6 +61,7 @@ JS_FILE_NAMES = [
     'ocean-system/passes/shore-reflection-pass.js',
     'ocean-system/passes/flow-foam-pass.js',
     'ocean-system/passes/flow-surface-pass.js',
+    'ocean-system/passes/waterfall-sheet-pass.js',
     'ocean-system/passes/reflection-pass.js',
     'ocean-system/passes/underwater-fog-chunk.js',
     'ocean-system/passes/ocean-shadow-pass.js',

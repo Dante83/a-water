@@ -207,6 +207,35 @@ uniform float meteringSurveyValid;
   uniform sampler2D flowWaveProfile;
   //Live knob on ripple slope (1 = the physical-ish defaults below).
   uniform float flowRippleScale;
+  //Phase 6: the waterfall corridors (WaterfallSheetPass). Each is a flat-ended box
+  //along a stretch of a fall's traced path: A = (start xz, end xz), B.x = half-width.
+  //Inside one, the waterfall sheet draws wherever the level is steep, so this surface
+  //steps aside there (see flowFallOwn). Flat ends, not capsules: a round cap reaches a
+  //half-width (~5 m) past the lip and would erase the creek running up to it.
+  const int FALL_CORRIDOR_MAX = 24;
+  uniform vec4 fallCorridorA[FALL_CORRIDOR_MAX];
+  uniform vec4 fallCorridorB[FALL_CORRIDOR_MAX];
+  uniform int fallCorridorCount;
+  float fallCorridorWeight(vec2 p){
+    float w = 0.0;
+    for(int i = 0; i < FALL_CORRIDOR_MAX; ++i){
+      if(i >= fallCorridorCount) break;
+      vec2 a = fallCorridorA[i].xy;
+      vec2 d = fallCorridorA[i].zw - a;
+      float len = length(d);
+      if(len < 1e-3) continue;
+      d /= len;
+      vec2 q = p - a;
+      float along = dot(q, d);
+      float across = abs(q.x * d.y - q.y * d.x);
+      float r = fallCorridorB[i].x;
+      //Half a metre of soft edge all round, so neighbouring boxes overlap cleanly.
+      float inside = smoothstep(-0.5, 0.0, along) * smoothstep(-0.5, 0.0, len - along)
+                   * (1.0 - smoothstep(r - 0.5, r, across));
+      w = max(w, inside);
+    }
+    return w;
+  }
   const float FLOW_WAVE_PERIOD = $flow_wave_period;
   //Cheap value noise for standing-wave patches (a look choice, see below).
   float flowHash(vec2 q){ return fract(sin(dot(q, vec2(127.1, 311.7))) * 43758.5453); }
@@ -1581,6 +1610,22 @@ void main(){
     if(oceanShadowDebugMode == 66) flowThicknessAlpha = max(flowThicknessAlpha, 0.01);
     //$DEBUG_END$
     if(flowThicknessAlpha <= 0.002) discard;
+    //Phase 6: inside a fall's corridor, where the LEVEL is steep, the waterfall sheet is
+    //the surface and this one steps aside. Gated on the level slope (tan 10 to 20 degrees,
+    //over a 0.75 m stencil) rather than the whole corridor, so the flat plunge pool the
+    //sheet dives into, and any ledge pool between steps, stay here and depth-clip it.
+    float flowFallCorridor = fallCorridorWeight(worldPosition.xz);
+    float flowFallOwn = 0.0;
+    if(flowFallCorridor > 0.0){
+      const float FALL_EPS = 0.75;
+      float fxm = waterFieldAt(worldPosition.xz - vec2(FALL_EPS, 0.0)).r;
+      float fxp = waterFieldAt(worldPosition.xz + vec2(FALL_EPS, 0.0)).r;
+      float fzm = waterFieldAt(worldPosition.xz - vec2(0.0, FALL_EPS)).r;
+      float fzp = waterFieldAt(worldPosition.xz + vec2(0.0, FALL_EPS)).r;
+      float fallLevelSlope = length(vec2(fxp - fxm, fzp - fzm)) / (2.0 * FALL_EPS);
+      flowFallOwn = flowFallCorridor * smoothstep(0.176, 0.364, fallLevelSlope);
+    }
+    if(flowFallOwn >= 0.998) discard;
   #else
     if(flowHandoffW >= 0.998) discard;
   #endif
@@ -1760,12 +1805,15 @@ void main(){
     rawDdz.y = levelSlope.y;
     cascade0HeightSlope = levelSlope;
   }
-  //PLACEHOLDER: Phase 6 falls. Where the level drops faster than tan 30 degrees the
+  //Phase 4 stand-in for falls, now only OUTSIDE Phase 6 corridors. Where the level drops faster than tan 30 degrees the
   //sheet is a waterfall stretched over its step, which this heightfield cannot draw
   //(the lumpy glass sheets of the browser rounds). Until Phase 6 gives falls their
   //own geometry, such cells are all whitewater: full foam and a rough surface. It is
   //the same onset as FlowFoamPass step foam, but not gated on speed or its window.
   float flowFallSheet = smoothstep(0.577, 1.0, length(cascade0HeightSlope) * waveHeightMultiplier);
+  //Phase 6: inside a fall's corridor the waterfall sheet draws the fall, so this stand-in
+  //stays for the small bed steps a-land does not export as falls.
+  flowFallSheet *= 1.0 - flowFallCorridor;
   //The current, foam and energy here (FlowFoamPass), read once for the waves below and
   //for the foam further down. Zero outside the pass window.
   vec4 flowFoamSample = vec4(0.0);
@@ -3542,6 +3590,6 @@ void main(){
   #if($flowing_water)
     //The hand-off cross-fade and the thin-water fade (see the discards above).
     //Debug views stay opaque.
-    if(oceanShadowDebugMode == 0) gl_FragColor.a = flowHandoffAlpha * flowThicknessAlpha;
+    if(oceanShadowDebugMode == 0) gl_FragColor.a = flowHandoffAlpha * flowThicknessAlpha * (1.0 - flowFallOwn);
   #endif
 }
