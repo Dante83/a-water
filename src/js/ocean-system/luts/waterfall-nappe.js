@@ -42,7 +42,7 @@
 //   thickness along the path h = q / |v| (continuity: the jet thins as it speeds up).
 //
 // AERATION is a budget A with a = 1 − e^(−A):
-//   start:     a = startAeration × the creek's energy where the trace begins;
+//   start:     a = startAeration × the creek's energy where the trace begins (default 0);
 //   airborne:  dA = fall height / L_b, L_b = BREAKUP_K · q^BREAKUP_EXP metres, a
 //              jet break-up length of the Horeni form (6·q^0.32; quoted from
 //              memory of the plunge-jet literature — ⚠ verify before tuning on it);
@@ -86,7 +86,10 @@ ARestlessOcean.WaterfallNappe = {};
     presenceSmoothRows: 1,      //± rows of box smoothing on presence
     hopDropLo: 0.25,            //m an airborne stretch must fall to start counting as a fall ...
     hopDropHi: 0.75,            //... and to count fully
-    approachClear: 2.0,         //m before the first takeoff where the creek, not the sheet, draws
+    levelSteepLo: Math.tan(10.0 * Math.PI / 180.0),   //the flowing material's flowFallOwn band ...
+    levelSteepHi: Math.tan(20.0 * Math.PI / 180.0),
+    levelEps: 0.75,             //... and its stencil (keep all three in step with water-shader.glsl)
+    fieldTexel: 1.0,            //m, WaterField cascade 0 texel
     settleRun: 3.0,             //m of gentle attached path after the last fall to stop
     plungeMinDepth: 0.4,        //m, water at least this deep ...
     plungeMaxFroude: 0.6,       //... and at most this Froude number is a pool to plunge into
@@ -95,7 +98,10 @@ ARestlessOcean.WaterfallNappe = {};
     detachMargin: 0.0005,       //m per step the bed must out-drop the free parabola by to launch
     breakupK: 6.0,
     breakupExp: 0.32,
-    startAeration: 0.5,         //aeration at the start per unit of the creek's energy (< 1)
+    startAeration: 0.0,         //aeration at the start per unit of the creek's energy (< 1). 0:
+                                //a-land's energy said 0.9 "whitewater" on hero-creek's FV creek,
+                                //which renders clear, and the jet left the lip already opaque
+                                //white against it. The lip is a glassy tongue that whitens as it falls.
     impactAerationSpeed: 3.0,   //m/s of lost normal speed per unit of aeration budget
     chuteAerationLength: 5.0,   //m
     aerationDecayLength: 3.0,   //m
@@ -186,6 +192,33 @@ ARestlessOcean.WaterfallNappe = {};
     while(r + step <= half && isWet(r + step)) r += step;
     while(l + step <= half && isWet(-(l + step))) l += step;
     return {width: r + l + step, offset: 0.5 * (r - l)};
+  };
+
+  //The field level at (x, z), bilinear over texel centres (texel metres), the way the GPU
+  //samples WaterFieldPass's cascade 0. Dry texels are left out of the blend; null when all
+  //four are dry.
+  N.fieldLevelAt = function(env, x, z, texel){
+    const fx = x / texel - 0.5, fz = z / texel - 0.5;
+    const i = Math.floor(fx), j = Math.floor(fz), tx = fx - i, tz = fz - j;
+    let sum = 0.0, wsum = 0.0;
+    for(let dj = 0; dj <= 1; ++dj){
+      for(let di = 0; di <= 1; ++di){
+        const w = env.waterAt((i + di + 0.5) * texel, (j + dj + 0.5) * texel);
+        if(!w || !(w.depth > 0.0) || w.level == null || !isFinite(w.level)) continue;
+        const k = (di ? tx : 1.0 - tx) * (dj ? tz : 1.0 - tz);
+        sum += k * w.level; wsum += k;
+      }
+    }
+    return wsum > 1e-6 ? sum / wsum : null;
+  };
+
+  //|∇level| by central differences over ±eps, as flowFallOwn measures it. Null without water.
+  N.levelSlope = function(env, x, z, eps, texel){
+    if(!env.waterAt) return null;
+    const xm = N.fieldLevelAt(env, x - eps, z, texel), xp = N.fieldLevelAt(env, x + eps, z, texel);
+    const zm = N.fieldLevelAt(env, x, z - eps, texel), zp = N.fieldLevelAt(env, x, z + eps, texel);
+    if(xm === null || xp === null || zm === null || zp === null) return null;
+    return Math.hypot(xp - xm, zp - zm) / (2.0 * eps);
   };
 
   //Group falls into cascades: fall j follows fall i when j's top is within chainGap
@@ -442,13 +475,13 @@ ARestlessOcean.WaterfallNappe = {};
     const nappe = {q: q, hc: hc, vc: vc, Lb: Lb, width: W, discharge: Q, chain: chain,
                    samples: samples, impacts: impacts, plunge: plunge, stop: stop,
                    rows: [], corridors: []};
-    N.resample(nappe, o);
+    N.resample(nappe, o, env);
     N.buildCorridors(nappe, o);
     return nappe;
   };
 
   //Uniform arc-length rows with presence, trimmed to where the sheet shows.
-  N.resample = function(nappe, o){
+  N.resample = function(nappe, o, env){
     const S = nappe.samples, ds = opt(o, 'rowSpacing');
     if(S.length < 2) return;
     //Each airborne stretch counts as a fall only in proportion to the height it falls: a
@@ -482,25 +515,28 @@ ARestlessOcean.WaterfallNappe = {};
       if(hl > 1e-6){ r.hx /= hl; r.hz /= hl; } else { r.hx = 0.0; r.hz = 1.0; }
       rows.push(r);
     }
-    //Presence: airborne → 1 (scaled by the stretch's drop, above); attached → the path
-    //slope band.
+    //Presence. Airborne: by the stretch's drop (above). Attached: wherever the creek's
+    //LEVEL is steep, by the very test the flowing-water material uses to step aside
+    //(water-shader.glsl, flowFallOwn: tan 10°→20° over a ±0.75 m stencil of the bilinear
+    //level), so the two surfaces are exact complements. Hero-creek-sky showed what a
+    //different criterion does: the sheet stopped at its landing while the creek, whose
+    //level still ran steeply down the ramp to the pool, had already stepped aside, and
+    //neither drew the metre between (2026-09-21). With no water to ask (tests, a world
+    //without tiles), the path's own slope stands in.
     const plo = opt(o, 'presenceLo'), phi = opt(o, 'presenceHi');
+    const llo = opt(o, 'levelSteepLo'), lhi = opt(o, 'levelSteepHi'), eps = opt(o, 'levelEps');
     const raw = new Array(rows.length);
     for(let i = 0; i < rows.length; ++i){
-      const a = rows[Math.max(i - 1, 0)], b = rows[Math.min(i + 1, rows.length - 1)];
-      const dPlan = Math.hypot(b.x - a.x, b.z - a.z);
-      const slope = dPlan > 1e-6 ? (a.y - b.y) / dPlan : (a.y > b.y ? 1e3 : 0.0);
-      raw[i] = Math.max(rows[i].air * rows[i].fallW, smoothstep(plo, phi, slope));
-    }
-    //On a FREE overfall the creek surface draws the approach up to the lip, so the flat rows
-    //just before the first takeoff must not draw: their slope presence laid a sun-facing
-    //white band over the brink (hero-creek-sky). Only when a real fall (airborne, fallW)
-    //follows within approachClear metres; a chute with no takeoff keeps its slope presence.
-    let firstAir = -1;
-    for(let i = 0; i < rows.length; ++i){ if(rows[i].air * rows[i].fallW > 0.5){ firstAir = i; break; } }
-    if(firstAir > 0){
-      const clear = opt(o, 'approachClear');
-      for(let i = firstAir - 1; i >= 0 && rows[firstAir].s - rows[i].s <= clear; --i) raw[i] = 0.0;
+      let attached;
+      const ls = env ? N.levelSlope(env, rows[i].x, rows[i].z, eps, opt(o, 'fieldTexel')) : null;
+      if(ls !== null) attached = smoothstep(llo, lhi, ls);
+      else {
+        const a = rows[Math.max(i - 1, 0)], b = rows[Math.min(i + 1, rows.length - 1)];
+        const dPlan = Math.hypot(b.x - a.x, b.z - a.z);
+        const slope = dPlan > 1e-6 ? (a.y - b.y) / dPlan : (a.y > b.y ? 1e3 : 0.0);
+        attached = smoothstep(plo, phi, slope);
+      }
+      raw[i] = Math.max(rows[i].air * rows[i].fallW, attached);
     }
     //A sliding plunge's dive inherits the presence of the row before it.
     for(let i = 1; i < rows.length; ++i) if(rows[i].dive > 0.0) raw[i] = raw[i - 1];

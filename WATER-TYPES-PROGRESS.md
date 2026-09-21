@@ -112,6 +112,23 @@ compute is not the constraint.
   presence and faced the sun. On a free overfall the creek draws the approach, so rows within
   `approachClear` (2 m) of the first real takeoff no longer draw.
 
+### Round 3 — Dante at (479, 7.9, 773.4) on hero-creek-sky, 2026-09-21
+
+"Back end of waterfall does not connect to the water nor at the front end."
+- **Bottom gap: two different criteria.** The creek stepped aside wherever its LEVEL was steep
+  (the FV solve runs 0.15 m of 4.8 m/s water down the ramp to the pool at z 769), but the sheet
+  stopped drawing at its landing (766.3): nothing drew the metre between. Attached presence now
+  IS the creek's test — `smoothstep(tan 10°, tan 20°, |∇level|)` over ±0.75 m of the bilinear
+  field level (`WaterfallNappe.levelSlope`), so the two surfaces are exact complements. The path
+  slope only stands in where there is no water to ask. `approachClear` (round 2) is gone.
+- **Top: clear creek, then an instantly opaque sheet.** The upstream creek IS drawn to the lip
+  (debug 66) — clear water over the grey carved bed. The jet's air was seeded from a-land's energy,
+  0.9 "whitewater" on a creek the renderer draws clear. `startAeration` 0: the lip is a glassy
+  tongue that whitens as it falls.
+- Not changed: the pool narrows toward the fall base in the water data itself (FV: 7 wet
+  cells across at z 766 against 10–12 in the pool), so the sheet (as wide as the creek at its
+  start) overhangs the ramp's dry edges there.
+
 ### Deferred
 
 Atmospheric perspective on the sheet (it takes the scene fog chunk instead); the plunge pool's
