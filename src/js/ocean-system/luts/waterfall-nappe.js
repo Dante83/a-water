@@ -42,6 +42,7 @@
 //   thickness along the path h = q / |v| (continuity: the jet thins as it speeds up).
 //
 // AERATION is a budget A with a = 1 − e^(−A):
+//   start:     a = startAeration × the creek's energy where the trace begins;
 //   airborne:  dA = fall height / L_b, L_b = BREAKUP_K · q^BREAKUP_EXP metres, a
 //              jet break-up length of the Horeni form (6·q^0.32; quoted from
 //              memory of the plunge-jet literature — ⚠ verify before tuning on it);
@@ -51,11 +52,12 @@
 //   gentle:    A decays over AERATION_DECAY_LENGTH (bubbles rise out).
 // The rendering turns a into whitewater; clear lip water stays clear.
 //
-// PRESENCE is where the sheet should draw instead of the heightfield surface:
-// 1 airborne, and on attached stretches smoothstep(tan 20°, tan 30°) of the path
-// slope. The flowing-water material fades itself out with the SAME band inside the
-// fall's corridor (the capsules below), so on flat ledges and pools between steps
-// the creek surface draws and on the steps the sheet does.
+// PRESENCE is where the sheet draws instead of the creek's heightfield surface: on
+// airborne stretches in proportion to how far they fall (a 5 cm hop over a run-out is
+// not a fall), and on attached stretches smoothstep(tan 20°, tan 30°) of the path slope.
+// The flowing-water material steps aside inside the fall's corridor boxes (below) where
+// its own LEVEL is steep, so flat ledges and pools between steps stay on the creek
+// surface and the steps move to the sheet.
 //
 // No THREE here: pure math, so Node can test it (see the Phase 6 section of
 // WATER-TYPES-PROGRESS.md).
@@ -81,7 +83,9 @@ ARestlessOcean.WaterfallNappe = {};
     rowSpacing: 0.25,           //m of arc length between ribbon rows
     presenceLo: Math.tan(20.0 * Math.PI / 180.0),
     presenceHi: Math.tan(30.0 * Math.PI / 180.0),
-    presenceSmoothRows: 3,      //± rows of box smoothing on presence
+    presenceSmoothRows: 1,      //± rows of box smoothing on presence
+    hopDropLo: 0.25,            //m an airborne stretch must fall to start counting as a fall ...
+    hopDropHi: 0.75,            //... and to count fully
     settleRun: 3.0,             //m of gentle attached path after the last fall to stop
     plungeMinDepth: 0.4,        //m, water at least this deep ...
     plungeMaxFroude: 0.6,       //... and at most this Froude number is a pool to plunge into
@@ -90,12 +94,13 @@ ARestlessOcean.WaterfallNappe = {};
     detachMargin: 0.0005,       //m per step the bed must out-drop the free parabola by to launch
     breakupK: 6.0,
     breakupExp: 0.32,
+    startAeration: 0.5,         //aeration at the start per unit of the creek's energy (< 1)
     impactAerationSpeed: 3.0,   //m/s of lost normal speed per unit of aeration budget
     chuteAerationLength: 5.0,   //m
     aerationDecayLength: 3.0,   //m
     minImpactSpeed: 0.5,        //m/s normal speed below which a touchdown is not recorded
-    capsuleLength: 4.0,         //m of plan length per corridor capsule
-    capsuleMargin: 0.75,        //m added to the half-width
+    corridorLength: 4.0,         //m of plan length per corridor box
+    corridorMargin: 0.75,        //m added to the half-width
     colSpacing: 0.5             //m between ribbon columns
   };
 
@@ -191,7 +196,7 @@ ARestlessOcean.WaterfallNappe = {};
 
   //Follow one parcel down a chain. Returns null when the terrain under the start is
   //not loaded yet (the caller retries), else the nappe:
-  //  {q, hc, vc, width, discharge, samples[], rows[], impacts[], plunge, capsules[]}
+  //  {q, hc, vc, width, discharge, samples[], rows[], impacts[], plunge, corridors[]}
   N.trace = function(chain, env, o){
     const dt = opt(o, 'dt'), nM = opt(o, 'manningN'), minDepth = opt(o, 'minDepth');
     const first = chain[0], last = chain[chain.length - 1];
@@ -237,7 +242,13 @@ ARestlessOcean.WaterfallNappe = {};
     //wins in attachedOffset anyway.
     const thickness = function(s){ return Math.min(Math.max(q / Math.max(s, 1e-3), minDepth), 2.0 * hc); };
     let takeoffY = py;
-    let airborne = false, tau = 0.0, path = 0.0, A = 0.0, gentleRun = 0.0, passed = false;
+    //The creek arrives with air in it already: a-land's energy (0 calm .. 1 whitewater) is
+    //what the creek surface's own whitewater keys off, so a turbulent approach launches an
+    //already-milky jet and a glassy one launches a clear jet.
+    const wStart = env.waterAt ? env.waterAt(px, pz) : null;
+    const e0 = (wStart && wStart.energy != null && isFinite(wStart.energy)) ? Math.min(Math.max(wStart.energy, 0.0), 1.0) : 0.0;
+    let A = -Math.log(1.0 - opt(o, 'startAeration') * e0);
+    let airborne = false, tau = 0.0, path = 0.0, gentleRun = 0.0, passed = false;
     let everAirborneOrSteep = false;
     const samples = [], impacts = [];
     let plunge = null;
@@ -245,7 +256,7 @@ ARestlessOcean.WaterfallNappe = {};
       const s = Math.sqrt(vx * vx + vy * vy + vz * vz);
       const shl = Math.sqrt(vx * vx + vz * vz);
       samples.push({x: px, y: py, z: pz, tau: tau, speed: s, h: thickness(s),
-                    air: airborne ? 1.0 : 0.0, aer: 1.0 - Math.exp(-A),
+                    air: airborne ? 1.0 : 0.0, aer: 1.0 - Math.exp(-A), dive: 0.0,
                     hx: shl > 1e-4 ? vx / shl : hx, hz: shl > 1e-4 ? vz / shl : hz});
     };
     pushSample();
@@ -351,6 +362,9 @@ ARestlessOcean.WaterfallNappe = {};
           tau += dt; path += Math.hypot(px - ox, pz - oz);
           py = level - plungeDepth;
           pushSample();
+          //The dive under the surface is not a chute: resample() must not read its drop
+          //as path slope (it drew a patch of sheet over the run-out).
+          samples[samples.length - 1].dive = 1.0;
           break;
         }
       }
@@ -363,9 +377,9 @@ ARestlessOcean.WaterfallNappe = {};
 
     const nappe = {q: q, hc: hc, vc: vc, Lb: Lb, width: W, discharge: Q, chain: chain,
                    samples: samples, impacts: impacts, plunge: plunge,
-                   rows: [], capsules: []};
+                   rows: [], corridors: []};
     N.resample(nappe, o);
-    N.buildCapsules(nappe, o);
+    N.buildCorridors(nappe, o);
     return nappe;
   };
 
@@ -373,6 +387,19 @@ ARestlessOcean.WaterfallNappe = {};
   N.resample = function(nappe, o){
     const S = nappe.samples, ds = opt(o, 'rowSpacing');
     if(S.length < 2) return;
+    //Each airborne stretch counts as a fall only in proportion to the height it falls: a
+    //parcel skipping over a supercritical run-out makes 5-10 cm hops (hero-creek, below the
+    //fall), and drawing those as sheet laid pale patches over the banks.
+    const lo = opt(o, 'hopDropLo'), hi = opt(o, 'hopDropHi');
+    for(let i = 0; i < S.length;){
+      if(!S[i].air){ S[i].fallW = 0.0; ++i; continue; }
+      let j = i;
+      while(j < S.length && S[j].air) ++j;
+      const y0 = S[Math.max(i - 1, 0)].y, y1 = S[Math.min(j, S.length - 1)].y;
+      const w = smoothstep(lo, hi, y0 - y1);
+      for(let k = i; k < j; ++k) S[k].fallW = w;
+      i = j;
+    }
     const cum = [0.0];
     for(let i = 1; i < S.length; ++i){
       cum.push(cum[i - 1] + Math.hypot(S[i].x - S[i - 1].x, S[i].y - S[i - 1].y, S[i].z - S[i - 1].z));
@@ -380,7 +407,7 @@ ARestlessOcean.WaterfallNappe = {};
     const total = cum[cum.length - 1];
     const rows = [];
     let j = 0;
-    const keys = ['x', 'y', 'z', 'tau', 'speed', 'h', 'air', 'aer', 'hx', 'hz'];
+    const keys = ['x', 'y', 'z', 'tau', 'speed', 'h', 'air', 'aer', 'hx', 'hz', 'fallW', 'dive'];
     for(let s = 0.0; s <= total + 1e-6; s += ds){
       while(j < S.length - 2 && cum[j + 1] < s) ++j;
       const seg = cum[j + 1] - cum[j];
@@ -391,24 +418,26 @@ ARestlessOcean.WaterfallNappe = {};
       if(hl > 1e-6){ r.hx /= hl; r.hz /= hl; } else { r.hx = 0.0; r.hz = 1.0; }
       rows.push(r);
     }
-    //Presence: airborne → 1; attached → the path slope band.
-    const lo = opt(o, 'presenceLo'), hi = opt(o, 'presenceHi');
+    //Presence: airborne → 1 (scaled by the stretch's drop, above); attached → the path
+    //slope band.
+    const plo = opt(o, 'presenceLo'), phi = opt(o, 'presenceHi');
     const raw = new Array(rows.length);
     for(let i = 0; i < rows.length; ++i){
       const a = rows[Math.max(i - 1, 0)], b = rows[Math.min(i + 1, rows.length - 1)];
       const dPlan = Math.hypot(b.x - a.x, b.z - a.z);
       const slope = dPlan > 1e-6 ? (a.y - b.y) / dPlan : (a.y > b.y ? 1e3 : 0.0);
-      raw[i] = Math.max(rows[i].air, smoothstep(lo, hi, slope));
+      raw[i] = Math.max(rows[i].air * rows[i].fallW, smoothstep(plo, phi, slope));
     }
+    //A sliding plunge's dive inherits the presence of the row before it.
+    for(let i = 1; i < rows.length; ++i) if(rows[i].dive > 0.0) raw[i] = raw[i - 1];
+    //Plain box, narrow: it only softens the lip and the landing. It used to be a
+    //max-then-box over ±3 rows, which gave the flat rows before a lip presence 0.57 and
+    //laid a bright strip of sheet over the creek there (hero-creek, 2026-09-21).
     const R = opt(o, 'presenceSmoothRows');
     for(let i = 0; i < rows.length; ++i){
-      //Max-then-box: a smoothed max keeps a one-row airborne hop from averaging away.
-      let m = 0.0, sum = 0.0, cnt = 0;
-      for(let k = -R; k <= R; ++k){
-        const v = raw[Math.min(Math.max(i + k, 0), rows.length - 1)];
-        sum += v; ++cnt; m = Math.max(m, v);
-      }
-      rows[i].presence = 0.5 * (m + sum / cnt);
+      let sum = 0.0, cnt = 0;
+      for(let k = -R; k <= R; ++k){ sum += raw[Math.min(Math.max(i + k, 0), rows.length - 1)]; ++cnt; }
+      rows[i].presence = sum / cnt;
     }
     //Tangent frames. Across is horizontal, perpendicular to the plan heading of the
     //water there; the normal faces up-and-downstream.
@@ -435,11 +464,11 @@ ARestlessOcean.WaterfallNappe = {};
     nappe.rows = rows.slice(Math.max(i0 - 2, 0), Math.min(i1 + 3, rows.length));
   };
 
-  //Corridor capsules over the rows where the sheet draws: {ax, az, bx, bz, r}. The
+  //Corridor boxes (flat-ended) over the rows where the sheet draws: {ax, az, bx, bz, r}. The
   //flowing-water material fades its own surface out inside them (on steep level only).
-  N.buildCapsules = function(nappe, o){
-    const rows = nappe.rows, len = opt(o, 'capsuleLength');
-    const r = 0.5 * nappe.width + opt(o, 'capsuleMargin');
+  N.buildCorridors = function(nappe, o){
+    const rows = nappe.rows, len = opt(o, 'corridorLength');
+    const r = 0.5 * nappe.width + opt(o, 'corridorMargin');
     const caps = [];
     let start = null, plan = 0.0, prev = null;
     for(let i = 0; i < rows.length; ++i){
@@ -453,14 +482,14 @@ ARestlessOcean.WaterfallNappe = {};
       }
       prev = row;
     }
-    nappe.capsules = caps;
+    nappe.corridors = caps;
   };
 
   //Extrude the rows across the width into ribbon arrays. Attached rows drape each
   //vertex onto its own ground (+ the water's thickness there); airborne rows stay rigid.
   //Returns {position, normal, flowA, flowB, index, vertexCount} (typed arrays).
   //  flowA = (tau, across −1..1, thickness, speed)
-  //  flowB = (aeration, presence, airborne, arc length)
+  //  flowB = (aeration, presence, airborne, half-width m)
   N.buildRibbon = function(nappe, env, o){
     const rows = nappe.rows;
     if(rows.length < 2) return null;
@@ -495,7 +524,7 @@ ARestlessOcean.WaterfallNappe = {};
         position[v * 3] = x; position[v * 3 + 1] = y; position[v * 3 + 2] = z;
         normal[v * 3] = nx; normal[v * 3 + 1] = ny; normal[v * 3 + 2] = nz;
         flowA[v * 4] = row.tau; flowA[v * 4 + 1] = across; flowA[v * 4 + 2] = row.h; flowA[v * 4 + 3] = row.speed;
-        flowB[v * 4] = row.aer; flowB[v * 4 + 1] = row.presence; flowB[v * 4 + 2] = row.air; flowB[v * 4 + 3] = row.s;
+        flowB[v * 4] = row.aer; flowB[v * 4 + 1] = row.presence; flowB[v * 4 + 2] = row.air; flowB[v * 4 + 3] = 0.5 * W;
       }
     }
     const index = new Uint32Array((rows.length - 1) * (nCols - 1) * 6);
