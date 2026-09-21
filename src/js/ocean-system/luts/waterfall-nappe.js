@@ -101,7 +101,14 @@ ARestlessOcean.WaterfallNappe = {};
     minImpactSpeed: 0.5,        //m/s normal speed below which a touchdown is not recorded
     corridorLength: 4.0,         //m of plan length per corridor box
     corridorMargin: 0.75,        //m added to the half-width
-    colSpacing: 0.5             //m between ribbon columns
+    colSpacing: 0.5,            //m between ribbon columns
+    wetScanStep: 0.25,          //m, across-flow step of the wet-width scan
+    wetMinDepth: 0.02,          //m of water that counts as wet for it
+    minWidth: 1.0,              //m, narrowest jet
+    minUnitDischarge: 0.01,     //m²/s below which the field's depth × speed is not trusted
+    climbStop: 0.3,             //m an attached parcel may climb before it counts as ponded
+    stallTime: 2.0,             //s ...
+    stallDistance: 1.0          //... and the plan progress it must make in that time
   };
 
   function opt(o, k){ return (o && o[k] !== undefined) ? o[k] : N.DEFAULTS[k]; }
@@ -164,6 +171,22 @@ ARestlessOcean.WaterfallNappe = {};
     return !!w && w.depth >= opt(o, 'plungeMinDepth') && w.fr <= opt(o, 'plungeMaxFroude');
   }
 
+  //Wet extent across the flow at (x, z) along the unit direction (ax, az), out to maxW/2
+  //each side: {width, offset} where offset moves (x, z) to the middle of the wet span.
+  //Null when (x, z) itself is dry or the water is unknown.
+  N.wetSpan = function(env, x, z, ax, az, maxW, step, minDepth){
+    const isWet = function(d){
+      const w = waterHere(env, x + ax * d, z + az * d);
+      return !!w && w.depth >= minDepth;
+    };
+    if(!isWet(0.0)) return null;
+    const half = 0.5 * maxW;
+    let r = 0.0, l = 0.0;
+    while(r + step <= half && isWet(r + step)) r += step;
+    while(l + step <= half && isWet(-(l + step))) l += step;
+    return {width: r + l + step, offset: 0.5 * (r - l)};
+  };
+
   //Group falls into cascades: fall j follows fall i when j's top is within chainGap
   //(plan) of i's bottom and not above it by more than a metre. Returns arrays of
   //falls, upstream first. Every fall lands in exactly one chain.
@@ -196,7 +219,8 @@ ARestlessOcean.WaterfallNappe = {};
 
   //Follow one parcel down a chain. Returns null when the terrain under the start is
   //not loaded yet (the caller retries), else the nappe:
-  //  {q, hc, vc, width, discharge, samples[], rows[], impacts[], plunge, corridors[]}
+  //  {q, hc, vc, width, discharge, samples[], rows[], impacts[], plunge, corridors[],
+  //   stop: why the trace ended — plunge | settled | stopped | climb | stall | unloaded | budget}
   N.trace = function(chain, env, o){
     const dt = opt(o, 'dt'), nM = opt(o, 'manningN'), minDepth = opt(o, 'minDepth');
     const first = chain[0], last = chain[chain.length - 1];
@@ -207,9 +231,6 @@ ARestlessOcean.WaterfallNappe = {};
     }
     if(!(W > 0.0)) W = 4.0;
     if(!(Q > 0.0)) Q = 0.5;
-    const q = Q / W;
-    const hc = Math.cbrt(q * q / G), vc = Math.cbrt(G * q);
-    const Lb = opt(o, 'breakupK') * Math.pow(q, opt(o, 'breakupExp'));
 
     //Plan heading: the field current at the lip when there is one, else top → bottom.
     let hx = first.bottom[0] - first.top[0], hz = first.bottom[2] - first.top[2];
@@ -227,6 +248,30 @@ ARestlessOcean.WaterfallNappe = {};
     let px = first.top[0] - hx * up, pz = first.top[2] - hz * up;
     let gy = env.groundAt(px, pz);
     if(gy == null) return null;
+    //The jet is as wide as the WATER at the start, not a-land's exported width: that is
+    //its hydraulic-geometry estimate (4·√Q, 14 m for every island-sholes fall), and a rigid
+    //14 m airborne sheet over a 5 m gully stood out past both banks. Scan across the flow
+    //for the wet extent (capped at the exported width) and centre the start on it.
+    const wet = N.wetSpan(env, px, pz, -hz, hx, W, opt(o, 'wetScanStep'), opt(o, 'wetMinDepth'));
+    if(wet){
+      W = Math.max(wet.width, opt(o, 'minWidth'));
+      px += -hz * wet.offset; pz += hx * wet.offset;
+      gy = env.groundAt(px, pz);
+      if(gy == null) return null;
+    }
+    //Flow per unit width from the field's own water where it has some (depth × speed at the
+    //start), so the jet carries what is drawn: a-land's exported discharge is its default
+    //source (12.5 m³/s on every island-sholes creek), and forced through the measured wet
+    //width it made a 1.7 m-thick jet out of a 1.8 m creek. Q/W where the field is silent.
+    let q = Q / W;
+    const wq = waterHere(env, px, pz), wv = env.waterAt ? env.waterAt(px, pz) : null;
+    if(wq && wv && wv.vx != null){
+      const fq = wq.depth * Math.sqrt(wv.vx * wv.vx + (wv.vz || 0) * (wv.vz || 0));
+      if(fq > opt(o, 'minUnitDischarge')) q = Math.min(fq, q);
+    }
+    Q = q * W;
+    const hc = Math.cbrt(q * q / G), vc = Math.cbrt(G * q);
+    const Lb = opt(o, 'breakupK') * Math.pow(q, opt(o, 'breakupExp'));
     let h = hc;
     let py = gy + attachedOffset(env, px, pz, gy, h);
     let vx = hx * vc, vy = 0.0, vz = hz * vc;
@@ -249,6 +294,8 @@ ARestlessOcean.WaterfallNappe = {};
     const e0 = (wStart && wStart.energy != null && isFinite(wStart.energy)) ? Math.min(Math.max(wStart.energy, 0.0), 1.0) : 0.0;
     let A = -Math.log(1.0 - opt(o, 'startAeration') * e0);
     let airborne = false, tau = 0.0, path = 0.0, gentleRun = 0.0, passed = false;
+    let rise = 0.0, stallT0 = 0.0, stallX = px, stallZ = pz;
+    const stallTime = opt(o, 'stallTime'), stallDist = opt(o, 'stallDistance');
     let everAirborneOrSteep = false;
     const samples = [], impacts = [];
     let plunge = null;
@@ -267,6 +314,7 @@ ARestlessOcean.WaterfallNappe = {};
     const minImpact = opt(o, 'minImpactSpeed');
     const steep = opt(o, 'presenceHi'), gentle = opt(o, 'presenceLo');
 
+    let stop = 'budget';
     while(tau < maxTime && path < maxPath){
       const ox = px, oy = py, oz = pz;
       const s = Math.sqrt(vx * vx + vy * vy + vz * vz);
@@ -275,7 +323,7 @@ ARestlessOcean.WaterfallNappe = {};
         vy -= G * dt;
         px += vx * dt; py += vy * dt; pz += vz * dt;
         const g2 = env.groundAt(px, pz);
-        if(g2 == null) break;
+        if(g2 == null){ stop = 'unloaded'; break; }
         const w = waterHere(env, px, pz);
         const level = w ? g2 + w.depth : -Infinity;
         //A pool only counts once the jet has really fallen: water right at a lip is
@@ -287,12 +335,12 @@ ARestlessOcean.WaterfallNappe = {};
             impacts.push(plunge);
             A += Math.max(-vy, 0.0) / opt(o, 'impactAerationSpeed');
           }
-          if(py <= level - plungeDepth){ tau += dt; path += Math.hypot(px - ox, py - oy, pz - oz); pushSample(); break; }
+          if(py <= level - plungeDepth){ tau += dt; path += Math.hypot(px - ox, py - oy, pz - oz); pushSample(); stop = 'plunge'; break; }
         }
         else if(py <= g2 + h){
           //Touchdown on a ledge or the chute below: lose the normal component.
           const pl = Math.sqrt(vx * vx + vz * vz) || 1.0;
-          if(!groundNormalUpwind(env, px, pz, vx / pl, vz / pl, 0.5, nrm)) break;
+          if(!groundNormalUpwind(env, px, pz, vx / pl, vz / pl, 0.5, nrm)){ stop = 'unloaded'; break; }
           const vn = vx * nrm[0] + vy * nrm[1] + vz * nrm[2];
           if(vn < 0.0){
             if(-vn >= minImpact){
@@ -303,6 +351,7 @@ ARestlessOcean.WaterfallNappe = {};
           }
           py = g2 + attachedOffset(env, px, pz, g2, h);
           airborne = false;
+          rise = 0.0;
         }
         A += Math.max(oy - py, 0.0) / Lb;
         everAirborneOrSteep = true;
@@ -310,7 +359,7 @@ ARestlessOcean.WaterfallNappe = {};
       else {
         const pl = Math.sqrt(vx * vx + vz * vz);
         const dxp = pl > 1e-4 ? vx / pl : hx, dzp = pl > 1e-4 ? vz / pl : hz;
-        if(!groundNormalUpwind(env, px, pz, dxp, dzp, 0.5, nrm)) break;
+        if(!groundNormalUpwind(env, px, pz, dxp, dzp, 0.5, nrm)){ stop = 'unloaded'; break; }
         //Gravity on the tangent plane.
         const gn = -G * nrm[1];
         let ax = -gn * nrm[0], ay = -G - gn * nrm[1], az = -gn * nrm[2];
@@ -325,7 +374,7 @@ ARestlessOcean.WaterfallNappe = {};
         //their own creek (and straight back into it as a "plunge") upstream of the lip.
         const bx = px + vx * dt, bz = pz + vz * dt, by = py + vy * dt - 0.5 * G * dt * dt;
         const gb = env.groundAt(bx, bz), gHere = env.groundAt(px, pz);
-        if(gb == null || gHere == null) break;
+        if(gb == null || gHere == null){ stop = 'unloaded'; break; }
         const offB = attachedOffset(env, bx, bz, gb, h);
         if((gHere - gb) > (py - by) + detach){
           airborne = true;
@@ -348,7 +397,17 @@ ARestlessOcean.WaterfallNappe = {};
         else A -= A * Math.min(dPlan / opt(o, 'aerationDecayLength'), 1.0);
         gentleRun = (slope < gentle) ? gentleRun + dPlan : 0.0;
         const sNow = Math.sqrt(vx * vx + vy * vy + vz * vz);
-        if(sNow < 0.05) { tau += dt; pushSample(); break; }
+        if(sNow < 0.05) { tau += dt; pushSample(); stop = 'stopped'; break; }
+        //Water does not slosh up the far side of a hollow and back like a ball in a bowl:
+        //it fills it. A parcel that RISES more than climbStop in one continuous climb, or
+        //makes under stallDistance of plan progress in stallTime, has reached a pond (on
+        //island-sholes one rolled round a carve hollow for the whole 60 s budget: 71k
+        //vertices of sheet). Measured as the integral of upward velocity, not as height:
+        //the parcel's height includes its thickness (which grows as it slows), and the bed
+        //under a parcel sliding down a near-vertical face jumps by tens of centimetres for
+        //a few centimetres of sideways jitter. Both read as climbing; neither is.
+        rise = vy > 0.0 ? rise + vy * dt : 0.0;
+        if(rise > opt(o, 'climbStop')) { tau += dt; pushSample(); stop = 'climb'; break; }
         //Slid into a pool (a chute, or the lower half of a cliff ramp, running into
         //deep water): that is a plunge too. Without this the parcel rode the pool's
         //surface, since attachedOffset lifts it by the water depth, and skated across.
@@ -365,18 +424,22 @@ ARestlessOcean.WaterfallNappe = {};
           //The dive under the surface is not a chute: resample() must not read its drop
           //as path slope (it drew a patch of sheet over the run-out).
           samples[samples.length - 1].dive = 1.0;
-          break;
+          stop = 'plunge'; break;
         }
       }
       tau += dt;
       path += Math.hypot(px - ox, py - oy, pz - oz);
+      if(tau - stallT0 >= stallTime){
+        if(Math.hypot(px - stallX, pz - stallZ) < stallDist){ stop = 'stall'; break; }
+        stallT0 = tau; stallX = px; stallZ = pz;
+      }
       if(!passed && ((px - last.bottom[0]) * lx + (pz - last.bottom[2]) * lz) > -0.5) passed = true;
       pushSample();
-      if(passed && !airborne && everAirborneOrSteep && gentleRun >= opt(o, 'settleRun')) break;
+      if(passed && !airborne && everAirborneOrSteep && gentleRun >= opt(o, 'settleRun')){ stop = 'settled'; break; }
     }
 
     const nappe = {q: q, hc: hc, vc: vc, Lb: Lb, width: W, discharge: Q, chain: chain,
-                   samples: samples, impacts: impacts, plunge: plunge,
+                   samples: samples, impacts: impacts, plunge: plunge, stop: stop,
                    rows: [], corridors: []};
     N.resample(nappe, o);
     N.buildCorridors(nappe, o);
