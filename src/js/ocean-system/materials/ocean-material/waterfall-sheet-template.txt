@@ -25,16 +25,23 @@ ARestlessOcean.Materials.Ocean.waterfallSheetMaterial = {
     sunShadowEnabled: {value: 0},
     refractionLinearDepth: {value: null},
     screenResolution: {value: new THREE.Vector2(1920.0, 1080.0)},
-    meteringSurveyTexture: {value: null},
-    meteringSurveyValid: {value: 0.0},
-    foamDiffuseMap: {value: null},
     foamOpacityMap: {value: null},
     foamNormalMap: {value: null},
+
+    //Scene fog. The material is fog:true, so three's refreshFogUniforms writes these
+    //every frame there is a scene.fog (a-starry-sky always sets one) and throws on
+    //uniforms.fogColor if they are missing. The fog chunks (a-starry-sky's, and
+    //UnderwaterFogChunk's) read nothing else but uwSunDir, which broadcastSunDir fills.
+    fogNear: {value: 1.0},
+    fogFar: {value: 1000.0},
+    fogDensity: {value: 0.00025},
+    fogColor: {value: new THREE.Color()},
+    uwSunDir: {value: new THREE.Vector3(0.0, -1.0, 0.0)},
 
     //The sheet's own
     uGrainScale: {value: 2.0},
     uGrainRate: {value: 1.0},
-    uVoidMax: {value: 0.2},
+    uVoidMax: {value: 0.25},
     uBubbleRadius: {value: 0.0015},
     uSurfaceRough: {value: 0.35},
     uSpecFalloff: {value: 120.0},

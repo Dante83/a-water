@@ -67,8 +67,8 @@ ARestlessOcean.Passes.WaterfallSheetPass.SHARED_UNIFORMS = [
   'brightestDirectionalLight', 'brightestDirectionalLightDirection', 'skyAmbientColor',
   'waterAbsorption', 'waterScattering', 'waterSurfaceY', 'specBoost', 't',
   'sunShadowMap', 'sunShadowMatrix', 'sunShadowMapSize', 'sunShadowRadius', 'sunShadowBias', 'sunShadowEnabled',
-  'refractionLinearDepth', 'screenResolution', 'meteringSurveyTexture', 'meteringSurveyValid',
-  'foamDiffuseMap', 'foamOpacityMap', 'foamNormalMap'
+  'refractionLinearDepth', 'screenResolution',
+  'foamOpacityMap', 'foamNormalMap'
 ];
 
 ARestlessOcean.Passes.WaterfallSheetPass.prototype.init = function(scene){

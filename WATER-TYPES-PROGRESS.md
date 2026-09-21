@@ -42,8 +42,8 @@ compute is not the constraint.
   with a NaN miss (`api.getHeightAt` drops that argument and answers 0 m for unloaded ground).
 - **`waterfall-sheet.glsl`: one water.** The material aliases the flowing material's uniform
   OBJECTS (Jerlov, metered sun, sky ambient, scene shadow, sky, foam textures) — no second stream.
-  The white is **computed**: the sheet is a slab of bubbly water, void fraction = 0.2 × aeration
-  streaked by the creek's foam grain, σ = 1.5·α/r (r 1.5 mm), two-stream reflectance and
+  The white is **computed**: the sheet is a slab of bubbly water, void fraction = 0.25 × aeration
+  streaked by the creek's foam grain (×0.25–1.75), σ = 1.5·α/r (r 1.5 mm), two-stream reflectance and
   diffuse transmittance with g 0.85, so a back-lit fall glows and a clear lip stays clear. The
   grain is sampled at (across, τ − t): it rides the water and stretches as the jet accelerates.
 - **The hand-off.** `water-shader.glsl` ($flowing_water): inside a trace's corridor boxes (flat
@@ -87,11 +87,30 @@ compute is not the constraint.
    stale against its terrain: the four-fall chain's tops read 125.5 / 116.8 / 114.3 m where the
    ground is 73.2 / 72.9 / 68.2 m, and its creek water tiles float 40–50 m over the steep island.
    Solve Water + Bake & Export, then look at wtr-8.
-3. Taste knobs, all live on `oceanGrid.waterfallSheetPass.material.uniforms`: `uVoidMax` (0.2),
+3. Taste knobs, all live on `oceanGrid.waterfallSheetPass.material.uniforms`: `uVoidMax` (0.25),
    `uBubbleRadius` (1.5 mm), `uSurfaceRough` (0.35), `uGrainScale`/`uGrainRate`, `uEdgeFray`,
    `uBreakup`. Debug `uDebugMode`: 1 presence, 2 aeration, 3 airborne (red) / attached (blue),
    4 thickness, 5 bubble optical depth, 6 grain UV, 7 alpha, 8 bubble light, 9 reflected sky,
    10 water transmittance.
+
+### Round 2 — Dante's first browser run (hero-creek-sky), 2026-09-21
+
+- **Crash: `e.fogColor is undefined`.** The sheet is `fog: true`, so three's refreshFogUniforms
+  writes fogColor/Near/Far/Density every frame there is a `scene.fog` — and a-starry-sky always
+  sets one. The template lacked them. The headless run missed it because hero-creek-OCEAN has no
+  scene fog. Added (plus `uwSunDir`). a-starry-sky's fog chunks read only those four (its sky is
+  baked in as constants), so nothing else was missing; verified on hero-creek-sky on the 4090.
+- **The sheet reflected black under a-starry-sky.** It sampled the metering-survey fisheye, which
+  **reads back all zeros on hero-creek-sky** (atmospheric perspective on; the render agreed with
+  the readback). The creek never noticed: with AP on it reflects `computeSkyRadiance`. The sheet
+  now reflects the water's ambient-built sky, with below-horizon rays fading to a dim ground
+  bounce. ⚠ The splash's bead rims sample the same texture (`uHasSkyTex`); not changed here.
+- **Dark navy gaps between the streaks** came from multiplying the slab's light by the creek's foam
+  DIFFUSE map, which is dark between bubbles by design. Removed: bubbles scatter almost losslessly;
+  the grain modulates the amount of air instead. Default `uVoidMax` 0.2 → 0.25.
+- **A hot white band over the brink**: the flat approach rows before the first takeoff had slope
+  presence and faced the sun. On a free overfall the creek draws the approach, so rows within
+  `approachClear` (2 m) of the first real takeoff no longer draw.
 
 ### Deferred
 

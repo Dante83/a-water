@@ -86,6 +86,7 @@ ARestlessOcean.WaterfallNappe = {};
     presenceSmoothRows: 1,      //± rows of box smoothing on presence
     hopDropLo: 0.25,            //m an airborne stretch must fall to start counting as a fall ...
     hopDropHi: 0.75,            //... and to count fully
+    approachClear: 2.0,         //m before the first takeoff where the creek, not the sheet, draws
     settleRun: 3.0,             //m of gentle attached path after the last fall to stop
     plungeMinDepth: 0.4,        //m, water at least this deep ...
     plungeMaxFroude: 0.6,       //... and at most this Froude number is a pool to plunge into
@@ -490,6 +491,16 @@ ARestlessOcean.WaterfallNappe = {};
       const dPlan = Math.hypot(b.x - a.x, b.z - a.z);
       const slope = dPlan > 1e-6 ? (a.y - b.y) / dPlan : (a.y > b.y ? 1e3 : 0.0);
       raw[i] = Math.max(rows[i].air * rows[i].fallW, smoothstep(plo, phi, slope));
+    }
+    //On a FREE overfall the creek surface draws the approach up to the lip, so the flat rows
+    //just before the first takeoff must not draw: their slope presence laid a sun-facing
+    //white band over the brink (hero-creek-sky). Only when a real fall (airborne, fallW)
+    //follows within approachClear metres; a chute with no takeoff keeps its slope presence.
+    let firstAir = -1;
+    for(let i = 0; i < rows.length; ++i){ if(rows[i].air * rows[i].fallW > 0.5){ firstAir = i; break; } }
+    if(firstAir > 0){
+      const clear = opt(o, 'approachClear');
+      for(let i = firstAir - 1; i >= 0 && rows[firstAir].s - rows[i].s <= clear; --i) raw[i] = 0.0;
     }
     //A sliding plunge's dive inherits the presence of the row before it.
     for(let i = 1; i < rows.length; ++i) if(rows[i].dive > 0.0) raw[i] = raw[i - 1];

@@ -7,10 +7,10 @@ precision highp float;
 //fall must look like the same water, only foamier. So every input that sets the
 //colour of water here is the SAME uniform object as the flowing material's (the pass
 //aliases them, it does not copy them): the Jerlov absorption/scattering, the metered
-//sun, the sky ambient, the scene sun shadow, the sky the surface reflects, and the
-//three foam textures. The functions that turn them into colour are copies of the
-//water shader's (underwaterInscatterSurface, the Phong sun, getSunShadow, the ACES +
-//sRGB tail), marked where they live so they can be kept in step.
+//sun, the sky ambient, the scene sun shadow, and the foam grain textures. The functions
+//that turn them into colour are copies of the water shader's (underwaterInscatterSurface,
+//the ambient-built sky, the Phong sun, getSunShadow, the ACES + sRGB tail), marked where
+//they live so they can be kept in step.
 //
 //WHAT IS NEW IS THE WHITE. A fall is white because of the air in it, so the whitewater
 //is an optical model of bubbly water (see AERATED WATER in main), not the creek's
@@ -53,10 +53,7 @@ uniform int sunShadowEnabled;
 
 uniform sampler2D refractionLinearDepth;
 uniform vec2 screenResolution;
-uniform sampler2D meteringSurveyTexture;
-uniform float meteringSurveyValid;
 
-uniform sampler2D foamDiffuseMap;
 uniform sampler2D foamOpacityMap;
 uniform sampler2D foamNormalMap;
 
@@ -131,12 +128,19 @@ vec3 computeStandaloneSkyRadiance(vec3 worldDir){
   return sky;
 }
 
-//The water's SSR-miss sky, atmosphere-off branch: the provider's metering survey
-//when one is bound, else the standalone sky.
+//The sky the sheet reflects: the water's ambient-built sky (computeStandaloneSkyRadiance),
+//NOT a-starry-sky's metering survey. That fisheye is what the creek's SSR falls back to with
+//atmospheric perspective OFF, but on hero-creek-sky (AP on) it read back all zeros and the
+//sheet reflected black even along clamped, upward rays (2026-09-21) — the creek never
+//noticed because with AP on it reflects computeSkyRadiance instead. skyAmbientColor is the
+//metered sky wherever there is one, so this sky is on the right brightness scale everywhere.
+//
+//A waterfall is VERTICAL, so much of what it reflects is at or below the horizon: rays that
+//point below it would see terrain, not sky, and fade to a dim ground bounce.
+//FUDGE: the 0.25 bounce is a stand-in for the terrain's radiance.
 vec3 skyRadiance(vec3 dir){
-  vec2 skyUV = clamp(dir.xz * 0.5 + 0.5, 0.01, 0.99);
-  return (meteringSurveyValid > 0.5) ? texture2D(meteringSurveyTexture, skyUV).rgb
-                                     : computeStandaloneSkyRadiance(dir);
+  vec3 sky = computeStandaloneSkyRadiance(normalize(vec3(dir.x, max(dir.y, 0.0), dir.z)));
+  return mix(skyAmbientColor * 0.25, sky, smoothstep(-0.3, 0.05, dir.y));
 }
 
 //water-shader.glsl getSunShadow (3x3 PCF + receiver-plane slope bias + edge fade).
@@ -195,7 +199,6 @@ void main(){
   vec2 grainUV  = vec2(across * halfWidth / uGrainScale, (tau - tWrap) * uGrainRate);
   //Second layer rotated and rescaled, like the creek's foamTextureUV2, to break the tile.
   vec2 grainUV2 = vec2(grainUV.y * 0.73 + 0.31, -grainUV.x * 0.73 + 0.57);
-  vec3  foamAlbedo = 0.5 * (texture2D(foamDiffuseMap, grainUV).rgb + texture2D(foamDiffuseMap, grainUV2).rgb);
   float foamMask   = 0.5 * (texture2D(foamOpacityMap, grainUV).r   + texture2D(foamOpacityMap, grainUV2).r);
   vec2  foamNMXZ   = 2.0 * (0.5 * (texture2D(foamNormalMap, grainUV).xy + texture2D(foamNormalMap, grainUV2).xy)) - 1.0;
 
@@ -237,7 +240,11 @@ void main(){
   //Water absorption along the view path through the sheet; half of it applied to the
   //scattered light, which on average travels about half-way in before it turns round.
   vec3 Twater = exp(-(waterAbsorption + waterScattering) * path);
-  vec3 bubbleLit = (slabR * frontE + slabTdif * backE) * foamAlbedo * mix(vec3(1.0), Twater, 0.5);
+  //No foam-texture ALBEDO here: the creek's foam diffuse map is dark between its bubbles by
+  //design (its opacity map hides those pixels), and multiplying a slab's light by it drew
+  //the gaps as dark navy water. Bubbles scatter almost without loss; the grain already
+  //modulates how much air there is (voidFrac), and the water's absorption tints it.
+  vec3 bubbleLit = (slabR * frontE + slabTdif * backE) * mix(vec3(1.0), Twater, 0.5);
 
   //── The film's surface and its medium ─────────────────────────────────────
   float F = fresnelAirToWater(NdotV);
