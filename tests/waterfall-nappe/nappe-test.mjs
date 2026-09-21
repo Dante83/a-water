@@ -27,7 +27,8 @@ function summarize(n){
   check('hero: landing 0.5..3 m past lip', n.plunge && n.plunge.z-764.5>0.5 && n.plunge.z-764.5<3.0);
   check('hero: sheet rows exist', n.rows.length > 4);
   const rib = N.buildRibbon(n, {groundAt: ground, waterAt: water});
-  check('hero: ribbon', rib && rib.vertexCount>0, rib && `verts ${rib.vertexCount}`);
+  check('hero: ribbon', rib && rib.vertexCount>0 && rib.tangent.length === rib.vertexCount*3, rib && `verts ${rib.vertexCount}`);
+  check('hero: sheet is the free fall (+ its 2 m brink lead-in) only', n.rows.every(r => r.presence < 0.01 || r.air > 0.0 || n.rows.some(q => q.air > 0 && q.s - r.s >= -0.26 && q.s - r.s <= 2.26)), '');
 }
 // 2. 45° chute 10 m drop, flat above and below (no pool water)
 {
@@ -40,9 +41,12 @@ function summarize(n){
   check('chute: mostly attached', air < 0.2, 'air frac '+f2(air));
   const vmax = Math.max(...n.samples.map(s=>s.speed));
   check('chute: terminal speed 3..14 m/s (friction, < free-fall 14)', vmax>3 && vmax<14, f2(vmax));
-  const mid = n.rows.find(r=>Math.abs(r.z-5)<0.2);
-  check('chute: presence on the chute', mid && mid.presence>0.9, mid && f2(mid.presence));
-  check('chute: aerated at bottom', n.rows.length && n.rows[n.rows.length-1].aer > 0.5, n.rows.length && f2(n.rows[n.rows.length-1].aer));
+  //The chute itself is the creek's own surface: the sheet draws only the short flight off the
+  //sharp top edge (a 2 m/s parabola meets a 45° face ~0.8 m out), nothing down the slope.
+  const onChute = n.rows.filter(r => r.z > 2 && r.z < 9 && r.presence > 0.01);
+  const maxZ = n.rows.length ? Math.max(...n.rows.filter(r=>r.presence>0.01).map(r=>r.z)) : 0;
+  check('chute: no sheet on the chute (attached water is the creek surface)', onChute.length === 0 && maxZ < 2.0, 'sheet ends z '+maxZ.toFixed(2));
+  check('chute: aerated at bottom', n.samples.at(-1).aer > 0.5, f2(n.samples.at(-1).aer));
 }
 // 3. vertical 10 m drop
 {

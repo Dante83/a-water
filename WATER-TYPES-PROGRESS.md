@@ -87,11 +87,12 @@ compute is not the constraint.
    stale against its terrain: the four-fall chain's tops read 125.5 / 116.8 / 114.3 m where the
    ground is 73.2 / 72.9 / 68.2 m, and its creek water tiles float 40–50 m over the steep island.
    Solve Water + Bake & Export, then look at wtr-8.
-3. Taste knobs, all live on `oceanGrid.waterfallSheetPass.material.uniforms`: `uVoidMax` (0.25),
+3. Taste knobs, all live on `oceanGrid.waterfallSheetPass.material.uniforms`: `uLumpAmp`, `uLumpScale`,
+   `uLumpRate`, `uEdgeWobble`, `uRefraction`, `uVoidMax` (0.25),
    `uBubbleRadius` (1.5 mm), `uSurfaceRough` (0.35), `uGrainScale`/`uGrainRate`, `uEdgeFray`,
    `uBreakup`. Debug `uDebugMode`: 1 presence, 2 aeration, 3 airborne (red) / attached (blue),
    4 thickness, 5 bubble optical depth, 6 grain UV, 7 alpha, 8 bubble light, 9 reflected sky,
-   10 water transmittance.
+   10 water transmittance to what is behind, 11 what is behind (relit, filtered).
 
 ### Round 2 — Dante's first browser run (hero-creek-sky), 2026-09-21
 
@@ -128,6 +129,36 @@ compute is not the constraint.
 - Not changed: the pool narrows toward the fall base in the water data itself (FV: 7 wet
   cells across at z 766 against 10–12 in the pool), so the sheet (as wide as the creek at its
   start) overhangs the ramp's dry edges there.
+
+### Round 4 — Dante's shots #4–#8 (hero-creek-sky), 2026-09-21
+
+"One river fades out and the waterfall fades in … wider than the river … juts into the air
+with a chunk of river popping through … the froth at the bottom is like a cube … the backside
+has a hard time connecting." One design decision behind most of it, and one Phase 4 seam:
+- **The sheet draws the FREE FALL only.** Round 3 also drew steep attached stretches, and those
+  rows (a) draped vertex-by-vertex onto banks, twisting the corners into the air, (b) lay on the
+  landing ramp as a flat white slab, (c) were wider than the creek there. Everything attached is
+  now the creek's own surface; a heightfield only fails where the water leaves the ground. The
+  ribbon is rigid across. Pure chutes are the creek's (steep heightfield + flowFallSheet foam).
+- **Corridors span the channel at the lip** (`lipSpan`, the wet width where the jet takes off,
+  10.25 m against the jet's 8.25 m), so the fringe's steep-level whitewater no longer pokes out.
+- **The sheet uses the creek's refraction model**, not an alpha film: G-buffer terrain behind it,
+  relit as the creek relights it, bent by the lumpy normal, filtered through the water crossed
+  (the column on the lead-in, the sheet's thickness on the fall), let through by the bubbles'
+  slabTdir. Opaque; alpha only for the fades. An alpha film read as bare rock where the creek
+  read as 40 cm of tinted water — that was the "fades out, fades in".
+- **Phase 4 seam found: the creek drops a strip just upstream of every lip**, with the sheet off
+  and the terrain hidden too: its level sinks toward the ramp while the rendered cliff-top edge
+  is still under it, so the thin-water fade (< 3 cm) discards it. The sheet now leads into each
+  takeoff by `brinkLead` (2 m), clear water at the creek's level, covering it.
+- **Shape**: the vertex stage displaces the ribbon along its normal by two-octave value noise in
+  (across, τ − t) space — lumps ride and stretch with the water, height grows with aeration
+  (`uLumpAmp` 0.3 m, `uLumpScale` 1.2 m, `uLumpRate` 3/s) — rebuilds the normal from the
+  displaced surface, and wobbles the side columns (`uEdgeWobble` 0.4 m). FUDGE: look noise, not
+  a jet-instability model. Answering Dante: neither surface had a heightmap at small scale —
+  the creek's ripples are normals only (Phase 4 step 4), the sheet was a smooth ribbon.
+- Test harness gotcha: `_corridors = []` from the console is undone by the next re-trace (≤ 2 s
+  while tiles stream). To isolate the creek, override `_streamCorridors`.
 
 ### Deferred
 

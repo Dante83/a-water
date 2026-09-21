@@ -67,7 +67,8 @@ ARestlessOcean.Passes.WaterfallSheetPass.SHARED_UNIFORMS = [
   'brightestDirectionalLight', 'brightestDirectionalLightDirection', 'skyAmbientColor',
   'waterAbsorption', 'waterScattering', 'waterSurfaceY', 'specBoost', 't',
   'sunShadowMap', 'sunShadowMatrix', 'sunShadowMapSize', 'sunShadowRadius', 'sunShadowBias', 'sunShadowEnabled',
-  'refractionLinearDepth', 'screenResolution',
+  'refractionLinearDepth', 'refractionColorTexture', 'gBufferNormal', 'refractionDepthTexture',
+  'inverseProjectionMatrix', 'inverseViewMatrix', 'screenResolution',
   'foamOpacityMap', 'foamNormalMap'
 ];
 
@@ -204,6 +205,7 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype._rebuildGeometry = function()
     if(c.ribbon){ nV += c.ribbon.vertexCount; nI += c.ribbon.index.length; }
   }
   const position = new Float32Array(nV * 3), normal = new Float32Array(nV * 3);
+  const tangent = new Float32Array(nV * 3), across = new Float32Array(nV * 3);
   const flowA = new Float32Array(nV * 4), flowB = new Float32Array(nV * 4);
   const index = new Uint32Array(nI);
   let v = 0, k = 0;
@@ -211,6 +213,7 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype._rebuildGeometry = function()
     const r = this.cascades[i].ribbon;
     if(!r) continue;
     position.set(r.position, v * 3); normal.set(r.normal, v * 3);
+    tangent.set(r.tangent, v * 3); across.set(r.across, v * 3);
     flowA.set(r.flowA, v * 4); flowB.set(r.flowB, v * 4);
     for(let j = 0; j < r.index.length; ++j) index[k + j] = r.index[j] + v;
     v += r.vertexCount; k += r.index.length;
@@ -219,10 +222,16 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype._rebuildGeometry = function()
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(position, 3));
   geo.setAttribute('normal', new THREE.BufferAttribute(normal, 3));
+  geo.setAttribute('aFlowTangent', new THREE.BufferAttribute(tangent, 3));
+  geo.setAttribute('aFlowAcross', new THREE.BufferAttribute(across, 3));
   geo.setAttribute('aFlowA', new THREE.BufferAttribute(flowA, 4));
   geo.setAttribute('aFlowB', new THREE.BufferAttribute(flowB, 4));
   geo.setIndex(new THREE.BufferAttribute(index, 1));
-  if(nV) geo.computeBoundingSphere();
+  if(nV){
+    geo.computeBoundingSphere();
+    //The vertex stage displaces by up to ~uLumpAmp along the normal and uEdgeWobble across.
+    geo.boundingSphere.radius += 1.0;
+  }
   this.mesh.geometry = geo;
   old.dispose();
 };

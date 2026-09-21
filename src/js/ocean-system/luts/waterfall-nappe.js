@@ -52,12 +52,11 @@
 //   gentle:    A decays over AERATION_DECAY_LENGTH (bubbles rise out).
 // The rendering turns a into whitewater; clear lip water stays clear.
 //
-// PRESENCE is where the sheet draws instead of the creek's heightfield surface: on
-// airborne stretches in proportion to how far they fall (a 5 cm hop over a run-out is
-// not a fall), and on attached stretches smoothstep(tan 20°, tan 30°) of the path slope.
-// The flowing-water material steps aside inside the fall's corridor boxes (below) where
-// its own LEVEL is steep, so flat ledges and pools between steps stay on the creek
-// surface and the steps move to the sheet.
+// PRESENCE is where the sheet draws: the free fall only, each airborne stretch in
+// proportion to how far it falls (a 5 cm hop over a run-out is not a fall). Everything
+// attached is the creek's own surface. The flowing-water material steps aside inside the
+// corridor boxes around the airborne rows (below) where its level is steep: the heightfield
+// ramp it would otherwise stretch down the step.
 //
 // No THREE here: pure math, so Node can test it (see the Phase 6 section of
 // WATER-TYPES-PROGRESS.md).
@@ -81,15 +80,12 @@ ARestlessOcean.WaterfallNappe = {};
     upstreamStart: 2.0,         //m upstream of the first fall's `top` to start
     chainGap: 6.0,              //m, a fall's bottom → the next fall's top to chain them
     rowSpacing: 0.25,           //m of arc length between ribbon rows
-    presenceLo: Math.tan(20.0 * Math.PI / 180.0),
-    presenceHi: Math.tan(30.0 * Math.PI / 180.0),
+    gentleSlope: Math.tan(20.0 * Math.PI / 180.0), //bed slope below which the parcel is on gentle ground (settling) ...
+    chuteSlope: Math.tan(30.0 * Math.PI / 180.0),  //... and above which it is on a chute (self-aeration)
     presenceSmoothRows: 1,      //± rows of box smoothing on presence
     hopDropLo: 0.25,            //m an airborne stretch must fall to start counting as a fall ...
     hopDropHi: 0.75,            //... and to count fully
-    levelSteepLo: Math.tan(10.0 * Math.PI / 180.0),   //the flowing material's flowFallOwn band ...
-    levelSteepHi: Math.tan(20.0 * Math.PI / 180.0),
-    levelEps: 0.75,             //... and its stencil (keep all three in step with water-shader.glsl)
-    fieldTexel: 1.0,            //m, WaterField cascade 0 texel
+    brinkLead: 2.0,             //m the sheet leads into each takeoff (see resample)
     settleRun: 3.0,             //m of gentle attached path after the last fall to stop
     plungeMinDepth: 0.4,        //m, water at least this deep ...
     plungeMaxFroude: 0.6,       //... and at most this Froude number is a pool to plunge into
@@ -194,33 +190,6 @@ ARestlessOcean.WaterfallNappe = {};
     return {width: r + l + step, offset: 0.5 * (r - l)};
   };
 
-  //The field level at (x, z), bilinear over texel centres (texel metres), the way the GPU
-  //samples WaterFieldPass's cascade 0. Dry texels are left out of the blend; null when all
-  //four are dry.
-  N.fieldLevelAt = function(env, x, z, texel){
-    const fx = x / texel - 0.5, fz = z / texel - 0.5;
-    const i = Math.floor(fx), j = Math.floor(fz), tx = fx - i, tz = fz - j;
-    let sum = 0.0, wsum = 0.0;
-    for(let dj = 0; dj <= 1; ++dj){
-      for(let di = 0; di <= 1; ++di){
-        const w = env.waterAt((i + di + 0.5) * texel, (j + dj + 0.5) * texel);
-        if(!w || !(w.depth > 0.0) || w.level == null || !isFinite(w.level)) continue;
-        const k = (di ? tx : 1.0 - tx) * (dj ? tz : 1.0 - tz);
-        sum += k * w.level; wsum += k;
-      }
-    }
-    return wsum > 1e-6 ? sum / wsum : null;
-  };
-
-  //|∇level| by central differences over ±eps, as flowFallOwn measures it. Null without water.
-  N.levelSlope = function(env, x, z, eps, texel){
-    if(!env.waterAt) return null;
-    const xm = N.fieldLevelAt(env, x - eps, z, texel), xp = N.fieldLevelAt(env, x + eps, z, texel);
-    const zm = N.fieldLevelAt(env, x, z - eps, texel), zp = N.fieldLevelAt(env, x, z + eps, texel);
-    if(xm === null || xp === null || zm === null || zp === null) return null;
-    return Math.hypot(xp - xm, zp - zm) / (2.0 * eps);
-  };
-
   //Group falls into cascades: fall j follows fall i when j's top is within chainGap
   //(plan) of i's bottom and not above it by more than a metre. Returns arrays of
   //falls, upstream first. Every fall lands in exactly one chain.
@@ -321,6 +290,7 @@ ARestlessOcean.WaterfallNappe = {};
     //wins in attachedOffset anyway.
     const thickness = function(s){ return Math.min(Math.max(q / Math.max(s, 1e-3), minDepth), 2.0 * hc); };
     let takeoffY = py;
+    let lipSpan = 0.0;
     //The creek arrives with air in it already: a-land's energy (0 calm .. 1 whitewater) is
     //what the creek surface's own whitewater keys off, so a turbulent approach launches an
     //already-milky jet and a glassy one launches a clear jet.
@@ -346,7 +316,7 @@ ARestlessOcean.WaterfallNappe = {};
     const plungeDepth = opt(o, 'plungeDepth');
     const plungeFall = opt(o, 'plungeMinFall');
     const minImpact = opt(o, 'minImpactSpeed');
-    const steep = opt(o, 'presenceHi'), gentle = opt(o, 'presenceLo');
+    const steep = opt(o, 'chuteSlope'), gentle = opt(o, 'gentleSlope');
 
     let stop = 'budget';
     while(tau < maxTime && path < maxPath){
@@ -413,6 +383,12 @@ ARestlessOcean.WaterfallNappe = {};
         if((gHere - gb) > (py - by) + detach){
           airborne = true;
           takeoffY = py;
+          //How wide the channel's water is where it leaves the ground: the corridor must
+          //hide the creek's heightfield ramp across ALL of it, fringe included, or the
+          //fringe's steep-level whitewater pokes out beside the sheet (hero-creek-sky).
+          const plx = Math.sqrt(vx * vx + vz * vz) || 1.0;
+          const lip = N.wetSpan(env, px, pz, -vz / plx, vx / plx, 3.0 * W, opt(o, 'wetScanStep'), opt(o, 'wetMinDepth'));
+          if(lip) lipSpan = Math.max(lipSpan, lip.width + 2.0 * Math.abs(lip.offset));
           vy -= G * dt;
           px = bx; py = by; pz = bz;
         }
@@ -473,15 +449,15 @@ ARestlessOcean.WaterfallNappe = {};
     }
 
     const nappe = {q: q, hc: hc, vc: vc, Lb: Lb, width: W, discharge: Q, chain: chain,
-                   samples: samples, impacts: impacts, plunge: plunge, stop: stop,
+                   samples: samples, impacts: impacts, plunge: plunge, stop: stop, lipSpan: lipSpan,
                    rows: [], corridors: []};
-    N.resample(nappe, o, env);
+    N.resample(nappe, o);
     N.buildCorridors(nappe, o);
     return nappe;
   };
 
   //Uniform arc-length rows with presence, trimmed to where the sheet shows.
-  N.resample = function(nappe, o, env){
+  N.resample = function(nappe, o){
     const S = nappe.samples, ds = opt(o, 'rowSpacing');
     if(S.length < 2) return;
     //Each airborne stretch counts as a fall only in proportion to the height it falls: a
@@ -515,28 +491,29 @@ ARestlessOcean.WaterfallNappe = {};
       if(hl > 1e-6){ r.hx /= hl; r.hz /= hl; } else { r.hx = 0.0; r.hz = 1.0; }
       rows.push(r);
     }
-    //Presence. Airborne: by the stretch's drop (above). Attached: wherever the creek's
-    //LEVEL is steep, by the very test the flowing-water material uses to step aside
-    //(water-shader.glsl, flowFallOwn: tan 10°→20° over a ±0.75 m stencil of the bilinear
-    //level), so the two surfaces are exact complements. Hero-creek-sky showed what a
-    //different criterion does: the sheet stopped at its landing while the creek, whose
-    //level still ran steeply down the ramp to the pool, had already stepped aside, and
-    //neither drew the metre between (2026-09-21). With no water to ask (tests, a world
-    //without tiles), the path's own slope stands in.
-    const plo = opt(o, 'presenceLo'), phi = opt(o, 'presenceHi');
-    const llo = opt(o, 'levelSteepLo'), lhi = opt(o, 'levelSteepHi'), eps = opt(o, 'levelEps');
+    //Presence: the FREE FALL only — airborne stretches, by how far they fall (above).
+    //Everything attached (the approach, ramps, chutes, the run into the pool) is the
+    //creek's heightfield surface, which follows the ground and has the creek's true width
+    //and look; a heightfield only fails where the water leaves the ground. Round 3 also
+    //drew the steep attached stretches, and in the browser that gave a clear-film sheet
+    //that read as bare ground where the creek stepped aside (the film is a thin alpha
+    //layer, the creek an opaque refracting surface), a flat white slab on the landing ramp,
+    //and draped edges climbing the banks into the air (Dante, hero-creek-sky, 2026-09-21).
     const raw = new Array(rows.length);
-    for(let i = 0; i < rows.length; ++i){
-      let attached;
-      const ls = env ? N.levelSlope(env, rows[i].x, rows[i].z, eps, opt(o, 'fieldTexel')) : null;
-      if(ls !== null) attached = smoothstep(llo, lhi, ls);
-      else {
-        const a = rows[Math.max(i - 1, 0)], b = rows[Math.min(i + 1, rows.length - 1)];
-        const dPlan = Math.hypot(b.x - a.x, b.z - a.z);
-        const slope = dPlan > 1e-6 ? (a.y - b.y) / dPlan : (a.y > b.y ? 1e3 : 0.0);
-        attached = smoothstep(plo, phi, slope);
+    for(let i = 0; i < rows.length; ++i) raw[i] = rows[i].air * rows[i].fallW;
+    //...plus a lead-in of brinkLead metres before each real takeoff, ramping 0 → 1. The
+    //creek's own surface drops out there: at a brink its level sinks toward the ramp while
+    //the rendered cliff-top edge is still under it, so Phase 4's thin-water fade (< 3 cm
+    //against the G-buffer ground) discards a strip just upstream of every lip — with the
+    //sheet off and the terrain hidden, it is still missing (hero-creek-sky, 2026-09-21).
+    //These rows are clear, unaerated water at the creek's level, so they read as the creek.
+    const lead = opt(o, 'brinkLead');
+    for(let i = 1; i < rows.length; ++i){
+      if(raw[i] > 0.5 && raw[i - 1] <= 0.5){
+        for(let k = i - 1; k >= 0 && rows[i].s - rows[k].s < lead; --k){
+          raw[k] = Math.max(raw[k], 1.0 - (rows[i].s - rows[k].s) / lead);
+        }
       }
-      raw[i] = Math.max(rows[i].air * rows[i].fallW, attached);
     }
     //A sliding plunge's dive inherits the presence of the row before it.
     for(let i = 1; i < rows.length; ++i) if(rows[i].dive > 0.0) raw[i] = raw[i - 1];
@@ -578,7 +555,9 @@ ARestlessOcean.WaterfallNappe = {};
   //flowing-water material fades its own surface out inside them (on steep level only).
   N.buildCorridors = function(nappe, o){
     const rows = nappe.rows, len = opt(o, 'corridorLength');
-    const r = 0.5 * nappe.width + opt(o, 'corridorMargin');
+    //As wide as the sheet, or as the channel's water at any lip (lipSpan, centred span
+    //about the jet), whichever is wider.
+    const r = 0.5 * Math.max(nappe.width, nappe.lipSpan || 0.0) + opt(o, 'corridorMargin');
     const caps = [];
     let start = null, plan = 0.0, prev = null;
     for(let i = 0; i < rows.length; ++i){
@@ -595,9 +574,13 @@ ARestlessOcean.WaterfallNappe = {};
     nappe.corridors = caps;
   };
 
-  //Extrude the rows across the width into ribbon arrays. Attached rows drape each
-  //vertex onto its own ground (+ the water's thickness there); airborne rows stay rigid.
-  //Returns {position, normal, flowA, flowB, index, vertexCount} (typed arrays).
+  //Extrude the rows across the width into ribbon arrays: rigid across (every row is a
+  //straight line at its own height). Rows used to drape onto the ground where the parcel
+  //was attached, which climbed the banks and twisted the corners into the air; the sheet
+  //only draws the free fall now, and a falling sheet is straight across.
+  //Returns {position, normal, tangent, across, flowA, flowB, index, vertexCount} (typed arrays).
+  //  tangent = down the flow, across = horizontal, toward +across (both unit): the vertex
+  //  stage's displacement frame
   //  flowA = (tau, across −1..1, thickness, speed)
   //  flowB = (aeration, presence, airborne, half-width m)
   N.buildRibbon = function(nappe, env, o){
@@ -607,32 +590,19 @@ ARestlessOcean.WaterfallNappe = {};
     const nCols = Math.max(2, Math.ceil(W / opt(o, 'colSpacing')) + 1);
     const nV = rows.length * nCols;
     const position = new Float32Array(nV * 3), normal = new Float32Array(nV * 3);
+    const tangent = new Float32Array(nV * 3), acrossDir = new Float32Array(nV * 3);
     const flowA = new Float32Array(nV * 4), flowB = new Float32Array(nV * 4);
-    const gn = [0, 1, 0];
     let v = 0;
     for(let i = 0; i < rows.length; ++i){
       const row = rows[i];
-      const attached = 1.0 - row.air;
       for(let c = 0; c < nCols; ++c, ++v){
         const across = -1.0 + 2.0 * c / (nCols - 1);
-        const x = row.x + row.ax * across * 0.5 * W;
-        const z = row.z + row.az * across * 0.5 * W;
-        let y = row.y;
-        let nx = row.nx, ny = row.ny, nz = row.nz;
-        if(attached > 0.0){
-          const g = env.groundAt(x, z);
-          if(g != null){
-            const yd = g + attachedOffset(env, x, z, g, row.h);
-            y = y + (yd - y) * attached;
-            if(groundNormal(env, x, z, 0.5, gn)){
-              nx += (gn[0] - nx) * attached; ny += (gn[1] - ny) * attached; nz += (gn[2] - nz) * attached;
-              const l = Math.hypot(nx, ny, nz) || 1.0;
-              nx /= l; ny /= l; nz /= l;
-            }
-          }
-        }
-        position[v * 3] = x; position[v * 3 + 1] = y; position[v * 3 + 2] = z;
-        normal[v * 3] = nx; normal[v * 3 + 1] = ny; normal[v * 3 + 2] = nz;
+        position[v * 3] = row.x + row.ax * across * 0.5 * W;
+        position[v * 3 + 1] = row.y;
+        position[v * 3 + 2] = row.z + row.az * across * 0.5 * W;
+        normal[v * 3] = row.nx; normal[v * 3 + 1] = row.ny; normal[v * 3 + 2] = row.nz;
+        tangent[v * 3] = row.tx; tangent[v * 3 + 1] = row.ty; tangent[v * 3 + 2] = row.tz;
+        acrossDir[v * 3] = row.ax; acrossDir[v * 3 + 1] = 0.0; acrossDir[v * 3 + 2] = row.az;
         flowA[v * 4] = row.tau; flowA[v * 4 + 1] = across; flowA[v * 4 + 2] = row.h; flowA[v * 4 + 3] = row.speed;
         flowB[v * 4] = row.aer; flowB[v * 4 + 1] = row.presence; flowB[v * 4 + 2] = row.air; flowB[v * 4 + 3] = 0.5 * W;
       }
@@ -646,6 +616,6 @@ ARestlessOcean.WaterfallNappe = {};
         index[k++] = b; index[k++] = d; index[k++] = e;
       }
     }
-    return {position: position, normal: normal, flowA: flowA, flowB: flowB, index: index, vertexCount: nV};
+    return {position: position, normal: normal, tangent: tangent, across: acrossDir, flowA: flowA, flowB: flowB, index: index, vertexCount: nV};
   };
 })(ARestlessOcean.WaterfallNappe);

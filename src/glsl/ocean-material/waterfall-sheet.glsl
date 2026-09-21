@@ -25,12 +25,17 @@ precision highp float;
 //water is faster, the grain STRETCHES down the fall exactly as the jet accelerates.
 //No flow map, no advection pass.
 //
-//COMPOSITING. The sheet is tens of centimetres thick, so it is a transparent layer over
-//whatever is behind it: Fresnel sky reflection + sun glint + light scattered by its
-//bubbles + the water's own inscatter, and an alpha of 1 - (1 - F)·T_bubbles·T_water, the
-//fraction of the scene behind that is NOT let straight through. (One alpha, not three:
-//the per-channel tint of 30 cm of creek water is below what a single-alpha blend can show
-//anyway.) Where the sheet hands over to the creek surface, `presence` fades it.
+//COMPOSITING: THE CREEK'S REFRACTION, NOT AN ALPHA LAYER. The creek draws clear water as
+//an opaque surface that relights the terrain behind it from the refraction G-buffer and
+//filters it through the water column (Beer-Lambert + inscatter). The sheet does the same,
+//so where one hands over to the other they read as one water: an alpha-blended film
+//looked like bare rock over the grey scarp where the creek had looked like 40 cm of tinted
+//water (hero-creek-sky, 2026-09-21). The background is sampled a little off-axis along the
+//lumpy normal (refraction), relit exactly as the creek relights terrain, and filtered
+//through the water the view actually crosses: on the lead-in over the bed, the whole
+//column down to it; on the free fall, only the sheet's thickness (air behind). The bubbles
+//let slabTdir of that through. Output is opaque; alpha is kept only for the fades
+//(presence, frayed edges, strands, the soft contact).
 //
 //NOT HERE (deferred, flagged): atmospheric perspective. With a-starry-sky's AP on, the
 //creek gets AP and this sheet gets the scene fog chunk instead; falls are drawn within
@@ -52,6 +57,12 @@ uniform float sunShadowBias;
 uniform int sunShadowEnabled;
 
 uniform sampler2D refractionLinearDepth;
+uniform sampler2D refractionColorTexture;   //G-buffer 0: linear albedo
+uniform sampler2D gBufferNormal;            //G-buffer 1: world normal
+uniform sampler2D refractionDepthTexture;   //raw NDC depth
+uniform mat4 sunShadowMatrix;
+uniform mat4 inverseProjectionMatrix;
+uniform mat4 inverseViewMatrix;
 uniform vec2 screenResolution;
 
 uniform sampler2D foamOpacityMap;
@@ -65,6 +76,7 @@ uniform float uSurfaceRough;     //how hard the grain's normals break the jet's 
 uniform float uSpecFalloff;      //Phong exponent of the sun glint on the clear lip
 uniform float uEdgeFray;         //how far the grain eats into the side edges (0..1 of half-width)
 uniform float uBreakup;          //how far an airborne, aerated jet opens into strands (0..1)
+uniform float uRefraction;       //how far the lumpy normal bends the view of what is behind (UV per unit normal)
 uniform float uSoftRange;        //metres of depth over which the sheet fades into the ground
 uniform float uOpacity;
 uniform int uDebugMode;
@@ -252,11 +264,35 @@ void main(){
   vec3 R = reflect(-L, Ns);
   vec3 glint = brightestDirectionalLight * pow(max(0.0, dot(R, V)), uSpecFalloff) * specBoost * sunShadow;
   vec3 inscatter = underwaterInscatterSurface(-V);
-  float Tmean = dot(Twater, vec3(1.0 / 3.0));
-  //Premultiplied: what the sheet adds, and how much of the scene behind survives.
-  vec3 premult = F * reflected + glint
-               + (1.0 - F) * (bubbleLit + slabTdir * (vec3(1.0) - Twater) * inscatter);
-  float alpha = clamp(1.0 - (1.0 - F) * slabTdir * Tmean, 0.0, 1.0);
+
+  //── What is behind: the creek's refraction model (see COMPOSITING) ─────────
+  vec2 screenUV = gl_FragCoord.xy / screenResolution;
+  vec2 refrUV = clamp(screenUV + (Ns.xz - N.xz) * uRefraction, vec2(0.001), vec2(0.999));
+  vec3 behind = skyRadiance(-V);        //nothing behind: the sky seen through the water
+  float behindDist = 1000.0;
+  for(int attempt = 0; attempt < 2; ++attempt){
+    vec2 uv = attempt == 0 ? refrUV : screenUV;
+    float raw = texture2D(refractionDepthTexture, uv).r;
+    if(raw >= 1.0) break;
+    vec4 vp = inverseProjectionMatrix * vec4(uv * 2.0 - 1.0, raw * 2.0 - 1.0, 1.0);
+    vp /= vp.w;
+    vec3 P = (inverseViewMatrix * vp).xyz;
+    //A bent sample that lands on something IN FRONT of the sheet is not behind it: retry
+    //straight through.
+    if(dot(P - vWorldPos, -V) < 0.0) continue;   //-V points from the camera to the fragment
+    //Relit as water-shader.glsl relights above-water terrain seen through the water.
+    vec3 bgN = normalize(texture2D(gBufferNormal, uv).rgb);
+    float bgShadow = getSunShadow(sunShadowMatrix * vec4(P, 1.0));
+    behind = texture2D(refractionColorTexture, uv).rgb
+           * (INV_PI * brightestDirectionalLight * max(0.0, dot(bgN, L)) * bgShadow + skyAmbientColor);
+    behindDist = distance(vWorldPos, P);
+    break;
+  }
+  //Water the view crosses to get there: the column on the lead-in, the sheet on the fall.
+  float waterPath = mix(min(behindDist, 50.0), min(behindDist, path), airborne);
+  vec3 Tbody = exp(-(waterAbsorption + waterScattering) * waterPath);
+  vec3 body = behind * Tbody + inscatter * (vec3(1.0) - Tbody);
+  vec3 color = F * reflected + glint + (1.0 - F) * (bubbleLit + slabTdir * body);
 
   //── Shape ───────────────────────────────────────────────────────────────
   //Side edges fray with the grain; an airborne, aerated jet opens into strands.
@@ -269,8 +305,7 @@ void main(){
   float sceneDepth = texture2D(refractionLinearDepth, gl_FragCoord.xy / screenResolution).r;
   if(sceneDepth > 0.0001) soft = clamp((sceneDepth - vViewDepth) / max(uSoftRange, 1e-3), 0.0, 1.0);
 
-  float outAlpha = alpha * presence * edgeAlpha * strandAlpha * soft * uOpacity;
-  vec3 color = premult / max(alpha, 1e-3);
+  float outAlpha = presence * edgeAlpha * strandAlpha * soft * uOpacity;
   gl_FragColor = linearTosRGB(vec4(aroAESFilmicToneMapping(color), outAlpha));
 
   //$DEBUG_START$
@@ -283,7 +318,8 @@ void main(){
   else if(uDebugMode == 7) gl_FragColor = vec4(vec3(outAlpha), 1.0);
   else if(uDebugMode == 8) gl_FragColor = linearTosRGB(vec4(aroAESFilmicToneMapping(bubbleLit), 1.0));
   else if(uDebugMode == 9) gl_FragColor = linearTosRGB(vec4(aroAESFilmicToneMapping(reflected), 1.0));
-  else if(uDebugMode == 10) gl_FragColor = vec4(vec3(Tmean), 1.0);
+  else if(uDebugMode == 10) gl_FragColor = vec4(vec3(dot(Tbody, vec3(1.0 / 3.0))), 1.0);
+  else if(uDebugMode == 11) gl_FragColor = linearTosRGB(vec4(aroAESFilmicToneMapping(body), 1.0));
   //$DEBUG_END$
 
   #include <fog_fragment>
