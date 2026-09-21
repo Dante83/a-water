@@ -449,6 +449,26 @@ a-land already hands us `simulation.waterfalls[]` with `top`, `bottom`, `width`,
 >   velocity, width along the lip) seeds the particles. The pool is an LBM source that
 >   receives what lands, with its momentum, which is what churns the pool.
 > - That is the tier-1 interface above (lip spline + pool point) with a solver behind it.
+>
+> **Tier 1 + 2 LANDED on `phase-6-waterfalls` (2026-09-21), no particle solver yet.** Dante:
+> "maybe that's where you play with particles or maybe you won't need them". What shipped:
+> - `luts/waterfall-nappe.js` traces one parcel per CASCADE (chains of falls whose bottoms meet
+>   the next tops) over a-land's ground: attached (gravity on the bed's tangent plane, implicit
+>   Manning), airborne (leaves wherever the bed out-drops a free parabola, i.e. at every lip),
+>   impact (normal speed lost, logged), plunge (pool = deep and slow, Fr ≤ 0.6). Width and q
+>   come from the field's own water where the trace starts.
+> - `passes/waterfall-sheet-pass.js` + `waterfall-sheet.glsl` draw the traced ribbons (one draw
+>   call) with a material that ALIASES the flowing material's uniforms, so the fall is the same
+>   water as the creek. The white is an optical model of bubbly water (void fraction from the
+>   trace's aeration, σ = 1.5α/r, two-stream), not painted-on foam.
+> - The flowing surface steps aside inside the traces' corridor boxes where its level is steep;
+>   the Phase 4 `flowFallSheet` stand-in now applies only outside them.
+> - Spray (`OceanSplash._emitFalls`) and foot foam (`FlowFoamPass._updateFalls`) come from every
+>   traced impact; the bed-point placeholder is the fallback.
+>
+> Deferred: atmospheric perspective on the sheet (it takes the scene fog chunk), the pool's
+> dynamic-waves impulse (no Phase 8 sim yet), fountains, the particle solver. Log:
+> `WATER-TYPES-PROGRESS.md` § Phase 6.
 
 
 
@@ -456,7 +476,7 @@ a-land already hands us `simulation.waterfalls[]` with `top`, `bottom`, `width`,
   vertical stretch increasing down the fall, Fresnel-lit edges.
 - **Tier 2, the pool**: a base mist volume reusing the existing mist shader; a plunge-pool
   foam ring with radial flow injected into the foam RT and the flow field; splash particles
-  at lip and impact via `emitImpact` (`ocean-splash.js:525` — already the right channel);
+  at lip and impact via `emitImpact` (`OceanSplash.prototype.emitImpact` — already the right channel);
   and a dynamic-waves impulse so the pool genuinely churns.
 - **Fountains**: the same emitter and sheet machinery, authored rather than solved
   (`<ocean-fountain>` with jet direction, discharge, basin level). The one member of the

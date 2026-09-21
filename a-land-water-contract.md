@@ -86,12 +86,18 @@ entirely and stale files from an earlier bake are ignorable.
   "velocityRange": 8.0,
   "waterTypes": [ { "jerlov": "IB", "turbidity": 0.1 }, ... ],
   "bodies":     [ { "id": "lk_tarn", "kind": "lake|ocean|river", "level": 84.0, "discharge": 3.2 } ],
-  "waterfalls": [ { "top": [x,y,z], "bottom": [x,y,z], "width": 4.0, "discharge": 3.2 } ],
+  "waterfalls": [ { "top": [x,y,z], "bottom": [x,y,z], "width": 4.0, "discharge": 3.2, "drop": 3.0 } ],
   "shoreline":  { "fetchBake": "tiles/fetch/{lod}/{x}_{y}.png" }
 }
 ```
 `waterfalls` is placement metadata only — rendering them (baked-loop VAT, SPH, etc.) is
-explicitly out of scope for v1. `shoreline.fetchBake` (per-shore open-water exposure so
+explicitly out of scope for v1. As the exporter writes it (a-land `save.js`): `top` and
+`bottom` are cell-centre points at **ground (bed) height**, `top` the first fall cell and
+`bottom` the first cell below the run; `drop` = ground(top) − ground(bottom) in metres;
+`width` is the hydraulic-geometry channel width (4·√Q) and `discharge` the largest Q along
+the run. No lip line and no direction. a-water's Phase 6 (`WaterfallNappe`) therefore
+re-derives the lip, the width and the flow from the terrain and the water tiles, and uses
+these entries only to find and chain the falls. `shoreline.fetchBake` (per-shore open-water exposure so
 surf amplitude follows geography) is optional and may ship later; absence means "use
 the ocean's own wind fetch."
 

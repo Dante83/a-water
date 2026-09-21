@@ -8,6 +8,99 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
+## Phase 6 — waterfalls: the nappe and the sheet — **written, GPU-headless-verified on hero-creek, awaiting regen + browser** (2026-09-21)
+
+Branch `phase-6-waterfalls`, off `development` at `4917375`. Plan:
+`~/.claude/plans/adaptive-singing-bengio.md`.
+**GLSL changed: run `create-shader.py`** (new `waterfall-sheet.js`; `water-shader.js`).
+
+Dante's steering (do not re-litigate): cascades are the main case, not one drop; the fall's
+colour inherits the creek's water data so the look is continuous apart from the white; foam
+type is ours to find; particles only if the sheet cannot sell it; the target is a 4090, so
+compute is not the constraint.
+
+### What shipped
+
+- **`luts/waterfall-nappe.js`: where the water goes.** a-land exports a fall as two bed points,
+  so the lip, the path and the landing are traced here, once per CASCADE: falls chain when one's
+  `bottom` is within 6 m of the next's `top` (island-sholes' "13 falls" are exact chains). One
+  parcel, as a state machine on the terrain:
+  - *attached*: gravity on the bed's tangent plane minus implicit Manning (n 0.04);
+  - *airborne*: leaves wherever the BED out-drops a free parabola, which is what a lip is, so
+    there is no lip detector;
+  - *impact*: the velocity into the ground is lost and logged (spray, foam);
+  - *plunge*: a POOL (≥ 0.4 m deep AND Froude ≤ 0.6) reached flying or sliding;
+  - *stop*: settled after the last fall, stalled, or climbing (water pools, it does not slosh).
+  Width = the wet span across the flow where the trace starts (capped at the export's width);
+  q = the field's own depth × speed there (capped at the export's Q/W); start speed critical,
+  (g·q)^⅓; thickness h = q/|v|; aeration budget seeded by a-land's energy, grown by fall height
+  over a Horeni-form break-up length 6·q^0.32 (quoted from memory — **verify before tuning on
+  it**), by impacts and by chute length; presence = where the sheet draws instead of the creek.
+- **`passes/waterfall-sheet-pass.js`**: the traced ribbons, all cascades in one draw call,
+  re-traced one cascade per frame when the falls list changes, a-land's height residency changes
+  (coalesced to ≤ one round per 2 s) or the terrain is edited. Ground is read from the DIRECTOR
+  with a NaN miss (`api.getHeightAt` drops that argument and answers 0 m for unloaded ground).
+- **`waterfall-sheet.glsl`: one water.** The material aliases the flowing material's uniform
+  OBJECTS (Jerlov, metered sun, sky ambient, scene shadow, sky, foam textures) — no second stream.
+  The white is **computed**: the sheet is a slab of bubbly water, void fraction = 0.2 × aeration
+  streaked by the creek's foam grain, σ = 1.5·α/r (r 1.5 mm), two-stream reflectance and
+  diffuse transmittance with g 0.85, so a back-lit fall glows and a clear lip stays clear. The
+  grain is sampled at (across, τ − t): it rides the water and stretches as the jet accelerates.
+- **The hand-off.** `water-shader.glsl` ($flowing_water): inside a trace's corridor boxes (flat
+  ended — a round cap reached 5 m past the lip) the creek surface steps aside where its LEVEL is
+  steep (tan 10°→20°, 0.75 m stencil), keeping plunge and ledge pools. `flowFallSheet` (Phase 4
+  stand-in) now only applies outside corridors.
+- **Tier 2.** `_emitFalls` and `FlowFoamPass._updateFalls` take every traced impact (each ledge,
+  the plunge) at its real point and velocity; the bed-point placeholder is the fallback.
+
+### Verified
+
+- `node tests/waterfall-nappe/nappe-test.mjs`: 18/18 on synthetic terrain (hero-creek-like step;
+  45° chute stays attached at a friction-limited 5.8 m/s; 10 m vertical lands at −14.3 m/s vs
+  −14.0; four-step staircase bounces off all four ledges; chute into a dry bowl stops in 4 s;
+  a 14.1 m export over a 5 m channel traces 5.25 m wide, centred).
+- hero-creek's survey terrain in Node, D8 and FV water: leaves at the lip (764.5), catches the
+  lower half of the 1 m bilinear cliff ramp, plunges (D8) or rides the supercritical run-out (FV).
+- **Headless Chrome on the RTX 4090** (raw CDP, `--use-angle=vulkan`; SwiftShader + virtual time
+  does not finish an a-land page in 170 s), shaders from a byte-exact create-shader twin:
+  sheet and flowing programs link, worst program **21 of 32** texture units (unchanged: the sheet
+  is its own program), aliasing confirmed, hero-creek builds 1 cascade / 360 vertices.
+
+### Bugs found on the way (kept, because each will come back)
+
+- Normal flipped by `gl_FrontFacing` made N·V < 0 → Fresnel 1 → an opaque white mirror. The
+  ribbon's winding is not tied to the normal; face the normal to the VIEWER.
+- A central-difference normal straddles a lip and tips the parcel early (phantom impacts): the
+  parcel feels an UPWIND normal. Separation is tested on the bed, never the water surface (a deep
+  creek drawing down to its brink "launched" parcels into their own creek).
+- Field water is per texel, ground is bilinear: `level − ground` invents a metre of water over a
+  cliff ramp. Use the field's `depth`.
+- Pools must be slow as well as deep: the FV solve puts 0.7 m of Fr ≈ 1 water on the lip cell.
+- Stall/climb tests on height fail twice (thickness grows as a parcel slows; the bed under a
+  near-vertical slide jumps with sideways jitter): integrate upward VELOCITY.
+
+### ⚠ Outstanding — needs Dante
+
+1. Run `create-shader.py` (waterfall-sheet.js, water-shader.js), then look at hero-creek's fall
+   (472, 765) in the browser: the seam at the lip, the white, the plunge spray.
+2. **island-sholes cannot judge cascades until it is re-baked.** Its exported `waterfalls[]` is
+   stale against its terrain: the four-fall chain's tops read 125.5 / 116.8 / 114.3 m where the
+   ground is 73.2 / 72.9 / 68.2 m, and its creek water tiles float 40–50 m over the steep island.
+   Solve Water + Bake & Export, then look at wtr-8.
+3. Taste knobs, all live on `oceanGrid.waterfallSheetPass.material.uniforms`: `uVoidMax` (0.2),
+   `uBubbleRadius` (1.5 mm), `uSurfaceRough` (0.35), `uGrainScale`/`uGrainRate`, `uEdgeFray`,
+   `uBreakup`. Debug `uDebugMode`: 1 presence, 2 aeration, 3 airborne (red) / attached (blue),
+   4 thickness, 5 bubble optical depth, 6 grain UV, 7 alpha, 8 bubble light, 9 reflected sky,
+   10 water transmittance.
+
+### Deferred
+
+Atmospheric perspective on the sheet (it takes the scene fog chunk instead); the plunge pool's
+dynamic-waves impulse (Phase 8); fountains; hard vertical side edges (the fray is weak); the
+PIC/SPH microsim behind the same lip + pool interface if the sheet does not sell big falls.
+
+---
+
 ## Phase 10 — the sampler budget: cascades + ocean CSM become texture arrays — **written, headless-verified, awaiting regen + browser** (2026-09-20)
 
 Branch `convert-textures-to-texture-arrays`, off `multi-water-types` at `e3f0f00`. Plan:
