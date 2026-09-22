@@ -193,7 +193,8 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.init = function(){
     //LinearFilter is correct HERE even though the Phase 1b tile decode must use
     //NEAREST on its SOURCE tiles: by this point the values are already decoded
     //floats, so interpolating them is meaningful. Blending level across a
-    //shoreline is benign (dry texels still carry the plane) and blending depth
+    //shoreline is benign (dry texels carry their nearest wet texel's level, so
+    //anything reading level must honour the known-dry flag) and blending depth
     //toward 0 at the shore is exactly the soft edge we want.
     //
     //⚠️ FloatType, NOT HalfFloatType. `level` is an absolute world Y, and
@@ -219,7 +220,8 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.init = function(){
       halfWidth: halfWidths[i],
       texel: (2.0 * halfWidths[i]) / RES,
       centerX: undefined,   //undefined => never filled, forces the first fill
-      centerZ: undefined
+      centerZ: undefined,
+      stale: false          //filled, but its sources changed: refill on the next tick
     });
   }
 
@@ -667,8 +669,9 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.tick = function(ctx){
     //not shimmer as the camera pans — same discipline as the foam ortho.
     const cx = Math.round(ctx.cameraX / c.texel) * c.texel;
     const cz = Math.round(ctx.cameraZ / c.texel) * c.texel;
-    if(cx === c.centerX && cz === c.centerZ) continue;   //still valid
+    if(cx === c.centerX && cz === c.centerZ && !c.stale) continue;   //still valid
 
+    c.stale = false;
     c.centerX = cx;
     c.centerZ = cz;
     u.uCascadeCenter.value.set(cx, cz);
@@ -684,7 +687,7 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.tick = function(ctx){
     this.renderer.render(this._fillScene, this._fillCamera);
 
     //Phase 1b: layer real a-land tile data on top of the standalone base
-    //fill above, still writing into c.target. See WaterTileDecodePass's
+    //fill above, still writing into the scratch. See WaterTileDecodePass's
     //header for why this must stay a *second* draw over the standalone
     //answer rather than replacing it outright — texels a-land has not
     //answered yet (still loading, or outside its world) keep the standalone
@@ -712,7 +715,12 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.tick = function(ctx){
 //move afterwards. A refill is three quad renders plus a handful of tile quads,
 //so running it a few dozen times while tiles stream in is cheap.
 ARestlessOcean.Passes.WaterFieldPass.prototype.invalidate = function(){
-  for(let i = 0; i < this.cascades.length; ++i) this.cascades[i].centerX = undefined;
+  //Marked stale, NOT un-centred: the target still holds a valid fill about its old centre
+  //until the refill, and invalidate() can land mid-frame (FlowSurfacePass.init →
+  //setFlowBand, after this pass ticked and before the water uniform loop), where an
+  //undefined centre was uploaded as (0, 0) and every material read the field at the
+  //world origin for a frame.
+  for(let i = 0; i < this.cascades.length; ++i) this.cascades[i].stale = true;
   //Bumped so CPU caches derived from the same sources (OceanGrid's shore
   //distance cache for the wave masks) know to drop their answers too.
   this.invalidationCount++;
@@ -869,7 +877,7 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.selfTest = function(){
     .then(function(){
       testMat.dispose();
       //Force a refill of every cascade on the next tick.
-      for(let i = 0; i < self.cascades.length; ++i) self.cascades[i].centerX = undefined;
+      for(let i = 0; i < self.cascades.length; ++i) self.cascades[i].stale = true;
       const got = Array.prototype.slice.call(buf).join(', ');
       const pass = (buf[0] === 11 && buf[1] === 22 && buf[2] === 33 && buf[3] === 44);
       return (pass ? 'PASS' : 'FAIL') + ' — wrote [11, 22, 33, 44], read back [' + got + ']'

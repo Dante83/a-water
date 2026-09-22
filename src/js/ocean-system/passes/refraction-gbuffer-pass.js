@@ -173,6 +173,8 @@ ARestlessOcean.Passes.RefractionGBufferPass.prototype.init = function(width, hei
 
 ARestlessOcean.Passes.RefractionGBufferPass.prototype.resize = function(width, height){
   this.target.setSize(width, height);
+  //The old attachment's GPU texture is freed, not orphaned on every resize.
+  if(this.target.depthTexture) this.target.depthTexture.dispose();
   this.target.depthTexture = new THREE.DepthTexture(
     width, height, THREE.UnsignedIntType
   );

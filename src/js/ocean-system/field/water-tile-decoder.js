@@ -211,6 +211,8 @@ ARestlessOcean.WaterTileDecoder.prototype._makeDataTexture = function(data, w, h
   return tex;
 };
 
+ARestlessOcean.WaterTileDecoder.RETRY_MS = 5000;
+
 ARestlessOcean.WaterTileDecoder.prototype._load = function(lod, tileX, tileY, key){
   const self = this;
   this._cache.set(key, 'loading');
@@ -221,12 +223,25 @@ ARestlessOcean.WaterTileDecoder.prototype._load = function(lod, tileX, tileY, ke
   const urls = ['waterLevel', 'waterFlow', 'waterClass'].map(function(s){
     return self.director._urlForTile(s, lod, tileX, tileY);
   });
+  //A MISSING tile (404) is an answer: all-dry. A FAILED fetch (network error, 5xx) is
+  //not, and used to be filed as 'dry' too — authoritative, so the field forced that
+  //tile's water dry for the rest of the session. It stays unknown and is retried.
+  const FAILED = {};
   Promise.all(urls.map(function(u){
     return fetch(u).then(function(r){
+      if(r.status >= 500) return FAILED;
       if(!r.ok) return null;
       return r.arrayBuffer().then(function(buf){ return decode(new Uint8Array(buf)); });
-    })['catch'](function(){ return null; });
+    })['catch'](function(){ return FAILED; });
   })).then(function(tiles){
+    if(tiles.indexOf(FAILED) !== -1){
+      setTimeout(function(){
+        if(self._cache.get(key) !== 'loading') return;
+        self._cache['delete'](key);                    //the next getTile asks again
+        if(self.onTileLoaded) self.onTileLoaded();     //and a refill will make it
+      }, ARestlessOcean.WaterTileDecoder.RETRY_MS);
+      return;
+    }
     if(!tiles[0]){ self._cache.set(key, 'dry'); return; }   //missing level tile = all-dry
     const w = tiles[0].w;
     //Flow/class degrade to still/empty if missing, same as WaterReader._load:

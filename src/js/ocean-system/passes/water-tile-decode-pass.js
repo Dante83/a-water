@@ -186,7 +186,7 @@ ARestlessOcean.Passes.WaterTileDecodePass.prototype._ensureDecoder = function(la
 //matching that cascade's texel density. `ctx` carries {seaLevel, waterType} for
 //the authoritative dry writes. Called
 //from WaterFieldPass.tick() immediately after that cascade's standalone
-//base fill, with `c.target` still the active render target — this pass
+//base fill, with the field's scratch target still active — this pass
 //never sets/restores the render target itself.
 ARestlessOcean.Passes.WaterTileDecodePass.prototype.fillCascade = function(c, landDirector, ctx){
   const decoder = this._ensureDecoder(landDirector);
