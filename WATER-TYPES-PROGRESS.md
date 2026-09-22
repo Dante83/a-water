@@ -321,21 +321,77 @@ differently shaded waters swapped at once.
   foam covers the water layer by the light it scatters, and reflections show only in its gaps.
   Round 11 had only faded the foam-normal reflection; it still drove the glints.
 
-### ▶ RESUME HERE (end of 2026-09-21) — two open items from Dante's last look
+### ▶ RESUME HERE (2026-09-22) — bug sweep of rivers + falls, awaiting regen + browser
 
-Status: Dante: "for a plane based waterfall, this is a pretty neat effect … getting better with
-time". Last commit 75b2e70; Dante has run create-shader.py on it.
-1. **"Water emanating from the rock."** Round 12's wall hugging narrows each row where the ground
-   rises into it, but rows BELOW a jut see open air again and widen straight back out, so the
-   sheet re-grows out of the rock face. Falling water cannot do that. Fix: along each free fall,
-   a row may be at most the previous row's width plus the lateral spread the water can reach
-   (≈ lateral speed × Δτ; ~0 for a plain nappe) — "shrink and stay shrunk" (Dante), or jump over
-   the jut where the trace clears it.
-2. **"The reflections feel like they're moving up."** Probably real, not perception: on the free
-   fall Nw takes the CREEK's ripples, sampled in world xz with plan-velocity advection. On a
-   near-vertical sheet that field does not travel DOWN with the water while the lumps under it do,
-   so the glints can read as climbing. Fix: key the fall's water ripples to (across, τ − t), the
-   lumps' own space, so they ride and stretch with the fall; keep the creek field on the lead-in.
+Both of 2026-09-21's open items are fixed. A review of the nappe/pass, the sheet shaders and the
+flowing-water path found more; plan `~/.claude/plans/let-s-give-it-a-snoopy-locket.md`.
+**Needs `create-shader.py`** (waterfall-sheet.js + water-shader.js). Commits 55dd726..3f4efd8:
+
+- **55dd726** commits the generated JS. `waterfall-sheet.js` had never been tracked, so a clean
+  checkout drew no falls (ocean-grid builds the pass only when the material exists).
+- **17c48a5, trace** (`node tests/waterfall-nappe/nappe-test.mjs`: 4 new cases, each fails on the
+  old code):
+  - A takeoff step no longer runs the attached checks. A pool texel overhanging the cliff foot
+    read as a sliding plunge and skipped the whole free fall.
+  - **Shrink and stay shrunk**: along each free-fall run each side may widen by at most
+    `fallSpread` (0.05 m/m). Free-fall rows have no quarter-width floor inside rock, and each
+    side's own half-width goes to the shader (`aFlowB.w`).
+  - Landing spans are capped at the jet plus spread. A 3.75 m jet flared to 11 m over a lake.
+  - Impacts are weighted by the drop since takeoff (`w`, hopDropLo/Hi). Run-out hops crowded the
+    plunge out of the foam's nearest-16 and flooded the mist pool.
+  - Touchdowns back off (bisection) to the surface crossing, and the first plunge stays the plunge.
+- **25c25b2, pass**:
+  - Failed traces go to a retry list on their own clock. One fall on ground that never loaded
+    kept the queue full, and no sheet published.
+  - Re-trace also when `waterFieldPass.invalidationCount` bumps (water tiles landing).
+  - `dispose()` clears the creek's corridors.
+- **fc88499, sheet GLSL**:
+  - Behind the free fall, only field water at P is a bed. Dry rock was lit under a fall-high
+    column: a near-black teal curtain.
+  - The fall's ripples are in (across m, τ·3 m/s), advected with the water: glints ride down.
+  - Seamless time wraps: whole tiles in both grain layers, periodic lump noise.
+  - The frame comes from the trace (varyings), not the viewer-flipped normal.
+  - Free-fall fragments under 20 % alpha skip depth, because they clipped the mist. Look knob
+    `DEPTH_ALPHA_MIN`.
+  - Soft contact reads the depth attachment; the refraction bend is in view space.
+- **5207ca1, rivers**:
+  - The level-bridge exemption and the all-dry cut were read from FILTERED RT0.a; both are
+    decoded now.
+  - Level gradients (normals, foam direction, step foam) drop dry taps (nearest-wet level =
+    maybe another body).
+  - The 2 m ring discards under the 1 m ring (`flowRingHole`); the overlap had double-blended.
+  - A disabled flowing ring stays hidden.
+- **3f4efd8, field**:
+  - `invalidate()` marks cascades stale rather than un-centring them. That uploaded (0, 0)
+    mid-frame.
+  - A failed water-tile fetch retries after 5 s instead of going dry for the session.
+  - G-buffer resize frees its old depth texture.
+
+Harness: a scratch WebGL2 compile check (headless Chrome, `--dump-dom`) builds the water shader
+still + flowing the way ocean-grid.js does, plus the sheet and foam pass. It is validated against
+HEAD first. It proves the shaders LINK, not how they look.
+
+**Browser checklist for Dante:**
+- rock behind the fall no longer dark teal;
+- glints travel down;
+- no sheet re-growing below the jut;
+- mist not clipped at the sheet edges;
+- distant sloped creeks have no ragged bank holes;
+- no square outline ~125 m out on creeks.
+
+**Found, not done:**
+- **Standing-wave phase** (water-shader.glsl `along = dot(vWorldXZ, vdir)`): at |x| ≈ 1 km any
+  bend turns the phase to noise, because the phase gradient carries |x|·∇θ. A local origin
+  cannot fix it: it jumps when the window recentres, and blended cells cancel. Needs a
+  distance-along-flow coordinate advected in FlowFoamPass.
+- ShoreBreaker/WaveMask still threshold filtered `field.a` (sub-texel at creek mouths). Their
+  CPU mirrors must change in step.
+- CPU twin flow weight ignores the GPU band blur.
+- Dry-tap cascade switch has no crossfade.
+- Sheet `creekWetAt` filters RT0.a (soft edge only).
+- The SSR fisheye fallback with AP off is untested (the round-2 zeros were seen with AP ON).
+- Derivatives inside the refraction branch (shadow slope bias).
+- The depth attachment is 24-bit; 32F would not help without reversed-Z.
 
 ### Deferred
 
