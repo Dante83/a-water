@@ -307,6 +307,20 @@ differently shaded waters swapped at once.
   look choice). The ocean's caustics are unchanged. The inline octave loop became causticOctaves().
 - Not found: the "triangle up top" — needs Dante's camera position.
 
+### Round 12 — the triangle was the terrain; foam and water are two layers (Dante, 2026-09-21)
+
+- **Dante found the triangle: terrain clipping through the sheet.** A rigid-across ribbon assumes
+  a clean lip; banks and rocks jutting into its width sliced it. `buildRibbon` now marches each
+  row's extent out from the centre (0.1 m steps) and stops where the ground first rises above
+  the water, then relaxes neighbouring rows (±2) so one jut cannot pinch a single row: the sheet
+  hugs the channel's walls. Test 8 (a rock jutting into one side of the lip): 0 vertices inside.
+- **Scaly face, take two — "foam as foam on top, water with its reflection underneath".** Two
+  surfaces: Nw (lumps + the creek's ripples, in the ground frame on the lead-in and the sheet's
+  frame on the fall) carries Fresnel, SSR and the glint; Nf (the grain's normal map) lights only
+  the matte foam. Composite: `bubbleLit + slabTdir · (F·reflection + glint + (1−F)·body)`: the
+  foam covers the water layer by the light it scatters, and reflections show only in its gaps.
+  Round 11 had only faded the foam-normal reflection; it still drove the glints.
+
 ### Deferred
 
 The plunge pool's

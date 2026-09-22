@@ -89,6 +89,16 @@ function summarize(n){
   check('wet width: ~5 m, not 14.1', n.width > 4 && n.width < 6, 'width '+n.width.toFixed(2));
   check('wet width: centred on the channel (x≈1)', Math.abs(n.samples[0].x - 1) < 0.3, 'x0 '+n.samples[0].x.toFixed(2));
 }
+// 8. a rock jutting into one side of the lip: the sheet must narrow, not pass through it
+{
+  const ground = (x,z) => { const base = z < 0 ? 10 : 0; return (x > 1.5 && z > -0.5 && z < 1.5) ? 12 : base; };
+  const fall = {top:[0,10,0.5], bottom:[0,0,1.5], width:6, discharge:5, drop:10};
+  const n = N.trace([fall], {groundAt: ground, waterAt: ()=>null});
+  const rib = N.buildRibbon(n, {groundAt: ground, waterAt: ()=>null});
+  let inside = 0;
+  for(let v = 0; v < rib.vertexCount; v++){ const x = rib.position[v*3], y = rib.position[v*3+1], z = rib.position[v*3+2]; if(ground(x,z) > y + 0.01) inside++; }
+  check('wall: no ribbon vertex inside the jutting rock', inside === 0, 'inside '+inside+' of '+rib.vertexCount);
+}
 // 5. island-sholes chains (only when the sibling project is checked out)
 {
   const p = new URL('../../../a-faraway-project/island-sholes/map.json', import.meta.url);

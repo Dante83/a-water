@@ -109,6 +109,7 @@ ARestlessOcean.WaterfallNappe = {};
     corridorLength: 4.0,         //m of plan length per corridor box
     corridorMargin: 0.75,        //m added to the half-width
     colSpacing: 0.5,            //m between ribbon columns
+    wallStep: 0.1,              //m, the across march that finds the channel's walls (buildRibbon)
     wetScanStep: 0.25,          //m, across-flow step of the wet-width scan
     wetMinDepth: 0.02,          //m of water that counts as wet for it (the corridor's lipSpan)
     visibleDepth: 0.06,         //m of water the creek visibly draws (mid of its 3→10 cm fade): the sheet's width
@@ -668,20 +669,48 @@ ARestlessOcean.WaterfallNappe = {};
     const position = new Float32Array(nV * 3), normal = new Float32Array(nV * 3);
     const tangent = new Float32Array(nV * 3), acrossDir = new Float32Array(nV * 3);
     const flowA = new Float32Array(nV * 4), flowB = new Float32Array(nV * 4), lump = new Float32Array(nV);
+    //THE CHANNEL'S WALLS. A row is rigid across, but the banks and any rock that juts into the
+    //lip are not straight: wherever the ground rises above the row inside its width, the terrain
+    //sliced the sheet (Dante's "triangle", round 12). So each side's extent is marched out from
+    //the centre and stops where the ground first rises above the water; the sheet narrows to
+    //hug the walls instead of passing through them. Then neighbouring rows are relaxed (±2) so
+    //one sample of a jut cannot pinch a single row.
+    const step = opt(o, 'wallStep');
+    const lim = [];
+    for(let i = 0; i < rows.length; ++i){
+      const row = rows[i];
+      const hw = 0.5 * (row.w || W), off = row.off || 0.0;
+      const e = [hw, hw];
+      for(let side = 0; side < 2; ++side){
+        const sg = side === 0 ? -1.0 : 1.0;
+        for(let d = 0.0; d <= hw + 1e-6; d += step){
+          const t = off + sg * d;
+          const g = env && env.groundAt ? env.groundAt(row.x + row.ax * t, row.z + row.az * t) : null;
+          if(g != null && g > row.y){ e[side] = Math.max(d - step, 0.25 * hw); break; }
+        }
+      }
+      lim.push(e);
+    }
+    const relaxed = lim.map(function(e, i){
+      let l = e[0], r = e[1];
+      for(let k = Math.max(i - 2, 0); k <= Math.min(i + 2, lim.length - 1); ++k){ l = Math.min(l, lim[k][0] + 0.5 * Math.abs(k - i) * step); r = Math.min(r, lim[k][1] + 0.5 * Math.abs(k - i) * step); }
+      return [l, r];
+    });
     let v = 0;
     for(let i = 0; i < rows.length; ++i){
       const row = rows[i];
+      const off = row.off || 0.0, eL = relaxed[i][0], eR = relaxed[i][1];
       for(let c = 0; c < nCols; ++c, ++v){
         const across = -1.0 + 2.0 * c / (nCols - 1);
-        const w = row.w || W, off = row.off || 0.0;
-        position[v * 3] = row.x + row.ax * (off + across * 0.5 * w);
+        const tA = across < 0.0 ? off + across * eL : off + across * eR;
+        position[v * 3] = row.x + row.ax * tA;
         position[v * 3 + 1] = row.y;
-        position[v * 3 + 2] = row.z + row.az * (off + across * 0.5 * w);
+        position[v * 3 + 2] = row.z + row.az * tA;
         normal[v * 3] = row.nx; normal[v * 3 + 1] = row.ny; normal[v * 3 + 2] = row.nz;
         tangent[v * 3] = row.tx; tangent[v * 3 + 1] = row.ty; tangent[v * 3 + 2] = row.tz;
         acrossDir[v * 3] = row.ax; acrossDir[v * 3 + 1] = 0.0; acrossDir[v * 3 + 2] = row.az;
         flowA[v * 4] = row.tau; flowA[v * 4 + 1] = across; flowA[v * 4 + 2] = row.h; flowA[v * 4 + 3] = row.speed;
-        flowB[v * 4] = row.aer; flowB[v * 4 + 1] = row.presence; flowB[v * 4 + 2] = row.fallFlag; flowB[v * 4 + 3] = 0.5 * (row.w || W);
+        flowB[v * 4] = row.aer; flowB[v * 4 + 1] = row.presence; flowB[v * 4 + 2] = row.fallFlag; flowB[v * 4 + 3] = 0.5 * (eL + eR);
         lump[v] = row.lumpW;
       }
     }

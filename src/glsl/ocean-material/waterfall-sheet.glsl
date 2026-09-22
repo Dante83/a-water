@@ -713,14 +713,20 @@ void main(){
 
   float sunShadow = getSunShadow(vSunShadowCoord);
 
-  //The jet's surface is not glass: it is broken by the same grain that carries its air,
-  //so the clear parts glitter instead of mirroring one sky colour.
-  vec3 NsGrain = normalize(N + (acrossDir * foamNMXZ.x + flowDir * foamNMXZ.y) * uSurfaceRough);
-  //On the lead-in (attached, over the creek's bed) the surface is the creek's: its ripples,
-  //not the fall's grain, so the creek's texture carries on into the lip.
+  //TWO LAYERS, as Dante put it (round 12): WATER underneath, with its reflection, and FOAM on
+  //top of it. They have different surfaces:
+  //  Nw  the WATER's surface: the sheet's lumps (N) plus the creek's own ripples, on the
+  //      lead-in in the ground frame and on the fall in the sheet's frame. Fresnel,
+  //      reflection and the sun glint use this, and only this.
+  //  Nf  the FOAM's surface: the grain's normal map. Only the matte foam is lit with it.
+  //Mixing the two (the foam normals standing in for ripples) made the foam texture a field of
+  //sharp sky glints: the scaly face.
   vec2 rs = creekRippleSlope(vWorldPos.xz, vFlowVel);
-  vec3 NsCreek = normalize(N - vec3(rs.x, 0.0, rs.y));
-  vec3 Ns = normalize(mix(NsCreek, NsGrain, airborne));
+  vec3 NwGround = normalize(N - vec3(rs.x, 0.0, rs.y));
+  vec3 NwSheet  = normalize(N + acrossDir * rs.x + flowDir * rs.y);
+  vec3 Nw = normalize(mix(NwGround, NwSheet, airborne));
+  vec3 Nf = normalize(N + (acrossDir * foamNMXZ.x + flowDir * foamNMXZ.y) * uSurfaceRough);
+  vec3 Ns = Nw;
   float NdotV = clamp(dot(Ns, V), 0.0, 1.0);
   float path = thickness / max(NdotV, 0.2);
 
@@ -750,10 +756,10 @@ void main(){
   float slabTdif = max(1.0 - slabR - slabTdir, 0.0);    //diffusely transmitted
   //Irradiance on the camera's face and on the far face. The far face's light reaches the
   //camera by diffuse TRANSMISSION: a back-lit fall glows.
-  float NdotL = dot(Ns, L);
+  float NdotL = dot(Nf, L);
   vec3 sunE = INV_PI * brightestDirectionalLight * sunShadow;
-  vec3 frontE = sunE * max(NdotL, 0.0) + skyAmbientColor * (0.5 + 0.5 * Ns.y);
-  vec3 backE  = sunE * max(-NdotL, 0.0) + skyAmbientColor * (0.5 - 0.5 * Ns.y);
+  vec3 frontE = sunE * max(NdotL, 0.0) + skyAmbientColor * (0.5 + 0.5 * Nf.y);
+  vec3 backE  = sunE * max(-NdotL, 0.0) + skyAmbientColor * (0.5 - 0.5 * Nf.y);
   //Water absorption along the view path through the sheet; half of it applied to the
   //scattered light, which on average travels about half-way in before it turns round.
   vec3 Twater = exp(-(waterAbsorption + waterScattering) * path);
@@ -765,17 +771,11 @@ void main(){
 
   //── The film's surface and its medium ─────────────────────────────────────
   float F = fresnelAirToWater(NdotV);
-  //March on the smooth (displaced) normal, sample the sky on the detailed one: the creek's
-  //split (see screenSpaceReflection). Detail in the march scatters it; none in the sky mirrors.
-  //Where the surface is broken by bubbles it is not a mirror: the grain's normals stand in for
-  //ripples on clear water only. On the aerated face they turned the foam texture into a field
-  //of sharp sky glints, the scaly look Dante found (round 11). So the reflection normal leans
-  //back to the smooth sheet, and the specular fades, as the bubble layer thickens.
-  float clearSurf = exp(-0.5 * tauB);
-  vec3 Nr = normalize(mix(N, Ns, clearSurf));
-  vec3 reflected = screenSpaceReflection(vWorldPos, reflect(-V, N), reflect(-V, Nr)) * mix(0.35, 1.0, clearSurf);
-  vec3 R = reflect(-L, Nr);
-  vec3 glint = brightestDirectionalLight * pow(max(0.0, dot(R, V)), uSpecFalloff) * specBoost * sunShadow * clearSurf;
+  //The WATER layer's reflection and glint, off the water's own surface (Nw); the march on the
+  //smooth sheet (N), the sky on the rippled one, the creek's split (screenSpaceReflection).
+  vec3 reflected = screenSpaceReflection(vWorldPos, reflect(-V, N), reflect(-V, Nw));
+  vec3 R = reflect(-L, Nw);
+  vec3 glint = brightestDirectionalLight * pow(max(0.0, dot(R, V)), uSpecFalloff) * specBoost * sunShadow;
   vec3 inscatter = underwaterInscatterSurface(-V);
 
   //── What is behind: the creek's refraction model (see COMPOSITING) ─────────
@@ -930,7 +930,11 @@ void main(){
   float waterPath = mix(bedColumn >= 0.0 ? bedColumn : min(behindDist, 50.0), min(behindDist, path), airborne);
   vec3 Tbody = exp(-(waterAbsorption + waterScattering) * waterPath);
   vec3 body = behind * Tbody + inscatter * (vec3(1.0) - Tbody);
-  vec3 color = F * reflected + glint + (1.0 - F) * (bubbleLit + slabTdir * body);
+  //FOAM ON TOP: the bubbles cover the water layer in proportion to the light they scatter
+  //(1 − slabTdir), and the foam is matte, so the reflection and glint show only through its
+  //gaps. bubbleLit is already the foam's radiance times its coverage.
+  vec3 waterLayer = F * reflected + glint + (1.0 - F) * body;
+  vec3 color = bubbleLit + slabTdir * waterLayer;
 
   //── Shape ───────────────────────────────────────────────────────────────
   //Side edges fray with the grain; an airborne, aerated jet opens into strands.
