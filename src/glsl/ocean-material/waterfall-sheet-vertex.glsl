@@ -17,7 +17,8 @@ precision highp float;
 //model; uLumpAmp/uLumpScale/uLumpRate/uEdgeWobble are its knobs.
 
 attribute vec4 aFlowA;       //tau (s of flight since the trace began), across (-1..1), thickness (m), speed (m/s)
-attribute vec4 aFlowB;       //aeration (0..1), presence (0..1), free-fall weight (0..1, smoothed), half-width (m)
+attribute vec4 aFlowB;       //aeration (0..1), presence (0..1), free-fall flag (0..1), half-width (m)
+attribute float aFlowLump;   //lump weight: 1 inside a fall, ramping to 0 inside its ends (WaterfallNappe.resample)
 attribute vec3 aFlowTangent; //down the flow (unit)
 attribute vec3 aFlowAcross;  //horizontal, toward +across (unit)
 
@@ -76,7 +77,7 @@ void main(){
   float tWrap = mod(t, 256.0);
   //Lumps on the free fall only: the attached ends are the creek's surface carried on, and
   //the landing tail (the most aerated rows) poked white lumps up through the pool.
-  float amp = uLumpAmp * (0.15 + 0.85 * aeration) * aFlowB.z;
+  float amp = uLumpAmp * (0.15 + 0.85 * aeration) * aFlowLump;
 
   vec3 N = normalize(normal);
   vec3 T = normalize(aFlowTangent);
@@ -97,7 +98,9 @@ void main(){
 
   //Ragged sides: the outer columns wander in and out across the flow.
   float edge = smoothstep(0.6, 1.0, abs(aFlowA.y));
-  float wobble = uEdgeWobble * edge * (wfLump(q * vec2(0.6, 1.7) + vec2(41.7, 3.1)) * 2.0) * (0.3 + 0.7 * aeration);
+  //Free fall only (aFlowLump), like the lumps: on the attached tail the edge columns swung
+  //40 cm sideways over the banks and stuck out as flags at both ends of the foot (round 10).
+  float wobble = uEdgeWobble * edge * (wfLump(q * vec2(0.6, 1.7) + vec2(41.7, 3.1)) * 2.0) * (0.3 + 0.7 * aeration) * aFlowLump;
 
   vec3 displaced = position + N * d0 + A * sign(aFlowA.y) * wobble;
   //ATTACHED rows stand on the creek: at its level where it has one above the traced height
@@ -108,13 +111,15 @@ void main(){
   //The creek's level as a MINIMUM: near the foot the field's cells still hold the ramp's
   //level (2.4 m at hero-creek's z 766 against a 1.9 m tail), and a plain sample yanked single
   //vertices half a metre up, folding the tail into edge-on strips.
-  //Only the point itself and 0.75 m DOWNSTREAM: an upstream sample is exactly what reaches
-  //back onto the ramp, and the full ±0.75 m minimum sank the tail under a pool whose level
-  //rises downstream (1.55 → 1.85 m below hero-creek's fall), where it showed through the
-  //clear creek as a sheet of foam under the river (round 8).
   vec2 fd = aFlowTangent.xz;
   fd = dot(fd, fd) > 1e-6 ? normalize(fd) * 0.75 : vec2(0.0);
-  float creekY = min(creekLevelAt(displaced.xz, displaced.y), creekLevelAt(displaced.xz + fd, displaced.y));
+  //The level HERE, dropping to the downstream sample only where the level falls steeply
+  //ahead (the ramp). The plain minimum sat the tail a few cm under a pool whose level eases
+  //down downstream, so the creek covered it where it draws and it showed where the creek
+  //fades: foam "right underneath the water" (round 10).
+  float lvHere = creekLevelAt(displaced.xz, displaced.y);
+  float lvDown = creekLevelAt(displaced.xz + fd, displaced.y);
+  float creekY = mix(lvHere, min(lvHere, lvDown), smoothstep(0.1, 0.25, lvHere - lvDown));
   //...and ATTACHED_LIFT above it. The sheet draws ON TOP of the creek and its fragment alpha
   //is the complement of the creek's visibility there, so the two blend instead of stacking.
   //Coincident with the creek it lost the depth test to it (the creek is polygon-offset toward

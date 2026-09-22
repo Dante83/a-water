@@ -664,7 +664,7 @@ void main(){
   float thickness = vFlowA.z;
   float aeration  = vFlowB.x;
   float presence  = vFlowB.y;
-  float airborne  = vFlowB.z;   //the smoothed free-fall weight (WaterfallNappe.resample)
+  float airborne  = vFlowB.z;   //the free-fall flag (WaterfallNappe.resample)
   float halfWidth = vFlowB.w;
   if(presence * uOpacity < 0.003) discard;
 
@@ -943,7 +943,7 @@ void main(){
   //$DEBUG_START$
   if(uDebugMode == 1) gl_FragColor = vec4(vec3(presence), 1.0);
   else if(uDebugMode == 2) gl_FragColor = vec4(vec3(aeration), 1.0);
-  else if(uDebugMode == 3) gl_FragColor = vec4(airborne, 0.0, 1.0 - airborne, 1.0);   //the smoothed free-fall weight
+  else if(uDebugMode == 3) gl_FragColor = vec4(airborne, 0.0, 1.0 - airborne, 1.0);   //the free-fall flag
   else if(uDebugMode == 4) gl_FragColor = vec4(vec3(clamp(thickness / 0.5, 0.0, 1.0)), 1.0);
   else if(uDebugMode == 5) gl_FragColor = vec4(vec3(1.0 - exp(-0.1 * tauB)), 1.0);
   else if(uDebugMode == 6) gl_FragColor = vec4(fract(grainUV), 0.0, 1.0);

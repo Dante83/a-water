@@ -86,7 +86,7 @@ ARestlessOcean.WaterfallNappe = {};
     hopDropLo: 0.25,            //m an airborne stretch must fall to start counting as a fall ...
     hopDropHi: 0.75,            //... and to count fully
     brinkLead: 3.0,             //m the sheet leads into each takeoff ...
-    fallSmooth: 0.5,            //m either side over which the free-fall weight ramps
+    fallSmooth: 0.5,            //m inside each end of a fall over which its lumps ramp in and out
     landTail: 3.0,              //... and runs on after each landing (see resample). Generous: the
                                 //material draws them only where the creek does not.
     settleRun: 3.0,             //m of gentle attached path after the last fall to stop
@@ -357,15 +357,19 @@ ARestlessOcean.WaterfallNappe = {};
           }
           if(py <= level - plungeDepth){ tau += dt; path += Math.hypot(px - ox, py - oy, pz - oz); pushSample(); stop = 'plunge'; break; }
         }
-        else if(py <= g2 + h){
-          //Touchdown on a ledge or the chute below: lose the normal component.
+        else if(py <= g2 + attachedOffset(env, px, pz, g2, h)){
+          //Touchdown on a ledge or the chute below: lose the normal component. On the WATER'S
+          //surface where the field has some (bed + depth), not bed + jet thickness: landing on
+          //the bed and then riding at the surface folded the ribbon back UP 16 cm at hero-creek's
+          //foot — a dark crack with a white lip standing off the fall (round 10).
           recordSpan(px, pz, vx, vz);
           const pl = Math.sqrt(vx * vx + vz * vz) || 1.0;
           if(!groundNormalUpwind(env, px, pz, vx / pl, vz / pl, 0.5, nrm)){ stop = 'unloaded'; break; }
           const vn = vx * nrm[0] + vy * nrm[1] + vz * nrm[2];
           if(vn < 0.0){
             if(-vn >= minImpact){
-              impacts.push({x: px, y: g2 + h, z: pz, vx: vx, vy: vy, vz: vz, nx: nrm[0], ny: nrm[1], nz: nrm[2], vn: -vn, level: g2 + h});
+              const surf = g2 + attachedOffset(env, px, pz, g2, h);
+              impacts.push({x: px, y: surf, z: pz, vx: vx, vy: vy, vz: vz, nx: nrm[0], ny: nrm[1], nz: nrm[2], vn: -vn, level: surf});
             }
             A += -vn / opt(o, 'impactAerationSpeed');
             vx -= vn * nrm[0]; vy -= vn * nrm[1]; vz -= vn * nrm[2];
@@ -563,18 +567,27 @@ ARestlessOcean.WaterfallNappe = {};
       for(let k = -R; k <= R; ++k){ sum += raw[Math.min(Math.max(i + k, 0), rows.length - 1)]; ++cnt; }
       rows[i].presence = sum / cnt;
     }
-    //The smooth FREE-FALL WEIGHT (0 attached … 1 in the air), a box over ±fallSmooth metres
-    //of the airborne-by-drop flag. Everything that differs between the fall and the attached
-    //ends (the lumps, the air in the water, the lift onto the creek, the hand-off) ramps on
-    //this, not on the raw flag: that flips within one 0.25 m row at every takeoff and landing,
-    //and the full-height lumps on one side of it and none on the other sheared that single row
-    //of triangles by 30 cm — the bent strips Dante found at the top and bottom (round 8).
+    //Two per-row weights for the vertex/fragment stages:
+    //  fall  the free-fall flag (airborne by drop), per row — air in the water, the lift onto
+    //        the creek and the hand-off follow it exactly. Round 8 smoothed this over ±0.5 m,
+    //        and the smoothing leaked past every landing: flat post-impact rows carrying
+    //        bubbles made a white slab lying on the water (round 10).
+    //  lump  the LUMP weight: 1 inside a fall, ramping to 0 over fallSmooth metres INSIDE it at
+    //        both ends, 0 elsewhere. Full lumps switching off within one row sheared that row
+    //        of triangles by 30 cm (the bent strips of round 8); ramping them inside the fall
+    //        cannot leak onto the attached rows.
     const fsm = opt(o, 'fallSmooth');
-    for(let i = 0; i < rows.length; ++i){
-      let sum = 0.0, cnt = 0;
-      for(let k = i; k >= 0 && rows[i].s - rows[k].s <= fsm; --k){ sum += fall[k]; ++cnt; }
-      for(let k = i + 1; k < rows.length && rows[k].s - rows[i].s <= fsm; ++k){ sum += fall[k]; ++cnt; }
-      rows[i].freeFall = cnt ? sum / cnt : 0.0;
+    for(let i = 0; i < rows.length; ++i){ rows[i].fallFlag = fall[i]; rows[i].lumpW = 0.0; }
+    for(let i = 0; i < rows.length;){
+      if(fall[i] <= 0.5){ ++i; continue; }
+      let j = i;
+      while(j < rows.length && fall[j] > 0.5) ++j;
+      const s0 = rows[i].s, s1 = rows[j - 1].s;
+      for(let k = i; k < j; ++k){
+        const e = Math.min(rows[k].s - s0, s1 - rows[k].s);
+        rows[k].lumpW = fall[k] * smoothstep(0.0, fsm, e);
+      }
+      i = j;
     }
     //Tangent frames. Across is horizontal, perpendicular to the plan heading of the
     //water there; the normal faces up-and-downstream.
@@ -612,7 +625,12 @@ ARestlessOcean.WaterfallNappe = {};
     let start = null, plan = 0.0, prev = null;
     for(let i = 0; i < rows.length; ++i){
       const row = rows[i];
-      const on = row.presence > 0.05;
+      //Only the FREE FALL: the creek steps aside under the jet and nowhere else. Covering the
+      //whole ribbon (the 3 m lead-in and tail) hid the creek's foamy surface over the landing
+      //zone, and the tail drew plain clear water there instead: a Fresnel-white slab with a
+      //crack above it at the foot of the fall (round 10). The attached rows fill only the
+      //creek's own holes (the material's complement).
+      const on = (row.fallFlag !== undefined ? row.fallFlag : row.presence) > 0.5;
       if(on && !start){ start = row; plan = 0.0; }
       if(start && prev) plan += Math.hypot(row.x - prev.x, row.z - prev.z);
       if(start && (!on || plan >= len || i === rows.length - 1)){
@@ -632,7 +650,7 @@ ARestlessOcean.WaterfallNappe = {};
   //  tangent = down the flow, across = horizontal, toward +across (both unit): the vertex
   //  stage's displacement frame
   //  flowA = (tau, across −1..1, thickness, speed)
-  //  flowB = (aeration, presence, free-fall weight (smoothed airborne), half-width m)
+  //  flowB = (aeration, presence, free-fall flag, half-width m); lump = lump weight (see resample)
   N.buildRibbon = function(nappe, env, o){
     const rows = nappe.rows;
     if(rows.length < 2) return null;
@@ -643,7 +661,7 @@ ARestlessOcean.WaterfallNappe = {};
     const nV = rows.length * nCols;
     const position = new Float32Array(nV * 3), normal = new Float32Array(nV * 3);
     const tangent = new Float32Array(nV * 3), acrossDir = new Float32Array(nV * 3);
-    const flowA = new Float32Array(nV * 4), flowB = new Float32Array(nV * 4);
+    const flowA = new Float32Array(nV * 4), flowB = new Float32Array(nV * 4), lump = new Float32Array(nV);
     let v = 0;
     for(let i = 0; i < rows.length; ++i){
       const row = rows[i];
@@ -657,7 +675,8 @@ ARestlessOcean.WaterfallNappe = {};
         tangent[v * 3] = row.tx; tangent[v * 3 + 1] = row.ty; tangent[v * 3 + 2] = row.tz;
         acrossDir[v * 3] = row.ax; acrossDir[v * 3 + 1] = 0.0; acrossDir[v * 3 + 2] = row.az;
         flowA[v * 4] = row.tau; flowA[v * 4 + 1] = across; flowA[v * 4 + 2] = row.h; flowA[v * 4 + 3] = row.speed;
-        flowB[v * 4] = row.aer; flowB[v * 4 + 1] = row.presence; flowB[v * 4 + 2] = row.freeFall; flowB[v * 4 + 3] = 0.5 * (row.w || W);
+        flowB[v * 4] = row.aer; flowB[v * 4 + 1] = row.presence; flowB[v * 4 + 2] = row.fallFlag; flowB[v * 4 + 3] = 0.5 * (row.w || W);
+        lump[v] = row.lumpW;
       }
     }
     const index = new Uint32Array((rows.length - 1) * (nCols - 1) * 6);
@@ -669,6 +688,6 @@ ARestlessOcean.WaterfallNappe = {};
         index[k++] = b; index[k++] = d; index[k++] = e;
       }
     }
-    return {position: position, normal: normal, tangent: tangent, across: acrossDir, flowA: flowA, flowB: flowB, index: index, vertexCount: nV};
+    return {position: position, normal: normal, tangent: tangent, across: acrossDir, flowA: flowA, flowB: flowB, lump: lump, index: index, vertexCount: nV};
   };
 })(ARestlessOcean.WaterfallNappe);

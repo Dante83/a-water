@@ -265,6 +265,28 @@ real, my test angles had missed them. At his angle (south-west, above, looking a
   emitImpact spray for falls is off by default (`fallSprayRate` 0, still a knob).
 - Swirly foam in the pool: FlowFoamPass advection, not the fall (Dante: likely the solve's sampling).
 
+### Round 10 — the front view: a dark crack and a white slab at the foot (Dante, 2026-09-21)
+
+Reproduced at Dante's front angle; hiding the terrain and then the creek isolated it to the
+sheet's own tail.
+- **Root cause: the corridor covered the whole ribbon**, 3 m tail included, so the creek stepped
+  aside over the landing zone (its level still slopes down to the pool there) and the tail drew
+  plain clear water in its place: Fresnel-white at grazing, no foam, and a crack where it met
+  the fall. Corridors now cover only the free fall (`fallFlag`); past the landing the creek keeps
+  its foamy surface, the jet dissolves into it, and the tail only fills the creek's own holes.
+- **Touchdown on the water's surface** (bed + field depth), not bed + jet thickness: landing on the
+  bed then riding at the surface folded the ribbon back up 16 cm at the foot.
+- **Two weights instead of one smoothed weight**: `fallFlag` per row (air, lift, hand-off — round
+  8's ±0.5 m smoothing leaked bubbles onto flat post-impact rows: the white slab) and `lumpW`,
+  ramped INSIDE each fall's ends (lumps and the edge wobble; the wobble had been ungated and swung
+  the tail's edge columns 40 cm over the banks).
+- **Tail level** = the level here, dropping to the downstream sample only where the level falls
+  steeply ahead (the plain minimum sat it a few cm under the pool: "foam right underneath").
+- Harness: Chrome's cache served a stale nappe once (a false TypeError); run.mjs now disables the
+  network cache.
+- Not the sheet: thin slivers of the CREEK's pool run up the base of the step at both banks (seen
+  with the sheet hidden) — Phase 4 wet cells along the cliff foot.
+
 ### Deferred
 
 The plunge pool's

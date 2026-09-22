@@ -231,7 +231,7 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype._rebuildGeometry = function()
   }
   const position = new Float32Array(nV * 3), normal = new Float32Array(nV * 3);
   const tangent = new Float32Array(nV * 3), across = new Float32Array(nV * 3);
-  const flowA = new Float32Array(nV * 4), flowB = new Float32Array(nV * 4);
+  const flowA = new Float32Array(nV * 4), flowB = new Float32Array(nV * 4), lump = new Float32Array(nV);
   const index = new Uint32Array(nI);
   let v = 0, k = 0;
   for(let i = 0; i < this.cascades.length; ++i){
@@ -239,7 +239,7 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype._rebuildGeometry = function()
     if(!r) continue;
     position.set(r.position, v * 3); normal.set(r.normal, v * 3);
     tangent.set(r.tangent, v * 3); across.set(r.across, v * 3);
-    flowA.set(r.flowA, v * 4); flowB.set(r.flowB, v * 4);
+    flowA.set(r.flowA, v * 4); flowB.set(r.flowB, v * 4); lump.set(r.lump, v);
     for(let j = 0; j < r.index.length; ++j) index[k + j] = r.index[j] + v;
     v += r.vertexCount; k += r.index.length;
   }
@@ -251,6 +251,7 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype._rebuildGeometry = function()
   geo.setAttribute('aFlowAcross', new THREE.BufferAttribute(across, 3));
   geo.setAttribute('aFlowA', new THREE.BufferAttribute(flowA, 4));
   geo.setAttribute('aFlowB', new THREE.BufferAttribute(flowB, 4));
+  geo.setAttribute('aFlowLump', new THREE.BufferAttribute(lump, 1));
   geo.setIndex(new THREE.BufferAttribute(index, 1));
   if(nV){
     geo.computeBoundingSphere();
