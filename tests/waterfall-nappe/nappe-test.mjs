@@ -28,7 +28,7 @@ function summarize(n){
   check('hero: sheet rows exist', n.rows.length > 4);
   const rib = N.buildRibbon(n, {groundAt: ground, waterAt: water});
   check('hero: ribbon', rib && rib.vertexCount>0 && rib.tangent.length === rib.vertexCount*3, rib && `verts ${rib.vertexCount}`);
-  check('hero: sheet is the free fall (+ 2 m lead-in, 1 m tail) only', n.rows.every(r => r.presence < 0.01 || r.air > 0.0 || n.rows.some(q => q.air > 0 && q.s - r.s >= -1.26 && q.s - r.s <= 2.26)), '');
+  check('hero: sheet is the free fall (+ 3 m lead-in, 3 m tail) only', n.rows.every(r => r.presence < 0.01 || r.air > 0.0 || n.rows.some(q => q.air > 0 && q.s - r.s >= -3.26 && q.s - r.s <= 3.26)), '');
 }
 // 2. 45° chute 10 m drop, flat above and below (no pool water)
 {
@@ -43,9 +43,11 @@ function summarize(n){
   check('chute: terminal speed 3..14 m/s (friction, < free-fall 14)', vmax>3 && vmax<14, f2(vmax));
   //The chute itself is the creek's own surface: the sheet draws only the short flight off the
   //sharp top edge (a 2 m/s parabola meets a 45° face ~0.8 m out), nothing down the slope.
-  const onChute = n.rows.filter(r => r.z > 2 && r.z < 9 && r.presence > 0.01);
+  //Past the flight and its 3 m landing tail (attached rows the material draws only where the
+  //creek does not), nothing down the slope.
+  const onChute = n.rows.filter(r => r.z > 4.5 && r.z < 9 && r.presence > 0.01);
   const maxZ = n.rows.length ? Math.max(...n.rows.filter(r=>r.presence>0.01).map(r=>r.z)) : 0;
-  check('chute: no sheet on the chute (attached water is the creek surface)', onChute.length === 0 && maxZ < 2.0, 'sheet ends z '+maxZ.toFixed(2));
+  check('chute: no sheet down the chute past the landing tail', onChute.length === 0 && maxZ < 4.5, 'sheet ends z '+maxZ.toFixed(2));
   check('chute: aerated at bottom', n.samples.at(-1).aer > 0.5, f2(n.samples.at(-1).aer));
 }
 // 3. vertical 10 m drop

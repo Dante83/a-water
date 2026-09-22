@@ -204,6 +204,28 @@ has a hard time connecting." One design decision behind most of it, and one Phas
 - Result, headless on the 4090: the creek's ripples and its SSR glints of the banks run straight
   over the brink into the curl of the fall.
 
+### Round 7 — "River > Fall start > Plunge > Foam > River … we need the river info in there" (2026-09-21)
+
+Dante's instinct was right: the sheet was GUESSING where the creek stops drawing (fixed-length
+lead-in/tail, CPU heights). Now it asks the creek's own rules, per pixel:
+- **Alpha complement.** On attached rows (lead-in, tail) the sheet's alpha is `1 − creekVisible`,
+  where `creekVisible` is the creek's thin-water fade (its field level over the G-buffer ground
+  under the undistorted pixel, 3 → 10 cm) times its corridor step-aside (level steep inside a
+  fall's box) — the same WaterField cascade 0 and the same corridor uniform objects (ring 0's,
+  aliased). The free fall keeps full presence. Lead-in and tail are 3 m each; the complement
+  hides whatever overlaps. Debug 12: red = creek visible, green = sheet's hand-off weight.
+- **The creek writes depth where it has faded out.** Round 5's "hand-off by depth" left a hole at
+  the foot: the flowing surface is transparent + depthWrite and only discards when fully faded,
+  so a nearly invisible creek, polygon-offset toward the camera, hid the coincident tail. The
+  attached rows now sit 3 cm ABOVE the creek (`ATTACHED_LIFT`) and blend over it by the complement.
+- **Attached rows stand on the creek**: vertex y = max(creek level, traced height) — so the tail
+  follows the pool's real level instead of running under it and under the banks at the edges
+  ("the foam seems to go below ground near the edges"). The creek level is the MINIMUM over
+  ±0.75 m along the flow: near the foot the field's cells still hold the ramp's level (2.4 m vs a
+  1.9 m tail) and single vertices were yanked up, folding the tail into edge-on strips.
+- **Lumps only on the free fall** (the tail's high aeration poked white lumps through the pool).
+- 60 s run on hero-creek-sky: no errors; both AP branches link.
+
 ### Deferred
 
 The plunge pool's

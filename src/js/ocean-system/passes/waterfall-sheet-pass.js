@@ -76,6 +76,10 @@ ARestlessOcean.Passes.WaterfallSheetPass.SHARED_UNIFORMS = [
   'atmSunPosition', 'atmMoonPosition', 'atmSunHorizonFade', 'atmMoonHorizonFade',
   'atmScatteringSunIntensity', 'atmScatteringMoonIntensity', 'atmMoonLightColor',
   'atmCameraHeight', 'atmDistanceScale',
+  'waterFieldCascade0', 'waterFieldCascadeCenter', 'waterFieldCascadeHalfWidth',
+  //Ring 0's corridor objects, which _streamCorridors fills: the sheet evaluates the creek's
+  //step-aside rule with the very same boxes.
+  'fallCorridorA', 'fallCorridorB', 'fallCorridorCount',
   'foamOpacityMap', 'foamNormalMap', 'flowWaveProfile', 'flowRippleScale'
 ];
 

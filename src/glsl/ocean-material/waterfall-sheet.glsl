@@ -74,6 +74,15 @@ uniform sampler2D blueNoiseTexture;
 uniform sampler2D meteringSurveyTexture;
 uniform float meteringSurveyValid;
 uniform float underwaterFactor;
+//The creek's own visibility rules, evaluated here so the attached ends draw exactly where it
+//does not (aliased from the flowing material: its WaterField cascade 0 and ring 0's corridors).
+uniform sampler2D waterFieldCascade0;
+uniform vec2 waterFieldCascadeCenter[3];
+uniform float waterFieldCascadeHalfWidth[3];
+const int FALL_CORRIDOR_MAX = 24;
+uniform vec4 fallCorridorA[FALL_CORRIDOR_MAX];
+uniform vec4 fallCorridorB[FALL_CORRIDOR_MAX];
+uniform int fallCorridorCount;
 
 uniform sampler2D foamOpacityMap;
 //The creek's ripple profile buffer (FlowSurfacePass) and its live knob: the lead-in's surface
@@ -500,6 +509,51 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 marchDir, vec3 skyDir){
   return skyColor;
 }
 
+//── How visible the creek is here (water-shader.glsl, $flowing_water; keep in step) ──
+//The same two rules that decide where the flowing surface draws: its thin-water fade
+//(FLOW_FADE_MIN_M 3 cm → FLOW_FADE_FULL_M 10 cm of its level over the G-buffer ground under
+//the pixel) and, inside a fall's corridor, stepping aside where its level is steep
+//(flowFallOwn). Not mirrored: the still/flowing hand-off weight and the bank taper, which
+//are ~1 and ~0 in a creek at a fall. Outside the flowing surface's window: 0 (no creek).
+float creekCorridorWeight(vec2 p){
+  float w = 0.0;
+  for(int i = 0; i < FALL_CORRIDOR_MAX; ++i){
+    if(i >= fallCorridorCount) break;
+    vec2 a = fallCorridorA[i].xy;
+    vec2 d = fallCorridorA[i].zw - a;
+    float len = length(d);
+    if(len < 1e-3) continue;
+    d /= len;
+    vec2 q = p - a;
+    float along = dot(q, d);
+    float across = abs(q.x * d.y - q.y * d.x);
+    float r = fallCorridorB[i].x;
+    float inside = smoothstep(-0.5, 0.0, along) * smoothstep(-0.5, 0.0, len - along)
+                 * (1.0 - smoothstep(r - 0.5, r, across));
+    w = max(w, inside);
+  }
+  return w;
+}
+float creekLevel0(vec2 xz){
+  vec2 uv = (xz - waterFieldCascadeCenter[0]) / (2.0 * waterFieldCascadeHalfWidth[0]) + 0.5;
+  return texture2D(waterFieldCascade0, uv).r;
+}
+float creekVisibleAt(vec2 xz, float groundY, bool haveGround){
+  vec2 d = abs(xz - waterFieldCascadeCenter[0]);
+  if(max(d.x, d.y) > 0.89 * waterFieldCascadeHalfWidth[0]) return 0.0;
+  float level = creekLevel0(xz);
+  float vis = haveGround ? smoothstep(0.03, 0.10, level - groundY) : 1.0;
+  float corr = creekCorridorWeight(xz);
+  if(corr > 0.0){
+    const float FALL_EPS = 0.75;
+    float fxm = creekLevel0(xz - vec2(FALL_EPS, 0.0)), fxp = creekLevel0(xz + vec2(FALL_EPS, 0.0));
+    float fzm = creekLevel0(xz - vec2(0.0, FALL_EPS)), fzp = creekLevel0(xz + vec2(0.0, FALL_EPS));
+    float slope = length(vec2(fxp - fxm, fzp - fzm)) / (2.0 * FALL_EPS);
+    vis *= 1.0 - corr * smoothstep(0.176, 0.364, slope);
+  }
+  return vis;
+}
+
 //── The creek's ripples (water-shader.glsl, Phase 4 step 4), for the lead-in ─────────
 //Same sixteen directions of the same profile buffer, advected with the current by the same
 //two-phase trick. Differences, flagged: the energy is a mid value (the creek reads it from
@@ -719,7 +773,25 @@ void main(){
   float sceneDepth = texture2D(refractionLinearDepth, gl_FragCoord.xy / screenResolution).r;
   if(sceneDepth > 0.0001) soft = clamp((sceneDepth - vViewDepth) / max(uSoftRange, 1e-3), 0.0, 1.0);
 
-  float outAlpha = presence * edgeAlpha * strandAlpha * soft * uOpacity;
+  //THE HAND-OFF. On attached rows (the lead-in and the landing tail) the sheet is the
+  //complement of the creek: it draws exactly as much as the creek does not, by the creek's
+  //own rules at this pixel. A fixed-length overlap either left the creek's holes half filled
+  //or laid a second, slightly different water over it (round 7, the interfaces still
+  //struggled). The ground is the G-buffer ground under the undistorted pixel, as the creek reads it.
+  float creekVis = 0.0;
+  if(airborne < 0.999){
+    float gRaw = texture2D(refractionDepthTexture, screenUV).r;
+    float gY = 0.0;
+    bool haveG = gRaw < 1.0;
+    if(haveG){
+      vec4 gv = inverseProjectionMatrix * vec4(screenUV * 2.0 - 1.0, gRaw * 2.0 - 1.0, 1.0);
+      gv /= gv.w;
+      gY = (inverseViewMatrix * gv).y;
+    }
+    creekVis = creekVisibleAt(vWorldPos.xz, gY, haveG);
+  }
+  float handoff = mix(1.0 - creekVis, 1.0, airborne);
+  float outAlpha = presence * handoff * edgeAlpha * strandAlpha * soft * uOpacity;
   #if($atmospheric_perspective_enabled)
     //Aerial perspective, as the creek applies it (above water only).
     if(underwaterFactor < 0.5) color = applyAtmosphericPerspective(color, vWorldPos);
@@ -738,6 +810,7 @@ void main(){
   else if(uDebugMode == 9) gl_FragColor = linearTosRGB(vec4(aroAESFilmicToneMapping(reflected), 1.0));
   else if(uDebugMode == 10) gl_FragColor = vec4(vec3(dot(Tbody, vec3(1.0 / 3.0))), 1.0);
   else if(uDebugMode == 11) gl_FragColor = linearTosRGB(vec4(aroAESFilmicToneMapping(body), 1.0));
+  else if(uDebugMode == 12) gl_FragColor = vec4(creekVis, handoff, 0.0, 1.0);
   //$DEBUG_END$
 
   //The scene fog chunk only when atmospheric perspective is OFF — the water's own rule

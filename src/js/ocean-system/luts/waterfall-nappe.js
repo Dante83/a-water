@@ -85,8 +85,9 @@ ARestlessOcean.WaterfallNappe = {};
     presenceSmoothRows: 1,      //± rows of box smoothing on presence
     hopDropLo: 0.25,            //m an airborne stretch must fall to start counting as a fall ...
     hopDropHi: 0.75,            //... and to count fully
-    brinkLead: 2.0,             //m the sheet leads into each takeoff ...
-    landTail: 1.0,              //... and runs on after each landing (see resample)
+    brinkLead: 3.0,             //m the sheet leads into each takeoff ...
+    landTail: 3.0,              //... and runs on after each landing (see resample). Generous: the
+                                //material draws them only where the creek does not.
     settleRun: 3.0,             //m of gentle attached path after the last fall to stop
     plungeMinDepth: 0.4,        //m, water at least this deep ...
     plungeMaxFroude: 0.6,       //... and at most this Froude number is a pool to plunge into
@@ -536,10 +537,10 @@ ARestlessOcean.WaterfallNappe = {};
     //at the brink its level sinks toward the ramp while the rendered cliff-top edge is still
     //under it (Phase 4's thin-water fade discards < 3 cm; seen with the sheet off and the
     //terrain hidden), and below it the level still runs steeply down the ramp to the pool.
-    //These rows sit at the creek's own level, so the hand-off is by DEPTH, not alpha: the
-    //creek writes depth with a polygon offset toward the camera and wins wherever it exists;
-    //the sheet shows only through the creek's holes. A ramped presence left the sheet half
-    //transparent exactly over the holes, which read as bare ground (round 5).
+    //These rows sit just above the creek's own level (the vertex stage lifts them onto it)
+    //and the material draws them as the COMPLEMENT of the creek's visibility at each pixel,
+    //so they fill its holes and fade out wherever it draws. (Round 5 handed over by depth
+    //alone; round 7 found the creek writes depth even where it has faded out.)
     const lead = opt(o, 'brinkLead'), tail = opt(o, 'landTail');
     const fall = raw.slice();
     for(let i = 1; i < rows.length; ++i){

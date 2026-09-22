@@ -27,6 +27,10 @@ uniform float uLumpAmp;      //m of lump at full aeration
 uniform float uLumpScale;    //m across per lump
 uniform float uLumpRate;     //lumps per second of flight along the fall
 uniform float uEdgeWobble;   //m the side edges wander in and out
+//The creek's WaterField, cascade 0 (the texture the flowing surface stands on; aliased).
+uniform sampler2D waterFieldCascade0;
+uniform vec2 waterFieldCascadeCenter[3];
+uniform float waterFieldCascadeHalfWidth[3];
 
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
@@ -37,6 +41,15 @@ varying float vViewDepth;
 varying vec2 vFlowVel;       //plan velocity (m/s), for the creek's ripple advection on the lead-in
 
 #include <fog_pars_vertex>
+
+//The creek's level at xz (cascade 0), or `fallback` outside the flowing surface's window
+//(FlowSurfacePass draws within ~0.89 of cascade 0's half-width).
+float creekLevelAt(vec2 xz, float fallback){
+  vec2 d = abs(xz - waterFieldCascadeCenter[0]);
+  if(max(d.x, d.y) > 0.89 * waterFieldCascadeHalfWidth[0]) return fallback;
+  vec2 uv = (xz - waterFieldCascadeCenter[0]) / (2.0 * waterFieldCascadeHalfWidth[0]) + 0.5;
+  return texture2D(waterFieldCascade0, uv).r;
+}
 
 float wfHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 float wfNoise(vec2 p){
@@ -58,7 +71,9 @@ void main(){
   float aeration = aFlowB.x;
   //Wrapped like the fragment grain (mod 256 s) so the lumps stay in float precision.
   float tWrap = mod(t, 256.0);
-  float amp = uLumpAmp * (0.15 + 0.85 * aeration);
+  //Lumps on the free fall only: the attached ends are the creek's surface carried on, and
+  //the landing tail (the most aerated rows) poked white lumps up through the pool.
+  float amp = uLumpAmp * (0.15 + 0.85 * aeration) * aFlowB.z;
 
   vec3 N = normalize(normal);
   vec3 T = normalize(aFlowTangent);
@@ -82,6 +97,27 @@ void main(){
   float wobble = uEdgeWobble * edge * (wfLump(q * vec2(0.6, 1.7) + vec2(41.7, 3.1)) * 2.0) * (0.3 + 0.7 * aeration);
 
   vec3 displaced = position + N * d0 + A * sign(aFlowA.y) * wobble;
+  //ATTACHED rows stand on the creek: at its level where it has one above the traced height
+  //(so the two surfaces coincide wherever the creek draws, and the creek, polygon-offset
+  //toward the camera, wins), at the trace's height where the creek's interpolated level
+  //sinks under the brink. At the landing that is the pool's real level: rigid at the trace's
+  //height, the tail ran under the pool and under the banks at its edges (round 7).
+  //The creek's level as the MINIMUM over ±0.75 m along the flow: near the foot the field's
+  //cells still hold the ramp's level (2.4 m at hero-creek's z 766 against a 1.9 m tail), and
+  //a plain sample yanked single vertices half a metre up, folding the tail into edge-on
+  //strips. A ramp only rises upstream, so the minimum ignores it; on the flat approach and in
+  //the pool the three samples agree.
+  vec2 fd = aFlowTangent.xz;
+  fd = dot(fd, fd) > 1e-6 ? normalize(fd) * 0.75 : vec2(0.0);
+  float creekY = min(creekLevelAt(displaced.xz, displaced.y),
+                     min(creekLevelAt(displaced.xz + fd, displaced.y), creekLevelAt(displaced.xz - fd, displaced.y)));
+  //...and ATTACHED_LIFT above it. The sheet draws ON TOP of the creek and its fragment alpha
+  //is the complement of the creek's visibility there, so the two blend instead of stacking.
+  //Coincident with the creek it lost the depth test to it (the creek is polygon-offset toward
+  //the camera and writes depth even where it has faded to nearly nothing), which left a hole
+  //at the foot: a faint creek in front of a hidden tail (round 7).
+  const float ATTACHED_LIFT = 0.03;
+  displaced.y = mix(max(creekY, displaced.y) + ATTACHED_LIFT, displaced.y, aFlowB.z);
   vec4 worldPos = modelMatrix * vec4(displaced, 1.0);
   vWorldPos = worldPos.xyz;
   vWorldNormal = normalize(mat3(modelMatrix) * Nd);
