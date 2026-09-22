@@ -17,7 +17,7 @@ precision highp float;
 //model; uLumpAmp/uLumpScale/uLumpRate/uEdgeWobble are its knobs.
 
 attribute vec4 aFlowA;       //tau (s of flight since the trace began), across (-1..1), thickness (m), speed (m/s)
-attribute vec4 aFlowB;       //aeration (0..1), presence (0..1), free-fall flag (0..1), half-width (m)
+attribute vec4 aFlowB;       //aeration (0..1), presence (0..1), free-fall flag (0..1), this side's half-width (m)
 attribute float aFlowLump;   //lump weight: 1 inside a fall, ramping to 0 inside its ends (WaterfallNappe.resample)
 attribute vec3 aFlowTangent; //down the flow (unit)
 attribute vec3 aFlowAcross;  //horizontal, toward +across (unit)
@@ -40,6 +40,8 @@ varying vec4 vFlowB;
 varying vec4 vSunShadowCoord;
 varying float vViewDepth;
 varying vec2 vFlowVel;       //plan velocity (m/s), for the creek's ripple advection on the lead-in
+varying vec3 vFlowAcrossDir; //the ribbon's frame for the fragment stage (not the viewer-flipped normal)
+varying vec3 vFlowDownDir;
 
 #include <fog_pars_vertex>
 
@@ -55,17 +57,21 @@ float creekLevelAt(vec2 xz, float fallback){
   return f.a > 0.5 ? fallback : f.r;
 }
 
+//Value noise PERIODIC along y with period `per` cells (a whole number): the time term below
+//is wrapped, and noise that does not repeat at the wrap jumped every lump on the sheet at once.
 float wfHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-float wfNoise(vec2 p){
+float wfNoise(vec2 p, float per){
   vec2 i = floor(p);
   vec2 f = p - i;
   f = f * f * (3.0 - 2.0 * f);
-  return mix(mix(wfHash(i), wfHash(i + vec2(1.0, 0.0)), f.x),
-             mix(wfHash(i + vec2(0.0, 1.0)), wfHash(i + vec2(1.0, 1.0)), f.x), f.y);
+  float y0 = mod(i.y, per), y1 = mod(i.y + 1.0, per);
+  return mix(mix(wfHash(vec2(i.x, y0)), wfHash(vec2(i.x + 1.0, y0)), f.x),
+             mix(wfHash(vec2(i.x, y1)), wfHash(vec2(i.x + 1.0, y1)), f.x), f.y);
 }
-//Two octaves, zero-mean, roughly -0.5..0.5.
-float wfLump(vec2 p){
-  return 0.67 * wfNoise(p) + 0.33 * wfNoise(p * 2.03 + vec2(17.1, 5.3)) - 0.5;
+//Two octaves, zero-mean, roughly -0.5..0.5. The second octave is exactly ×2 (was 2.03) so it
+//repeats too.
+float wfLump(vec2 p, float per){
+  return 0.67 * wfNoise(p, per) + 0.33 * wfNoise(p * 2.0 + vec2(17.1, 5.3), 2.0 * per) - 0.5;
 }
 
 void main(){
@@ -73,8 +79,10 @@ void main(){
   float tau = aFlowA.x;
   float speed = max(aFlowA.w, 0.5);
   float aeration = aFlowB.x;
-  //Wrapped like the fragment grain (mod 256 s) so the lumps stay in float precision.
-  float tWrap = mod(t, 256.0);
+  //The time term, wrapped for float precision on a whole number of lump cells that is also
+  //whole in the edge wobble's ×1.7 (a multiple of 10), with the noise periodic at that count.
+  float lumpCells = max(10.0 * floor(25.6 * uLumpRate + 0.5), 10.0);
+  float lumpPhase = mod(t * uLumpRate, lumpCells);
   //Lumps on the free fall only: the attached ends are the creek's surface carried on, and
   //the landing tail (the most aerated rows) poked white lumps up through the pool.
   float amp = uLumpAmp * (0.15 + 0.85 * aeration) * aFlowLump;
@@ -87,10 +95,10 @@ void main(){
   //second of flight) for the rebuilt normal.
   const float DU = 0.2;   //m
   const float DT = 0.04;  //s
-  vec2 q  = vec2(acrossM / uLumpScale, (tau - tWrap) * uLumpRate);
-  float d0 = amp * wfLump(q);
-  float du = amp * wfLump(q + vec2(DU / uLumpScale, 0.0));
-  float dv = amp * wfLump(q + vec2(0.0, DT * uLumpRate));
+  vec2 q  = vec2(acrossM / uLumpScale, tau * uLumpRate - lumpPhase);
+  float d0 = amp * wfLump(q, lumpCells);
+  float du = amp * wfLump(q + vec2(DU / uLumpScale, 0.0), lumpCells);
+  float dv = amp * wfLump(q + vec2(0.0, DT * uLumpRate), lumpCells);
   vec3 dPdu = A + N * ((du - d0) / DU);
   vec3 dPdt = T * speed + N * ((dv - d0) / DT);
   vec3 Nd = normalize(cross(dPdt, dPdu));
@@ -100,7 +108,7 @@ void main(){
   float edge = smoothstep(0.6, 1.0, abs(aFlowA.y));
   //Free fall only (aFlowLump), like the lumps: on the attached tail the edge columns swung
   //40 cm sideways over the banks and stuck out as flags at both ends of the foot (round 10).
-  float wobble = uEdgeWobble * edge * (wfLump(q * vec2(0.6, 1.7) + vec2(41.7, 3.1)) * 2.0) * (0.3 + 0.7 * aeration) * aFlowLump;
+  float wobble = uEdgeWobble * edge * (wfLump(q * vec2(0.6, 1.7) + vec2(41.7, 3.1), 1.7 * lumpCells) * 2.0) * (0.3 + 0.7 * aeration) * aFlowLump;
 
   vec3 displaced = position + N * d0 + A * sign(aFlowA.y) * wobble;
   //ATTACHED rows stand on the creek: at its level where it has one above the traced height
@@ -132,8 +140,11 @@ void main(){
   vWorldNormal = normalize(mat3(modelMatrix) * Nd);
   vFlowA = aFlowA;
   vFlowB = aFlowB;
-  vec2 planT = aFlowTangent.xz;
-  vFlowVel = dot(planT, planT) > 1e-6 ? normalize(planT) * aFlowA.w : vec2(0.0);
+  //PLAN velocity: the unit tangent's xz part times the speed. normalize(planT) × speed took
+  //the full 3D speed as horizontal and over-advected the lead-in's ripples on steep rows.
+  vFlowVel = aFlowTangent.xz * aFlowA.w;
+  vFlowAcrossDir = normalize(aFlowAcross);
+  vFlowDownDir = normalize(aFlowTangent);
   vSunShadowCoord = sunShadowMatrix * worldPos;
   vec4 mvPosition = viewMatrix * worldPos;
   vViewDepth = -mvPosition.z;

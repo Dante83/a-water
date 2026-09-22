@@ -116,6 +116,8 @@ varying vec4 vFlowB;
 varying vec4 vSunShadowCoord;
 varying float vViewDepth;
 varying vec2 vFlowVel;
+varying vec3 vFlowAcrossDir;  //the trace's across direction (horizontal, unit)
+varying vec3 vFlowDownDir;    //the trace's downstream tangent (unit)
 
 //Fog and atmosphere exactly as water-shader.glsl declares them: the scene fog chunk only
 //with atmospheric perspective OFF (a-starry-sky's fog branch tone-maps AGAIN, which washed
@@ -302,7 +304,8 @@ vec3 computeStandaloneSkyRadiance(vec3 worldDir){
 //on hero-creek-sky and the sheet reflected black (round 2). Rays below the horizon would see
 //terrain, not sky, and fade to a dim ground bounce (FUDGE 0.25) in both cases.
 vec3 skyRadiance(vec3 dir){
-  vec3 upDir = normalize(vec3(dir.x, max(dir.y, 0.0), dir.z));
+  vec3 upDir = vec3(dir.x, max(dir.y, 0.0), dir.z);
+  upDir = dot(upDir, upDir) > 1e-8 ? normalize(upDir) : vec3(0.0, 1.0, 0.0);   //straight down: weight 0 below
   #if($atmospheric_perspective_enabled)
     vec3 sky = computeSkyRadiance(upDir);
   #else
@@ -573,6 +576,10 @@ vec2 creekCorridorWeights(vec2 p){
   }
   return w;
 }
+bool creekInWindow(vec2 xz){
+  vec2 d = abs(xz - waterFieldCascadeCenter[0]);
+  return max(d.x, d.y) <= 0.89 * waterFieldCascadeHalfWidth[0];
+}
 float creekLevel0(vec2 xz){
   vec2 uv = (xz - waterFieldCascadeCenter[0]) / (2.0 * waterFieldCascadeHalfWidth[0]) + 0.5;
   return texture2D(waterFieldCascade0, uv).r;
@@ -694,22 +701,33 @@ void main(){
   //gl_FrontFacing: the ribbon's winding is not tied to which way the nappe's normal points,
   //and a back-facing normal made N·V < 0, Fresnel 1, and the whole film an opaque mirror.
   //Both faces of a thin film are water surfaces, so either is right.
-  vec3 N = normalize(vWorldNormal);
-  if(dot(N, V) < 0.0) N = -N;
+  vec3 N0 = normalize(vWorldNormal);
+  float side = dot(N0, V) < 0.0 ? -1.0 : 1.0;
+  vec3 N = side * N0;
   vec3 L = -brightestDirectionalLightDirection;
 
   //── Grain, carried with the water (see the header) ─────────────────────────
-  float tWrap = mod(t, 256.0);  //a whole number of tiles at uGrainRate 1, so the wrap is seamless there
-  vec2 grainUV  = vec2(across * halfWidth / uGrainScale, (tau - tWrap) * uGrainRate);
+  //The time term is wrapped for float precision, and the wrap must land on a whole number of
+  //tiles in EVERY layer or the texture jumps once per wrap. The old mod(t, 256) was whole only
+  //for layer 1 at uGrainRate 1; layer 2's ×0.73 slid it 186.88 tiles every 256 s. A wrap of
+  //N·100 tiles (N·73 in layer 2) is whole in both at any rate.
+  float grainTiles = max(100.0 * floor(2.56 * uGrainRate + 0.5), 100.0);
+  float grainPhase = mod(t * uGrainRate, grainTiles);
+  vec2 grainUV  = vec2(across * halfWidth / uGrainScale, tau * uGrainRate - grainPhase);
   //Second layer rotated and rescaled, like the creek's foamTextureUV2, to break the tile.
   vec2 grainUV2 = vec2(grainUV.y * 0.73 + 0.31, -grainUV.x * 0.73 + 0.57);
   float foamMask   = 0.5 * (texture2D(foamOpacityMap, grainUV).r   + texture2D(foamOpacityMap, grainUV2).r);
   vec2  foamNMXZ   = 2.0 * (0.5 * (texture2D(foamNormalMap, grainUV).xy + texture2D(foamNormalMap, grainUV2).xy)) - 1.0;
 
-  //Ribbon frame from the normal: across is horizontal, the flow direction lies in the sheet.
-  vec3 acrossDir = cross(N, vec3(0.0, 1.0, 0.0));
-  acrossDir = dot(acrossDir, acrossDir) > 1e-4 ? normalize(acrossDir) : vec3(1.0, 0.0, 0.0);
-  vec3 flowDir = normalize(cross(acrossDir, N));
+  //The ribbon's own frame (the trace's across and downstream directions), laid into the lumpy
+  //surface. It used to be rebuilt from the viewer-facing normal: cross(N, up) flipped with the
+  //side the sheet was seen from, and cross(across, N) pointed UPSTREAM, so the grain's normals
+  //and the fall's ripples mirrored as the camera crossed the sheet. Perturbations are built on
+  //the UNflipped normal N0 and turned with it (side), as a surface seen from behind is.
+  vec3 acrossDir = vFlowAcrossDir - N0 * dot(vFlowAcrossDir, N0);
+  acrossDir = dot(acrossDir, acrossDir) > 1e-6 ? normalize(acrossDir) : vec3(1.0, 0.0, 0.0);
+  vec3 flowDir = vFlowDownDir - N0 * dot(vFlowDownDir, N0) - acrossDir * dot(vFlowDownDir, acrossDir);
+  flowDir = dot(flowDir, flowDir) > 1e-6 ? normalize(flowDir) : normalize(cross(acrossDir, N0));
 
   float sunShadow = getSunShadow(vSunShadowCoord);
 
@@ -721,11 +739,19 @@ void main(){
   //  Nf  the FOAM's surface: the grain's normal map. Only the matte foam is lit with it.
   //Mixing the two (the foam normals standing in for ripples) made the foam texture a field of
   //sharp sky glints: the scaly face.
-  vec2 rs = creekRippleSlope(vWorldPos.xz, vFlowVel);
-  vec3 NwGround = normalize(N - vec3(rs.x, 0.0, rs.y));
-  vec3 NwSheet  = normalize(N + acrossDir * rs.x + flowDir * rs.y);
+  //On the FALL the ripples are keyed to the water's own space, (across m, time of flight) —
+  //the space the lumps and the grain ride in. Sampled in world xz they were the creek's field
+  //seen edge-on: it barely changes down a near-vertical sheet and does not travel down with the
+  //water while the lumps under it do, so the glints read as climbing (Dante, round 12). Here
+  //the along coordinate is τ·RIPPLE_ALONG_SPEED and the ripples are advected at that speed, so
+  //each one rides a parcel and stretches as the jet accelerates. The lead-in keeps the creek's.
+  const float RIPPLE_ALONG_SPEED = 3.0;   //m/s: ripple lengths are the creek's at this speed
+  vec2 rsGround = creekRippleSlope(vWorldPos.xz, vFlowVel);
+  vec2 rsSheet  = creekRippleSlope(vec2(across * halfWidth, tau * RIPPLE_ALONG_SPEED), vec2(0.0, RIPPLE_ALONG_SPEED));
+  vec3 NwGround = side * normalize(N0 - vec3(rsGround.x, 0.0, rsGround.y));
+  vec3 NwSheet  = side * normalize(N0 - acrossDir * rsSheet.x - flowDir * rsSheet.y);
   vec3 Nw = normalize(mix(NwGround, NwSheet, airborne));
-  vec3 Nf = normalize(N + (acrossDir * foamNMXZ.x + flowDir * foamNMXZ.y) * uSurfaceRough);
+  vec3 Nf = side * normalize(N0 + (acrossDir * foamNMXZ.x + flowDir * foamNMXZ.y) * uSurfaceRough);
   vec3 Ns = Nw;
   float NdotV = clamp(dot(Ns, V), 0.0, 1.0);
   float path = thickness / max(NdotV, 0.2);
@@ -780,7 +806,9 @@ void main(){
 
   //── What is behind: the creek's refraction model (see COMPOSITING) ─────────
   vec2 screenUV = gl_FragCoord.xy / screenResolution;
-  vec2 refrUV = clamp(screenUV + (Ns.xz - N.xz) * uRefraction, vec2(0.001), vec2(0.999));
+  //The bend in SCREEN space: the normal's change taken into view space (a world-xz difference
+  //turned with the camera's yaw).
+  vec2 refrUV = clamp(screenUV + (mat3(viewMatrix) * (Ns - N)).xy * uRefraction, vec2(0.001), vec2(0.999));
   vec3 behind = skyRadiance(-V);        //nothing behind: the sky seen through the water
   float behindDist = 1000.0;
   float bedColumn = -1.0;
@@ -797,7 +825,16 @@ void main(){
     vec3 bgN = normalize(texture2D(gBufferNormal, uv).rgb);
     vec3 bgAlbedo = texture2D(refractionColorTexture, uv).rgb;
     behindDist = distance(vWorldPos, P);
-    if(P.y < vWorldPos.y){
+    //Is P under WATER, and under how much? On the lead-in the sheet IS the creek's surface, so
+    //anything below it is. Behind the FREE FALL, only where the creek's field has water at P
+    //(the pool at the foot), up to that water's level: the cliff face, dry banks and rocks at
+    //the foot are below a mid-fall fragment but in air, and lit as a bed under a column the
+    //height of the fall they drew a near-black teal curtain behind the clear tongue.
+    float surfaceAtP = vWorldPos.y;
+    if(airborne > 0.5){
+      surfaceAtP = (creekInWindow(P.xz) && creekWetAt(P.xz) > 0.5) ? min(creekLevel0(P.xz), vWorldPos.y) : -1e4;
+    }
+    if(P.y < surfaceAtP){
       //UNDER the water (the creek's bed below the lead-in): lit as water-shader.glsl lights
       //its seabed, by the sun refracted in and filtered down the column, plus the sky tinted
       //by the water. The above-water formula lit it as dry ground: a bright brown band
@@ -805,7 +842,7 @@ void main(){
       vec3 sunDirInWater = refract(brightestDirectionalLightDirection, vec3(0.0, 1.0, 0.0), 1.0 / 1.33);
       vec3 toSunInWater = -sunDirInWater;
       float upY = max(toSunInWater.y, 0.05);
-      float downPath = max(0.0, vWorldPos.y - P.y) / upY;
+      float downPath = max(0.0, surfaceAtP - P.y) / upY;
       float sunCosZenith = max(dot(L, vec3(0.0, 1.0, 0.0)), 0.0);
       vec3 ext = waterAbsorption + waterScattering;
       vec3 sunDown = brightestDirectionalLight * (1.0 - fresnelAirToWater(sunCosZenith)) * exp(-ext * downPath);
@@ -916,7 +953,7 @@ void main(){
     #endif
       behind = bgAlbedo * (INV_PI * sunDown * max(0.0, dot(bgN, toSunInWater)) * causticMod * bedShadow + skyAmbientColor * waterAlbedo);
       //The creek's column: vertical depth plus its grazing-path proxy (HORIZONTAL_DEPTH_SCALE).
-      bedColumn = (vWorldPos.y - P.y) + length(vWorldPos.xz - cameraPosition.xz) * 0.008;
+      bedColumn = (surfaceAtP - P.y) + length(vWorldPos.xz - cameraPosition.xz) * 0.008;
     }
     else {
       //Above the water (the cliff behind a fall): lit as the creek lights terrain it sees
@@ -942,10 +979,21 @@ void main(){
   float edgeAlpha = 1.0 - smoothstep(0.85, 1.0, edgeN);
   float strands = airborne * uBreakup * smoothstep(0.5, 1.0, aeration);
   float strandAlpha = smoothstep(strands - 0.1, strands + 0.1, foamMask + 0.25 * (1.0 - strands));
+  //The G-buffer ground under the undistorted pixel, from the full-precision depth attachment
+  //(the half-float linear depth steps 3 cm at 50 m and 6-12 cm at 100-200 m, coarser than
+  //uSoftRange: the soft contact stair-stepped into a hard flickering edge in the distance).
+  float gRaw = texture2D(refractionDepthTexture, screenUV).r;
+  bool haveG = gRaw < 1.0;
+  vec3 gView = vec3(0.0);
+  float gY = 0.0;
+  if(haveG){
+    vec4 gv = inverseProjectionMatrix * vec4(screenUV * 2.0 - 1.0, gRaw * 2.0 - 1.0, 1.0);
+    gView = gv.xyz / gv.w;
+    gY = (inverseViewMatrix * vec4(gView, 1.0)).y;
+  }
   //Soft contact with whatever is behind (the cliff it hugs, the ground it lands on).
   float soft = 1.0;
-  float sceneDepth = texture2D(refractionLinearDepth, gl_FragCoord.xy / screenResolution).r;
-  if(sceneDepth > 0.0001) soft = clamp((sceneDepth - vViewDepth) / max(uSoftRange, 1e-3), 0.0, 1.0);
+  if(haveG) soft = clamp((-gView.z - vViewDepth) / max(uSoftRange, 1e-3), 0.0, 1.0);
 
   //THE HAND-OFF. On attached rows (the lead-in and the landing tail) the sheet is the
   //complement of the creek: it draws exactly as much as the creek does not, by the creek's
@@ -955,14 +1003,6 @@ void main(){
   float creekVis = 0.0;
   float creekHere = 0.0;
   {
-    float gRaw = texture2D(refractionDepthTexture, screenUV).r;
-    float gY = 0.0;
-    bool haveG = gRaw < 1.0;
-    if(haveG){
-      vec4 gv = inverseProjectionMatrix * vec4(screenUV * 2.0 - 1.0, gRaw * 2.0 - 1.0, 1.0);
-      gv /= gv.w;
-      gY = (inverseViewMatrix * gv).y;
-    }
     creekVis = creekVisibleAt(vWorldPos.xz, gY, haveG);
     creekHere = creekVis > 0.0 ? creekLevel0(vWorldPos.xz) : -1e4;
   }
@@ -976,8 +1016,14 @@ void main(){
   handoff *= mix(1.0, smoothstep(0.0, PLUNGE_BLEND, vWorldPos.y - creekHere), step(0.02, creekVis) * airborne);
   float outAlpha = presence * handoff * edgeAlpha * strandAlpha * soft * uOpacity;
   //The sheet writes depth (so the tongue at the lip hides the fall behind it, instead of the
-  //fall painting over it in row order, round 9): a fully faded fragment must not.
-  if(uDebugMode == 0 && outAlpha < 0.004) discard;
+  //fall painting over it in row order, round 9): a faint fragment must not. Frayed edges,
+  //strands and the hand-off's thin complement wrote depth at 1-30 % alpha, and the plunge mist
+  //and spray drawn after the sheet were clipped by those invisible fringes. On the FREE FALL
+  //only: the attached rows' alpha is the complement of the creek's visibility and must reach
+  //zero smoothly, or a see-through band opens where the creek draws 80-99 %. LOOK KNOB:
+  //raising it trims faint fringe off the fall; lowering it brings the clipping back.
+  const float DEPTH_ALPHA_MIN = 0.2;
+  if(uDebugMode == 0 && outAlpha < mix(0.004, DEPTH_ALPHA_MIN, step(0.5, airborne))) discard;
   #if($atmospheric_perspective_enabled)
     //Aerial perspective, as the creek applies it (above water only).
     if(underwaterFactor < 0.5) color = applyAtmosphericPerspective(color, vWorldPos);
