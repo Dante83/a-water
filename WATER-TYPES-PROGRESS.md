@@ -321,7 +321,50 @@ differently shaded waters swapped at once.
   foam covers the water layer by the light it scatters, and reflections show only in its gaps.
   Round 11 had only faded the foam-normal reflection; it still drove the glints.
 
-### ▶ RESUME HERE (2026-09-22) — bug sweep of rivers + falls, awaiting regen + browser
+### ▶ RESUME HERE (end of 2026-09-22) — Phase 6b: the splash at the foot
+
+**State.** Dante: "we've really cooked already with this waterfall." Browser pass on hero-creek-sky
+after the sweep below, then these commits (all headless-verified over CDP against his server, with
+a scratch regen swapped in for the GLSL ones):
+- **bcc2d64** still surface: thin-water rule inside the flowing hand-off band (puddle at (546, 643)).
+- **58c8ca8** corridor 2 m past the landing ramp + margin 2 m, landing tail restored (regression
+  from 17c48a5), FlowFoamPass realignment gated (the fork/swirl at the hydraulic jump).
+- **e375117** landing tail boils (`uTailBoil` 0.12).
+- **2a0b6e2** tail as wide as the creek draws water (the hourglass).
+- **bc04041** fall mist has its own opacity (`fallMistOpacity` 0.6, rate 50). Page `opacity` 0.1
+  had hidden it.
+
+**Needs `create-shader.py`** if not run since bc04041: waterfall-sheet.js, water-shader.js,
+ocean-splash.js.
+
+**Phase 6b (next session): chunky splash at the foot.** Decided direction: ballistic particles
+with a waterfall look, not a fluid sim. The trace already gives each impact's point, speed and
+width, and a splash strip ~1 m tall is where ballistic arcs are close to exact.
+1. **Point-size bug (seen by Dante).** Particles are GL points clamped at `maxPointSize` 512 px
+   (ocean-splash-vertex.glsl:81). A 1-1.5 m mist puff within a few metres wants more, so puffs
+   shrink as you approach. Fix: camera-facing instanced quads (also removes hardware point caps).
+2. **A waterfall particle type.** White clumps and short droplet streaks, not the sea's foam
+   beads and chunks (round 9 hid those for exactly that). Emitted from `nappe.impacts` weighted
+   by `w`, launched from the impact speed with a reflected, run-up cone (`emitImpact` already
+   does the kinematics).
+3. **Die on water contact.** Particles already die on land; add a kill below the field's
+   water level (known-dry aware), so a splash falls back INTO the pool instead of through it.
+4. Knobs live on `oceanGrid.oceanSplash`, like `fallMistRate`/`fallMistOpacity`.
+
+**Not now:** PBF / MLS-MPM / DFSPH baked into a loop. Every fall and cascade step differs (width,
+speed, landing), so a loop needs a bake per fall and repeats visibly, and the curtain already
+carries the bulk. If a hero plunge ever needs churning mass, a live small-box sim on the 4090 can
+slot in behind the same impact points.
+
+**Also open:**
+- A thin brown seam where the landing boil meets the creek foam. Over-compositing complements
+  (sheet alpha 1 − c over creek alpha c) covers only 1 − c(1 − c), so 25 % terrain shows at
+  c = 0.5. The fix sharpens the crossover or makes the sheet opaque where it draws, which changes
+  every hand-off: ask Dante first.
+- Orange terrain speckle through the creek at grazing angles (pre-existing, seen in the harness).
+- Tail edges are straight (fray is free-fall only): a taste call.
+
+### Earlier on 2026-09-22 — bug sweep of rivers + falls
 
 Both of 2026-09-21's open items are fixed. A review of the nappe/pass, the sheet shaders and the
 flowing-water path found more; plan `~/.claude/plans/let-s-give-it-a-snoopy-locket.md`.
