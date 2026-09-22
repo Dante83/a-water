@@ -226,6 +226,23 @@ lead-in/tail, CPU heights). Now it asks the creek's own rules, per pixel:
 - **Lumps only on the free fall** (the tail's high aeration poked white lumps through the pool).
 - 60 s run on hero-creek-sky: no errors; both AP branches link.
 
+### Round 8 — a foam sheet under the river, bent strips top and bottom (Dante, 2026-09-21)
+
+- **The bent triangle strips at the landing AND the takeoff were the lumps.** Full-height lumps
+  on airborne rows, none on attached rows, switching within one 0.25 m row: that single row of
+  triangles was sheared by up to 30 cm (and could clip the terrain). Everything that differs
+  between the fall and the attached ends — lumps, air, the lift onto the creek, the hand-off —
+  now ramps on a smoothed FREE-FALL WEIGHT (box over ±0.5 m, `fallSmooth`) carried in flowB.z.
+- **The "sheet of foam under the river" was the landing tail**: the trace's post-impact aeration
+  made it dense white, and a ±0.75 m minimum of the creek level sank it under a pool whose level
+  rises downstream (1.55 → 1.85 m), where it showed through the clear creek. Attached rows now
+  carry NO air (the pool's foam is the creek's own FlowFoamPass foam, fed by the traced
+  impacts), and stand on min(level here, level 0.75 m downstream).
+- **The jet dissolves into water the creek draws** over its last 35 cm (`PLUNGE_BLEND`) instead
+  of cutting a hard line through it.
+- Left: a thin bright line where the jet's lowest rows curve toward horizontal and catch the
+  sky at grazing Fresnel; the creek's plunge foam has its own swirly advection artefacts (#8).
+
 ### Deferred
 
 The plunge pool's

@@ -86,6 +86,7 @@ ARestlessOcean.WaterfallNappe = {};
     hopDropLo: 0.25,            //m an airborne stretch must fall to start counting as a fall ...
     hopDropHi: 0.75,            //... and to count fully
     brinkLead: 3.0,             //m the sheet leads into each takeoff ...
+    fallSmooth: 0.5,            //m either side over which the free-fall weight ramps
     landTail: 3.0,              //... and runs on after each landing (see resample). Generous: the
                                 //material draws them only where the creek does not.
     settleRun: 3.0,             //m of gentle attached path after the last fall to stop
@@ -562,6 +563,19 @@ ARestlessOcean.WaterfallNappe = {};
       for(let k = -R; k <= R; ++k){ sum += raw[Math.min(Math.max(i + k, 0), rows.length - 1)]; ++cnt; }
       rows[i].presence = sum / cnt;
     }
+    //The smooth FREE-FALL WEIGHT (0 attached … 1 in the air), a box over ±fallSmooth metres
+    //of the airborne-by-drop flag. Everything that differs between the fall and the attached
+    //ends (the lumps, the air in the water, the lift onto the creek, the hand-off) ramps on
+    //this, not on the raw flag: that flips within one 0.25 m row at every takeoff and landing,
+    //and the full-height lumps on one side of it and none on the other sheared that single row
+    //of triangles by 30 cm — the bent strips Dante found at the top and bottom (round 8).
+    const fsm = opt(o, 'fallSmooth');
+    for(let i = 0; i < rows.length; ++i){
+      let sum = 0.0, cnt = 0;
+      for(let k = i; k >= 0 && rows[i].s - rows[k].s <= fsm; --k){ sum += fall[k]; ++cnt; }
+      for(let k = i + 1; k < rows.length && rows[k].s - rows[i].s <= fsm; ++k){ sum += fall[k]; ++cnt; }
+      rows[i].freeFall = cnt ? sum / cnt : 0.0;
+    }
     //Tangent frames. Across is horizontal, perpendicular to the plan heading of the
     //water there; the normal faces up-and-downstream.
     for(let i = 0; i < rows.length; ++i){
@@ -618,7 +632,7 @@ ARestlessOcean.WaterfallNappe = {};
   //  tangent = down the flow, across = horizontal, toward +across (both unit): the vertex
   //  stage's displacement frame
   //  flowA = (tau, across −1..1, thickness, speed)
-  //  flowB = (aeration, presence, airborne, half-width m)
+  //  flowB = (aeration, presence, free-fall weight (smoothed airborne), half-width m)
   N.buildRibbon = function(nappe, env, o){
     const rows = nappe.rows;
     if(rows.length < 2) return null;
@@ -643,7 +657,7 @@ ARestlessOcean.WaterfallNappe = {};
         tangent[v * 3] = row.tx; tangent[v * 3 + 1] = row.ty; tangent[v * 3 + 2] = row.tz;
         acrossDir[v * 3] = row.ax; acrossDir[v * 3 + 1] = 0.0; acrossDir[v * 3 + 2] = row.az;
         flowA[v * 4] = row.tau; flowA[v * 4 + 1] = across; flowA[v * 4 + 2] = row.h; flowA[v * 4 + 3] = row.speed;
-        flowB[v * 4] = row.aer; flowB[v * 4 + 1] = row.presence; flowB[v * 4 + 2] = row.air; flowB[v * 4 + 3] = 0.5 * (row.w || W);
+        flowB[v * 4] = row.aer; flowB[v * 4 + 1] = row.presence; flowB[v * 4 + 2] = row.freeFall; flowB[v * 4 + 3] = 0.5 * (row.w || W);
       }
     }
     const index = new Uint32Array((rows.length - 1) * (nCols - 1) * 6);

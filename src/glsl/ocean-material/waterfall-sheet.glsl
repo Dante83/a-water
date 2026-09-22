@@ -632,7 +632,7 @@ void main(){
   float thickness = vFlowA.z;
   float aeration  = vFlowB.x;
   float presence  = vFlowB.y;
-  float airborne  = vFlowB.z;
+  float airborne  = vFlowB.z;   //the smoothed free-fall weight (WaterfallNappe.resample)
   float halfWidth = vFlowB.w;
   if(presence * uOpacity < 0.003) discard;
 
@@ -680,7 +680,11 @@ void main(){
   //foam grain; the slab's diffuse reflectance and transmittance come from a two-stream
   //estimate with the bubbles' forward-peaked phase (g = 0.85, the usual value for bubbles
   //of this size); what is not scattered or reflected shows the scene behind.
-  float voidFrac = uVoidMax * aeration * mix(0.25, 1.75, foamMask);
+  //Air only in the free fall: the attached ends are the creek carried on, and the creek's
+  //own foam (FlowFoamPass, fed by the traced impacts) is the foam of the pool. The tail used
+  //to carry the trace's post-impact aeration, a dense white sheet that did not match the
+  //creek's foam and showed through it (round 8).
+  float voidFrac = uVoidMax * aeration * airborne * mix(0.25, 1.75, foamMask);
   float tauB = 1.5 * voidFrac / uBubbleRadius * path;
   const float BUBBLE_G = 0.85;
   float tauR = (1.0 - BUBBLE_G) * tauB;
@@ -779,7 +783,8 @@ void main(){
   //or laid a second, slightly different water over it (round 7, the interfaces still
   //struggled). The ground is the G-buffer ground under the undistorted pixel, as the creek reads it.
   float creekVis = 0.0;
-  if(airborne < 0.999){
+  float creekHere = 0.0;
+  {
     float gRaw = texture2D(refractionDepthTexture, screenUV).r;
     float gY = 0.0;
     bool haveG = gRaw < 1.0;
@@ -789,8 +794,13 @@ void main(){
       gY = (inverseViewMatrix * gv).y;
     }
     creekVis = creekVisibleAt(vWorldPos.xz, gY, haveG);
+    creekHere = creekVis > 0.0 ? creekLevel0(vWorldPos.xz) : -1e4;
   }
   float handoff = mix(1.0 - creekVis, 1.0, airborne);
+  //Where the free fall comes down into water the creek draws, it dissolves over its last
+  //PLUNGE_BLEND metres above that surface instead of cutting a hard line through it.
+  const float PLUNGE_BLEND = 0.35;
+  handoff *= mix(1.0, smoothstep(0.0, PLUNGE_BLEND, vWorldPos.y - creekHere), creekVis * airborne);
   float outAlpha = presence * handoff * edgeAlpha * strandAlpha * soft * uOpacity;
   #if($atmospheric_perspective_enabled)
     //Aerial perspective, as the creek applies it (above water only).
@@ -801,7 +811,7 @@ void main(){
   //$DEBUG_START$
   if(uDebugMode == 1) gl_FragColor = vec4(vec3(presence), 1.0);
   else if(uDebugMode == 2) gl_FragColor = vec4(vec3(aeration), 1.0);
-  else if(uDebugMode == 3) gl_FragColor = vec4(airborne, 0.0, 1.0 - airborne, 1.0);
+  else if(uDebugMode == 3) gl_FragColor = vec4(airborne, 0.0, 1.0 - airborne, 1.0);   //the smoothed free-fall weight
   else if(uDebugMode == 4) gl_FragColor = vec4(vec3(clamp(thickness / 0.5, 0.0, 1.0)), 1.0);
   else if(uDebugMode == 5) gl_FragColor = vec4(vec3(1.0 - exp(-0.1 * tauB)), 1.0);
   else if(uDebugMode == 6) gl_FragColor = vec4(fract(grainUV), 0.0, 1.0);

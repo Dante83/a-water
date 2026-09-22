@@ -17,7 +17,7 @@ precision highp float;
 //model; uLumpAmp/uLumpScale/uLumpRate/uEdgeWobble are its knobs.
 
 attribute vec4 aFlowA;       //tau (s of flight since the trace began), across (-1..1), thickness (m), speed (m/s)
-attribute vec4 aFlowB;       //aeration (0..1), presence (0..1), airborne (0..1), half-width (m)
+attribute vec4 aFlowB;       //aeration (0..1), presence (0..1), free-fall weight (0..1, smoothed), half-width (m)
 attribute vec3 aFlowTangent; //down the flow (unit)
 attribute vec3 aFlowAcross;  //horizontal, toward +across (unit)
 
@@ -102,15 +102,16 @@ void main(){
   //toward the camera, wins), at the trace's height where the creek's interpolated level
   //sinks under the brink. At the landing that is the pool's real level: rigid at the trace's
   //height, the tail ran under the pool and under the banks at its edges (round 7).
-  //The creek's level as the MINIMUM over ±0.75 m along the flow: near the foot the field's
-  //cells still hold the ramp's level (2.4 m at hero-creek's z 766 against a 1.9 m tail), and
-  //a plain sample yanked single vertices half a metre up, folding the tail into edge-on
-  //strips. A ramp only rises upstream, so the minimum ignores it; on the flat approach and in
-  //the pool the three samples agree.
+  //The creek's level as a MINIMUM: near the foot the field's cells still hold the ramp's
+  //level (2.4 m at hero-creek's z 766 against a 1.9 m tail), and a plain sample yanked single
+  //vertices half a metre up, folding the tail into edge-on strips.
+  //Only the point itself and 0.75 m DOWNSTREAM: an upstream sample is exactly what reaches
+  //back onto the ramp, and the full ±0.75 m minimum sank the tail under a pool whose level
+  //rises downstream (1.55 → 1.85 m below hero-creek's fall), where it showed through the
+  //clear creek as a sheet of foam under the river (round 8).
   vec2 fd = aFlowTangent.xz;
   fd = dot(fd, fd) > 1e-6 ? normalize(fd) * 0.75 : vec2(0.0);
-  float creekY = min(creekLevelAt(displaced.xz, displaced.y),
-                     min(creekLevelAt(displaced.xz + fd, displaced.y), creekLevelAt(displaced.xz - fd, displaced.y)));
+  float creekY = min(creekLevelAt(displaced.xz, displaced.y), creekLevelAt(displaced.xz + fd, displaced.y));
   //...and ATTACHED_LIFT above it. The sheet draws ON TOP of the creek and its fragment alpha
   //is the complement of the creek's visibility there, so the two blend instead of stacking.
   //Coincident with the creek it lost the depth test to it (the creek is polygon-offset toward
