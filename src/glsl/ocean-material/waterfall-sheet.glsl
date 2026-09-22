@@ -104,6 +104,7 @@ uniform float uSurfaceRough;     //how hard the grain's normals break the jet's 
 uniform float uSpecFalloff;      //Phong exponent of the sun glint on the clear lip
 uniform float uEdgeFray;         //how far the grain eats into the side edges (0..1 of half-width)
 uniform float uBreakup;          //how far an airborne, aerated jet opens into strands (0..1)
+uniform float uTailBoil;         //how much of the trace's post-impact air the landing tail carries (0..1)
 uniform float uRefraction;       //how far the lumpy normal bends the view of what is behind (UV per unit normal)
 uniform float uSoftRange;        //metres of depth over which the sheet fades into the ground
 uniform float uOpacity;
@@ -773,7 +774,15 @@ void main(){
   //for its first stretch (air works in from the surfaces). Linear, 10 % aeration already made
   //the tongue opaque white right at the lip (round 9); uVoidMax went 0.25 → 0.5 with it so
   //the foot is as white as before.
-  float voidFrac = uVoidMax * aeration * aeration * airborne * mix(0.25, 1.75, foamMask);
+  //THE BOIL (2026-09-22). The landing tail carries the trace's post-impact air too, decaying
+  //as the trace lets it rise out (aerationDecayLength). With the corridor now reaching past
+  //the landing, the tail draws the creek's ramp there, and as plain water it was a dark
+  //glassy apron between the curtain and the foam (Dante, hero-creek). Round 8 took the tail's
+  //air out because it lay as a white slab OVER the creek's own foam; the tail now draws only
+  //the complement of the creek, so this whitens only where the creek is not drawn. The lead-in
+  //carries none: the trace starts with no air (startAeration 0). uTailBoil is its knob.
+  float airWeight = max(airborne, uTailBoil * (1.0 - airborne));
+  float voidFrac = uVoidMax * aeration * aeration * airWeight * mix(0.25, 1.75, foamMask);
   float tauB = 1.5 * voidFrac / uBubbleRadius * path;
   const float BUBBLE_G = 0.85;
   float tauR = (1.0 - BUBBLE_G) * tauB;
