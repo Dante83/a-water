@@ -11,7 +11,7 @@ precision highp float;
 attribute float aSize;     //world-space radius of this droplet (metres)
 attribute float aAge01;    //age / lifetime, 0 at birth .. 1 at death
 attribute float aSeed;     //per-particle random in [0,1] for shader variety
-attribute float aType;     //0 = open-water crest mist, 1 = impact burst
+attribute float aType;     //0 = open-water crest mist, 1 = impact burst, 2 = waterfall mist
 attribute float aCoarse;   //0 = fine hanging mist .. 1 = coherent falling droplet
 
 uniform float uViewportHeight; //renderer drawing-buffer height in pixels

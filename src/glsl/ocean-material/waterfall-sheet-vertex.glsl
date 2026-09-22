@@ -48,7 +48,10 @@ float creekLevelAt(vec2 xz, float fallback){
   vec2 d = abs(xz - waterFieldCascadeCenter[0]);
   if(max(d.x, d.y) > 0.89 * waterFieldCascadeHalfWidth[0]) return fallback;
   vec2 uv = (xz - waterFieldCascadeCenter[0]) / (2.0 * waterFieldCascadeHalfWidth[0]) + 0.5;
-  return texture2D(waterFieldCascade0, uv).r;
+  vec4 f = texture2D(waterFieldCascade0, uv);
+  //Known-dry texels (RT0.a ≥ 1 there) hold their nearest wet texel's level — beside a fall
+  //often the creek 3 m up, which yanked the ribbon's bank-side vertices into slivers (round 9).
+  return f.a > 0.5 ? fallback : f.r;
 }
 
 float wfHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }

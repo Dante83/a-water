@@ -32,7 +32,7 @@
 //plausible height and would put a fall's landing at sea level.
 //
 //RENDER STATE
-//Transparent, no depth write, DoubleSide, renderOrder 5 (after the flowing surface's 3,
+//Transparent, writes depth (faded fragments discard), DoubleSide, renderOrder 5 (after the flowing surface's 3,
 //before the splash's 10), OCEAN_LAYER. As a ShaderMaterial on OCEAN_LAYER it is already
 //skipped by the refraction G-buffer, the mirror, the foam ortho and the ocean CSM, and it
 //casts no scene shadow. Not registered with the grid: the water uniform loop assumes a
@@ -77,6 +77,7 @@ ARestlessOcean.Passes.WaterfallSheetPass.SHARED_UNIFORMS = [
   'atmScatteringSunIntensity', 'atmScatteringMoonIntensity', 'atmMoonLightColor',
   'atmCameraHeight', 'atmDistanceScale',
   'waterFieldCascade0', 'waterFieldCascadeCenter', 'waterFieldCascadeHalfWidth',
+  'causticMap', 'causticIntensityMultiplier',
   //Ring 0's corridor objects, which _streamCorridors fills: the sheet evaluates the creek's
   //step-aside rule with the very same boxes.
   'fallCorridorA', 'fallCorridorB', 'fallCorridorCount',
@@ -98,9 +99,11 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype.init = function(scene){
   this.material = new THREE.ShaderMaterial({
     uniforms: uniforms,
     vertexShader: def.vertexShader,
-    fragmentShader: def.fragmentShader(false, null),
+    fragmentShader: def.fragmentShader(false, null, !!og.causticsEnabled),
     transparent: true,
-    depthWrite: false,
+    //Writes depth: from above the lip the tongue must hide the fall behind it (one mesh,
+    //drawn in row order, the fall painted over the tongue otherwise). Faded fragments discard.
+    depthWrite: true,
     depthTest: true,
     side: THREE.DoubleSide,
     lights: false,
@@ -207,7 +210,7 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype.tick = function(ctx){
   const atm = !!(og.atmosphericPerspectiveEnabled && og.atmosphereFunctionsGLSL);
   if(atm !== this._atmReady){
     this._atmReady = atm;
-    this.material.fragmentShader = ARestlessOcean.Materials.Ocean.waterfallSheetMaterial.fragmentShader(atm, og.atmosphereFunctionsGLSL);
+    this.material.fragmentShader = ARestlessOcean.Materials.Ocean.waterfallSheetMaterial.fragmentShader(atm, og.atmosphereFunctionsGLSL, !!og.causticsEnabled);
     this.material.needsUpdate = true;
   }
   this._streamCorridors();

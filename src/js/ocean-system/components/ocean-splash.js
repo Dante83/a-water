@@ -170,7 +170,18 @@ ARestlessOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
   //Phase 4 waterfall spray (PLACEHOLDER until Phase 6 falls): a burst stream at every
   //simulation.waterfalls[].bottom that FlowFoamPass lists near the camera. See _emitFalls.
   this.fallSprayEnabled = true;
-  this.fallSprayRate = 0.3;         //FUDGE: emitImpact countScale per (m³/s of discharge) per second.
+  this.fallSprayRate = 0.0;         //FUDGE: emitImpact countScale per (m³/s of discharge) per second.
+                                    //0 since Phase 6 round 9: the impact burst throws the sea's foam
+                                    //chunks and beads, and a waterfall's plunge reads as a MIST (Dante).
+                                    //Raise it to add droplets back under the mist.
+  //Waterfall MIST (Phase 6 round 9): fine type-2 puffs rolling out from every traced impact —
+  //the haze off the bottom of a fall. Type 2 is a haze puff at any wind (ocean-splash.glsl).
+  this.fallMistRate = 20.0;         //FUDGE: puffs per (m³/s) per second at IMPACT_REF_SPEED.
+  this.fallMistSize = 1.0;          //m base puff radius.
+  this.fallMistLife = 2.8;          //s base life: it hangs and rolls, unlike crest mist's 0.6 s.
+  this.fallMistSpeed = 1.2;         //m/s outward roll along the pool.
+  this.fallMistRise = 0.5;          //m/s upward lift.
+  this.fallMistSpread = 1.75;       //rad either side of downstream it rolls out over.
   this.fallSprayMinDrop = 0.5;      //m: a step lower than this is a riffle, not a plunge.
   this.impactBurstPerSpeed = 6.0;//particles per m/s of impact speed (FUDGE).
   this.impactMinBurst = 4;
@@ -992,7 +1003,7 @@ ARestlessOcean.OceanSplash.prototype._emitBreakers = function(field, t, camX, ca
   }
 };
 
-//Spray where falls land.
+//Spray and mist where falls land.
 //
 //Phase 6: with traced nappes (WaterfallSheetPass.liveNappes) every impact the trace
 //recorded throws spray — each ledge a cascade bounces off, and the plunge — at the point
@@ -1022,9 +1033,29 @@ ARestlessOcean.OceanSplash.prototype._emitFalls = function(falls, dt, camX, camZ
         const hl = Math.sqrt(hx * hx + hz * hz);
         if(hl > 1e-3){ hx /= hl; hz /= hl; } else { hx = 1.0; hz = 0.0; }
         const share = Math.min(Math.max(im.vn / ref, 0.1), 1.5);
-        this.emitImpact(im.x, im.y + 0.05, im.z, im.nx, im.ny, im.nz, speed,
-          -hz, hx, nap.width, this.fallSprayRate * nap.discharge * share * dt,
-          im.vx, im.vy, im.vz);
+        if(this.fallSprayRate > 0.0){
+          this.emitImpact(im.x, im.y + 0.05, im.z, im.nx, im.ny, im.nz, speed,
+            -hz, hx, nap.width, this.fallSprayRate * nap.discharge * share * dt,
+            im.vx, im.vy, im.vz);
+        }
+        //The mist: spread across the fall's width at the impact, rolling out mostly
+        //downstream and rising slowly; high drag and little gravity (coarse ≈ 0) let it hang.
+        const want = this.fallMistRate * nap.discharge * share * dt;
+        let count = Math.floor(want);
+        if(Math.random() < want - count) ++count;
+        for(let c = 0; c < count; ++c){
+          const along = (Math.random() - 0.5) * nap.width;
+          const px = im.x - hz * along, pz = im.z + hx * along;
+          const ang = (Math.random() * 2.0 - 1.0) * this.fallMistSpread;
+          const ca = Math.cos(ang), sa = Math.sin(ang);
+          const dxo = hx * ca - hz * sa, dzo = hz * ca + hx * sa;
+          const v = this.fallMistSpeed * (0.5 + Math.random());
+          this.spawn(px, im.y + 0.1 + Math.random() * 0.3, pz,
+            dxo * v, this.fallMistRise * (0.3 + 0.7 * Math.random()), dzo * v,
+            this.fallMistSize * (0.7 + 0.6 * Math.random()),
+            this.fallMistLife * (0.8 + 0.5 * Math.random()),
+            2.0, 0.03 * Math.random());
+        }
       }
     }
     return;

@@ -24,6 +24,8 @@ ARestlessOcean.Materials.Ocean.waterfallSheetMaterial = {
     sunShadowBias: {value: 0.0},
     sunShadowEnabled: {value: 0},
     refractionLinearDepth: {value: null},
+    causticMap: {value: null},
+    causticIntensityMultiplier: {value: 1.0},
     waterFieldCascade0: {value: null},
     waterFieldCascadeCenter: {value: [new THREE.Vector2(), new THREE.Vector2(), new THREE.Vector2()]},
     waterFieldCascadeHalfWidth: {value: [256.0, 1024.0, 4096.0]},
@@ -78,7 +80,7 @@ ARestlessOcean.Materials.Ocean.waterfallSheetMaterial = {
     uEdgeWobble: {value: 0.4},
     uGrainScale: {value: 2.0},
     uGrainRate: {value: 1.0},
-    uVoidMax: {value: 0.25},
+    uVoidMax: {value: 0.5},
     uBubbleRadius: {value: 0.0015},
     uSurfaceRough: {value: 0.35},
     uSpecFalloff: {value: 120.0},
@@ -91,9 +93,9 @@ ARestlessOcean.Materials.Ocean.waterfallSheetMaterial = {
   },
 
   //Built like the water's fragment shader (water-shader-template.txt): $atmospheric_perspective_enabled
-  //is substituted, and with it on the atmosphere functions replace the injection marker line.
+  //and $caustics_enabled are substituted, and with it on the atmosphere functions replace the injection marker line.
   //WaterfallSheetPass rebuilds it when atmospheric perspective becomes ready.
-  fragmentShader: function(atmosphericPerspectiveEnabled, atmosphereFunctionsGLSL){
+  fragmentShader: function(atmosphericPerspectiveEnabled, atmosphereFunctionsGLSL, causticsEnabled){
     const originalGLSL = [
       {fragment_glsl}
     ];
@@ -101,6 +103,7 @@ ARestlessOcean.Materials.Ocean.waterfallSheetMaterial = {
     for(let i = 0, numLines = originalGLSL.length; i < numLines; ++i){
       let updatedCode = originalGLSL[i];
       updatedCode = updatedCode.replace(/\$atmospheric_perspective_enabled/g, atmosphericPerspectiveEnabled ? '1' : '0');
+      updatedCode = updatedCode.replace(/\$caustics_enabled/g, causticsEnabled ? '1' : '0');
       if(atmosphericPerspectiveEnabled && atmosphereFunctionsGLSL && updatedCode.indexOf('//ATMOSPHERE_FUNCTIONS_INJECTION_POINT') !== -1){
         updatedCode = atmosphereFunctionsGLSL;
       }

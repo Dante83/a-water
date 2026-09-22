@@ -309,6 +309,10 @@ void main(){
   //GEOMETRY select: fine spray becomes a noise-eroded PUFF only when strong wind shreds it
   //(windMist); otherwise spray is resolved DROPLETS (a bead cluster). Lighting is unified below.
   float windMist = smoothstep(uMistWindMin, uMistWindMax, length(uWind));
+  //Type 2 is WATERFALL mist (OceanSplash._emitFalls): made by the impact, not shredded by the
+  //wind, so it is a haze puff at any wind — a still valley's fall still smokes.
+  float fallMist = step(1.5, vType);
+  windMist = max(windMist, fallMist);
   float beadMix = mix(1.0, smoothstep(0.4, 0.65, vCoarse), windMist);
 
   //Mist PUFF silhouette (noise-eroded soft sphere) — used when beadMix is low.
@@ -346,7 +350,7 @@ void main(){
   //axis drives opacity so light waves read see-through and storm foam reads solid. Calmer seas thin
   //the whole thing (foamWind), matching the size break-up in the cluster.
   float density = mix(hazeDensity, dropCov, beadMix);
-  float foamWind = mix(1.0 - uFoamCalmFade, 1.0, windE);
+  float foamWind = mix(mix(1.0 - uFoamCalmFade, 1.0, windE), 1.0, fallMist);
   float opacity = mix(uOpacity, uFoamOpacity, aer) * foamWind;
 
   //Lifetime fade: a quick rise then a long ease-out, like real spray thinning.

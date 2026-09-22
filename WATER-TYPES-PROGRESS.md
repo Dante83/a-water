@@ -243,6 +243,28 @@ lead-in/tail, CPU heights). Now it asks the creek's own rules, per pixel:
 - Left: a thin bright line where the jet's lowest rows curve toward horizontal and catch the
   sky at grazing Fresnel; the creek's plunge foam has its own swirly advection artefacts (#8).
 
+### Round 9 — bugs still there at Dante's angle; caustics, depth under the lip, mist (2026-09-21)
+
+Dante's regenerated waterfall-sheet.js was byte-identical to the committed sources: the bugs were
+real, my test angles had missed them. At his angle (south-west, above, looking across the face):
+- **Dry texels hold their nearest WET texel's level** — beside a fall, often the creek 3 m up. The
+  vertex lift yanked bank-side vertices up to it (the slivers down the fall's left side) and the
+  creek-visibility test read "water" over dry bank (the lead-in spilling past the creek). Both now
+  honour the field's dry flag (RT0.a ≥ 1 = known dry), as the creek's own discard does.
+- **Seeing the fall's foam through the water at the lip (#15)**: one transparent mesh drawn in row
+  order, no depth write, so the falling rows painted over the tongue in front of them. The sheet now
+  writes depth (fully faded fragments discard) and the tongue shows its own water column.
+- **The tongue whitened at once**: bubble optical depth now goes with aeration² (air works in from
+  the surfaces; a nappe stays glassy for its first stretch), `uVoidMax` 0.25 → 0.5 to keep the foot.
+- **Caustics on the lead-in's bed**: the creek's caustic block, lifted verbatim, in the sheet's
+  seabed lighting (`$caustics_enabled` substituted by the builder; causticMap aliased).
+- **Mist, not sea-foam chunks, at the plunge**: new splash particle type 2 (waterfall mist) is a
+  haze puff at any wind (ocean-splash.glsl; the sea's mist look is gated on wind speed). Every
+  traced impact rolls out fine, long-lived puffs (`fallMistRate` 20/s per m³/s, `fallMistSize`
+  1 m, `fallMistLife` 2.8 s, `fallMistSpeed`, `fallMistRise`, `fallMistSpread`); the chunky
+  emitImpact spray for falls is off by default (`fallSprayRate` 0, still a knob).
+- Swirly foam in the pool: FlowFoamPass advection, not the fall (Dante: likely the solve's sampling).
+
 ### Deferred
 
 The plunge pool's

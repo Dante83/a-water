@@ -74,6 +74,11 @@ uniform sampler2D blueNoiseTexture;
 uniform sampler2D meteringSurveyTexture;
 uniform float meteringSurveyValid;
 uniform float underwaterFactor;
+//The creek's seabed caustics (aliased; compiled in with $caustics_enabled, as the creek's are).
+#if($caustics_enabled)
+  uniform sampler2D causticMap;
+  uniform float causticIntensityMultiplier;
+#endif
 //The creek's own visibility rules, evaluated here so the attached ends draw exactly where it
 //does not (aliased from the flowing material: its WaterField cascade 0 and ring 0's corridors).
 uniform sampler2D waterFieldCascade0;
@@ -305,6 +310,21 @@ vec3 skyRadiance(vec3 dir){
   #endif
   return mix(skyAmbientColor * 0.25, sky, smoothstep(-0.3, 0.05, dir.y));
 }
+
+//── Lifted verbatim from water-shader.glsl (keep in step): the creek's caustic pattern ──
+#if($caustics_enabled)
+  float causticShader(vec2 uv, float t){
+    //Animation speed: t/8 — gentle ocean shimmer rather than rapids. Original
+    //was t/20 (glacial); t/4 read as frantic. Two scrolling UVs with non-
+    //parallel velocities create the interlock look.
+    float tModified = (t / 8.0);
+    vec2 uv1 = uv + vec2(0.8, 0.1) * tModified;
+    vec2 uv2 = uv - vec2(0.2, 0.7) * tModified;
+    float aSample1 = texture(causticMap, uv1).r;
+    float aSample2 = texture(causticMap, uv2).g;
+    return min(aSample1, aSample2);
+  }
+#endif
 
 //── Lifted verbatim from water-shader.glsl (keep in step): the creek's SSR ─────────────
 //The lip and the lead-in are the creek's surface carried on, so they reflect the banks and
@@ -538,9 +558,21 @@ float creekLevel0(vec2 xz){
   vec2 uv = (xz - waterFieldCascadeCenter[0]) / (2.0 * waterFieldCascadeHalfWidth[0]) + 0.5;
   return texture2D(waterFieldCascade0, uv).r;
 }
+//Wet (1) or known dry (0) by the field's own flag, softened across the texel edge. RT0.a
+//carries the flow weight: wet texels store −w, dry texels 1 + w, still water 0. A dry texel's
+//LEVEL is its nearest wet texel's, which beside a fall is often the creek 3 m up: read as water,
+//it drew the lead-in out over the dry bank and yanked the ribbon into slivers (round 9).
+//Outside the flowing window there is no flag: treated as wet.
+float creekWetAt(vec2 xz){
+  vec2 d = abs(xz - waterFieldCascadeCenter[0]);
+  if(max(d.x, d.y) > 0.89 * waterFieldCascadeHalfWidth[0]) return 1.0;
+  vec2 uv = (xz - waterFieldCascadeCenter[0]) / (2.0 * waterFieldCascadeHalfWidth[0]) + 0.5;
+  return 1.0 - smoothstep(0.3, 0.7, texture2D(waterFieldCascade0, uv).a);
+}
 float creekVisibleAt(vec2 xz, float groundY, bool haveGround){
   vec2 d = abs(xz - waterFieldCascadeCenter[0]);
   if(max(d.x, d.y) > 0.89 * waterFieldCascadeHalfWidth[0]) return 0.0;
+  if(creekWetAt(xz) < 0.5) return 0.0;   //the creek discards known-dry texels
   float level = creekLevel0(xz);
   float vis = haveGround ? smoothstep(0.03, 0.10, level - groundY) : 1.0;
   float corr = creekCorridorWeight(xz);
@@ -684,7 +716,11 @@ void main(){
   //own foam (FlowFoamPass, fed by the traced impacts) is the foam of the pool. The tail used
   //to carry the trace's post-impact aeration, a dense white sheet that did not match the
   //creek's foam and showed through it (round 8).
-  float voidFrac = uVoidMax * aeration * airborne * mix(0.25, 1.75, foamMask);
+  //Squared: aeration is how far the jet is toward break-up, and a nappe stays a glassy tongue
+  //for its first stretch (air works in from the surfaces). Linear, 10 % aeration already made
+  //the tongue opaque white right at the lip (round 9); uVoidMax went 0.25 → 0.5 with it so
+  //the foot is as white as before.
+  float voidFrac = uVoidMax * aeration * aeration * airborne * mix(0.25, 1.75, foamMask);
   float tauB = 1.5 * voidFrac / uBubbleRadius * path;
   const float BUBBLE_G = 0.85;
   float tauR = (1.0 - BUBBLE_G) * tauB;
@@ -748,7 +784,99 @@ void main(){
       vec3 sunDown = brightestDirectionalLight * (1.0 - fresnelAirToWater(sunCosZenith)) * exp(-ext * downPath);
       float bedShadow = getSunShadow(sunShadowMatrix * vec4(P + toSunInWater * downPath, 1.0));
       vec3 waterAlbedo = waterScattering / max(ext, vec3(1e-4));
-      behind = bgAlbedo * (INV_PI * sunDown * max(0.0, dot(bgN, toSunInWater)) * bedShadow + skyAmbientColor * waterAlbedo);
+      //The creek's caustics on the bed, as the creek computes them (the lead-in's bed lit
+      //plain beside the creek's shimmering one, round 9).
+      vec3 pSurfaceHit = P + toSunInWater * downPath;
+    vec3 causticMod = vec3(1.0);
+    #if($caustics_enabled)
+      //Caustic modulation around 1.0 (brief 04 sec 2): the divergence of
+      //refracted sun rays redistributes energy across the seabed -- total
+      //energy is conserved, so the operator is a mean-1 multiplier.
+      //
+      //Pivot at CAUSTIC_TEXTURE_MEAN, not 0.5: the smoothstep contrast
+      //curve maps the raw min(R,G) tap distribution (already low-mean
+      //from the double-min in causticShader) into a left-skewed [0,1]
+      //sample whose empirical mean sits near 0.25. Subtracting 0.5
+      //instead would darken most of the seabed because most pixels live
+      //well below 0.5; subtracting 0.25 is the correct zero-mean shift
+      //for THIS texture+contrast-curve.
+      //
+      //Depth-contrast fade (brief 04 sec 2 item 2): caustic ray bundles
+      //spread out with depth, so even when total energy is conserved the
+      //contrast of the pattern flattens. exp(-downPath / CONTRAST_DEPTH)
+      //gives sharp caustic webs in 0-2 m water and a soft diffuse
+      //modulation past 3 e-folds (~24 m at default 8 m e-fold).
+      //
+      //The whole factor still rides on sunDown (already Beer-Lambert
+      //attenuated by downPath) so ABSOLUTE caustic brightness also fades
+      //with depth and sunset on top of the contrast fade.
+      const float CAUSTIC_AMP             = 3.0;
+      const float CAUSTIC_TEXTURE_MEAN    = 0.25;
+      const float CAUSTIC_CONTRAST_DEPTH  = 8.0;
+      //LO/HI are solved by src/python/make-caustic-map.py so the smoothstep
+      //output distribution over the generated 1024px linear-intensity caustic
+      //texture matches what the original 256px asset produced with the old
+      //0.15/0.85 pair — same seabed energy and hot-line coverage, just sharper
+      //filaments. Regenerating the texture re-solves these; keep this pair and
+      //the projection-pass smoothstep in ocean-grid.js in sync with the script
+      //output. CAUSTIC_TEXTURE_MEAN stays the tuned pivot it always was.
+      const float CAUSTIC_THRESHOLD_LO    = 0.0;
+      const float CAUSTIC_THRESHOLD_HI    = 1.0;
+      //UV multiplier sets caustic texture tile size. The texture itself encodes
+      //multiple caustic structures, so the visible caustic period is texture_tile / N.
+      //0.3 → ~3.3 m tile, ~0.5-1 m visible caustic scale (real pool shimmer).
+      //Previous 0.02 (50 m tile) was invisible at close range; 1.0 (1 m tile) was
+      //sub-pixel and averaged to flat. 0.3 is the sweet spot for 1 unit = 1 m world.
+      //(0.3 is now the DEEP-water scale, CAUSTIC_BASE_UV below; shallower beds get finer
+      //cells, by depth.)
+      //Project the caustic texture ALONG the refracted sun ray, not straight
+      //down. pSurfaceHit (already computed above for the seabed shadow lookup)
+      //is where THIS seabed point's refracted sun ray pierces the surface, so
+      //sampling the caustic pattern there parallel-projects the surface web
+      //down sunDirInWater onto the seabed. As the sun lowers the web slides
+      //and stretches the way real caustics do, and a steep seabed face no
+      //longer gets a smeared top-down slice. Collapses to the old straight-
+      //down look exactly at solar zenith (sunDirInWater vertical ⇒
+      //pSurfaceHit.xz == pointXYZ.xz).
+      //ONE MODEL FOR EVERY BODY (hero-creek rounds 1-2). Round 1 gave creeks their own
+      //constants and the pond beside them kept the ocean ones, so the two textures clashed
+      //across the hand-off. The physics says a single model covers both:
+      //- SCALE follows DEPTH. The ripples whose rays focus at depth h have curvature about
+      //  4 / h (a lens of index n focuses at n / (n - 1) / curvature), and at slope s a
+      //  ripple of curvature k has wavelength 2 pi s / k, about 0.16 h at s = 0.1. So the
+      //  cells on a bed are about 0.16 x its depth: ~10 cm under a 0.6 m creek, ~0.8 m
+      //  under 5 m of sea, which is where the ocean tile (0.3 UV, 3.3 m, ~4 cells) was
+      //  already tuned. Deep water is unchanged. Two fixed octave scales are blended
+      //  rather than one scale driven by depth, because multiplying world position by a
+      //  depth that varies across the bed would warp the pattern.
+      //- FOCUS. Rays need depth to converge: no pattern at the waterline, sharpening over
+      //  the first ~0.25 m (the finest ripples, a few cm, focus there).
+      //- DISPERSION. Red and blue refract about 0.6 mm apart per metre of depth at slope
+      //  0.1 (index 1.331 vs 1.339): invisible in a creek, millimetres in the sea.
+      const float CAUSTIC_BASE_UV = 0.3;
+      const float CAUSTIC_TILE_PER_DEPTH = 0.65;
+      const float CAUSTIC_MIN_TILE_M = 0.25;
+      const float CAUSTIC_FOCUS_M = 0.25;
+      const float CAUSTIC_DISPERSION_PER_M = 0.0006;
+      float causticTile = clamp(CAUSTIC_TILE_PER_DEPTH * downPath, CAUSTIC_MIN_TILE_M, 1.0 / CAUSTIC_BASE_UV);
+      float causticLevel = log2(1.0 / (causticTile * CAUSTIC_BASE_UV));
+      float causticLevel0 = floor(causticLevel);
+      float causticLevelT = causticLevel - causticLevel0;
+      vec3 causticSampleRaw = vec3(0.0);
+      for(int k = 0; k < 2; k++){
+        float causticScale = CAUSTIC_BASE_UV * exp2(causticLevel0 + float(k));
+        vec2 causticUV = causticScale * pSurfaceHit.xz;
+        float causticSplit = causticScale * CAUSTIC_DISPERSION_PER_M * downPath;
+        vec3 causticOctave = vec3(causticShader(causticUV + causticSplit, t),
+                                  causticShader(causticUV, t),
+                                  causticShader(causticUV - causticSplit, t));
+        causticSampleRaw += (k == 0 ? 1.0 - causticLevelT : causticLevelT) * causticOctave;
+      }
+      vec3 causticSample = smoothstep(vec3(CAUSTIC_THRESHOLD_LO), vec3(CAUSTIC_THRESHOLD_HI), causticSampleRaw);
+      float causticDepthFade = exp(-downPath / CAUSTIC_CONTRAST_DEPTH) * smoothstep(0.0, CAUSTIC_FOCUS_M, downPath);
+      causticMod = vec3(1.0) + causticDepthFade * causticIntensityMultiplier * CAUSTIC_AMP * (causticSample - vec3(CAUSTIC_TEXTURE_MEAN));
+    #endif
+      behind = bgAlbedo * (INV_PI * sunDown * max(0.0, dot(bgN, toSunInWater)) * causticMod * bedShadow + skyAmbientColor * waterAlbedo);
       //The creek's column: vertical depth plus its grazing-path proxy (HORIZONTAL_DEPTH_SCALE).
       bedColumn = (vWorldPos.y - P.y) + length(vWorldPos.xz - cameraPosition.xz) * 0.008;
     }
@@ -796,12 +924,16 @@ void main(){
     creekVis = creekVisibleAt(vWorldPos.xz, gY, haveG);
     creekHere = creekVis > 0.0 ? creekLevel0(vWorldPos.xz) : -1e4;
   }
-  float handoff = mix(1.0 - creekVis, 1.0, airborne);
+  //Attached rows also stop where the field says dry (they are water standing on the creek).
+  float handoff = mix((1.0 - creekVis) * creekWetAt(vWorldPos.xz), 1.0, airborne);
   //Where the free fall comes down into water the creek draws, it dissolves over its last
   //PLUNGE_BLEND metres above that surface instead of cutting a hard line through it.
   const float PLUNGE_BLEND = 0.35;
   handoff *= mix(1.0, smoothstep(0.0, PLUNGE_BLEND, vWorldPos.y - creekHere), creekVis * airborne);
   float outAlpha = presence * handoff * edgeAlpha * strandAlpha * soft * uOpacity;
+  //The sheet writes depth (so the tongue at the lip hides the fall behind it, instead of the
+  //fall painting over it in row order, round 9): a fully faded fragment must not.
+  if(uDebugMode == 0 && outAlpha < 0.004) discard;
   #if($atmospheric_perspective_enabled)
     //Aerial perspective, as the creek applies it (above water only).
     if(underwaterFactor < 0.5) color = applyAtmosphericPerspective(color, vWorldPos);
