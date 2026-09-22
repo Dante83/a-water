@@ -36,7 +36,9 @@
 //GEOMETRY AND LOD (declared here, per the cross-cutting rules)
 //  near  1 m cells  over ±128 m
 //  mid   2 m cells  over ±240 m, with a hole under the near grid that stops one
-//        mid cell short of it so the two overlap (hides the T-junction cracks)
+//        mid cell short of it so the two overlap (hides the T-junction cracks);
+//        its fragments discard under all but the last half metre of that overlap
+//        (flowRingHole), or the transparent strip drew twice
 //Every vertex sits on a WaterField cascade 0 (1 m) texel centre, and the whole
 //surface stays inside cascade 0. It used to reach ±512 m on cascade 1, and at 4 m
 //a texel the hand-off drew blocky squares and the dilated bank weight drew wedges
@@ -80,8 +82,8 @@ ARestlessOcean.Passes.FlowSurfacePass = function(oceanGrid){
 };
 
 //cell: metres per grid cell; halfWidth: metres; hole: half-width of the square
-//left out for the finer ring (0 = none). Each cell size matches the WaterField
-//cascade whose texel centres its vertices sit on.
+//left out for the finer ring (0 = none). Every ring's vertices sit on WaterField
+//cascade 0's (1 m) texel centres; the 2 m ring matches no cascade of its own.
 ARestlessOcean.Passes.FlowSurfacePass.RINGS = [
   {cell: 1.0, halfWidth: 128.0, hole: 0.0},
   {cell: 2.0, halfWidth: 240.0, hole: 124.0}
@@ -273,9 +275,16 @@ ARestlessOcean.Passes.FlowSurfacePass.prototype.tick = function(ctx){
     const cz = Math.floor(ctx.cameraZ) + 0.5;
     ring.mesh.position.set(cx, ctx.heightOffset, cz);
     ring.mesh.visible = this.enabled;
+    ring.mesh.userData.aroHidden = !this.enabled;   //OceanGrid's show-all loop honours it
     ring.centerX = cx;
     ring.centerZ = cz;
     const u = ring.mesh.material.uniforms;
+    //The finer ring inside this one (see the discard in water-shader.glsl): everything
+    //under it but the last half metre, which stays to cover the T-junction cracks.
+    if(u.flowRingHole){
+      const inner = r > 0 ? this.rings[r - 1].spec.halfWidth - 0.5 : 0.0;
+      u.flowRingHole.value.set(cx, cz, inner);
+    }
     u.flowFoamMap.value = foamTex;
     u.flowWaveProfile.value = this.waveTarget ? this.waveTarget.texture : null;
     u.flowRippleScale.value = this.rippleScale;

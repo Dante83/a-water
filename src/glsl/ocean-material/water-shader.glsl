@@ -207,6 +207,9 @@ uniform float meteringSurveyValid;
   uniform sampler2D flowWaveProfile;
   //Live knob on ripple slope (1 = the physical-ish defaults below).
   uniform float flowRippleScale;
+  //(centre xz, half-width) of the finer ring this ring's geometry overlaps (FlowSurfacePass);
+  //half-width 0 on the innermost ring. See the discard in main.
+  uniform vec3 flowRingHole;
   //Phase 6: the waterfall corridors (WaterfallSheetPass). Each is a flat-ended box
   //along a stretch of a fall's traced path: A = (start xz, end xz), B.x = half-width.
   //Inside one, the waterfall sheet draws wherever the level is steep, so this surface
@@ -1537,10 +1540,13 @@ void main(){
   //Only a KNOWN dry (dryMask, a-land's answer) discards. A standalone depth of
   //0 is a guess from the foam ortho, which captures EVERYTHING above the water:
   //a pier deck, a boat, an overhanging branch; discarding on it would cut holes
-  //under every dock. dryMask is linearly filtered, so > 0.999 means all taps are
-  //dry: the cut sits a texel inland of the shoreline, under the terrain, rather
+  //under every dock. The test is ALL TAPS KNOWN DRY (flowHandoffDryAt, decoded per
+  //texel): the cut sits a texel inland of the shoreline, under the terrain, rather
   //than half a texel seaward of it where it would show seabed. Not gated on
   //underwaterFactor: the ceiling has no water over dry land either.
+  //(It used to read the FILTERED dryMask > 0.999, which meant all-dry only while dry
+  //was stored as 1. Since Phase 4 a known-dry texel holds 1 + w, so one dry tap of 2
+  //beside a creek at half weight already passed, and the cut moved seaward.)
   //
   //Phase 3a swash: EXCEPT inside the band the run-up can reach. There the sheet
   //is a flat surface at rest level plus the swash height, and where the beach is
@@ -1569,8 +1575,9 @@ void main(){
   //LODs, a solve cell that rounded dry) that texel of flat water showed as a sheet
   //hanging over the bank. shoreSDF crosses zero half way between the last wet and
   //first dry texel centres, and only a KNOWN dry tap (a-land's answer) may cut.
-  bool dryByShoreLine = dryTestField.b < 0.0 && flowHandoffDryAt(worldPosition.xz) > 0.0;
-  if((dryTestField.a > 0.999 || dryByShoreLine) && !shoreSwashCovers(worldPosition.xz, dryTestField)){
+  float dryTaps = flowHandoffDryAt(worldPosition.xz);
+  bool dryByShoreLine = dryTestField.b < 0.0 && dryTaps > 0.0;
+  if((dryTaps > 0.999 || dryByShoreLine) && !shoreSwashCovers(worldPosition.xz, dryTestField)){
     discard;
   }
   //Phase 4 browser round 7: no triangle that BRIDGES two water levels. A dry texel
@@ -1580,9 +1587,11 @@ void main(){
   //of that step is a thin wall metres tall, and the swash exception above kept it
   //on the beach: the spikes seen from ~400 m that shrank away on approach as the
   //cells got finer. The level this fragment interpolated from its vertices must be
-  //the level of the place it lands on. Flowing water (a < -0.5) is exempt: a creek
-  //the clipmap still draws beyond the flowing window really is sloped.
-  if(dryTestField.a > -0.5 && abs(vFieldLevelMaskA.x - dryTestField.r) > 1.0){
+  //the level of the place it lands on. Flowing water is exempt: a creek the clipmap
+  //still draws beyond the flowing window really is sloped. Flowing by the DECODED
+  //weight: the filtered channel between a creek texel (−1) and its bank (2) reads
+  //above −0.5 over most of the texel, which cut ragged holes along distant creeks.
+  if(flowHandoffFieldWeightAt(worldPosition.xz) < 0.5 && abs(vFieldLevelMaskA.x - dryTestField.r) > 1.0){
     discard;
   }
   #endif
@@ -1597,6 +1606,14 @@ void main(){
   float flowHandoffW = flowHandoffWeightAt(worldPosition.xz);
   #if($flowing_water)
     if(flowHandoffW <= 0.002) discard;
+    //The coarser ring's geometry runs 4 m under the finer ring's edge to hide T-junction
+    //cracks; both are transparent, so wherever alpha < 1 (hand-off band, thin water,
+    //corridors) that strip drew twice, a square outline ~125 m out. It keeps only the
+    //last half metre under the edge for the cracks.
+    if(flowRingHole.z > 0.0){
+      vec2 ringD = abs(worldPosition.xz - flowRingHole.xy);
+      if(max(ringD.x, ringD.y) < flowRingHole.z) discard;
+    }
     float flowHandoffAlpha = flowHandoffW;
     //THIN WATER IS NOT A SURFACE (Phase 4 close-out, the simplest form of the River
     //Editor's thickness-dependent scattering). island-sholes creeks are 5-20 cm deep
@@ -1608,8 +1625,10 @@ void main(){
     //entirely below FLOW_FADE_MIN_M, which also keeps it out of the depth buffer.
     //Thickness is what the depth buffer sees, not a-land's solve depth: this surface
     //minus the ground the refraction G-buffer holds under the SAME pixel (undistorted,
-    //so a bank behind the water cannot stand in for the bed). Measured from the 32-bit
-    //depth texture, not the half-float linear depth, whose steps are 3 cm by 50 m.
+    //so a bank behind the water cannot stand in for the bed). Measured from the depth
+    //attachment (24-bit: UnsignedIntType is DEPTH_COMPONENT24 in three r173; about 0.6 cm
+    //steps at 100 m and 3 cm, the whole fade floor, near the 228 m window edge with the
+    //examples' near 0.1), not the half-float linear depth, whose steps are 3 cm by 50 m.
     //Positive where the ground is under the sheet, negative where the polygon offset
     //pulled the sheet in front of ground that is really above it.
     const float FLOW_FADE_MIN_M = 0.03;
@@ -1816,13 +1835,23 @@ void main(){
   //water. Central differences over 1.5 m either side: a-land steps the level
   //down the bed one metre at a time, and a one-texel stencil would facet every
   //step. Stored pre-multiplier, like the cascade slopes it replaces.
+  //A tap on DRY ground (field .a > 0.5) holds its nearest water's level, which past a
+  //bank can be another body entirely (the sea across a spit, a parallel channel): read
+  //as this creek it made a false slope, whitewater and roughness along the bank. Such a
+  //tap drops out and the difference goes one-sided.
   {
     const float LEVEL_EPS = 1.5;
-    float lxm = waterFieldAt(vWorldXZ - vec2(LEVEL_EPS, 0.0)).r;
-    float lxp = waterFieldAt(vWorldXZ + vec2(LEVEL_EPS, 0.0)).r;
-    float lzm = waterFieldAt(vWorldXZ - vec2(0.0, LEVEL_EPS)).r;
-    float lzp = waterFieldAt(vWorldXZ + vec2(0.0, LEVEL_EPS)).r;
-    vec2 levelSlope = vec2(lxp - lxm, lzp - lzm) / (2.0 * LEVEL_EPS) / max(waveHeightMultiplier, 0.0001);
+    vec4 txm = waterFieldAt(vWorldXZ - vec2(LEVEL_EPS, 0.0));
+    vec4 txp = waterFieldAt(vWorldXZ + vec2(LEVEL_EPS, 0.0));
+    vec4 tzm = waterFieldAt(vWorldXZ - vec2(0.0, LEVEL_EPS));
+    vec4 tzp = waterFieldAt(vWorldXZ + vec2(0.0, LEVEL_EPS));
+    float lc = dryTestField.r;
+    float lxm = txm.a > 0.5 ? lc : txm.r, lxp = txp.a > 0.5 ? lc : txp.r;
+    float lzm = tzm.a > 0.5 ? lc : tzm.r, lzp = tzp.a > 0.5 ? lc : tzp.r;
+    float spanX = LEVEL_EPS * (step(txm.a, 0.5) + step(txp.a, 0.5));
+    float spanZ = LEVEL_EPS * (step(tzm.a, 0.5) + step(tzp.a, 0.5));
+    vec2 levelSlope = vec2(spanX > 0.0 ? (lxp - lxm) / spanX : 0.0,
+                           spanZ > 0.0 ? (lzp - lzm) / spanZ : 0.0) / max(waveHeightMultiplier, 0.0001);
     rawDdx.y = levelSlope.x;
     rawDdz.y = levelSlope.y;
     cascade0HeightSlope = levelSlope;

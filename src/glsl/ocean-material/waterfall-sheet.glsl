@@ -979,7 +979,7 @@ void main(){
   float edgeAlpha = 1.0 - smoothstep(0.85, 1.0, edgeN);
   float strands = airborne * uBreakup * smoothstep(0.5, 1.0, aeration);
   float strandAlpha = smoothstep(strands - 0.1, strands + 0.1, foamMask + 0.25 * (1.0 - strands));
-  //The G-buffer ground under the undistorted pixel, from the full-precision depth attachment
+  //The G-buffer ground under the undistorted pixel, from the depth attachment (24-bit)
   //(the half-float linear depth steps 3 cm at 50 m and 6-12 cm at 100-200 m, coarser than
   //uSoftRange: the soft contact stair-stepped into a hard flickering edge in the distance).
   float gRaw = texture2D(refractionDepthTexture, screenUV).r;

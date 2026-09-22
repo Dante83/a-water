@@ -147,6 +147,18 @@ ARestlessOcean.Passes.FlowFoamPass.prototype.init = function(){
       '         + texture(uFieldB, fieldUV(xz + vec2(0.0, r))).xy + texture(uFieldB, fieldUV(xz - vec2(0.0, r))).xy;',
       '  return 0.5 * c + 0.125 * s;',
       '}',
+      //The level gradient over ±h, with DRY taps (a > 0.5) dropped and the difference taken
+      //one-sided: a dry texel holds its nearest wet texel's level, which past a bank can be
+      //another body (the sea across a spit, a parallel channel), and read as this creek it
+      //turned the flow toward a fake downhill and laid step foam along the bank.
+      'vec2 levelGrad(vec2 xz, float h, float lc){',
+      '  vec4 xp = texture(uFieldA, fieldUV(xz + vec2(h, 0.0))), xm = texture(uFieldA, fieldUV(xz - vec2(h, 0.0)));',
+      '  vec4 zp = texture(uFieldA, fieldUV(xz + vec2(0.0, h))), zm = texture(uFieldA, fieldUV(xz - vec2(0.0, h)));',
+      '  float sx = h * (step(xp.a, 0.5) + step(xm.a, 0.5)), sz = h * (step(zp.a, 0.5) + step(zm.a, 0.5));',
+      '  float gx = sx > 0.0 ? ((xp.a > 0.5 ? lc : xp.r) - (xm.a > 0.5 ? lc : xm.r)) / sx : 0.0;',
+      '  float gz = sz > 0.0 ? ((zp.a > 0.5 ? lc : zp.r) - (zm.a > 0.5 ? lc : zm.r)) / sz : 0.0;',
+      '  return vec2(gx, gz);',
+      '}',
       'void main(){',
       '  vec2 xz = uCenter + (vUv * 2.0 - 1.0) * uHalfWidth;',
       '  vec4 fa = texture(uFieldA, fieldUV(xz));',
@@ -158,8 +170,7 @@ ARestlessOcean.Passes.FlowFoamPass.prototype.init = function(){
       //round 5, oval island). Where the surface visibly slopes, turn a-land's direction
       //toward the downhill of the level (same speed); on flat water (lakes, pools) keep
       //a-land's.
-      '  vec2 gradL = vec2(texture(uFieldA, fieldUV(xz + vec2(uStencil, 0.0))).r - texture(uFieldA, fieldUV(xz - vec2(uStencil, 0.0))).r,',
-      '                    texture(uFieldA, fieldUV(xz + vec2(0.0, uStencil))).r - texture(uFieldA, fieldUV(xz - vec2(0.0, uStencil))).r) / (2.0 * uStencil);',
+      '  vec2 gradL = levelGrad(xz, uStencil, fa.r);',
       '  float gradLen = length(gradL);',
       '  float speed = length(v);',
       '  if(speed > 0.05 && gradLen > 1e-4){',
@@ -188,9 +199,7 @@ ARestlessOcean.Passes.FlowFoamPass.prototype.init = function(){
       '  float curlV = ((vxp.y - vxm.y) - (vzp.x - vzm.x)) / (2.0 * H);',
       '  float convergence = max(0.0, -divV - uOnsets.x);',
       '  float bank = max(0.0, abs(curlV) - uOnsets.y) * (1.0 - smoothstep(0.5, 2.0, fa.b));',
-      '  float lxp = texture(uFieldA, fieldUV(xz + vec2(H, 0.0))).r, lxm = texture(uFieldA, fieldUV(xz - vec2(H, 0.0))).r;',
-      '  float lzp = texture(uFieldA, fieldUV(xz + vec2(0.0, H))).r, lzm = texture(uFieldA, fieldUV(xz - vec2(0.0, H))).r;',
-      '  float bedSlope = length(vec2(lxp - lxm, lzp - lzm)) / (2.0 * H);',
+      '  float bedSlope = length(levelGrad(xz, H, fa.r));',
       //tan 30° = 0.577: a-land classifies a waterfall cell at that slope.
       '  float stepT = smoothstep(uOnsets.z, uOnsets.w, bedSlope) * length(v);',
       '  float fall = 0.0;',

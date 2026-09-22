@@ -1432,6 +1432,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //Step 4: ripple profile buffer (FlowSurfacePass) and its live slope knob.
     mat.uniforms.flowWaveProfile = {value: null};
     mat.uniforms.flowRippleScale = {value: 1.0};
+    mat.uniforms.flowRingHole = {value: new THREE.Vector3(0, 0, 0)};
     //Phase 6: the waterfall corridors this surface steps aside in (WaterfallSheetPass).
     const nCorr = ARestlessOcean.Passes && ARestlessOcean.Passes.WaterfallSheetPass
       ? ARestlessOcean.Passes.WaterfallSheetPass.MAX_CORRIDORS : 24;
@@ -1830,7 +1831,10 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
     //Show all of our ocean grid elements again
     for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
-      oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].visible = true;
+      //A mesh its owner switched off stays off (the flowing rings with the flowing
+      //surface disabled drew every vertex until each fragment discarded).
+      const shown = oceanPatchGeometryInstances[oceanGridInstanceKeys[i]];
+      shown.visible = shown.userData.aroHidden !== true;
     }
 
     //Update each of our ocean grid height maps
@@ -1893,9 +1897,10 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
 
     //Underwater caustic projector — caustics on the directly-viewed seabed.
     if(self.causticProjectionPass){
-      //Not under flowing water: the flowing surface draws no caustics from above (its
-      //variant compiles them out), so diving into a creek must not switch them on
-      //(browser round 7). Same weight and window the surfaces hand off with.
+      //Not under flowing water (browser round 7). The flowing surface DOES draw its
+      //in-shader bed caustics (re-enabled in round 7, see buildFragmentShader); this
+      //projector is the underwater SpotLight on terrain, and in a creek it doubled
+      //them. Same weight and window the surfaces hand off with.
       let causticFlowKeep = 1.0;
       if(underwaterFactor > 0.001){
         const cf = self.waterFlowAt(self.globalCameraPosition.x, self.globalCameraPosition.z, self._causticFlowScratch);
