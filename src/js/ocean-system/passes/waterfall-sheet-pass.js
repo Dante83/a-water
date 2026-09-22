@@ -52,8 +52,11 @@ ARestlessOcean.Passes.WaterfallSheetPass = function(oceanGrid){
   this._falls = null;
   this._heightVersion = -1;
   this._queue = [];
+  //Cascades whose trace met unloaded ground: {i, atMs}, retried on their own clock so one
+  //fall on ground that never streams in cannot hold back the others (see tick).
+  this._retry = [];
   this._dirtyGeometry = false;
-  this._retryAtMs = 0;
+  this._waterVersion = -1;
   this._lastInvalidateMs = -1e9;
   this._corridors = [];
   this._atmReady = false;
@@ -149,6 +152,7 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype._env = function(){
 //Start over: new falls list, a-land height residency changed, or a terrain edit.
 ARestlessOcean.Passes.WaterfallSheetPass.prototype.invalidate = function(){
   this._queue.length = 0;
+  this._retry.length = 0;
   for(let i = 0; i < this.cascades.length; ++i) this._queue.push(i);
 };
 
@@ -166,10 +170,17 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype._syncFalls = function(now){
   //Residency changes arrive with every streamed tile, so they are coalesced: a re-trace
   //at most every REBUILD_MS, and only once the previous round has finished (otherwise the
   //queue refills forever and the merged geometry never publishes).
+  //WATER residency too: a-land's getWaterAt answers null until a water tile has loaded, and
+  //a trace run before then saw no water at all — the exported 14 m width and Q/W, no pools,
+  //no spans — and nothing re-ran it once the water arrived. The field's invalidation count
+  //bumps as decoded water tiles land.
   const hc = og._landDirector && og._landDirector.heightCache;
   const ver = hc && typeof hc.version === 'number' ? hc.version : 0;
-  if(ver !== this._heightVersion && !this._queue.length && now - this._lastInvalidateMs >= ARestlessOcean.Passes.WaterfallSheetPass.REBUILD_MS){
+  const wver = og.waterFieldPass && typeof og.waterFieldPass.invalidationCount === 'number' ? og.waterFieldPass.invalidationCount : 0;
+  if((ver !== this._heightVersion || wver !== this._waterVersion) && !this._queue.length
+     && now - this._lastInvalidateMs >= ARestlessOcean.Passes.WaterfallSheetPass.REBUILD_MS){
     this._heightVersion = ver;
+    this._waterVersion = wver;
     this._lastInvalidateMs = now;
     this.invalidate();
   }
@@ -181,23 +192,23 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype.tick = function(ctx){
   this.enabled = ctx.enabled !== false;
   if(!this.mesh) return;
   this._syncFalls(ctx.timeMs);
-  //One trace per frame. A trace over unloaded ground returns null; retry after a pause
-  //rather than spinning on it every frame.
-  if(this._queue.length && ctx.timeMs >= this._retryAtMs){
-    const env = this._env();
-    const i = this._queue.shift();
-    const c = this.cascades[i];
-    if(env && c){
+  //One trace per frame. A trace over unloaded ground returns null; it moves to the retry
+  //list with its own clock rather than back onto the queue, so the queue drains and the
+  //geometry publishes (it used to wait for an empty queue that one unstreamed fall kept full).
+  const env = this._env();
+  if(env){
+    let i = -1;
+    if(this._queue.length) i = this._queue.shift();
+    else if(this._retry.length && ctx.timeMs >= this._retry[0].atMs) i = this._retry.shift().i;
+    const c = i >= 0 ? this.cascades[i] : null;
+    if(c){
       const nappe = ARestlessOcean.WaterfallNappe.trace(c.chain, env);
       if(nappe){
         c.nappe = nappe;
         c.ribbon = ARestlessOcean.WaterfallNappe.buildRibbon(nappe, env);
         this._dirtyGeometry = true;
       }
-      else {
-        this._queue.push(i);
-        this._retryAtMs = ctx.timeMs + WS.RETRY_MS;
-      }
+      else this._retry.push({i: i, atMs: ctx.timeMs + WS.RETRY_MS});
     }
   }
   if(this._dirtyGeometry && !this._queue.length) this._rebuildGeometry();
@@ -298,6 +309,14 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype.liveNappes = function(){
 ARestlessOcean.Passes.WaterfallSheetPass.prototype.resize = function(){};
 
 ARestlessOcean.Passes.WaterfallSheetPass.prototype.dispose = function(){
+  //Hand the creek its steps back: tick no longer runs to clear the boxes once the mesh is gone.
+  const fsp = this.oceanGrid.flowSurfacePass;
+  if(fsp){
+    for(let r = 0; r < fsp.rings.length; ++r){
+      const u = fsp.rings[r].mesh.material.uniforms;
+      if(u.fallCorridorCount) u.fallCorridorCount.value = 0;
+    }
+  }
   if(this.mesh){
     if(this.mesh.parent) this.mesh.parent.remove(this.mesh);
     this.mesh.geometry.dispose();
@@ -307,4 +326,5 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype.dispose = function(){
   this.cascades.length = 0;
   this.nappes.length = 0;
   this._queue.length = 0;
+  this._retry.length = 0;
 };
