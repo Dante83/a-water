@@ -264,7 +264,7 @@ ARestlessOcean.Passes.FlowFoamPass.prototype._updateFalls = function(ctx){
         let dx = im.vx, dz = im.vz;
         const len = Math.sqrt(dx * dx + dz * dz);
         if(len > 1e-3){ dx /= len; dz /= len; } else { dx = 0.0; dz = 1.0; }
-        consider(im.x, im.z, 0.5 * nap.width, nap.discharge, dx, dz, im.vn * im.vn / (2.0 * 9.81), null);
+        consider(im.x, im.z, 0.5 * nap.width, nap.discharge * (im.w !== undefined ? im.w : 1.0), dx, dz, im.vn * im.vn / (2.0 * 9.81), null);
       }
     }
   }

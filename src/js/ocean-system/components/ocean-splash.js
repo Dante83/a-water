@@ -1032,7 +1032,8 @@ ARestlessOcean.OceanSplash.prototype._emitFalls = function(falls, dt, camX, camZ
         let hx = im.vx, hz = im.vz;
         const hl = Math.sqrt(hx * hx + hz * hz);
         if(hl > 1e-3){ hx /= hl; hz /= hl; } else { hx = 1.0; hz = 0.0; }
-        const share = Math.min(Math.max(im.vn / ref, 0.1), 1.5);
+        //im.w: the trace's weight for how far the water fell before this touchdown (a hop is 0).
+        const share = Math.min(Math.max(im.vn / ref, 0.1), 1.5) * (im.w !== undefined ? im.w : 1.0);
         if(this.fallSprayRate > 0.0){
           this.emitImpact(im.x, im.y + 0.05, im.z, im.nx, im.ny, im.nz, speed,
             -hz, hx, nap.width, this.fallSprayRate * nap.discharge * share * dt,

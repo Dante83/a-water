@@ -1,6 +1,7 @@
 //Node checks for ARestlessOcean.WaterfallNappe (Phase 6): synthetic terrain with known
 //answers — a hero-creek-like step, a 45° chute, a 10 m vertical drop, a four-step staircase
-//cascade, a chute into a dry bowl, and an over-wide export over a narrow wet channel.
+//cascade, a chute into a dry bowl, an over-wide export over a narrow wet channel, a pool
+//reaching the lip, a jut below the lip, a lip over a lake and a hop run-out.
 //Run: node tests/waterfall-nappe/nappe-test.mjs   (exit code 1 on any failure)
 import fs from 'fs'; import vm from 'vm';
 globalThis.ARestlessOcean = {};
@@ -98,6 +99,50 @@ function summarize(n){
   let inside = 0;
   for(let v = 0; v < rib.vertexCount; v++){ const x = rib.position[v*3], y = rib.position[v*3+1], z = rib.position[v*3+2]; if(ground(x,z) > y + 0.01) inside++; }
   check('wall: no ribbon vertex inside the jutting rock', inside === 0, 'inside '+inside+' of '+rib.vertexCount);
+}
+// 9. a deep slow pool whose wet texels reach the cliff top (a per-texel field overhanging the
+//    ramp): the step that leaves the lip must not count as a sliding plunge into it
+{
+  const ground = (x,z) => z < 0 ? 10 : 0;
+  const water = (x,z) => z < -0.05 ? {level: 10.3, depth: 0.3, vx:0, vz:1.5} : {level: 3, depth: 3, vx:0, vz:0.1};
+  const n = N.trace([{top:[0,10,-0.5], bottom:[0,0,0.5], width:4, discharge:2, drop:10}], {groundAt: ground, waterAt: water});
+  console.log(summarize(n));
+  check('lip pool: the fall is traced, not skipped', n.samples.filter(s=>s.air).length > 20 && n.rows.some(r=>r.fallFlag>0.5), 'airSteps '+n.samples.filter(s=>s.air).length);
+  check('lip pool: plunges after really falling', n.plunge && n.plunge.vy < -8, n.plunge && 'vy '+f2(n.plunge.vy));
+}
+// 10. a rock jutting into one side of the fall BELOW the lip, open air under it: the sheet
+//     must shrink and stay shrunk, not re-grow out of the rock face
+{
+  const jut = (x,z) => x > 1.0 && z > 0.2 && z < 1.2;
+  const ground = (x,z) => jut(x,z) ? 9.5 : (z < 0 ? 10 : 0);
+  const n = N.trace([{top:[0,10,-0.5], bottom:[0,0,0.5], width:6, discharge:5, drop:10}], {groundAt: ground, waterAt: ()=>null});
+  const rib = N.buildRibbon(n, {groundAt: ground, waterAt: ()=>null});
+  const nC = rib.vertexCount / n.rows.length;
+  const rowMaxX = i => { let m = -1e9; for(let c = 0; c < nC; c++) m = Math.max(m, rib.position[(i*nC+c)*3]); return m; };
+  let pinched = null, regrow = 0;
+  for(let i = 0; i < n.rows.length; i++){
+    const r = n.rows[i];
+    if(r.fallFlag <= 0.5) continue;
+    if(r.z > 0.2 && r.z < 1.2 && r.y < 9.5) pinched = pinched === null ? rowMaxX(i) : Math.min(pinched, rowMaxX(i));
+    else if(pinched !== null && r.z >= 1.2) regrow = Math.max(regrow, rowMaxX(i) - pinched);
+  }
+  check('jut: sheet pinched by the rock', pinched !== null && pinched <= 1.05, 'max x '+(pinched===null?'none':f2(pinched)));
+  check('jut: no re-growth below it (≤ fallSpread)', regrow <= 0.5, 'regrow '+f2(regrow));
+}
+// 11. a 3.75 m creek leaving a lip over a wide lake: the sheet must not flare to the lake's width
+{
+  const ground = (x,z) => z < 0 ? 10 + (Math.abs(x) > 1.875 ? 1 : 0) : 0;
+  const water = (x,z) => z < 0 ? (Math.abs(x) <= 1.875 ? {level: 10.3, depth: 0.3, vx:0, vz:1.5} : null) : (z < 0.3 ? null : {level: 3, depth: 3, vx:0, vz:0.05});
+  const n = N.trace([{top:[0,10,-0.5], bottom:[0,0,0.5], width:14, discharge:3, drop:10}], {groundAt: ground, waterAt: water});
+  const wMax = Math.max(...n.rows.map(r=>r.w));
+  check('lake: no flare past the jet (+ spread)', n.rows.length > 0 && wMax < 3.75 + 1.0, 'max width '+f2(wMax)+' lip '+f2(n.width));
+}
+// 12. a supercritical run-out of 8 cm steps below a real fall: the hops must not be impacts
+{
+  const ground = (x,z) => z < 0 ? 10 : (z < 3 ? 0 : -0.08*Math.floor(z-2));
+  const n = N.trace([{top:[0,10,-0.5], bottom:[0,0,0.5], width:4, discharge:4, drop:10}], {groundAt: ground, waterAt: ()=>null});
+  const small = n.impacts.filter(i => i.z > 3.2);
+  check('hops: only the real landing is an impact', n.impacts.length >= 1 && small.length === 0, n.impacts.map(i=>`z${f2(i.z)} w${f2(i.w)}`).join(' '));
 }
 // 5. island-sholes chains (only when the sibling project is checked out)
 {
