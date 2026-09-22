@@ -177,8 +177,14 @@ ARestlessOcean.Passes.FlowFoamPass.prototype.init = function(){
       '    float align = smoothstep(0.003, 0.02, gradLen);',
       '    vec2 dirV = v / speed;',
       '    vec2 dirL = -gradL / gradLen;',
-      //never turn the flow more than 90 degrees: past that the level gradient is noise
-      '    if(dot(dirV, dirL) > 0.0){',
+      //Only a D8-sized correction: the zig-zag is at most 45 degrees off, so the turn fades
+      //out from 40 to 65 degrees of disagreement (it used to act on anything under 90). Where
+      //the surface does NOT fall along the current, the current is right and the slope is
+      //something else: a hydraulic jump below a fall, where the level RISES downstream and
+      //its sideways tilt swung the flow out to both banks (the fork and the swirl at
+      //hero-creek's foot, Dante 2026-09-22).
+      '    align *= smoothstep(0.42, 0.77, dot(dirV, dirL));',
+      '    if(align > 0.0){',
       '      vec2 dir = normalize(mix(dirV, dirL, 0.85 * align));',
       '      v = dir * speed;',
       '    }',

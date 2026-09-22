@@ -106,8 +106,10 @@ ARestlessOcean.WaterfallNappe = {};
     aerationDecayLength: 3.0,   //m
     minImpactSpeed: 0.5,        //m/s normal speed below which a touchdown is not recorded
     corridorLead: 2.0,          //m of creek/sheet cross-dissolve before each takeoff
+    corridorTail: 2.0,          //m each run's last box reaches past the landing (the creek's ramp; see buildCorridors)
     corridorLength: 4.0,         //m of plan length per corridor box
-    corridorMargin: 0.75,        //m added to the half-width
+    corridorMargin: 2.0,         //m added to the half-width: the creek's ramp runs a metre or two past the
+                                 //lip span at the foot (bank slivers at hero-creek with 0.75)
     colSpacing: 0.5,            //m between ribbon columns
     wallStep: 0.1,              //m, the across march that finds the channel's walls (buildRibbon)
     fallSpread: 0.05,           //m a free-fall side may widen per m of path (buildRibbon; ~0 for a nappe)
@@ -455,6 +457,10 @@ ARestlessOcean.WaterfallNappe = {};
           //Airborne from here: nothing below belongs to this step. The attached checks that
           //follow read the bed across the lip as a steep chute and could take a pool texel
           //overhanging the cliff foot for a sliding plunge — skipping the whole free fall.
+          //The gentle run restarts here (those checks used to reset it by reading the lip
+          //as steep): carried over the fall, the creek above the lip counted toward
+          //'settled' and the trace stopped a metre past the landing, cutting the tail short.
+          gentleRun = 0.0;
           tau += dt;
           path += Math.hypot(px - ox, py - oy, pz - oz);
           pushSample();
@@ -685,12 +691,23 @@ ARestlessOcean.WaterfallNappe = {};
       while(j < rows.length && isFall(rows[j])) ++j;
       let k = i;
       while(k > 0 && rows[i].s - rows[k - 1].s <= leadLen) --k;
+      //...and its LAST box runs corridorTail metres past the landing. The creek's level is a
+      //1 m heightfield, so it is still ramping down from the brink onto the pool for a metre
+      //or so past where the water lands; a box ending AT the landing handed that ramp back to
+      //the creek, and the sheet, cutting itself at the creek's level there (the ramp, 0.7 m
+      //above the pool at hero-creek), stopped short of the water: a strip of cliff between
+      //the fall and the foam (Dante, 2026-09-22). The creek steps aside only where its level
+      //is steep, so the flat pool past the ramp keeps its surface inside the box.
+      let e = j;
+      const tailLen = opt(o, 'corridorTail');
+      const lf = rows[j - 1];   //plan metres, not arc length: the arc still holds the last of the drop
+      while(e < rows.length && Math.hypot(rows[e].x - lf.x, rows[e].z - lf.z) < tailLen && !isFall(rows[e])) ++e;
       let start = rows[k], lead = rows[i].s - rows[k].s, plan = 0.0, prev = rows[i];
-      for(let m = i; m < j; ++m){
+      for(let m = i; m < e; ++m){
         const row = rows[m];
         plan += Math.hypot(row.x - prev.x, row.z - prev.z);
         prev = row;
-        if(plan >= len || m === j - 1){
+        if(plan >= len || m === e - 1){
           caps.push({ax: start.x, az: start.z, bx: row.x, bz: row.z, r: r, lead: lead});
           start = row; lead = 0.0; plan = 0.0;
         }

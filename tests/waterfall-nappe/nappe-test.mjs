@@ -62,6 +62,12 @@ function summarize(n){
   const t = land ? n.samples.find(s=>Math.abs(s.x-land.x)<1e-9 && Math.abs(s.z-land.z)<1e-9) : null;
   check('vertical: free fall, impact vy ≈ -√(2g·10)=-14', land && Math.abs(land.vy + 14.0) < 1.2, land && f2(land.vy));
   check('vertical: landing x = v0·t (≈1-3 m)', land && land.z > 0.8 && land.z < 3.5, land && f2(land.z));
+  //The landing tail (landTail) and the last corridor box (corridorTail) run on past the landing.
+  const lastFall = n.rows.filter(r => r.fallFlag > 0.5).at(-1);
+  const tail = n.rows.at(-1).s - lastFall.s;
+  check('vertical: landing tail ≥ 2.5 m (gentle run restarts at takeoff)', tail >= 2.5, 'tail '+f2(tail));
+  const cEnd = Math.max(...n.corridors.map(c => c.bz));
+  check('vertical: corridor reaches ≥ 1.5 m past the landing', cEnd - lastFall.z >= 1.5, 'past '+f2(cEnd - lastFall.z));
 }
 // 4. staircase cascade: 4 steps of 2.5 m, 3 m ledges, as a chain of 4 falls
 {
