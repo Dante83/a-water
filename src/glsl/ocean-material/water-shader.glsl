@@ -216,8 +216,12 @@ uniform float meteringSurveyValid;
   uniform vec4 fallCorridorA[FALL_CORRIDOR_MAX];
   uniform vec4 fallCorridorB[FALL_CORRIDOR_MAX];
   uniform int fallCorridorCount;
-  float fallCorridorWeight(vec2 p){
-    float w = 0.0;
+  //x: inside a box (soft half-metre edges). y: the LEAD RAMP — a box whose B.y (lead, m) is
+  //set starts that many metres upstream of a takeoff, and across those metres this surface
+  //fades out by distance alone while the sheet (which draws the exact complement) fades in:
+  //a cross-dissolve between the two waters instead of a swap along one line (round 11).
+  vec2 fallCorridorWeights(vec2 p){
+    vec2 w = vec2(0.0);
     for(int i = 0; i < FALL_CORRIDOR_MAX; ++i){
       if(i >= fallCorridorCount) break;
       vec2 a = fallCorridorA[i].xy;
@@ -229,10 +233,12 @@ uniform float meteringSurveyValid;
       float along = dot(q, d);
       float across = abs(q.x * d.y - q.y * d.x);
       float r = fallCorridorB[i].x;
-      //Half a metre of soft edge all round, so neighbouring boxes overlap cleanly.
-      float inside = smoothstep(-0.5, 0.0, along) * smoothstep(-0.5, 0.0, len - along)
+      float lead = fallCorridorB[i].y;
+      float startEdge = lead > 0.0 ? step(0.0, along) : smoothstep(-0.5, 0.0, along);
+      float inside = startEdge * smoothstep(-0.5, 0.0, len - along)
                    * (1.0 - smoothstep(r - 0.5, r, across));
-      w = max(w, inside);
+      float ramp = lead > 0.0 ? smoothstep(0.0, lead, along) : 0.0;
+      w = max(w, vec2(inside, inside * ramp));
     }
     return w;
   }
@@ -1214,6 +1220,21 @@ float smithMaskingBeckmann(vec3 H, vec3 S, float roughness){
     float aSample2 = texture(causticMap, uv2).g;
     return min(aSample1, aSample2);
   }
+
+  //The caustic octave blend at a surface point (the loop that used to sit inline in main).
+  vec3 causticOctaves(vec2 pxz, float downPath, float level0, float levelT, float baseUV, float dispersion){
+    vec3 raw = vec3(0.0);
+    for(int k = 0; k < 2; k++){
+      float causticScale = baseUV * exp2(level0 + float(k));
+      vec2 causticUV = causticScale * pxz;
+      float causticSplit = causticScale * dispersion * downPath;
+      vec3 causticOctave = vec3(causticShader(causticUV + causticSplit, t),
+                                causticShader(causticUV, t),
+                                causticShader(causticUV - causticSplit, t));
+      raw += (k == 0 ? 1.0 - levelT : levelT) * causticOctave;
+    }
+    return raw;
+  }
 #endif
 
 //Converted from the Minstrel Water Engine
@@ -1614,8 +1635,9 @@ void main(){
     //the surface and this one steps aside. Gated on the level slope (tan 10 to 20 degrees,
     //over a 0.75 m stencil) rather than the whole corridor, so the flat plunge pool the
     //sheet dives into, and any ledge pool between steps, stay here and depth-clip it.
-    float flowFallCorridor = fallCorridorWeight(worldPosition.xz);
-    float flowFallOwn = 0.0;
+    vec2 flowFallW = fallCorridorWeights(worldPosition.xz);
+    float flowFallCorridor = flowFallW.x;
+    float flowFallOwn = flowFallW.y;
     if(flowFallCorridor > 0.0){
       const float FALL_EPS = 0.75;
       float fxm = waterFieldAt(worldPosition.xz - vec2(FALL_EPS, 0.0)).r;
@@ -1623,7 +1645,7 @@ void main(){
       float fzm = waterFieldAt(worldPosition.xz - vec2(0.0, FALL_EPS)).r;
       float fzp = waterFieldAt(worldPosition.xz + vec2(0.0, FALL_EPS)).r;
       float fallLevelSlope = length(vec2(fxp - fxm, fzp - fzm)) / (2.0 * FALL_EPS);
-      flowFallOwn = flowFallCorridor * smoothstep(0.176, 0.364, fallLevelSlope);
+      flowFallOwn = max(flowFallOwn, flowFallCorridor * smoothstep(0.176, 0.364, fallLevelSlope));
     }
     if(flowFallOwn >= 0.998) discard;
   #else
@@ -2541,23 +2563,34 @@ void main(){
       //  0.1 (index 1.331 vs 1.339): invisible in a creek, millimetres in the sea.
       const float CAUSTIC_BASE_UV = 0.3;
       const float CAUSTIC_TILE_PER_DEPTH = 0.65;
-      const float CAUSTIC_MIN_TILE_M = 0.25;
+      #if($flowing_water)
+        //A creek's focusing ripples are decimetres to metres long; at 0.25 m the cells read as
+        //fine static grain beside the creek's 2 m foam (Dante, round 11). Look choice, flagged.
+        const float CAUSTIC_MIN_TILE_M = 1.0;
+      #else
+        const float CAUSTIC_MIN_TILE_M = 0.25;
+      #endif
       const float CAUSTIC_FOCUS_M = 0.25;
       const float CAUSTIC_DISPERSION_PER_M = 0.0006;
       float causticTile = clamp(CAUSTIC_TILE_PER_DEPTH * downPath, CAUSTIC_MIN_TILE_M, 1.0 / CAUSTIC_BASE_UV);
       float causticLevel = log2(1.0 / (causticTile * CAUSTIC_BASE_UV));
       float causticLevel0 = floor(causticLevel);
       float causticLevelT = causticLevel - causticLevel0;
-      vec3 causticSampleRaw = vec3(0.0);
-      for(int k = 0; k < 2; k++){
-        float causticScale = CAUSTIC_BASE_UV * exp2(causticLevel0 + float(k));
-        vec2 causticUV = causticScale * pSurfaceHit.xz;
-        float causticSplit = causticScale * CAUSTIC_DISPERSION_PER_M * downPath;
-        vec3 causticOctave = vec3(causticShader(causticUV + causticSplit, t),
-                                  causticShader(causticUV, t),
-                                  causticShader(causticUV - causticSplit, t));
-        causticSampleRaw += (k == 0 ? 1.0 - causticLevelT : causticLevelT) * causticOctave;
-      }
+      vec3 causticSampleRaw;
+      #if($flowing_water)
+        //Flowing water: the pattern rides the current (the ripples that focus it do), by the
+        //same two-phase advection as the creek's ripples. It sat still under a moving creek.
+        const float CAUSTIC_ADVECT_PERIOD = 2.0;
+        float cPhA = fract(t / CAUSTIC_ADVECT_PERIOD);
+        float cPhB = fract(cPhA + 0.5);
+        float cMix = abs(1.0 - 2.0 * cPhA);
+        causticSampleRaw = mix(
+          causticOctaves(pSurfaceHit.xz - flowVelocity * cPhA * CAUSTIC_ADVECT_PERIOD, downPath, causticLevel0, causticLevelT, CAUSTIC_BASE_UV, CAUSTIC_DISPERSION_PER_M),
+          causticOctaves(pSurfaceHit.xz - flowVelocity * cPhB * CAUSTIC_ADVECT_PERIOD + vec2(3.7, 1.9), downPath, causticLevel0, causticLevelT, CAUSTIC_BASE_UV, CAUSTIC_DISPERSION_PER_M),
+          cMix);
+      #else
+        causticSampleRaw = causticOctaves(pSurfaceHit.xz, downPath, causticLevel0, causticLevelT, CAUSTIC_BASE_UV, CAUSTIC_DISPERSION_PER_M);
+      #endif
       vec3 causticSample = smoothstep(vec3(CAUSTIC_THRESHOLD_LO), vec3(CAUSTIC_THRESHOLD_HI), causticSampleRaw);
       dbgCausticSample = causticSample;
       float causticDepthFade = exp(-downPath / CAUSTIC_CONTRAST_DEPTH) * smoothstep(0.0, CAUSTIC_FOCUS_M, downPath);

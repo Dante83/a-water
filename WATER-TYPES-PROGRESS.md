@@ -287,6 +287,26 @@ sheet's own tail.
 - Not the sheet: thin slivers of the CREEK's pool run up the base of the step at both banks (seen
   with the sheet hidden) — Phase 4 wet cells along the cliff foot.
 
+### Round 11 — the seam, scaly glints, the tail under the water, still caustics (Dante, 2026-09-21)
+
+Reproduced from the east bank (480, 5.5, 769) looking west. With the sheet hidden, the creek ended
+on a clean line well upstream of the brink and the sheet's lead-in took over along that line: two
+differently shaded waters swapped at once.
+- **A shared cross-dissolve (Dante: "pass this into the river shaders").** The first corridor box of
+  each free fall starts `corridorLead` (2 m) upstream of the takeoff and carries that length in
+  B.y. Across it the CREEK fades out by distance (`fallCorridorWeights().y`, water-shader.glsl) and
+  the sheet, which draws the exact complement with the same function, fades in. Beyond the lead,
+  boxes step aside on steep level as before.
+- **Tail under the water:** the jet is cut below the creek's surface wherever the creek draws at all
+  (it was weighted by how much, so a partly drawn creek let the jet show through).
+- **Scaly reflections on the face:** the grain's normals made the foam a field of sharp sky glints.
+  Bubbles are not a mirror: the reflection normal leans back to the smooth sheet and SSR + glint
+  fade with the bubble layer (`clearSurf = exp(−τ_b/2)`).
+- **Caustics** (creek and sheet): on flowing water they now ride the current (two-phase advection,
+  as the ripples), and their minimum cell is 1 m (was 0.25 m, fine static grain beside 2 m foam; a
+  look choice). The ocean's caustics are unchanged. The inline octave loop became causticOctaves().
+- Not found: the "triangle up top" — needs Dante's camera position.
+
 ### Deferred
 
 The plunge pool's

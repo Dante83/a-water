@@ -105,6 +105,7 @@ ARestlessOcean.WaterfallNappe = {};
     chuteAerationLength: 5.0,   //m
     aerationDecayLength: 3.0,   //m
     minImpactSpeed: 0.5,        //m/s normal speed below which a touchdown is not recorded
+    corridorLead: 2.0,          //m of creek/sheet cross-dissolve before each takeoff
     corridorLength: 4.0,         //m of plan length per corridor box
     corridorMargin: 0.75,        //m added to the half-width
     colSpacing: 0.5,            //m between ribbon columns
@@ -617,27 +618,32 @@ ARestlessOcean.WaterfallNappe = {};
   //Corridor boxes (flat-ended) over the rows where the sheet draws: {ax, az, bx, bz, r}. The
   //flowing-water material fades its own surface out inside them (on steep level only).
   N.buildCorridors = function(nappe, o){
-    const rows = nappe.rows, len = opt(o, 'corridorLength');
-    //As wide as the sheet, or as the channel's water at any lip (lipSpan, centred span
-    //about the jet), whichever is wider.
+    const rows = nappe.rows, len = opt(o, 'corridorLength'), leadLen = opt(o, 'corridorLead');
     const r = 0.5 * Math.max(nappe.width, nappe.lipSpan || 0.0) + opt(o, 'corridorMargin');
     const caps = [];
-    let start = null, plan = 0.0, prev = null;
-    for(let i = 0; i < rows.length; ++i){
-      const row = rows[i];
-      //Only the FREE FALL: the creek steps aside under the jet and nowhere else. Covering the
-      //whole ribbon (the 3 m lead-in and tail) hid the creek's foamy surface over the landing
-      //zone, and the tail drew plain clear water there instead: a Fresnel-white slab with a
-      //crack above it at the foot of the fall (round 10). The attached rows fill only the
-      //creek's own holes (the material's complement).
-      const on = (row.fallFlag !== undefined ? row.fallFlag : row.presence) > 0.5;
-      if(on && !start){ start = row; plan = 0.0; }
-      if(start && prev) plan += Math.hypot(row.x - prev.x, row.z - prev.z);
-      if(start && (!on || plan >= len || i === rows.length - 1)){
-        caps.push({ax: start.x, az: start.z, bx: row.x, bz: row.z, r: r});
-        start = on ? row : null; plan = 0.0;
+    const isFall = function(row){ return (row.fallFlag !== undefined ? row.fallFlag : row.presence) > 0.5; };
+    let i = 0;
+    while(i < rows.length){
+      if(!isFall(rows[i])){ ++i; continue; }
+      //A free-fall run [i, j). Its FIRST box starts leadLen metres upstream of the takeoff and
+      //carries that length as `lead`: across it the creek fades out by distance while the sheet
+      //fades in (the cross-dissolve, water-shader.glsl fallCorridorWeights). Only the free fall
+      //is covered: past the landing the creek keeps its foamy surface (round 10).
+      let j = i;
+      while(j < rows.length && isFall(rows[j])) ++j;
+      let k = i;
+      while(k > 0 && rows[i].s - rows[k - 1].s <= leadLen) --k;
+      let start = rows[k], lead = rows[i].s - rows[k].s, plan = 0.0, prev = rows[i];
+      for(let m = i; m < j; ++m){
+        const row = rows[m];
+        plan += Math.hypot(row.x - prev.x, row.z - prev.z);
+        prev = row;
+        if(plan >= len || m === j - 1){
+          caps.push({ax: start.x, az: start.z, bx: row.x, bz: row.z, r: r, lead: lead});
+          start = row; lead = 0.0; plan = 0.0;
+        }
       }
-      prev = row;
+      i = j;
     }
     nappe.corridors = caps;
   };

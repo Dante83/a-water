@@ -324,6 +324,21 @@ vec3 skyRadiance(vec3 dir){
     float aSample2 = texture(causticMap, uv2).g;
     return min(aSample1, aSample2);
   }
+
+  //The caustic octave blend at a surface point (the loop that used to sit inline in main).
+  vec3 causticOctaves(vec2 pxz, float downPath, float level0, float levelT, float baseUV, float dispersion){
+    vec3 raw = vec3(0.0);
+    for(int k = 0; k < 2; k++){
+      float causticScale = baseUV * exp2(level0 + float(k));
+      vec2 causticUV = causticScale * pxz;
+      float causticSplit = causticScale * dispersion * downPath;
+      vec3 causticOctave = vec3(causticShader(causticUV + causticSplit, t),
+                                causticShader(causticUV, t),
+                                causticShader(causticUV - causticSplit, t));
+      raw += (k == 0 ? 1.0 - levelT : levelT) * causticOctave;
+    }
+    return raw;
+  }
 #endif
 
 //── Lifted verbatim from water-shader.glsl (keep in step): the creek's SSR ─────────────
@@ -535,8 +550,9 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 marchDir, vec3 skyDir){
 //the pixel) and, inside a fall's corridor, stepping aside where its level is steep
 //(flowFallOwn). Not mirrored: the still/flowing hand-off weight and the bank taper, which
 //are ~1 and ~0 in a creek at a fall. Outside the flowing surface's window: 0 (no creek).
-float creekCorridorWeight(vec2 p){
-  float w = 0.0;
+//water-shader.glsl fallCorridorWeights (keep in step): x inside a box, y the lead ramp.
+vec2 creekCorridorWeights(vec2 p){
+  vec2 w = vec2(0.0);
   for(int i = 0; i < FALL_CORRIDOR_MAX; ++i){
     if(i >= fallCorridorCount) break;
     vec2 a = fallCorridorA[i].xy;
@@ -548,9 +564,12 @@ float creekCorridorWeight(vec2 p){
     float along = dot(q, d);
     float across = abs(q.x * d.y - q.y * d.x);
     float r = fallCorridorB[i].x;
-    float inside = smoothstep(-0.5, 0.0, along) * smoothstep(-0.5, 0.0, len - along)
+    float lead = fallCorridorB[i].y;
+    float startEdge = lead > 0.0 ? step(0.0, along) : smoothstep(-0.5, 0.0, along);
+    float inside = startEdge * smoothstep(-0.5, 0.0, len - along)
                  * (1.0 - smoothstep(r - 0.5, r, across));
-    w = max(w, inside);
+    float ramp = lead > 0.0 ? smoothstep(0.0, lead, along) : 0.0;
+    w = max(w, vec2(inside, inside * ramp));
   }
   return w;
 }
@@ -575,15 +594,17 @@ float creekVisibleAt(vec2 xz, float groundY, bool haveGround){
   if(creekWetAt(xz) < 0.5) return 0.0;   //the creek discards known-dry texels
   float level = creekLevel0(xz);
   float vis = haveGround ? smoothstep(0.03, 0.10, level - groundY) : 1.0;
-  float corr = creekCorridorWeight(xz);
+  vec2 cw = creekCorridorWeights(xz);
+  float corr = cw.x;
+  float own = cw.y;
   if(corr > 0.0){
     const float FALL_EPS = 0.75;
     float fxm = creekLevel0(xz - vec2(FALL_EPS, 0.0)), fxp = creekLevel0(xz + vec2(FALL_EPS, 0.0));
     float fzm = creekLevel0(xz - vec2(0.0, FALL_EPS)), fzp = creekLevel0(xz + vec2(0.0, FALL_EPS));
     float slope = length(vec2(fxp - fxm, fzp - fzm)) / (2.0 * FALL_EPS);
-    vis *= 1.0 - corr * smoothstep(0.176, 0.364, slope);
+    own = max(own, corr * smoothstep(0.176, 0.364, slope));
   }
-  return vis;
+  return vis * (1.0 - own);
 }
 
 //── The creek's ripples (water-shader.glsl, Phase 4 step 4), for the lead-in ─────────
@@ -746,9 +767,15 @@ void main(){
   float F = fresnelAirToWater(NdotV);
   //March on the smooth (displaced) normal, sample the sky on the detailed one: the creek's
   //split (see screenSpaceReflection). Detail in the march scatters it; none in the sky mirrors.
-  vec3 reflected = screenSpaceReflection(vWorldPos, reflect(-V, N), reflect(-V, Ns));
-  vec3 R = reflect(-L, Ns);
-  vec3 glint = brightestDirectionalLight * pow(max(0.0, dot(R, V)), uSpecFalloff) * specBoost * sunShadow;
+  //Where the surface is broken by bubbles it is not a mirror: the grain's normals stand in for
+  //ripples on clear water only. On the aerated face they turned the foam texture into a field
+  //of sharp sky glints, the scaly look Dante found (round 11). So the reflection normal leans
+  //back to the smooth sheet, and the specular fades, as the bubble layer thickens.
+  float clearSurf = exp(-0.5 * tauB);
+  vec3 Nr = normalize(mix(N, Ns, clearSurf));
+  vec3 reflected = screenSpaceReflection(vWorldPos, reflect(-V, N), reflect(-V, Nr)) * mix(0.35, 1.0, clearSurf);
+  vec3 R = reflect(-L, Nr);
+  vec3 glint = brightestDirectionalLight * pow(max(0.0, dot(R, V)), uSpecFalloff) * specBoost * sunShadow * clearSurf;
   vec3 inscatter = underwaterInscatterSurface(-V);
 
   //── What is behind: the creek's refraction model (see COMPOSITING) ─────────
@@ -855,23 +882,34 @@ void main(){
       //  0.1 (index 1.331 vs 1.339): invisible in a creek, millimetres in the sea.
       const float CAUSTIC_BASE_UV = 0.3;
       const float CAUSTIC_TILE_PER_DEPTH = 0.65;
-      const float CAUSTIC_MIN_TILE_M = 0.25;
+      #if(1)
+        //A creek's focusing ripples are decimetres to metres long; at 0.25 m the cells read as
+        //fine static grain beside the creek's 2 m foam (Dante, round 11). Look choice, flagged.
+        const float CAUSTIC_MIN_TILE_M = 1.0;
+      #else
+        const float CAUSTIC_MIN_TILE_M = 0.25;
+      #endif
       const float CAUSTIC_FOCUS_M = 0.25;
       const float CAUSTIC_DISPERSION_PER_M = 0.0006;
       float causticTile = clamp(CAUSTIC_TILE_PER_DEPTH * downPath, CAUSTIC_MIN_TILE_M, 1.0 / CAUSTIC_BASE_UV);
       float causticLevel = log2(1.0 / (causticTile * CAUSTIC_BASE_UV));
       float causticLevel0 = floor(causticLevel);
       float causticLevelT = causticLevel - causticLevel0;
-      vec3 causticSampleRaw = vec3(0.0);
-      for(int k = 0; k < 2; k++){
-        float causticScale = CAUSTIC_BASE_UV * exp2(causticLevel0 + float(k));
-        vec2 causticUV = causticScale * pSurfaceHit.xz;
-        float causticSplit = causticScale * CAUSTIC_DISPERSION_PER_M * downPath;
-        vec3 causticOctave = vec3(causticShader(causticUV + causticSplit, t),
-                                  causticShader(causticUV, t),
-                                  causticShader(causticUV - causticSplit, t));
-        causticSampleRaw += (k == 0 ? 1.0 - causticLevelT : causticLevelT) * causticOctave;
-      }
+      vec3 causticSampleRaw;
+      #if(1)
+        //Flowing water: the pattern rides the current (the ripples that focus it do), by the
+        //same two-phase advection as the creek's ripples. It sat still under a moving creek.
+        const float CAUSTIC_ADVECT_PERIOD = 2.0;
+        float cPhA = fract(t / CAUSTIC_ADVECT_PERIOD);
+        float cPhB = fract(cPhA + 0.5);
+        float cMix = abs(1.0 - 2.0 * cPhA);
+        causticSampleRaw = mix(
+          causticOctaves(pSurfaceHit.xz - vFlowVel * cPhA * CAUSTIC_ADVECT_PERIOD, downPath, causticLevel0, causticLevelT, CAUSTIC_BASE_UV, CAUSTIC_DISPERSION_PER_M),
+          causticOctaves(pSurfaceHit.xz - vFlowVel * cPhB * CAUSTIC_ADVECT_PERIOD + vec2(3.7, 1.9), downPath, causticLevel0, causticLevelT, CAUSTIC_BASE_UV, CAUSTIC_DISPERSION_PER_M),
+          cMix);
+      #else
+        causticSampleRaw = causticOctaves(pSurfaceHit.xz, downPath, causticLevel0, causticLevelT, CAUSTIC_BASE_UV, CAUSTIC_DISPERSION_PER_M);
+      #endif
       vec3 causticSample = smoothstep(vec3(CAUSTIC_THRESHOLD_LO), vec3(CAUSTIC_THRESHOLD_HI), causticSampleRaw);
       float causticDepthFade = exp(-downPath / CAUSTIC_CONTRAST_DEPTH) * smoothstep(0.0, CAUSTIC_FOCUS_M, downPath);
       causticMod = vec3(1.0) + causticDepthFade * causticIntensityMultiplier * CAUSTIC_AMP * (causticSample - vec3(CAUSTIC_TEXTURE_MEAN));
@@ -929,7 +967,9 @@ void main(){
   //Where the free fall comes down into water the creek draws, it dissolves over its last
   //PLUNGE_BLEND metres above that surface instead of cutting a hard line through it.
   const float PLUNGE_BLEND = 0.35;
-  handoff *= mix(1.0, smoothstep(0.0, PLUNGE_BLEND, vWorldPos.y - creekHere), creekVis * airborne);
+  //Wherever the creek draws AT ALL, not in proportion to how much: a partly drawn creek over
+  //the landing let the jet show through underneath it (round 11).
+  handoff *= mix(1.0, smoothstep(0.0, PLUNGE_BLEND, vWorldPos.y - creekHere), step(0.02, creekVis) * airborne);
   float outAlpha = presence * handoff * edgeAlpha * strandAlpha * soft * uOpacity;
   //The sheet writes depth (so the tongue at the lip hides the fall behind it, instead of the
   //fall painting over it in row order, round 9): a fully faded fragment must not.

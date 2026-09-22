@@ -282,7 +282,7 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype._streamCorridors = function()
     if(!u.fallCorridorA) continue;
     for(let i = 0; i < caps.length; ++i){
       u.fallCorridorA.value[i].set(caps[i].ax, caps[i].az, caps[i].bx, caps[i].bz);
-      u.fallCorridorB.value[i].set(caps[i].r, 0, 0, 0);
+      u.fallCorridorB.value[i].set(caps[i].r, caps[i].lead || 0.0, 0, 0);
     }
     u.fallCorridorCount.value = caps.length;
   }
