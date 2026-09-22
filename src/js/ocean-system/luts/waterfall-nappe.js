@@ -755,10 +755,22 @@ ARestlessOcean.WaterfallNappe = {};
         for(let d = 0.0; d <= hw + 1e-6; d += step){
           const t = off + sg * d;
           const g = env && env.groundAt ? env.groundAt(row.x + row.ax * t, row.z + row.az * t) : null;
-          //Attached rows (lead-in, tail) sit ON the creek, where a bank rising a centimetre
-          //above the interpolated level is noise: they keep a quarter of their width. A
-          //free-fall row does not: a jut there is real rock, and the floor put vertices in it.
-          if(g != null && g > row.y){ e[side] = Math.max(d - step, row.fallFlag > 0.5 ? 0.0 : 0.25 * hw); break; }
+          //Attached rows (lead-in, tail) sit ON the creek: the vertex stage lifts each vertex
+          //onto the creek's level, which curves UP toward the banks (1.72 m mid-stream, 1.95 m
+          //at the edges below hero-creek's fall). Walled by the ground against the row's single
+          //height, the tail was cut narrower than the river it lands in: an hourglass, and the
+          //river widening out of nothing below it (Dante, 2026-09-22). So an attached row runs
+          //as far as the creek visibly draws water (visibleDepth, the fall's own width rule) and
+          //only then stops at a bank; it keeps a quarter of its width. A free-fall row is
+          //walled by the ground: a jut there is real rock, and a floor put vertices in it.
+          if(g != null && g > row.y){
+            if(!(row.fallFlag > 0.5)){
+              const w = waterHere(env, row.x + row.ax * t, row.z + row.az * t);
+              if(w && w.depth >= opt(o, 'visibleDepth')) continue;
+            }
+            e[side] = Math.max(d - step, row.fallFlag > 0.5 ? 0.0 : 0.25 * hw);
+            break;
+          }
         }
       }
       lim.push(e);
