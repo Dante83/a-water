@@ -1669,6 +1669,24 @@ void main(){
     if(flowFallOwn >= 0.998) discard;
   #else
     if(flowHandoffW >= 0.998) discard;
+    //In the hand-off band this surface stands in for FLOWING water, so it keeps the
+    //flowing surface's rule that thin water is not a surface. a-land wets a creek's slow
+    //fringe with millimetres (hero-creek (548, 640): 3 mm); the flowing surface fades that
+    //out, but this one drew it as a flat opaque film at the level, which showed as a
+    //puddle wherever the rendered ground dipped a few centimetres under it (Dante,
+    //2026-09-22, (546, 643)). Opaque, so no fade: it cuts at the middle of the flowing
+    //surface's 3-10 cm ramp (the waterfall sheet's visibleDepth). Only in the band: lake and
+    //sea shores keep drawing to the terrain's depth test as before.
+    if(flowHandoffW > 0.002 && underwaterFactor < 0.5){
+      vec2 stillGroundUV = gl_FragCoord.xy / screenResolution;
+      float stillGroundRaw = texture2D(refractionDepthTexture, stillGroundUV).r;
+      if(stillGroundRaw < 1.0){
+        vec4 stillGroundView = inverseProjectionMatrix * vec4(stillGroundUV * 2.0 - 1.0, stillGroundRaw * 2.0 - 1.0, 1.0);
+        stillGroundView /= stillGroundView.w;
+        const float STILL_BAND_MIN_THICKNESS_M = 0.06;
+        if(worldPosition.y - (inverseViewMatrix * stillGroundView).y < STILL_BAND_MIN_THICKNESS_M) discard;
+      }
+    }
   #endif
   //Phase 3a: a ripple floor for the two smallest cascades in very shallow water and
   //on the swash sheet (normals only; the geometry is untouched).
