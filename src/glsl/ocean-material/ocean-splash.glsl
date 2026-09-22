@@ -12,6 +12,7 @@ uniform sampler2D uLinearDepth;   //G-buffer attachment 2: positive view-Z, a=ha
 uniform vec2 uResolution;         //G-buffer / drawing-buffer size in pixels
 uniform float uSoftRange;         //metres over which we soft-fade into geometry
 uniform float uOpacity;           //global artistic opacity (FUDGE)
+uniform float uFallMistOpacity;   //waterfall mist's own opacity (type 2): not scaled by uOpacity
 uniform int uDebugMode;           //0 = normal, 1 = tint by emitter type
 uniform float uNoiseScale;        //3D noise frequency across the droplet
 uniform float uErode;             //silhouette erosion threshold (higher = grainier)
@@ -352,6 +353,9 @@ void main(){
   float density = mix(hazeDensity, dropCov, beadMix);
   float foamWind = mix(mix(1.0 - uFoamCalmFade, 1.0, windE), 1.0, fallMist);
   float opacity = mix(uOpacity, uFoamOpacity, aer) * foamWind;
+  //Waterfall mist is its own opacity. Through the global uOpacity (0.1 on the hero-creek pages,
+  //tuned for sea spray) the plunge haze was all but invisible (Dante, 2026-09-22).
+  opacity = mix(opacity, uFallMistOpacity, fallMist);
 
   //Lifetime fade: a quick rise then a long ease-out, like real spray thinning.
   float fadeIn = smoothstep(0.0, 0.15, vAge01);

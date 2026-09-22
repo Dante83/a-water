@@ -176,8 +176,11 @@ ARestlessOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
                                     //Raise it to add droplets back under the mist.
   //Waterfall MIST (Phase 6 round 9): fine type-2 puffs rolling out from every traced impact —
   //the haze off the bottom of a fall. Type 2 is a haze puff at any wind (ocean-splash.glsl).
-  this.fallMistRate = 20.0;         //FUDGE: puffs per (m³/s) per second at IMPACT_REF_SPEED.
+  this.fallMistRate = 50.0;         //FUDGE: puffs per (m³/s) per second at IMPACT_REF_SPEED (20 -> 50
+                                    //2026-09-22 with fallMistOpacity: the plume hides the landing line).
   this.fallMistSize = 1.0;          //m base puff radius.
+  this.fallMistOpacity = 0.6;       //the mist's own opacity (uOpacity is the sea spray's; 0.1 on
+                                    //the hero-creek pages hid the plunge haze).  Live knob.
   this.fallMistLife = 2.8;          //s base life: it hangs and rolls, unlike crest mist's 0.6 s.
   this.fallMistSpeed = 1.2;         //m/s outward roll along the pool.
   this.fallMistRise = 0.5;          //m/s upward lift.
@@ -1108,6 +1111,7 @@ ARestlessOcean.OceanSplash.prototype.tick = function(ctx){
   const u = this.material.uniforms;
   //Push art / lighting uniforms regardless of enable state so a toggle is instant.
   u.uOpacity.value = this.opacity;
+  if(u.uFallMistOpacity) u.uFallMistOpacity.value = this.fallMistOpacity;
   u.uSizeScale.value = this.sizeScale;
   u.uSoftRange.value = this.softRange;
   u.uMaxPointSize.value = this.maxPointSize;
