@@ -31,6 +31,8 @@ ARestlessOcean.Materials.Ocean.waterfallSheetMaterial = {
     inverseViewMatrix: {value: new THREE.Matrix4()},
     screenResolution: {value: new THREE.Vector2(1920.0, 1080.0)},
     foamOpacityMap: {value: null},
+    flowWaveProfile: {value: null},
+    flowRippleScale: {value: 1.0},
     foamNormalMap: {value: null},
 
     //Scene fog. The material is fog:true, so three's refreshFogUniforms writes these

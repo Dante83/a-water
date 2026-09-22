@@ -28,7 +28,7 @@ function summarize(n){
   check('hero: sheet rows exist', n.rows.length > 4);
   const rib = N.buildRibbon(n, {groundAt: ground, waterAt: water});
   check('hero: ribbon', rib && rib.vertexCount>0 && rib.tangent.length === rib.vertexCount*3, rib && `verts ${rib.vertexCount}`);
-  check('hero: sheet is the free fall (+ its 2 m brink lead-in) only', n.rows.every(r => r.presence < 0.01 || r.air > 0.0 || n.rows.some(q => q.air > 0 && q.s - r.s >= -0.26 && q.s - r.s <= 2.26)), '');
+  check('hero: sheet is the free fall (+ 2 m lead-in, 1 m tail) only', n.rows.every(r => r.presence < 0.01 || r.air > 0.0 || n.rows.some(q => q.air > 0 && q.s - r.s >= -1.26 && q.s - r.s <= 2.26)), '');
 }
 // 2. 45° chute 10 m drop, flat above and below (no pool water)
 {

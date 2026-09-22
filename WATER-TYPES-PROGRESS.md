@@ -160,6 +160,31 @@ has a hard time connecting." One design decision behind most of it, and one Phas
 - Test harness gotcha: `_corridors = []` from the console is undone by the next re-trace (≤ 2 s
   while tiles stream). To isolate the creek, override `_streamCorridors`.
 
+### Round 5 — "the river's texture needs to continue into the lip", widths (Dante, 2026-09-21)
+
+- **The creek's surface really is underground at every brink.** a-land's water level is
+  interpolated between 1 m cells, and at a lip it blends the creek cell (4.91) with the fall
+  cell (4.02): from z 764.5 to 765.2 on hero-creek the level runs BELOW the ground (4.25 vs 4.50
+  at 764.75). That is the strip the creek "drops" (also why its thin-water fade fires there).
+- **Hand-off by depth, not alpha.** The sheet's lead-in (2 m before each takeoff) and a new tail
+  (1 m after each landing) are FULLY present at the creek's own level (bed + the cell's depth).
+  The creek writes depth with a polygon offset toward the camera and wins wherever it exists;
+  the sheet shows only through its holes. The old presence ramp left the sheet half-transparent
+  exactly over the holes.
+- **The scene fog chunk made the sheet look like terrain.** With a-starry-sky's AP on, its fog
+  branch re-linearises, adds aerial perspective and tone-maps AGAIN — right for linear terrain,
+  wrong for the already tone-mapped sheet (orange wash; the lead-in read as ground). The sheet now
+  follows the water's rule: fog chunk only with AP off (`SHEET_SCENE_FOG`, toggled per tick).
+- **Under-water terrain behind the lead-in is lit as the creek lights its seabed** (refracted sun
+  filtered down the column + sky tinted by the water, column = depth + the creek's 0.008 grazing
+  proxy), not as dry ground.
+- **The lead-in wears the creek's ripples**: the same 16 directions of the shared
+  `flowWaveProfile`, advected with the sheet's own velocity (energy fixed at a mid value; the
+  creek reads it from FlowFoamPass). The fall keeps the grain normals.
+- **Width follows the VISIBLE water** (≥ 6 cm, mid of the creek's 3→10 cm fade), recorded at every
+  takeoff and landing, interpolated along the sheet with its centre offset: 8.0 m at the lip,
+  7.25–8.5 m at the landings on hero-creek (was 8.25 m rigid, measured to 2 cm).
+
 ### Deferred
 
 Atmospheric perspective on the sheet (it takes the scene fog chunk instead); the plunge pool's

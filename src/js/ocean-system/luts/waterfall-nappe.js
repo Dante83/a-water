@@ -85,7 +85,8 @@ ARestlessOcean.WaterfallNappe = {};
     presenceSmoothRows: 1,      //± rows of box smoothing on presence
     hopDropLo: 0.25,            //m an airborne stretch must fall to start counting as a fall ...
     hopDropHi: 0.75,            //... and to count fully
-    brinkLead: 2.0,             //m the sheet leads into each takeoff (see resample)
+    brinkLead: 2.0,             //m the sheet leads into each takeoff ...
+    landTail: 1.0,              //... and runs on after each landing (see resample)
     settleRun: 3.0,             //m of gentle attached path after the last fall to stop
     plungeMinDepth: 0.4,        //m, water at least this deep ...
     plungeMaxFroude: 0.6,       //... and at most this Froude number is a pool to plunge into
@@ -106,7 +107,8 @@ ARestlessOcean.WaterfallNappe = {};
     corridorMargin: 0.75,        //m added to the half-width
     colSpacing: 0.5,            //m between ribbon columns
     wetScanStep: 0.25,          //m, across-flow step of the wet-width scan
-    wetMinDepth: 0.02,          //m of water that counts as wet for it
+    wetMinDepth: 0.02,          //m of water that counts as wet for it (the corridor's lipSpan)
+    visibleDepth: 0.06,         //m of water the creek visibly draws (mid of its 3→10 cm fade): the sheet's width
     minWidth: 1.0,              //m, narrowest jet
     minUnitDischarge: 0.01,     //m²/s below which the field's depth × speed is not trusted
     climbStop: 0.3,             //m an attached parcel may climb before it counts as ponded
@@ -291,6 +293,17 @@ ARestlessOcean.WaterfallNappe = {};
     const thickness = function(s){ return Math.min(Math.max(q / Math.max(s, 1e-3), minDepth), 2.0 * hc); };
     let takeoffY = py;
     let lipSpan = 0.0;
+    //The VISIBLE wet span (depth ≥ visibleDepth) across the flow at each takeoff and landing:
+    //the sheet's width and centre follow them, so it matches the river it leaves and the
+    //river it lands in. Measured to 2 cm, the old start width was wider than the river the
+    //creek draws (its thin-water fade drops < 3 cm and is full only at 10 cm), and a rigid
+    //width could not match a pool narrower than the lip (hero-creek-sky, Dante).
+    const spans = [];
+    const recordSpan = function(x, z, dvx, dvz){
+      const l = Math.hypot(dvx, dvz) || 1.0;
+      const sp = N.wetSpan(env, x, z, -dvz / l, dvx / l, 3.0 * W, opt(o, 'wetScanStep'), opt(o, 'visibleDepth'));
+      if(sp) spans.push({i: samples.length, width: Math.max(sp.width, opt(o, 'minWidth')), offset: sp.offset});
+    };
     //The creek arrives with air in it already: a-land's energy (0 calm .. 1 whitewater) is
     //what the creek surface's own whitewater keys off, so a turbulent approach launches an
     //already-milky jet and a glassy one launches a clear jet.
@@ -335,6 +348,7 @@ ARestlessOcean.WaterfallNappe = {};
         if(isPool(w, o) && py <= level && (takeoffY - py) > plungeFall){
           //Into a pool: the impact is where the jet crosses its surface.
           if(!plunge){
+            recordSpan(px, pz, vx, vz);
             plunge = {x: px, y: level, z: pz, vx: vx, vy: vy, vz: vz, nx: 0, ny: 1, nz: 0, vn: -vy, level: level};
             impacts.push(plunge);
             A += Math.max(-vy, 0.0) / opt(o, 'impactAerationSpeed');
@@ -343,6 +357,7 @@ ARestlessOcean.WaterfallNappe = {};
         }
         else if(py <= g2 + h){
           //Touchdown on a ledge or the chute below: lose the normal component.
+          recordSpan(px, pz, vx, vz);
           const pl = Math.sqrt(vx * vx + vz * vz) || 1.0;
           if(!groundNormalUpwind(env, px, pz, vx / pl, vz / pl, 0.5, nrm)){ stop = 'unloaded'; break; }
           const vn = vx * nrm[0] + vy * nrm[1] + vz * nrm[2];
@@ -381,6 +396,7 @@ ARestlessOcean.WaterfallNappe = {};
         if(gb == null || gHere == null){ stop = 'unloaded'; break; }
         const offB = attachedOffset(env, bx, bz, gb, h);
         if((gHere - gb) > (py - by) + detach){
+          recordSpan(px, pz, vx, vz);
           airborne = true;
           takeoffY = py;
           //How wide the channel's water is where it leaves the ground: the corridor must
@@ -449,7 +465,7 @@ ARestlessOcean.WaterfallNappe = {};
     }
 
     const nappe = {q: q, hc: hc, vc: vc, Lb: Lb, width: W, discharge: Q, chain: chain,
-                   samples: samples, impacts: impacts, plunge: plunge, stop: stop, lipSpan: lipSpan,
+                   samples: samples, impacts: impacts, plunge: plunge, stop: stop, lipSpan: lipSpan, spans: spans,
                    rows: [], corridors: []};
     N.resample(nappe, o);
     N.buildCorridors(nappe, o);
@@ -491,6 +507,20 @@ ARestlessOcean.WaterfallNappe = {};
       if(hl > 1e-6){ r.hx /= hl; r.hz /= hl; } else { r.hx = 0.0; r.hz = 1.0; }
       rows.push(r);
     }
+    //Width and centre offset along the sheet, piecewise-linear between the recorded spans.
+    const sp = (nappe.spans || []).map(function(e){ return {s: cum[Math.min(e.i, cum.length - 1)], width: e.width, offset: e.offset}; });
+    for(let i = 0; i < rows.length; ++i){
+      const r = rows[i];
+      if(!sp.length){ r.w = nappe.width; r.off = 0.0; continue; }
+      let k = 0;
+      while(k < sp.length && sp[k].s <= r.s) ++k;
+      if(k === 0){ r.w = sp[0].width; r.off = sp[0].offset; }
+      else if(k === sp.length){ r.w = sp[k - 1].width; r.off = sp[k - 1].offset; }
+      else {
+        const a = sp[k - 1], b = sp[k], f = (r.s - a.s) / Math.max(b.s - a.s, 1e-6);
+        r.w = a.width + (b.width - a.width) * f; r.off = a.offset + (b.offset - a.offset) * f;
+      }
+    }
     //Presence: the FREE FALL only — airborne stretches, by how far they fall (above).
     //Everything attached (the approach, ramps, chutes, the run into the pool) is the
     //creek's heightfield surface, which follows the ground and has the creek's true width
@@ -501,18 +531,23 @@ ARestlessOcean.WaterfallNappe = {};
     //and draped edges climbing the banks into the air (Dante, hero-creek-sky, 2026-09-21).
     const raw = new Array(rows.length);
     for(let i = 0; i < rows.length; ++i) raw[i] = rows[i].air * rows[i].fallW;
-    //...plus a lead-in of brinkLead metres before each real takeoff, ramping 0 → 1. The
-    //creek's own surface drops out there: at a brink its level sinks toward the ramp while
-    //the rendered cliff-top edge is still under it, so Phase 4's thin-water fade (< 3 cm
-    //against the G-buffer ground) discards a strip just upstream of every lip — with the
-    //sheet off and the terrain hidden, it is still missing (hero-creek-sky, 2026-09-21).
-    //These rows are clear, unaerated water at the creek's level, so they read as the creek.
-    const lead = opt(o, 'brinkLead');
+    //...plus brinkLead metres before each real takeoff and landTail metres after each
+    //landing, FULLY present. On both sides of a fall the creek's heightfield drops a strip:
+    //at the brink its level sinks toward the ramp while the rendered cliff-top edge is still
+    //under it (Phase 4's thin-water fade discards < 3 cm; seen with the sheet off and the
+    //terrain hidden), and below it the level still runs steeply down the ramp to the pool.
+    //These rows sit at the creek's own level, so the hand-off is by DEPTH, not alpha: the
+    //creek writes depth with a polygon offset toward the camera and wins wherever it exists;
+    //the sheet shows only through the creek's holes. A ramped presence left the sheet half
+    //transparent exactly over the holes, which read as bare ground (round 5).
+    const lead = opt(o, 'brinkLead'), tail = opt(o, 'landTail');
+    const fall = raw.slice();
     for(let i = 1; i < rows.length; ++i){
-      if(raw[i] > 0.5 && raw[i - 1] <= 0.5){
-        for(let k = i - 1; k >= 0 && rows[i].s - rows[k].s < lead; --k){
-          raw[k] = Math.max(raw[k], 1.0 - (rows[i].s - rows[k].s) / lead);
-        }
+      if(fall[i] > 0.5 && fall[i - 1] <= 0.5){
+        for(let k = i - 1; k >= 0 && rows[i].s - rows[k].s < lead; --k) raw[k] = 1.0;
+      }
+      if(fall[i] <= 0.5 && fall[i - 1] > 0.5){
+        for(let k = i; k < rows.length && rows[k].s - rows[i - 1].s < tail; ++k) raw[k] = 1.0;
       }
     }
     //A sliding plunge's dive inherits the presence of the row before it.
@@ -587,7 +622,9 @@ ARestlessOcean.WaterfallNappe = {};
     const rows = nappe.rows;
     if(rows.length < 2) return null;
     const W = nappe.width;
-    const nCols = Math.max(2, Math.ceil(W / opt(o, 'colSpacing')) + 1);
+    let wMax = W;
+    for(let i = 0; i < rows.length; ++i) wMax = Math.max(wMax, rows[i].w || 0.0);
+    const nCols = Math.max(2, Math.ceil(wMax / opt(o, 'colSpacing')) + 1);
     const nV = rows.length * nCols;
     const position = new Float32Array(nV * 3), normal = new Float32Array(nV * 3);
     const tangent = new Float32Array(nV * 3), acrossDir = new Float32Array(nV * 3);
@@ -597,14 +634,15 @@ ARestlessOcean.WaterfallNappe = {};
       const row = rows[i];
       for(let c = 0; c < nCols; ++c, ++v){
         const across = -1.0 + 2.0 * c / (nCols - 1);
-        position[v * 3] = row.x + row.ax * across * 0.5 * W;
+        const w = row.w || W, off = row.off || 0.0;
+        position[v * 3] = row.x + row.ax * (off + across * 0.5 * w);
         position[v * 3 + 1] = row.y;
-        position[v * 3 + 2] = row.z + row.az * across * 0.5 * W;
+        position[v * 3 + 2] = row.z + row.az * (off + across * 0.5 * w);
         normal[v * 3] = row.nx; normal[v * 3 + 1] = row.ny; normal[v * 3 + 2] = row.nz;
         tangent[v * 3] = row.tx; tangent[v * 3 + 1] = row.ty; tangent[v * 3 + 2] = row.tz;
         acrossDir[v * 3] = row.ax; acrossDir[v * 3 + 1] = 0.0; acrossDir[v * 3 + 2] = row.az;
         flowA[v * 4] = row.tau; flowA[v * 4 + 1] = across; flowA[v * 4 + 2] = row.h; flowA[v * 4 + 3] = row.speed;
-        flowB[v * 4] = row.aer; flowB[v * 4 + 1] = row.presence; flowB[v * 4 + 2] = row.air; flowB[v * 4 + 3] = 0.5 * W;
+        flowB[v * 4] = row.aer; flowB[v * 4 + 1] = row.presence; flowB[v * 4 + 2] = row.air; flowB[v * 4 + 3] = 0.5 * (row.w || W);
       }
     }
     const index = new Uint32Array((rows.length - 1) * (nCols - 1) * 6);

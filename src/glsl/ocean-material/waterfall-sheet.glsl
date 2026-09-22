@@ -38,8 +38,8 @@ precision highp float;
 //(presence, frayed edges, strands, the soft contact).
 //
 //NOT HERE (deferred, flagged): atmospheric perspective. With a-starry-sky's AP on, the
-//creek gets AP and this sheet gets the scene fog chunk instead; falls are drawn within
-//a few hundred metres, where the difference is small.
+//creek gets AP and this sheet gets neither AP nor the scene fog chunk (see the end of
+//main); falls are drawn within a few hundred metres, where the difference is small.
 
 uniform vec3 brightestDirectionalLight;
 uniform vec3 brightestDirectionalLightDirection;   //from the sun TOWARD the scene
@@ -66,6 +66,10 @@ uniform mat4 inverseViewMatrix;
 uniform vec2 screenResolution;
 
 uniform sampler2D foamOpacityMap;
+//The creek's ripple profile buffer (FlowSurfacePass) and its live knob: the lead-in's surface
+//IS the creek's, so it carries the creek's ripples.
+uniform sampler2D flowWaveProfile;
+uniform float flowRippleScale;
 uniform sampler2D foamNormalMap;
 
 uniform float uGrainScale;       //metres per foam tile ACROSS the sheet (the creek uses 2 m)
@@ -87,6 +91,7 @@ varying vec4 vFlowA;
 varying vec4 vFlowB;
 varying vec4 vSunShadowCoord;
 varying float vViewDepth;
+varying vec2 vFlowVel;
 
 #include <fog_pars_fragment>
 
@@ -153,6 +158,46 @@ vec3 computeStandaloneSkyRadiance(vec3 worldDir){
 vec3 skyRadiance(vec3 dir){
   vec3 sky = computeStandaloneSkyRadiance(normalize(vec3(dir.x, max(dir.y, 0.0), dir.z)));
   return mix(skyAmbientColor * 0.25, sky, smoothstep(-0.3, 0.05, dir.y));
+}
+
+//── The creek's ripples (water-shader.glsl, Phase 4 step 4), for the lead-in ─────────
+//Same sixteen directions of the same profile buffer, advected with the current by the same
+//two-phase trick. Differences, flagged: the energy is a mid value (the creek reads it from
+//FlowFoamPass, which this pass does not sample), and FLOW_WAVE_PERIOD is written in here
+//(the creek gets it substituted from FlowSurfacePass.WAVE_PERIOD; keep the two equal).
+const float SHEET_FLOW_WAVE_PERIOD = 8.0;
+float sheetHash(vec2 q){ return fract(sin(dot(q, vec2(127.1, 311.7))) * 43758.5453); }
+float sheetValueNoise(vec2 q){
+  vec2 i = floor(q);
+  vec2 f = q - i;
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(sheetHash(i), sheetHash(i + vec2(1.0, 0.0)), f.x),
+             mix(sheetHash(i + vec2(0.0, 1.0)), sheetHash(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+vec2 creekRippleSlope(vec2 xz, vec2 vel){
+  float speed = length(vel);
+  float rippleSlope = max(0.05, (0.035 + 0.13 * 0.5) * smoothstep(0.05, 0.6, speed)) * flowRippleScale;
+  const float RIPPLE_ADVECT_PERIOD = 2.0;
+  float ra = fract(t / RIPPLE_ADVECT_PERIOD);
+  float rb = fract(ra + 0.5);
+  float rmix = abs(1.0 - 2.0 * ra);
+  vec2 xa = xz - vel * ra * RIPPLE_ADVECT_PERIOD;
+  vec2 xb = xz - vel * rb * RIPPLE_ADVECT_PERIOD + vec2(3.7, 1.9);
+  vec2 sv = vec2(0.0);
+  float scaleSq = 0.0;
+  for(int d = 0; d < 16; d++){
+    float fd = float(d);
+    float ang = (fd + 0.5) * 0.19634954 + 0.09 * sin(fd * 2.39);
+    vec2 dir = vec2(cos(ang), sin(ang));
+    float stretch = 1.0 + 0.071 * fd;
+    float off = fract(sin(fd * 12.9898) * 43758.5453);
+    float amp = 0.3 + 0.7 * sheetValueNoise(xa * 0.21 + vec2(fd * 7.13, fd * 3.37));
+    float sa = texture2D(flowWaveProfile, vec2(dot(xa, dir) * stretch / SHEET_FLOW_WAVE_PERIOD + off, 0.5)).g;
+    float sb = texture2D(flowWaveProfile, vec2(dot(xb, dir) * stretch / SHEET_FLOW_WAVE_PERIOD + off, 0.5)).g;
+    sv += dir * mix(sa, sb, rmix) * stretch * amp;
+    scaleSq += stretch * stretch;
+  }
+  return sv * rippleSlope * inversesqrt(0.5 * 0.55 * scaleSq);
 }
 
 //water-shader.glsl getSunShadow (3x3 PCF + receiver-plane slope bias + edge fade).
@@ -223,7 +268,12 @@ void main(){
 
   //The jet's surface is not glass: it is broken by the same grain that carries its air,
   //so the clear parts glitter instead of mirroring one sky colour.
-  vec3 Ns = normalize(N + (acrossDir * foamNMXZ.x + flowDir * foamNMXZ.y) * uSurfaceRough);
+  vec3 NsGrain = normalize(N + (acrossDir * foamNMXZ.x + flowDir * foamNMXZ.y) * uSurfaceRough);
+  //On the lead-in (attached, over the creek's bed) the surface is the creek's: its ripples,
+  //not the fall's grain, so the creek's texture carries on into the lip.
+  vec2 rs = creekRippleSlope(vWorldPos.xz, vFlowVel);
+  vec3 NsCreek = normalize(N - vec3(rs.x, 0.0, rs.y));
+  vec3 Ns = normalize(mix(NsCreek, NsGrain, airborne));
   float NdotV = clamp(dot(Ns, V), 0.0, 1.0);
   float path = thickness / max(NdotV, 0.2);
 
@@ -270,6 +320,7 @@ void main(){
   vec2 refrUV = clamp(screenUV + (Ns.xz - N.xz) * uRefraction, vec2(0.001), vec2(0.999));
   vec3 behind = skyRadiance(-V);        //nothing behind: the sky seen through the water
   float behindDist = 1000.0;
+  float bedColumn = -1.0;
   for(int attempt = 0; attempt < 2; ++attempt){
     vec2 uv = attempt == 0 ? refrUV : screenUV;
     float raw = texture2D(refractionDepthTexture, uv).r;
@@ -280,16 +331,37 @@ void main(){
     //A bent sample that lands on something IN FRONT of the sheet is not behind it: retry
     //straight through.
     if(dot(P - vWorldPos, -V) < 0.0) continue;   //-V points from the camera to the fragment
-    //Relit as water-shader.glsl relights above-water terrain seen through the water.
     vec3 bgN = normalize(texture2D(gBufferNormal, uv).rgb);
-    float bgShadow = getSunShadow(sunShadowMatrix * vec4(P, 1.0));
-    behind = texture2D(refractionColorTexture, uv).rgb
-           * (INV_PI * brightestDirectionalLight * max(0.0, dot(bgN, L)) * bgShadow + skyAmbientColor);
+    vec3 bgAlbedo = texture2D(refractionColorTexture, uv).rgb;
     behindDist = distance(vWorldPos, P);
+    if(P.y < vWorldPos.y){
+      //UNDER the water (the creek's bed below the lead-in): lit as water-shader.glsl lights
+      //its seabed, by the sun refracted in and filtered down the column, plus the sky tinted
+      //by the water. The above-water formula lit it as dry ground: a bright brown band
+      //between the creek and the fall (Dante, round 5).
+      vec3 sunDirInWater = refract(brightestDirectionalLightDirection, vec3(0.0, 1.0, 0.0), 1.0 / 1.33);
+      vec3 toSunInWater = -sunDirInWater;
+      float upY = max(toSunInWater.y, 0.05);
+      float downPath = max(0.0, vWorldPos.y - P.y) / upY;
+      float sunCosZenith = max(dot(L, vec3(0.0, 1.0, 0.0)), 0.0);
+      vec3 ext = waterAbsorption + waterScattering;
+      vec3 sunDown = brightestDirectionalLight * (1.0 - fresnelAirToWater(sunCosZenith)) * exp(-ext * downPath);
+      float bedShadow = getSunShadow(sunShadowMatrix * vec4(P + toSunInWater * downPath, 1.0));
+      vec3 waterAlbedo = waterScattering / max(ext, vec3(1e-4));
+      behind = bgAlbedo * (INV_PI * sunDown * max(0.0, dot(bgN, toSunInWater)) * bedShadow + skyAmbientColor * waterAlbedo);
+      //The creek's column: vertical depth plus its grazing-path proxy (HORIZONTAL_DEPTH_SCALE).
+      bedColumn = (vWorldPos.y - P.y) + length(vWorldPos.xz - cameraPosition.xz) * 0.008;
+    }
+    else {
+      //Above the water (the cliff behind a fall): lit as the creek lights terrain it sees
+      //above its surface.
+      float bgShadow = getSunShadow(sunShadowMatrix * vec4(P, 1.0));
+      behind = bgAlbedo * (INV_PI * brightestDirectionalLight * max(0.0, dot(bgN, L)) * bgShadow + skyAmbientColor);
+    }
     break;
   }
   //Water the view crosses to get there: the column on the lead-in, the sheet on the fall.
-  float waterPath = mix(min(behindDist, 50.0), min(behindDist, path), airborne);
+  float waterPath = mix(bedColumn >= 0.0 ? bedColumn : min(behindDist, 50.0), min(behindDist, path), airborne);
   vec3 Tbody = exp(-(waterAbsorption + waterScattering) * waterPath);
   vec3 body = behind * Tbody + inscatter * (vec3(1.0) - Tbody);
   vec3 color = F * reflected + glint + (1.0 - F) * (bubbleLit + slabTdir * body);
@@ -322,5 +394,12 @@ void main(){
   else if(uDebugMode == 11) gl_FragColor = linearTosRGB(vec4(aroAESFilmicToneMapping(body), 1.0));
   //$DEBUG_END$
 
-  #include <fog_fragment>
+  //The scene fog chunk only when atmospheric perspective is OFF — the water's own rule
+  //(water-shader.glsl). With a-starry-sky's AP on, its fog chunk takes the fragment back to
+  //linear, adds aerial perspective and tone-maps it AGAIN: right for terrain, which outputs
+  //linear, but on this already tone-mapped sheet it washed the colour out toward the
+  //terrain's orange, and the lead-in read as ground next to the creek (round 5).
+  #ifdef SHEET_SCENE_FOG
+    #include <fog_fragment>
+  #endif
 }

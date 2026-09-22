@@ -34,6 +34,7 @@ varying vec4 vFlowA;
 varying vec4 vFlowB;
 varying vec4 vSunShadowCoord;
 varying float vViewDepth;
+varying vec2 vFlowVel;       //plan velocity (m/s), for the creek's ripple advection on the lead-in
 
 #include <fog_pars_vertex>
 
@@ -86,6 +87,8 @@ void main(){
   vWorldNormal = normalize(mat3(modelMatrix) * Nd);
   vFlowA = aFlowA;
   vFlowB = aFlowB;
+  vec2 planT = aFlowTangent.xz;
+  vFlowVel = dot(planT, planT) > 1e-6 ? normalize(planT) * aFlowA.w : vec2(0.0);
   vSunShadowCoord = sunShadowMatrix * worldPos;
   vec4 mvPosition = viewMatrix * worldPos;
   vViewDepth = -mvPosition.z;

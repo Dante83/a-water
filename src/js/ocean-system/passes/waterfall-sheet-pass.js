@@ -56,6 +56,7 @@ ARestlessOcean.Passes.WaterfallSheetPass = function(oceanGrid){
   this._retryAtMs = 0;
   this._lastInvalidateMs = -1e9;
   this._corridors = [];
+  this._sceneFog = null;
 };
 
 ARestlessOcean.Passes.WaterfallSheetPass.RENDER_ORDER = 5;
@@ -69,7 +70,7 @@ ARestlessOcean.Passes.WaterfallSheetPass.SHARED_UNIFORMS = [
   'sunShadowMap', 'sunShadowMatrix', 'sunShadowMapSize', 'sunShadowRadius', 'sunShadowBias', 'sunShadowEnabled',
   'refractionLinearDepth', 'refractionColorTexture', 'gBufferNormal', 'refractionDepthTexture',
   'inverseProjectionMatrix', 'inverseViewMatrix', 'screenResolution',
-  'foamOpacityMap', 'foamNormalMap'
+  'foamOpacityMap', 'foamNormalMap', 'flowWaveProfile', 'flowRippleScale'
 ];
 
 ARestlessOcean.Passes.WaterfallSheetPass.prototype.init = function(scene){
@@ -188,6 +189,18 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype.tick = function(ctx){
   }
   if(this._dirtyGeometry && !this._queue.length) this._rebuildGeometry();
   this.mesh.visible = this.enabled && this.mesh.geometry.index !== null && this.mesh.geometry.index.count > 0;
+  //The water's rule for the scene fog chunk: only while atmospheric perspective is off
+  //(waterfall-sheet.glsl, end of main). AP can become ready a few frames in, like the
+  //water's own late recompile, so this is checked every tick and recompiles once.
+  const og = this.oceanGrid;
+  const sceneFog = !(og.atmosphericPerspectiveEnabled && og.atmosphereFunctionsGLSL);
+  if(sceneFog !== this._sceneFog){
+    this._sceneFog = sceneFog;
+    this.material.defines = this.material.defines || {};
+    if(sceneFog) this.material.defines.SHEET_SCENE_FOG = 1;
+    else delete this.material.defines.SHEET_SCENE_FOG;
+    this.material.needsUpdate = true;
+  }
   this._streamCorridors();
 };
 
