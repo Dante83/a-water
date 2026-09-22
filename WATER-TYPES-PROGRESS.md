@@ -321,6 +321,22 @@ differently shaded waters swapped at once.
   foam covers the water layer by the light it scatters, and reflections show only in its gaps.
   Round 11 had only faded the foam-normal reflection; it still drove the glints.
 
+### ▶ RESUME HERE (end of 2026-09-21) — two open items from Dante's last look
+
+Status: Dante: "for a plane based waterfall, this is a pretty neat effect … getting better with
+time". Last commit 75b2e70; Dante has run create-shader.py on it.
+1. **"Water emanating from the rock."** Round 12's wall hugging narrows each row where the ground
+   rises into it, but rows BELOW a jut see open air again and widen straight back out, so the
+   sheet re-grows out of the rock face. Falling water cannot do that. Fix: along each free fall,
+   a row may be at most the previous row's width plus the lateral spread the water can reach
+   (≈ lateral speed × Δτ; ~0 for a plain nappe) — "shrink and stay shrunk" (Dante), or jump over
+   the jut where the trace clears it.
+2. **"The reflections feel like they're moving up."** Probably real, not perception: on the free
+   fall Nw takes the CREEK's ripples, sampled in world xz with plan-velocity advection. On a
+   near-vertical sheet that field does not travel DOWN with the water while the lumps under it do,
+   so the glints can read as climbing. Fix: key the fall's water ripples to (across, τ − t), the
+   lumps' own space, so they ride and stretch with the fall; keep the creek field on the lead-in.
+
 ### Deferred
 
 The plunge pool's
