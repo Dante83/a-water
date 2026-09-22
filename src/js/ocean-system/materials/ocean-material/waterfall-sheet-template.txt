@@ -24,6 +24,26 @@ ARestlessOcean.Materials.Ocean.waterfallSheetMaterial = {
     sunShadowBias: {value: 0.0},
     sunShadowEnabled: {value: 0},
     refractionLinearDepth: {value: null},
+    cameraNearFar: {value: new THREE.Vector2(0.1, 7000.0)},
+    ssrViewMatrix: {value: new THREE.Matrix4()},
+    ssrProjectionMatrix: {value: new THREE.Matrix4()},
+    ssrMaxSteps: {value: 48.0},
+    blueNoiseTexture: {value: null},
+    meteringSurveyTexture: {value: null},
+    meteringSurveyValid: {value: 0.0},
+    underwaterFactor: {value: 0.0},
+    atmosphereTransmittance: {value: null},
+    atmosphereMieInscattering: {value: null},
+    atmosphereRayleighInscattering: {value: null},
+    atmSunPosition: {value: new THREE.Vector3(0.0, 1.0, 0.0)},
+    atmMoonPosition: {value: new THREE.Vector3(0.0, -1.0, 0.0)},
+    atmSunHorizonFade: {value: 1.0},
+    atmMoonHorizonFade: {value: 0.0},
+    atmScatteringSunIntensity: {value: 1.0},
+    atmScatteringMoonIntensity: {value: 0.0},
+    atmMoonLightColor: {value: new THREE.Vector3(1.0, 1.0, 1.0)},
+    atmCameraHeight: {value: 0.0},
+    atmDistanceScale: {value: 1.0},
     refractionColorTexture: {value: null},
     gBufferNormal: {value: null},
     refractionDepthTexture: {value: null},
@@ -64,9 +84,24 @@ ARestlessOcean.Materials.Ocean.waterfallSheetMaterial = {
     uDebugMode: {value: 0},
   },
 
-  fragmentShader: [
-    {fragment_glsl}
-  ].join('\n'),
+  //Built like the water's fragment shader (water-shader-template.txt): $atmospheric_perspective_enabled
+  //is substituted, and with it on the atmosphere functions replace the injection marker line.
+  //WaterfallSheetPass rebuilds it when atmospheric perspective becomes ready.
+  fragmentShader: function(atmosphericPerspectiveEnabled, atmosphereFunctionsGLSL){
+    const originalGLSL = [
+      {fragment_glsl}
+    ];
+    const updatedLines = [];
+    for(let i = 0, numLines = originalGLSL.length; i < numLines; ++i){
+      let updatedCode = originalGLSL[i];
+      updatedCode = updatedCode.replace(/\$atmospheric_perspective_enabled/g, atmosphericPerspectiveEnabled ? '1' : '0');
+      if(atmosphericPerspectiveEnabled && atmosphereFunctionsGLSL && updatedCode.indexOf('//ATMOSPHERE_FUNCTIONS_INJECTION_POINT') !== -1){
+        updatedCode = atmosphereFunctionsGLSL;
+      }
+      updatedLines.push(updatedCode);
+    }
+    return updatedLines.join('\n');
+  },
 
   vertexShader: [
     {vertex_glsl}

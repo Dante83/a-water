@@ -56,7 +56,7 @@ ARestlessOcean.Passes.WaterfallSheetPass = function(oceanGrid){
   this._retryAtMs = 0;
   this._lastInvalidateMs = -1e9;
   this._corridors = [];
-  this._sceneFog = null;
+  this._atmReady = false;
 };
 
 ARestlessOcean.Passes.WaterfallSheetPass.RENDER_ORDER = 5;
@@ -70,6 +70,12 @@ ARestlessOcean.Passes.WaterfallSheetPass.SHARED_UNIFORMS = [
   'sunShadowMap', 'sunShadowMatrix', 'sunShadowMapSize', 'sunShadowRadius', 'sunShadowBias', 'sunShadowEnabled',
   'refractionLinearDepth', 'refractionColorTexture', 'gBufferNormal', 'refractionDepthTexture',
   'inverseProjectionMatrix', 'inverseViewMatrix', 'screenResolution',
+  'cameraNearFar', 'ssrViewMatrix', 'ssrProjectionMatrix', 'ssrMaxSteps', 'blueNoiseTexture',
+  'meteringSurveyTexture', 'meteringSurveyValid', 'underwaterFactor',
+  'atmosphereTransmittance', 'atmosphereMieInscattering', 'atmosphereRayleighInscattering',
+  'atmSunPosition', 'atmMoonPosition', 'atmSunHorizonFade', 'atmMoonHorizonFade',
+  'atmScatteringSunIntensity', 'atmScatteringMoonIntensity', 'atmMoonLightColor',
+  'atmCameraHeight', 'atmDistanceScale',
   'foamOpacityMap', 'foamNormalMap', 'flowWaveProfile', 'flowRippleScale'
 ];
 
@@ -88,7 +94,7 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype.init = function(scene){
   this.material = new THREE.ShaderMaterial({
     uniforms: uniforms,
     vertexShader: def.vertexShader,
-    fragmentShader: def.fragmentShader,
+    fragmentShader: def.fragmentShader(false, null),
     transparent: true,
     depthWrite: false,
     depthTest: true,
@@ -189,16 +195,15 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype.tick = function(ctx){
   }
   if(this._dirtyGeometry && !this._queue.length) this._rebuildGeometry();
   this.mesh.visible = this.enabled && this.mesh.geometry.index !== null && this.mesh.geometry.index.count > 0;
-  //The water's rule for the scene fog chunk: only while atmospheric perspective is off
-  //(waterfall-sheet.glsl, end of main). AP can become ready a few frames in, like the
-  //water's own late recompile, so this is checked every tick and recompiles once.
+  //Atmospheric perspective, the water's way: with it ready, the fragment shader is rebuilt
+  //with the atmosphere functions injected (the sheet then reflects a-starry-sky's sky and
+  //applies AP itself, and leaves the scene fog chunk out). AP can become ready a few frames
+  //in, like the water's own late recompile, so this is checked every tick and rebuilds once.
   const og = this.oceanGrid;
-  const sceneFog = !(og.atmosphericPerspectiveEnabled && og.atmosphereFunctionsGLSL);
-  if(sceneFog !== this._sceneFog){
-    this._sceneFog = sceneFog;
-    this.material.defines = this.material.defines || {};
-    if(sceneFog) this.material.defines.SHEET_SCENE_FOG = 1;
-    else delete this.material.defines.SHEET_SCENE_FOG;
+  const atm = !!(og.atmosphericPerspectiveEnabled && og.atmosphereFunctionsGLSL);
+  if(atm !== this._atmReady){
+    this._atmReady = atm;
+    this.material.fragmentShader = ARestlessOcean.Materials.Ocean.waterfallSheetMaterial.fragmentShader(atm, og.atmosphereFunctionsGLSL);
     this.material.needsUpdate = true;
   }
   this._streamCorridors();

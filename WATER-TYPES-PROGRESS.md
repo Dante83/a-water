@@ -185,9 +185,28 @@ has a hard time connecting." One design decision behind most of it, and one Phas
   takeoff and landing, interpolated along the sheet with its centre offset: 8.0 m at the lip,
   7.25–8.5 m at the landings on hero-creek (was 8.25 m rigid, measured to 2 cm).
 
+### Round 6 — the top: reflect like the creek (Dante, 2026-09-21)
+
+"That foot might mask some of that bottom stuff and that top might be worth doing."
+- The sheet now carries the creek's **screen-space reflection**, lifted verbatim from
+  water-shader.glsl (the 48-step jittered march against the G-buffer, binary refinement,
+  silhouette and convergence gates, relit hits), marching on the smooth displaced normal and
+  sampling the sky on the detailed one, as the creek does.
+- **The sky is the creek's sky**: with atmospheric perspective on, the fragment shader is built
+  like the water's (the template is now a builder: `$atmospheric_perspective_enabled` substituted,
+  a-starry-sky's atmosphere GLSL spliced in at the water's injection marker), so misses and the
+  view through the sheet use `computeSkyRadiance`, and the sheet **applies aerial perspective**
+  itself (`applyAtmosphericPerspective`, above water) — no longer deferred. The pass rebuilds the
+  shader the tick AP becomes ready. With AP off: the ambient-built sky and the scene fog chunk.
+- Trap: the injected atmosphere GLSL declares `PI`; the sheet's own `const float PI` was a
+  link error ("'PI' : redefinition") on the sky page only. Removed. Both branches verified to
+  link (hero-creek-sky with AP, hero-creek-ocean without).
+- Result, headless on the 4090: the creek's ripples and its SSR glints of the banks run straight
+  over the brink into the curl of the fall.
+
 ### Deferred
 
-Atmospheric perspective on the sheet (it takes the scene fog chunk instead); the plunge pool's
+The plunge pool's
 dynamic-waves impulse (Phase 8); fountains; hard vertical side edges (the fray is weak); the
 PIC/SPH microsim behind the same lip + pool interface if the sheet does not sell big falls.
 

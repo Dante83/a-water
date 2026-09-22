@@ -37,9 +37,10 @@ precision highp float;
 //let slabTdir of that through. Output is opaque; alpha is kept only for the fades
 //(presence, frayed edges, strands, the soft contact).
 //
-//NOT HERE (deferred, flagged): atmospheric perspective. With a-starry-sky's AP on, the
-//creek gets AP and this sheet gets neither AP nor the scene fog chunk (see the end of
-//main); falls are drawn within a few hundred metres, where the difference is small.
+//ATMOSPHERE: exactly the creek's arrangement. With atmospheric perspective on, the atmosphere
+//functions are injected (at the water's injection marker, by the template's builder), the
+//sheet reflects a-starry-sky's sky and applies AP itself, and the scene fog chunk is left out;
+//with it off, the scene fog chunk runs at the end of main.
 
 uniform vec3 brightestDirectionalLight;
 uniform vec3 brightestDirectionalLightDirection;   //from the sun TOWARD the scene
@@ -64,6 +65,15 @@ uniform mat4 sunShadowMatrix;
 uniform mat4 inverseProjectionMatrix;
 uniform mat4 inverseViewMatrix;
 uniform vec2 screenResolution;
+//The creek's screen-space reflection (lifted from water-shader.glsl, see below) and what it reads.
+uniform vec2 cameraNearFar;
+uniform mat4 ssrViewMatrix;
+uniform mat4 ssrProjectionMatrix;
+uniform float ssrMaxSteps;
+uniform sampler2D blueNoiseTexture;
+uniform sampler2D meteringSurveyTexture;
+uniform float meteringSurveyValid;
+uniform float underwaterFactor;
 
 uniform sampler2D foamOpacityMap;
 //The creek's ripple profile buffer (FlowSurfacePass) and its live knob: the lead-in's surface
@@ -93,9 +103,42 @@ varying vec4 vSunShadowCoord;
 varying float vViewDepth;
 varying vec2 vFlowVel;
 
-#include <fog_pars_fragment>
+//Fog and atmosphere exactly as water-shader.glsl declares them: the scene fog chunk only
+//with atmospheric perspective OFF (a-starry-sky's fog branch tone-maps AGAIN, which washed
+//this already tone-mapped sheet toward the terrain's orange, round 5); with it ON, the
+//atmosphere functions are injected here and the sheet applies AP itself, like the creek.
+#if(!$atmospheric_perspective_enabled)
+  #include <fog_pars_fragment>
+#endif
+#if($atmospheric_perspective_enabled)
+  precision highp sampler3D;
+  uniform sampler2D atmosphereTransmittance;
+  uniform sampler3D atmosphereMieInscattering;
+  uniform sampler3D atmosphereRayleighInscattering;
+  uniform vec3 atmSunPosition;
+  uniform vec3 atmMoonPosition;
+  uniform float atmSunHorizonFade;
+  uniform float atmMoonHorizonFade;
+  uniform float atmScatteringSunIntensity;
+  uniform float atmScatteringMoonIntensity;
+  uniform vec3 atmMoonLightColor;
+  uniform float atmCameraHeight;
+  uniform float atmDistanceScale;
 
-const float PI = 3.14159265359;
+  //ATMOSPHERE_FUNCTIONS_INJECTION_POINT
+#endif
+
+#if(!$atmospheric_perspective_enabled)
+  //When atmospheric perspective is enabled, sRGBToLinear is provided by the
+  //injected atmosphere functions (inside the #if block above). Otherwise we
+  //need our own — declared here, BEFORE the SSR raymarch function that calls
+  //it, because GLSL requires forward declarations before use.
+  vec4 sRGBToLinear( in vec4 value ) {
+  	return vec4( mix( pow( value.rgb * 0.9478672986 + vec3( 0.0521327014 ), vec3( 2.4 ) ), value.rgb * 0.0773993808, vec3( lessThanEqual( value.rgb, vec3( 0.04045 ) ) ) ), value.a );
+  }
+#endif
+
+//(No PI of our own: the injected atmosphere functions declare one; a second is a link error.)
 const float INV_PI = 0.31830988618;
 //── Copied from water-shader.glsl (keep in step) ──────────────────────────────
 const float r0 = 0.02;
@@ -145,19 +188,316 @@ vec3 computeStandaloneSkyRadiance(vec3 worldDir){
   return sky;
 }
 
-//The sky the sheet reflects: the water's ambient-built sky (computeStandaloneSkyRadiance),
-//NOT a-starry-sky's metering survey. That fisheye is what the creek's SSR falls back to with
-//atmospheric perspective OFF, but on hero-creek-sky (AP on) it read back all zeros and the
-//sheet reflected black even along clamped, upward rays (2026-09-21) — the creek never
-//noticed because with AP on it reflects computeSkyRadiance instead. skyAmbientColor is the
-//metered sky wherever there is one, so this sky is on the right brightness scale everywhere.
-//
-//A waterfall is VERTICAL, so much of what it reflects is at or below the horizon: rays that
-//point below it would see terrain, not sky, and fade to a dim ground bounce.
-//FUDGE: the 0.25 bounce is a stand-in for the terrain's radiance.
+//── Lifted verbatim from water-shader.glsl (keep in step): the creek's sky and AP ──────
+#if($atmospheric_perspective_enabled)
+  //Compute sky radiance in a given world-space direction using the same atmosphere LUTs
+  //as applyAtmosphericPerspective. This matches a-starry-sky's own sky rendering, so
+  //reflection colors are continuous with the visible sky at any view direction.
+  //Returns LINEAR radiance (same convention as the rest of the SSR path).
+  vec3 computeSkyRadiance(vec3 worldDir){
+    //Convert from THREE.js world coords to a-starry-sky coords (same transform as applyAtmosphericPerspective)
+    vec3 skyDir = vec3(-worldDir.z, worldDir.y, -worldDir.x);
+
+    //Clamp to horizon so reflection rays pointing slightly below horizon (off wave faces
+    //tilted toward the viewer) snap to horizon color rather than sampling invalid LUT coords.
+    float viewCosZenith = max(skyDir.y, 0.0);
+    float xParam = parameterizationOfCosOfViewZenithToX(viewCosZenith);
+    float yHeight = parameterizationOfHeightToY(RADIUS_OF_EARTH + atmCameraHeight);
+
+    //Sun inscatter. horizonFade is squared (NOT cubed) here to match the sky
+    //dome exactly — a-starry-sky multiplies intensityFader twice in
+    //linearAtmosphericPass. This function must track the VISIBLE sky so the
+    //SSR sky fallback and skirt stay continuous with the dome at twilight;
+    //fade cubed left them darker than the dome by a factor of fade.
+    //applyAtmosphericPerspective keeps fade cubed (the fog convention).
+    float zSun = parameterizationOfCosOfSourceZenithToZ(max(atmSunPosition.y, 0.0));
+    vec3 uv3Sun = vec3(xParam, yHeight, zSun);
+    vec3 mieSun = texture(atmosphereMieInscattering, uv3Sun).rgb;
+    vec3 raySun = texture(atmosphereRayleighInscattering, uv3Sun).rgb;
+    float cosViewSun = dot(skyDir, atmSunPosition);
+    vec3 skySun = (atmSunHorizonFade * atmSunHorizonFade) * atmScatteringSunIntensity
+                * (miePhaseFunction(cosViewSun) * mieSun + rayleighPhaseFunction(cosViewSun) * raySun);
+
+    //Moon inscatter
+    float zMoon = parameterizationOfCosOfSourceZenithToZ(max(atmMoonPosition.y, 0.0));
+    vec3 uv3Moon = vec3(xParam, yHeight, zMoon);
+    vec3 mieMoon = texture(atmosphereMieInscattering, uv3Moon).rgb;
+    vec3 rayMoon = texture(atmosphereRayleighInscattering, uv3Moon).rgb;
+    float cosViewMoon = dot(skyDir, atmMoonPosition);
+    vec3 skyMoon = (atmMoonHorizonFade * atmMoonHorizonFade) * atmScatteringMoonIntensity * atmMoonLightColor
+                 * (miePhaseFunction(cosViewMoon) * mieMoon + rayleighPhaseFunction(cosViewMoon) * rayMoon);
+
+    //Base sky ambient — matches a-starry-sky's own atmosphere pass main() (not linearAtmosphericPass).
+    //Small bluish floor that fades with altitude/horizon via the 2D transmittance LUT.
+    vec3 transmittanceFade = texture(atmosphereTransmittance, vec2(xParam, yHeight)).rgb;
+    vec3 baseSkyLighting = 0.25 * vec3(2E-3, 3.5E-3, 9E-3) * transmittanceFade;
+
+    return skySun + skyMoon + baseSkyLighting;
+  }
+
+  //Atmospheric perspective for ground-level surfaces.
+  //Uses distance-based extinction with LUT-sampled multi-scattered inscattering.
+  //At the same height: S(A->B) = S(A->inf) * (1 - T(A->B))
+  vec3 applyAtmosphericPerspective(vec3 color, vec3 worldPos){
+    vec3 worldViewDir = normalize(worldPos - cameraPosition);
+    //Convert view direction from THREE.js world space to a-starry-sky's coordinate
+    //system. Sun world direction = (-sp.z, sp.y, -sp.x) from quadOffset, so the
+    //inverse transform from world to sky coords is: skyDir = (-world.z, world.y, -world.x)
+    vec3 viewDir = vec3(-worldViewDir.z, worldViewDir.y, -worldViewDir.x);
+    float dist = length(worldPos - cameraPosition) * METERS_TO_KM * atmDistanceScale;
+
+    //Distance-based extinction along the camera-to-surface path
+    vec3 extinction = exp(-(RAYLEIGH_BETA + EARTH_MIE_BETA_EXTINCTION) * dist);
+
+    //Attenuate surface color
+    color *= extinction;
+
+    //LUT coordinates for inscattering lookup
+    float viewCosZenith = max(viewDir.y, 0.0);
+    float xParam = parameterizationOfCosOfViewZenithToX(viewCosZenith);
+    float yHeight = parameterizationOfHeightToY(RADIUS_OF_EARTH + atmCameraHeight);
+
+    //Sun inscattering from 3D LUTs
+    float zSun = parameterizationOfCosOfSourceZenithToZ(max(atmSunPosition.y, 0.0));
+    vec3 uv3Sun = vec3(xParam, yHeight, zSun);
+    vec3 mieSun = texture(atmosphereMieInscattering, uv3Sun).rgb;
+    vec3 raySun = texture(atmosphereRayleighInscattering, uv3Sun).rgb;
+    float cosViewSun = dot(viewDir, atmSunPosition);
+    vec3 fogSun = pow(atmSunHorizonFade, 3.0) * atmScatteringSunIntensity
+                * (miePhaseFunction(cosViewSun) * mieSun + rayleighPhaseFunction(cosViewSun) * raySun)
+                * (1.0 - extinction);
+
+    //Moon inscattering from 3D LUTs
+    float zMoon = parameterizationOfCosOfSourceZenithToZ(max(atmMoonPosition.y, 0.0));
+    vec3 uv3Moon = vec3(xParam, yHeight, zMoon);
+    vec3 mieMoon = texture(atmosphereMieInscattering, uv3Moon).rgb;
+    vec3 rayMoon = texture(atmosphereRayleighInscattering, uv3Moon).rgb;
+    float cosViewMoon = dot(viewDir, atmMoonPosition);
+    vec3 fogMoon = pow(atmMoonHorizonFade, 3.0) * atmScatteringMoonIntensity * atmMoonLightColor
+                 * (miePhaseFunction(cosViewMoon) * mieMoon + rayleighPhaseFunction(cosViewMoon) * rayMoon)
+                 * (1.0 - extinction);
+
+    return color + fogSun + fogMoon;
+  }
+#endif
+
+//What the sheet sees of the sky where nothing is behind it (and what the SSR below falls
+//back to through its own lookup): the creek's sky. With atmospheric perspective ON that is
+//a-starry-sky's own sky through its LUTs (computeSkyRadiance). With it OFF, the water's
+//ambient-built sky rather than the metering-survey fisheye: that fisheye read back all zeros
+//on hero-creek-sky and the sheet reflected black (round 2). Rays below the horizon would see
+//terrain, not sky, and fade to a dim ground bounce (FUDGE 0.25) in both cases.
 vec3 skyRadiance(vec3 dir){
-  vec3 sky = computeStandaloneSkyRadiance(normalize(vec3(dir.x, max(dir.y, 0.0), dir.z)));
+  vec3 upDir = normalize(vec3(dir.x, max(dir.y, 0.0), dir.z));
+  #if($atmospheric_perspective_enabled)
+    vec3 sky = computeSkyRadiance(upDir);
+  #else
+    vec3 sky = computeStandaloneSkyRadiance(upDir);
+  #endif
   return mix(skyAmbientColor * 0.25, sky, smoothstep(-0.3, 0.05, dir.y));
+}
+
+//── Lifted verbatim from water-shader.glsl (keep in step): the creek's SSR ─────────────
+//The lip and the lead-in are the creek's surface carried on, so they reflect the banks and
+//the sky the way the creek does (Dante, round 6: the top looked duller than the creek).
+//Screen-space reflection using the refraction color+depth buffer (already rendered
+//from the main camera with water hidden — zero extra render passes).
+//Exponential stepping covers nearby geometry detail AND distant sky.
+//Sky fallback: LUT-based atmosphere (when enabled) or metering survey fisheye.
+//Returns LINEAR radiance — caller must NOT apply sRGBToLinear to the result.
+//Geometry hits come from the sRGB refraction buffer and are converted here.
+//TWO DIRECTIONS, NOT ONE.
+//  marchDir — the ray the depth-buffer raymarch follows. Wants the SMOOTH normal:
+//             per-pixel normal jitter makes neighbouring fragments march into
+//             different depth footprints and the geometry reflection breaks into
+//             noise. This is why the SSR ray was put on macroNormal originally,
+//             and that reasoning still holds.
+//  skyDir   — the direction the sky is sampled along on a MISS. Wants the exact
+//             opposite: sub-metre ripple detail is the entire reason a real sea
+//             surface glitters rather than mirroring. Sharing one direction meant
+//             the sky reflection only ever tracked the long swell, which reads as
+//             a reflection that barely moves while the water under it ripples.
+//Callers that want the old single-direction behaviour pass the same vector twice.
+vec3 screenSpaceReflection(vec3 worldPos, vec3 marchDir, vec3 skyDir){
+  vec3 reflectDir  = skyDir;      //every sky lookup below reads this
+  vec3 viewPos     = (ssrViewMatrix * vec4(worldPos,    1.0)).xyz;
+  vec3 viewReflect = normalize(mat3(ssrViewMatrix) * marchDir);
+
+  //Sky fallback: use LUT-based sky radiance when atmosphere is enabled for correct horizon
+  //colors; fall back to metering survey fisheye for the no-atmosphere build path.
+  #if($atmospheric_perspective_enabled)
+    vec3 skyColor = computeSkyRadiance(reflectDir);
+  #else
+    //A sky provider can still be present with atmospheric perspective switched
+    //off, in which case its metering survey is the better source — it is a real
+    //render of the real sky. Only fall back when nothing bound one.
+    vec2 skyUV = clamp(reflectDir.xz * 0.5 + 0.5, 0.01, 0.99);
+    vec3 skyColor = (meteringSurveyValid > 0.5)
+                  ? texture2D(meteringSurveyTexture, skyUV).rgb
+                  : computeStandaloneSkyRadiance(reflectDir);
+  #endif
+
+  //Note: a procedural sun-disk/halo addition was attempted here to fill the
+  //"dark hole" in computeSkyRadiance at the sun direction at sunset (the
+  //Mie forward-scattering peak gets crushed by the horizon fade — softened
+  //since computeSkyRadiance moved from fade^3 to the dome-matching fade^2). It
+  //produced wrong colors when combined with the LUT's dim plum baseline.
+  //The proper fix is to either (a) sample a-starry-sky's actual sun render
+  //target in the SSR fallback, or (b) hide the sun mesh during the G-buffer
+  //refraction pass and have the sky LUT include a proper sun peak.
+  //Deferred to a follow-up session.
+
+  //Reflected ray pointing behind the camera — skip march, return sky directly.
+  if(viewReflect.z > 0.0){
+    return skyColor;
+  }
+
+  //Exponential step: starts at 0.25m, grows 1.15x each step. Was 0.5m / 1.3x,
+  //then 1.2x; the slower growth pulls the step size at mid-distance hits down
+  //(at iter ~15: ~30 m/step at 1.3x → ~3.8 m at 1.2x → ~2.0 m at 1.15x), so
+  //binary refinement starts from a tighter bracket and converges to ~cm-level
+  //residual. The 1.15x tightening also halves the stride stripes lean on the
+  //jitter for (see below), trading reach — full 48-step span drops from ~7.9 km
+  //to ~1.2 km, still far past where the edge-fade kills SSR.
+  //Per-pixel blue-noise jitter of the march phase. The exponential step
+  //boundaries are otherwise coherent across neighboring fragments, so whether
+  //a sample lands inside a reflected object depth footprint flips in visible
+  //stripes — worst on flat water (wind 0), where wave normals no longer dither
+  //the ray directions for free. Scaling the initial step by [0.75, 1.25]
+  //decorrelates the whole exponential ladder per pixel, turning the stripes
+  //into fine stable grain. STATIC noise (no temporalOffset): there is no TAA
+  //pass to resolve temporal shimmer, so the pattern must not change per frame.
+  float ssrJitter = texelFetch(blueNoiseTexture, ivec2(mod(gl_FragCoord.xy, 128.0)), 0).r;
+  float stepLen = 0.25 * (0.75 + 0.5 * ssrJitter);
+  vec3 curPos = viewPos;
+  vec3 prevPos = viewPos;
+
+  //48 is the hard loop ceiling (GLSL ES requires a constant bound); ssrMaxSteps
+  //caps the live count below it. Hitting the cap with no crossing falls through
+  //to the sky return below — identical to running out of steps naturally.
+  for(int i = 0; i < 48; i++){
+    if(float(i) >= ssrMaxSteps){ break; }
+    prevPos = curPos;
+    curPos  += viewReflect * stepLen;
+    stepLen *= 1.15;
+
+    vec4 clip = ssrProjectionMatrix * vec4(curPos, 1.0);
+    if(clip.w <= 0.0) break;
+    vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
+
+    //Ray exited screen — return sky.
+    if(uv.x < 0.01 || uv.x > 0.99 || uv.y < 0.01 || uv.y > 0.99){
+      return skyColor;
+    }
+
+    float sceneDepth = texture2D(refractionLinearDepth, uv).r;
+    float rayDepth   = -curPos.z;
+    float depthDelta = rayDepth - sceneDepth;
+    float farThreshold = cameraNearFar.y * 0.95;
+    //Loose crossing gate — every accepted hit gets binary-search refinement
+    //and a silhouette check below, so thickness can be generous here.
+    float maxThickness = stepLen + 1.0;
+
+    //Note: previously gated `uv.y > 0.5`, rejecting any hit whose projected
+    //screen position lands in the lower half. That truncated reflections of
+    //tall geometry (like the lighthouse) to whatever bit happened to project
+    //into the upper half — usually just the very top of the base. Removed:
+    //the depth + silhouette checks already do the work, and "lower-half hit"
+    //is not a meaningful rejection criterion in itself (the bounced ray's
+    //hit position has no necessary relationship to camera screen-space halves).
+    if(depthDelta > 0.0 && depthDelta < maxThickness &&
+       sceneDepth > 2.0 && sceneDepth < farThreshold){
+
+      //Binary-search refinement: the actual crossing lies between prevPos and
+      //curPos. 8 iterations narrows it to ~1/256 of the last step length, so
+      //real hits converge to sub-cm residual even when the outer step has
+      //grown to tens of metres at the horizon. Was 5 iterations (1/32);
+      //3 extra iterations cost 3 depth taps per accepted hit and visibly
+      //sharpen where the reflection of an object meets the waterline.
+      //Thickness-bug rays (ray passes behind thin geometry whose back face is
+      //not in the depth buffer) still converge, but only to the thin object's
+      //front face — which the silhouette check below then rejects.
+      vec3 lo = prevPos;
+      vec3 hi = curPos;
+      vec2  hitUV         = uv;
+      float hitSceneDepth = sceneDepth;
+      float hitDelta      = depthDelta;
+      for(int j = 0; j < 8; j++){
+        vec3 mid = 0.5 * (lo + hi);
+        vec4 midClip = ssrProjectionMatrix * vec4(mid, 1.0);
+        vec2 midUV   = midClip.xy / midClip.w * 0.5 + 0.5;
+        float midDepth = texture2D(refractionLinearDepth, midUV).r;
+        float midDelta = -mid.z - midDepth;
+        if(midDelta > 0.0){
+          hi            = mid;
+          hitUV         = midUV;
+          hitSceneDepth = midDepth;
+          hitDelta      = midDelta;
+        } else {
+          lo = mid;
+        }
+      }
+
+      //Silhouette check: sample 4 neighbors. A thick surface — even on its
+      //edge — has at most ONE neighbor reading far background (the side
+      //pointing away from the object). A thin object (tree, railing, wire)
+      //has TWO opposing neighbors reading background. Using the 2nd-largest
+      //delta instead of the max distinguishes the two cases and stops us
+      //from rejecting the outline of every solid object.
+      vec2 px = vec2(0.002);
+      float dN = abs(texture2D(refractionLinearDepth, hitUV + vec2( 0.0,  px.y)).r - hitSceneDepth);
+      float dS = abs(texture2D(refractionLinearDepth, hitUV + vec2( 0.0, -px.y)).r - hitSceneDepth);
+      float dE = abs(texture2D(refractionLinearDepth, hitUV + vec2( px.x, 0.0)).r - hitSceneDepth);
+      float dW = abs(texture2D(refractionLinearDepth, hitUV + vec2(-px.x, 0.0)).r - hitSceneDepth);
+      //Second-largest of four: max of (min-of-each-pair, min-of-the-two-maxes).
+      float secondMax = max(max(min(dN, dS), min(dE, dW)),
+                            min(max(dN, dS), max(dE, dW)));
+      float silhouetteThreshold = hitSceneDepth * 0.05 + 1.0;
+
+      //Soft rejection: smoothstep out as the silhouette measure grows, instead
+      //of a hard cutoff. Hard cutoffs produce moire/striping when the refined
+      //hitUV jitters sub-pixel across adjacent fragments.
+      float silhouetteConfidence =
+        1.0 - smoothstep(silhouetteThreshold * 0.6, silhouetteThreshold, secondMax);
+
+      //Convergence threshold scales with step size: 5 binary halvings of a
+      //step of length L leaves at most L/32 of residual on a real crossing,
+      //so 0.1*stepLen + 0.5 is generous margin. A constant 0.5 rejected every
+      //far hit because exponential stepping reaches ~100m-per-step by iter 20.
+      float convergenceThreshold = stepLen * 0.1 + 0.5;
+      //Soft acceptance, same reasoning as silhouetteConfidence above: a hard
+      //hitDelta cutoff flips between accept and reject across adjacent
+      //fragments whose refined residuals straddle the threshold, striping the
+      //reflection. Fade out over the top half of the threshold instead.
+      float convergenceConfidence =
+        1.0 - smoothstep(convergenceThreshold * 0.5, convergenceThreshold, hitDelta);
+      if(convergenceConfidence > 0.0 && silhouetteConfidence > 0.0){
+        vec2  edgeDist = abs(hitUV * 2.0 - 1.0);
+        float edgeFade = 1.0 - smoothstep(0.80, 1.0, max(edgeDist.x, edgeDist.y));
+        //G-buffer attachment 0 is already LINEAR (the G-buffer fragment shader
+        //sRGB-decodes source albedo before writing). The refraction sampling
+        //below at the equivalent line correctly samples without a second decode
+        //— this one used to do sRGBToLinear() here, which gamma-darkened the
+        //reflection so lighthouse bricks read as near-black silhouettes.
+        vec3  hitAlbedo = texture2D(refractionColorTexture, hitUV).rgb;
+        //Apply approximate lighting at the hit point so the reflection matches
+        //the lit appearance of the reflected geometry, not just raw albedo.
+        //Lambertian sun diffuse (using gBufferNormal as the surface normal) +
+        //skyAmbientColor as hemispheric fill. We don't have shadow info for
+        //the hit point, so reflected-into-shadow regions will read slightly
+        //overlit — acceptable trade for a cheap approximation.
+        vec3  hitNormal = normalize(texture2D(gBufferNormal, hitUV).rgb);
+        float hitNdotL  = max(0.0, dot(hitNormal, -brightestDirectionalLightDirection));
+        vec3  hitLight  = brightestDirectionalLight * hitNdotL + skyAmbientColor;
+        vec3  hitColor  = hitAlbedo * hitLight;
+        return mix(skyColor, hitColor, edgeFade * silhouetteConfidence * convergenceConfidence);
+      }
+      //Rejected — keep marching; a thicker surface may lie further along the ray.
+    }
+  }
+
+  //Max steps without hit — sky.
+  return skyColor;
 }
 
 //── The creek's ripples (water-shader.glsl, Phase 4 step 4), for the lead-in ─────────
@@ -310,7 +650,9 @@ void main(){
 
   //── The film's surface and its medium ─────────────────────────────────────
   float F = fresnelAirToWater(NdotV);
-  vec3 reflected = skyRadiance(reflect(-V, Ns));
+  //March on the smooth (displaced) normal, sample the sky on the detailed one: the creek's
+  //split (see screenSpaceReflection). Detail in the march scatters it; none in the sky mirrors.
+  vec3 reflected = screenSpaceReflection(vWorldPos, reflect(-V, N), reflect(-V, Ns));
   vec3 R = reflect(-L, Ns);
   vec3 glint = brightestDirectionalLight * pow(max(0.0, dot(R, V)), uSpecFalloff) * specBoost * sunShadow;
   vec3 inscatter = underwaterInscatterSurface(-V);
@@ -378,6 +720,10 @@ void main(){
   if(sceneDepth > 0.0001) soft = clamp((sceneDepth - vViewDepth) / max(uSoftRange, 1e-3), 0.0, 1.0);
 
   float outAlpha = presence * edgeAlpha * strandAlpha * soft * uOpacity;
+  #if($atmospheric_perspective_enabled)
+    //Aerial perspective, as the creek applies it (above water only).
+    if(underwaterFactor < 0.5) color = applyAtmosphericPerspective(color, vWorldPos);
+  #endif
   gl_FragColor = linearTosRGB(vec4(aroAESFilmicToneMapping(color), outAlpha));
 
   //$DEBUG_START$
@@ -399,7 +745,7 @@ void main(){
   //linear, adds aerial perspective and tone-maps it AGAIN: right for terrain, which outputs
   //linear, but on this already tone-mapped sheet it washed the colour out toward the
   //terrain's orange, and the lead-in read as ground next to the creek (round 5).
-  #ifdef SHEET_SCENE_FOG
+  #if(!$atmospheric_perspective_enabled)
     #include <fog_fragment>
   #endif
 }
