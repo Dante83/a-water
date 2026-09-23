@@ -336,8 +336,8 @@ const siteFrame = (nx, nz) => ({s: (x,z) => x * nx + z * nz, t: (x,z) => x * nz 
         'falling '+falling.length+'/'+n.strands.length+' lip s spread '+f2(Math.max(...ls) - Math.min(...ls)));
   check('site: the sheet is whole', rib.index.length / 6 >= 0.9 * fullQuads(n), 'quads '+rib.index.length/6+' of '+fullQuads(n));
 }
-// 22. a carved STAIRCASE: its steps chain by site.cascade/step whatever their treads' length (11 m,
-//     past chainGap), in step order, and every later lip's lead box is square to ITS lip.
+// 22. a carved STAIRCASE: every step is a chain of its own (each lands in its own pool and leaves
+//     off its own approach), and each step's trace falls off ITS lip, square to it.
 {
   const nx = Math.sin(Math.PI / 6), nz = Math.cos(Math.PI / 6), F = siteFrame(nx, nz), hw = 3;
   const lvl = s => s < 0 ? 20 : (s < 11 ? 14 : (s < 22 ? 8 : 2));
@@ -352,12 +352,14 @@ const siteFrame = (nx, nz) => ({s: (x,z) => x * nx + z * nz, t: (x,z) => x * nz 
                    cascade: 7, step: k, steps: 3}}; };
   const other = {top: [500, 5, 500], bottom: [500, 1, 501], width: 4, discharge: 1, drop: 4};
   const chains = N.chains([step(2), other, step(0), step(1)]);
-  const c = chains.find(ch => ch[0].site);
-  check('staircase: its steps chain by cascade, in step order', chains.length === 2 && c && c.map(f => f.site.step).join() === '0,1,2',
+  const sited = chains.filter(ch => ch[0].site);
+  check('staircase: every carved step is its own chain', chains.length === 4 && sited.length === 3 && sited.every(ch => ch.length === 1),
         chains.map(ch => ch.map(f => f.site ? f.site.step : 'x').join('')).join(' | '));
-  const n = N.trace(c, env);
-  const leads = n.corridors.filter(b => b.lead > 0.05).map(b => { const dx = b.bx - b.ax, dz = b.bz - b.az, l = Math.hypot(dx, dz); return (dx * nx + dz * nz) / l; });
-  check('staircase: a lead box square to every lip', leads.length >= 2 && leads.every(d => d > 0.999), 'leads '+leads.map(f2).join(' '));
+  const naps = sited.map(ch => N.trace(ch, env));
+  const falls = naps.map(nap => nap.strands.filter(st => st && st.rows.some(r => r.fallFlag > 0.5)).length);
+  const leads = naps.map(nap => nap.corridors.find(b => b.lead > 0.05)).map(b => b ? ((b.bx - b.ax) * nx + (b.bz - b.az) * nz) / Math.hypot(b.bx - b.ax, b.bz - b.az) : 0);
+  check('staircase: every step draws its own falling sheet, square to its lip', falls.every(f => f > 0) && leads.every(d => d > 0.999),
+        'falling '+falls.join(',')+' leads '+leads.map(f2).join(' '));
 }
 // 5. island-sholes chains (only when the sibling project is checked out)
 {

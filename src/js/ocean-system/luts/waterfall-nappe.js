@@ -280,28 +280,21 @@ ARestlessOcean.WaterfallNappe = {};
   //Group falls into cascades: fall j follows fall i when j's top is within chainGap
   //(plan) of i's bottom and not above it by more than a metre. Returns arrays of
   //falls, upstream first. Every fall lands in exactly one chain.
-  //A carved staircase (a-land fall sites, simulation 0.2.0) says so itself: the steps of one
-  //site.cascade chain in site.step order, whatever their treads' length (each holds a pool and
-  //an approach, often more than chainGap).
+  //A carved fall (a-land fall sites, simulation 0.2.0) is a chain of its own: every step of a
+  //carved staircase lands in its own pool and leaves again off its own approach, so a strand that
+  //plunged into the first pool ended the whole chain's trace there, and every later step drew as
+  //creek draped down its face (falls-lab B and D, Dante 2026-09-23).
   N.chains = function(falls, o){
     const gap = opt(o, 'chainGap');
     const n = falls.length;
     const succ = new Array(n).fill(-1), hasPred = new Array(n).fill(false);
     for(let i = 0; i < n; ++i){
-      const si = falls[i].site;
-      if(!si || si.cascade == null) continue;
-      for(let j = 0; j < n; ++j){
-        const sj = falls[j].site;
-        if(j !== i && sj && sj.cascade === si.cascade && sj.step === si.step + 1 && !hasPred[j]){ succ[i] = j; hasPred[j] = true; break; }
-      }
-    }
-    for(let i = 0; i < n; ++i){
-      if(succ[i] >= 0) continue;
+      if(N.siteOf(falls[i])) continue;
       const b = falls[i].bottom;
       if(!b || !falls[i].top) continue;
       let best = -1, bestD = gap * gap;
       for(let j = 0; j < n; ++j){
-        if(j === i || hasPred[j] || !falls[j].top) continue;
+        if(j === i || hasPred[j] || !falls[j].top || N.siteOf(falls[j])) continue;
         const t = falls[j].top;
         const dx = t[0] - b[0], dz = t[2] - b[2], d2 = dx * dx + dz * dz;
         if(d2 <= bestD && t[1] <= b[1] + 1.0){ best = j; bestD = d2; }
@@ -606,7 +599,11 @@ ARestlessOcean.WaterfallNappe = {};
     const maxTime = opt(o, 'maxTime'), maxPath = opt(o, 'maxPath');
     const detach = opt(o, 'detachMargin');
     const plungeDepth = opt(o, 'plungeDepth');
-    const plungeFall = opt(o, 'plungeMinFall');
+    //A carved site's pool is a known drop below its lip: water met in the first half of that drop
+    //is the creek it just left, carried a texel past the brink by the 1 m water tiles (a 1 m
+    //texel half on the lip holds the lip's level over the face). There half of falls-lab C's
+    //strands "plunged" 0.4 m under the lip and drew nothing (Dante's missing chunks, 2026-09-23).
+    const plungeFall = job.site ? Math.max(opt(o, 'plungeMinFall'), 0.5 * (job.site.drop || 0)) : opt(o, 'plungeMinFall');
     const minImpact = opt(o, 'minImpactSpeed');
     const steep = opt(o, 'chuteSlope'), gentle = opt(o, 'gentleSlope');
 
@@ -850,7 +847,8 @@ ARestlessOcean.WaterfallNappe = {};
         //surface, since attachedOffset lifts it by the water depth, and skated across.
         //Gated on having come down something, so the deep creek above a lip is not a pool.
         const w = waterHere(env, px, pz);
-        if(everAirborneOrSteep && isPool(w, o)){
+        //(At a carved site, only the pool the site's drop leads to: see plungeFall.)
+        if(everAirborneOrSteep && isPool(w, o) && (!job.site || startY - py > plungeFall)){
           const level = gb + w.depth;
           //Only the first plunge is THE plunge: a jet that dove into a pool and was carried back
           //out over its shallow edge (the airborne branch's touchdown) is still that pool's water.

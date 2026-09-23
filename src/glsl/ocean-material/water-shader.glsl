@@ -1688,6 +1688,27 @@ void main(){
     if(flowFallOwn >= 0.998) discard;
   #else
     if(flowHandoffW >= 0.998) discard;
+    //NOT A FALL. This surface never draws a waterfall (the sheet does, or the flowing
+    //surface's stand-in), yet where the water field steps down a face its heightfield drapes
+    //from the lip to the pool: a 1 m texel half on the lip carries the lip's level over the
+    //face, reads deep enough to draw, and hung a strip of creek down the cliff beside falls-lab
+    //A's sheet, wherever the hand-off weight fell short of 1 near the still pool (Dante,
+    //2026-09-23). Level steeper than tan 30 degrees over +-0.75 m is a fall: not drawn. Dry taps
+    //drop out, as in the flowing surface's own slope.
+    {
+      const float STILL_FALL_EPS = 0.75;
+      vec4 sfxm = waterFieldAt(worldPosition.xz - vec2(STILL_FALL_EPS, 0.0));
+      vec4 sfxp = waterFieldAt(worldPosition.xz + vec2(STILL_FALL_EPS, 0.0));
+      vec4 sfzm = waterFieldAt(worldPosition.xz - vec2(0.0, STILL_FALL_EPS));
+      vec4 sfzp = waterFieldAt(worldPosition.xz + vec2(0.0, STILL_FALL_EPS));
+      float sfc = dryTestField.r;
+      float sfSpanX = STILL_FALL_EPS * (step(sfxm.a, 0.5) + step(sfxp.a, 0.5));
+      float sfSpanZ = STILL_FALL_EPS * (step(sfzm.a, 0.5) + step(sfzp.a, 0.5));
+      vec2 stillLevelSlope = vec2(
+        sfSpanX > 0.0 ? ((sfxp.a > 0.5 ? sfc : sfxp.r) - (sfxm.a > 0.5 ? sfc : sfxm.r)) / sfSpanX : 0.0,
+        sfSpanZ > 0.0 ? ((sfzp.a > 0.5 ? sfc : sfzp.r) - (sfzm.a > 0.5 ? sfc : sfzm.r)) / sfSpanZ : 0.0);
+      if(length(stillLevelSlope) > 0.577) discard;
+    }
     //BEYOND THE FLOWING WINDOW (2026-09-22: creeks z-fighting from above, far off). Past
     //~228 m no flowing surface exists and this opaque surface draws the creek at its level,
     //a few centimetres over a terrain the depth buffer cannot tell it apart from: 24-bit depth

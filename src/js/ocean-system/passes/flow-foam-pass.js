@@ -83,6 +83,7 @@ ARestlessOcean.Passes.FlowFoamPass = function(oceanGrid){
 ARestlessOcean.Passes.FlowFoamPass.RESOLUTION = 512;
 ARestlessOcean.Passes.FlowFoamPass.HALF_WIDTH = 128.0;
 ARestlessOcean.Passes.FlowFoamPass.MAX_FALLS = 16;
+ARestlessOcean.Passes.FlowFoamPass.MAX_CALM = 8;       //carved fall approaches calmed (nearest first)
 
 ARestlessOcean.Passes.FlowFoamPass.prototype.init = function(){
   const RES = ARestlessOcean.Passes.FlowFoamPass.RESOLUTION;
@@ -104,6 +105,9 @@ ARestlessOcean.Passes.FlowFoamPass.prototype.init = function(){
   const falls = [];
   const fallsB = [];
   for(let i = 0; i < MAX_FALLS; ++i){ falls.push(new THREE.Vector4(0, 0, 0, 0)); fallsB.push(new THREE.Vector4(0, 1, 0, 1)); }
+  const MAX_CALM = ARestlessOcean.Passes.FlowFoamPass.MAX_CALM;
+  const calm = [], calmB = [];
+  for(let i = 0; i < MAX_CALM; ++i){ calm.push(new THREE.Vector4(0, 0, 0, 1)); calmB.push(new THREE.Vector4(0, 0, 0, 0)); }
   this.material = new THREE.ShaderMaterial({
     glslVersion: THREE.GLSL3,
     uniforms: {
@@ -123,7 +127,10 @@ ARestlessOcean.Passes.FlowFoamPass.prototype.init = function(){
       uFieldHalfWidth: {value: 256.0},
       uFalls: {value: falls},          //(x, z, half-width along the foot, source rate)
       uFallsB: {value: fallsB},        //(downstream dir x, z, band depth, 0)
-      uFallCount: {value: 0}
+      uFallCount: {value: 0},
+      uCalm: {value: calm},            //(lip centre x, z, downstream normal x, z) of a carved fall
+      uCalmB: {value: calmB},          //(half-width across, approach length m, 0, 0)
+      uCalmCount: {value: 0}
     },
     vertexShader: [
       'out vec2 vUv;',
@@ -139,6 +146,8 @@ ARestlessOcean.Passes.FlowFoamPass.prototype.init = function(){
       'uniform vec4 uGains, uOnsets;',
       'uniform vec4 uFalls[' + MAX_FALLS + '], uFallsB[' + MAX_FALLS + '];',
       'uniform int uFallCount;',
+      'uniform vec4 uCalm[' + MAX_CALM + '], uCalmB[' + MAX_CALM + '];',
+      'uniform int uCalmCount;',
       'vec2 fieldUV(vec2 xz){ return (xz - uFieldCenter) / (2.0 * uFieldHalfWidth) + 0.5; }',
       'vec2 flowAt(vec2 xz){',
       '  vec2 c = texture(uFieldB, fieldUV(xz)).xy;',
@@ -197,6 +206,21 @@ ARestlessOcean.Passes.FlowFoamPass.prototype.init = function(){
       '  float foam = inside * texture(uPrev, puv).r;',
       '  float tau = mix(uDecayTime, uDecayTimeDense, smoothstep(0.15, 0.7, foam));',
       '  foam *= exp(-uDt / max(tau, 0.01));',
+      //The approach to a carved fall is the glassy tongue before the brink: no foam made there,
+      //and what drifts in fades out toward the lip (Dante: "we likely don't want foam as we
+      //approach the falls"; it rode the approach and stopped dead at the sheet, a seam). Calm
+      //ramps from nothing where the approach begins to full over its last 60%.
+      '  float calmK = 0.0;',
+      '  for(int i = 0; i < ' + MAX_CALM + '; ++i){',
+      '    if(i >= uCalmCount) break;',
+      '    vec2 pc = xz - uCalm[i].xy, nc = uCalm[i].zw;',
+      '    float alongC = dot(pc, nc), acrossC = abs(dot(pc, vec2(-nc.y, nc.x)));',
+      '    float lenC = max(uCalmB[i].y, 1.0);',
+      '    float inC = smoothstep(-lenC, -0.4 * lenC, alongC) * (1.0 - smoothstep(0.0, 1.0, alongC))',
+      '              * (1.0 - smoothstep(uCalmB[i].x, uCalmB[i].x + 1.5, acrossC));',
+      '    calmK = max(calmK, inC);',
+      '  }',
+      '  foam *= exp(-uDt * calmK / 0.25);',
       //3. sources
       '  float H = uStencil;',
       '  vec2 vxp = flowAt(xz + vec2(H, 0.0)), vxm = flowAt(xz - vec2(H, 0.0));',
@@ -223,6 +247,7 @@ ARestlessOcean.Passes.FlowFoamPass.prototype.init = function(){
       '    fall += uFalls[i].w * (1.0 - smoothstep(0.0, 0.5 * depthF, d));',
       '  }',
       '  float S = (uGains.x * convergence + uGains.y * bank + uGains.z * stepT) * mix(0.6, 1.0, clamp(fb.z, 0.0, 1.0));',
+      '  S *= 1.0 - calmK;',
       '  S += fall;',
       '  foam = 1.0 - (1.0 - foam) * exp(-max(S, 0.0) * uDt);',
       '  foam *= wet;',
@@ -310,6 +335,25 @@ ARestlessOcean.Passes.FlowFoamPass.prototype._updateFalls = function(ctx){
   u.uFallCount.value = n;
   if(near.length > n) near.length = n;
   this.nearFalls = near;
+  //Carved fall sites (a-land simulation 0.2.0): their approaches, nearest first, calmed.
+  const MAX_CALM = ARestlessOcean.Passes.FlowFoamPass.MAX_CALM;
+  const calm = [], wf = ctx.waterfalls || [];
+  for(let i = 0; i < wf.length; ++i){
+    const t = wf[i] && wf[i].site;
+    if(!t || !t.lip || !t.normal) continue;
+    const cx = 0.5 * (t.lip[0][0] + t.lip[1][0]), cz = 0.5 * (t.lip[0][2] + t.lip[1][2]);
+    const ox = cx - this.centerX, oz = cz - this.centerZ, reach = (t.approach || 0) + 0.5 * (t.wetWidth || 0);
+    if(Math.abs(ox) > hw + reach || Math.abs(oz) > hw + reach) continue;
+    calm.push({d: ox * ox + oz * oz, cx: cx, cz: cz, t: t});
+  }
+  calm.sort(function(a, b){ return a.d - b.d; });
+  const nc = Math.min(calm.length, MAX_CALM);
+  for(let i = 0; i < nc; ++i){
+    const c = calm[i], nl = Math.hypot(c.t.normal[0], c.t.normal[1]) || 1.0;
+    u.uCalm.value[i].set(c.cx, c.cz, c.t.normal[0] / nl, c.t.normal[1] / nl);
+    u.uCalmB.value[i].set(0.5 * (c.t.wetWidth || 0) + (c.t.shoulder || 0), c.t.approach || 0, 0, 0);
+  }
+  u.uCalmCount.value = nc;
 };
 
 //ctx: {timeMs, cameraX, cameraZ, fieldCascade (WaterField cascade 0), waterfalls}
