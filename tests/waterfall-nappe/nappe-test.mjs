@@ -301,6 +301,64 @@ const fullQuads = n => {
   check('uneven: edge strands carry less than the middle', edgeSt.q < 0.5 * mid.q, 'edge q '+f2(edgeSt.q)+' mid q '+f2(mid.q));
   check('uneven: ...and run thinner', edgeSt.samples[0].h < mid.samples[0].h, 'edge h '+f2(edgeSt.samples[0].h)+' mid h '+f2(mid.samples[0].h));
 }
+// 21. A CARVED SITE (a-land's fall-site carve, simulation 0.2.0): the ground is one canonical shape
+//     and the export says where it is, so the trace discovers nothing. The reach runs 30° off
+//     the axes; the entry's own top/bottom/width are D8's (a cell to one side, a diagonal step,
+//     4·√Q wide) and must be ignored: heading = the lip normal exactly, the seeds on one line
+//     back on the approach as wide as the wet width, no rail, and one straight sheet off the lip.
+const siteFrame = (nx, nz) => ({s: (x,z) => x * nx + z * nz, t: (x,z) => x * nz - z * nx,
+                                at: (s,t) => [s * nx + t * nz, s * nz - t * nx]});
+{
+  //the carve's banks blend out past the wet width and the water reaches onto them: the bank
+  //stands a metre outside it here (a wall right at the edge seeds pushes them off it)
+  const nx = Math.sin(Math.PI / 6), nz = Math.cos(Math.PI / 6), F = siteFrame(nx, nz), hw = 4;
+  const ground = (x,z) => F.s(x,z) < 0 ? 10 + (Math.abs(F.t(x,z)) > hw + 1 ? 1 : 0) : 2;
+  const water = (x,z) => { const s = F.s(x,z), t = F.t(x,z);
+    if(s < 0) return Math.abs(t) <= hw + 1 ? {level: 10.4, depth: 0.4, vx: 1.5 * nx, vz: 1.5 * nz} : null;
+    return s > 0.3 ? {level: 4, depth: 2, vx: 0.05 * nx, vz: 0.05 * nz} : null; };
+  const env = {groundAt: ground, waterAt: water};
+  const L0 = F.at(0, -hw), L1 = F.at(0, hw), top = F.at(-0.5, 1.5), bot = F.at(0.5, 2.5);
+  const fall = {top: [top[0], 10, top[1]], bottom: [bot[0] + 0.7, 2, bot[1]], width: 14, discharge: 9, drop: 8,
+                site: {lip: [[L0[0], 10, L0[1]], [L1[0], 10, L1[1]]], normal: [nx, nz], drop: 8, treadAbove: 10, treadBelow: 2,
+                       approach: 3, landing: 2, wetWidth: 2 * hw, depth: 0.4, discharge: 4.8,
+                       pool: {centre: [0, 4, 0], radius: 4, depth: 2.4, kind: 'dug'}, cascade: 0, step: 0, steps: 1}};
+  const job = N.beginTrace([fall], env);
+  check('site: heading is the lip normal exactly', Math.abs(job.hx - nx) < 1e-9 && Math.abs(job.hz - nz) < 1e-9, 'h '+job.hx.toFixed(4)+','+job.hz.toFixed(4));
+  const seeds = job.seeds.filter(Boolean), ss = seeds.map(q => F.s(q.x, q.z)), ts = seeds.map(q => F.t(q.x, q.z));
+  check('site: the seeds are one line on the approach, no rail', job.rail === 0 && Math.max(...ss.map(v => Math.abs(v + job.up))) < 1e-9,
+        'up '+f2(job.up)+' rail '+job.rail);
+  check('site: ...as wide as the wet width', Math.abs(Math.max(...ts) - Math.min(...ts) - (2 * hw - 0.5)) < 0.01 && job.W === 2 * hw && job.Q === 4.8,
+        'span '+f2(Math.max(...ts) - Math.min(...ts))+' W '+job.W+' Q '+job.Q);
+  const n = N.trace([fall], env), rib = N.buildRibbon(n, env);
+  const falling = n.strands.filter(st => st && st.rows.some(r => r.fallFlag > 0.5));
+  const lip = lipRow(n), ls = lip.map(r => F.s(r.x, r.z));
+  check('site: every strand falls, off one straight lip', falling.length === n.strands.length && Math.max(...ls) - Math.min(...ls) < 0.1,
+        'falling '+falling.length+'/'+n.strands.length+' lip s spread '+f2(Math.max(...ls) - Math.min(...ls)));
+  check('site: the sheet is whole', rib.index.length / 6 >= 0.9 * fullQuads(n), 'quads '+rib.index.length/6+' of '+fullQuads(n));
+}
+// 22. a carved STAIRCASE: its steps chain by site.cascade/step whatever their treads' length (11 m,
+//     past chainGap), in step order, and every later lip's lead box is square to ITS lip.
+{
+  const nx = Math.sin(Math.PI / 6), nz = Math.cos(Math.PI / 6), F = siteFrame(nx, nz), hw = 3;
+  const lvl = s => s < 0 ? 20 : (s < 11 ? 14 : (s < 22 ? 8 : 2));
+  const ground = (x,z) => lvl(F.s(x,z)) + (Math.abs(F.t(x,z)) > hw ? 1 : 0);
+  const water = (x,z) => { const s = F.s(x,z), t = F.t(x,z);
+    return Math.abs(t) <= hw ? {level: lvl(s) + 0.4, depth: 0.4, vx: 1.5 * nx, vz: 1.5 * nz} : null; };
+  const env = {groundAt: ground, waterAt: water};
+  const step = k => { const sL = 11 * k, a = F.at(sL, -hw), b = F.at(sL, hw), tp = F.at(sL - 0.5, 0), bt = F.at(sL + 0.5, 0);
+    return {top: [tp[0], lvl(sL - 0.5), tp[1]], bottom: [bt[0], lvl(sL + 0.5), bt[1]], width: 10, discharge: 3, drop: 6,
+            site: {lip: [[a[0], lvl(sL - 0.5), a[1]], [b[0], lvl(sL - 0.5), b[1]]], normal: [nx, nz], drop: 6, approach: k ? 11 : 3,
+                   landing: 2, wetWidth: 2 * hw, discharge: 3, pool: {centre: [0, 0, 0], radius: 3, depth: 1.8, kind: 'dug'},
+                   cascade: 7, step: k, steps: 3}}; };
+  const other = {top: [500, 5, 500], bottom: [500, 1, 501], width: 4, discharge: 1, drop: 4};
+  const chains = N.chains([step(2), other, step(0), step(1)]);
+  const c = chains.find(ch => ch[0].site);
+  check('staircase: its steps chain by cascade, in step order', chains.length === 2 && c && c.map(f => f.site.step).join() === '0,1,2',
+        chains.map(ch => ch.map(f => f.site ? f.site.step : 'x').join('')).join(' | '));
+  const n = N.trace(c, env);
+  const leads = n.corridors.filter(b => b.lead > 0.05).map(b => { const dx = b.bx - b.ax, dz = b.bz - b.az, l = Math.hypot(dx, dz); return (dx * nx + dz * nz) / l; });
+  check('staircase: a lead box square to every lip', leads.length >= 2 && leads.every(d => d > 0.999), 'leads '+leads.map(f2).join(' '));
+}
 // 5. island-sholes chains (only when the sibling project is checked out)
 {
   const p = new URL('../../../a-faraway-project/island-sholes/map.json', import.meta.url);

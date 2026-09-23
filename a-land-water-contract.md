@@ -80,13 +80,14 @@ entirely and stale files from an earlier bake are ignorable.
 ### `map.json` `simulation` block (field already reserved in a-land's schema)
 ```json
 "simulation": {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "seaLevel": 12.0,
   "maxDepth": 60.0,
   "velocityRange": 8.0,
   "waterTypes": [ { "jerlov": "IB", "turbidity": 0.1 }, ... ],
   "bodies":     [ { "id": "lk_tarn", "kind": "lake|ocean|river", "level": 84.0, "discharge": 3.2 } ],
-  "waterfalls": [ { "top": [x,y,z], "bottom": [x,y,z], "width": 4.0, "discharge": 3.2, "drop": 3.0 } ],
+  "waterfalls": [ { "top": [x,y,z], "bottom": [x,y,z], "width": 4.0, "discharge": 3.2, "drop": 3.0,
+                    "site": { ... } } ],
   "shoreline":  { "fetchBake": "tiles/fetch/{lod}/{x}_{y}.png" }
 }
 ```
@@ -97,7 +98,43 @@ explicitly out of scope for v1. As the exporter writes it (a-land `save.js`): `t
 `width` is the hydraulic-geometry channel width (4·√Q) and `discharge` the largest Q along
 the run. No lip line and no direction. a-water's Phase 6 (`WaterfallNappe`) therefore
 re-derives the lip, the width and the flow from the terrain and the water tiles, and uses
-these entries only to find and chain the falls. `shoreline.fetchBake` (per-shore open-water exposure so
+these entries only to find and chain the falls.
+
+**`site` (0.2.0, optional): the carved fall site.** With `carveChannels` on, a-land carves every
+fall into one canonical shape (WaterSolve `carveChannels` stage 1c, `carveFallSites`; decided with
+Dante 2026-09-23, "the river owns its falls"):
+- an approach tread, flat and level across the wet width;
+- a straight lip, square to the reach;
+- a vertical face;
+- steps of at most 8 m, with a gorge cut back for a taller sheer face;
+- a plunge pool 0.3 × the drop at each landing (the lake itself when it lands in one; in the sea,
+  a scour pool with a sand rim).
+
+Each step is its own `waterfalls[]` entry, carrying:
+```json
+"site": { "lip": [[x,y,z],[x,y,z]], "normal": [nx,nz], "drop": 6.0,
+          "treadAbove": 41.6, "treadBelow": 35.7, "approach": 3.0, "landing": 2.1,
+          "wetWidth": 12.1, "depth": 0.6, "discharge": 9.1,
+          "pool": { "centre": [x,y,z], "radius": 6.0, "depth": 1.8, "kind": "dug|lake|sea" },
+          "cascade": 1, "step": 0, "steps": 3 }
+```
+- `lip`: the two ends of the lip line, at the lip's **bed** height.
+- `normal`: the downstream unit direction in plan (X, Z).
+- `treadAbove` / `treadBelow`: bed heights either side of the lip. Below the last step of a lake or
+  sea landing, `treadBelow` is the body's surface.
+- `approach`: the flat tread's length before this lip, in metres.
+- `landing`: the jet's plan reach, v_c·√(2·drop/g).
+- `depth`: the tread's water depth.
+- `pool.centre[1]`: the pool's water level.
+- `cascade` / `step` / `steps`: the entry's place in its staircase. The steps of one `cascade` chain in
+  `step` order, and their treads are longer than a-water's 6 m `chainGap`.
+
+Entries without `site` are falls the carve did not shape: hand-made terrain, a world baked before
+0.2.0, or a site that needed more than `carveFallMaxCutM` of gorge. a-water traces those as
+before, discovering the lip. A site is carried on the Channels layer that carved it, so a Bake &
+Export re-solve keeps it.
+
+`shoreline.fetchBake` (per-shore open-water exposure so
 surf amplitude follows geography) is optional and may ship later; absence means "use
 the ocean's own wind fetch."
 

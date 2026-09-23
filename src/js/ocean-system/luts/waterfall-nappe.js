@@ -280,11 +280,23 @@ ARestlessOcean.WaterfallNappe = {};
   //Group falls into cascades: fall j follows fall i when j's top is within chainGap
   //(plan) of i's bottom and not above it by more than a metre. Returns arrays of
   //falls, upstream first. Every fall lands in exactly one chain.
+  //A carved staircase (a-land fall sites, simulation 0.2.0) says so itself: the steps of one
+  //site.cascade chain in site.step order, whatever their treads' length (each holds a pool and
+  //an approach, often more than chainGap).
   N.chains = function(falls, o){
     const gap = opt(o, 'chainGap');
     const n = falls.length;
     const succ = new Array(n).fill(-1), hasPred = new Array(n).fill(false);
     for(let i = 0; i < n; ++i){
+      const si = falls[i].site;
+      if(!si || si.cascade == null) continue;
+      for(let j = 0; j < n; ++j){
+        const sj = falls[j].site;
+        if(j !== i && sj && sj.cascade === si.cascade && sj.step === si.step + 1 && !hasPred[j]){ succ[i] = j; hasPred[j] = true; break; }
+      }
+    }
+    for(let i = 0; i < n; ++i){
+      if(succ[i] >= 0) continue;
       const b = falls[i].bottom;
       if(!b || !falls[i].top) continue;
       let best = -1, bestD = gap * gap;
@@ -349,7 +361,10 @@ ARestlessOcean.WaterfallNappe = {};
     }
     if(!(W > 0.0)) W = 4.0;
     if(!(Q > 0.0)) Q = 0.5;
+    const site = N.siteOf(first);
+    if(site) return siteTrace(chain, env, o, site, Q);
 
+    //No carved site (hand-made terrain, a world baked before simulation 0.2.0): find the lip.
     //Plan heading: square to the LIP. The ground's downhill direction averaged over a disc
     //round the lip straddles the edge, so it is the cliff line's normal. The field current
     //there is a-land's D8 step direction (axis or 45° diagonal): as the heading it swung the
@@ -395,8 +410,9 @@ ARestlessOcean.WaterfallNappe = {};
       }
       if(clear) break;
     }
-    let px = first.top[0] - hx * up, pz = first.top[2] - hz * up;
-    if(env.groundAt(px, pz) == null) return null;
+    const px0 = first.top[0] - hx * up, pz0 = first.top[2] - hz * up;
+    if(env.groundAt(px0, pz0) == null) return null;
+    let px = px0, pz = pz0;
     //The jet is as wide as the WATER at the start, not a-land's exported width: that is
     //its hydraulic-geometry estimate (4·√Q, 14 m for every island-sholes fall), and a rigid
     //14 m airborne sheet over a 5 m gully stood out past both banks. Scan across the flow
@@ -417,6 +433,49 @@ ARestlessOcean.WaterfallNappe = {};
     //Between the outermost wet SAMPLES: wetSpan's width carries half a scan step of margin each
     //side, which put the edge seeds on the banks (dry, a metre up, carrying the whole Q/W).
     if(vis){ span = Math.max(vis.width - step, opt(o, 'minWidth')); spanOff = vis.offset; }
+    return seedTrace(chain, env, o, {hx: hx, hz: hz, lx: lx, lz: lz, up: up,
+                                      rail: Math.max(opt(o, 'upstreamStart') - up, 0.0),
+                                      px: px, pz: pz, W: W, Q: Q, span: span, spanOff: spanOff, skipDry: !!wet});
+  };
+
+  //The carved site of a waterfalls[] entry (a-land simulation 0.2.0), checked for the fields the
+  //trace reads; null for an entry without one.
+  N.siteOf = function(f){
+    const t = f && f.site;
+    if(!t || !t.lip || t.lip.length !== 2 || !t.normal || !(t.wetWidth > 0)) return null;
+    return t;
+  };
+
+  //THE CARVED SITE (a-land's fall-site carve, 2026-09-23: "the river owns its falls"). a-land
+  //cut the ground at this fall into one shape: a flat approach, a straight lip level across,
+  //square to the reach, a vertical face and a pool. So nothing is discovered: the heading is the
+  //lip's normal, the seeds sit on the approach one line back from the lip, as wide as the wet
+  //width, and no rail is needed (the approach is flat and at least carveFallApproachM long).
+  //The start rule, the lip-heading disc and the wet-span scan above stay for un-carved falls.
+  function siteTrace(chain, env, o, t, Q){
+    const last = chain[chain.length - 1], tl = N.siteOf(last) || t;
+    const cx = 0.5 * (t.lip[0][0] + t.lip[1][0]), cz = 0.5 * (t.lip[0][2] + t.lip[1][2]);
+    let hx = t.normal[0], hz = t.normal[1];
+    const hl = Math.hypot(hx, hz) || 1.0;
+    hx /= hl; hz /= hl;
+    let lx = tl.normal[0], lz = tl.normal[1];
+    const ll = Math.hypot(lx, lz) || 1.0;
+    lx /= ll; lz /= ll;
+    const up = Math.min(opt(o, 'upstreamStart'), Math.max(t.approach || 0.0, 0.5));
+    const px = cx - hx * up, pz = cz - hz * up;
+    if(env.groundAt(px, pz) == null) return null;
+    //the flat bed runs the whole wet width; the edge seeds sit half a spacing in from its ends,
+    //where the bank starts to rise
+    const span = Math.max(t.wetWidth - opt(o, 'strandSpacing'), opt(o, 'minWidth'));
+    return seedTrace(chain, env, o, {hx: hx, hz: hz, lx: lx, lz: lz, up: up, rail: 0.0,
+                                      px: px, pz: pz, W: t.wetWidth, Q: t.discharge > 0 ? t.discharge : Q,
+                                      span: span, spanOff: 0.0, skipDry: false, site: t});
+  }
+
+  //Seeds across the start line (both paths above): an odd count spread over `span`, each with
+  //the field's own discharge per width.
+  function seedTrace(chain, env, o, a){
+    const hx = a.hx, hz = a.hz, px = a.px, pz = a.pz, W = a.W, Q = a.Q, span = a.span, spanOff = a.spanOff;
     //An ODD count, so a strand runs down the middle (the spine: the corridors and the
     //single-parcel fields below follow it) and the across coordinate is symmetric.
     const nHalf = Math.max(Math.round(0.5 * span / opt(o, 'strandSpacing')), 0);
@@ -441,7 +500,7 @@ ARestlessOcean.WaterfallNappe = {};
       const wq = waterHere(env, sx, sz);
       //A seed on the dry rock the scan stepped over (wetGap) is no water: no strand, so the weave
       //tears round the rock. Only where the field has water at all (else every seed is Q/W).
-      if(wet && !wq){ seeds[j] = null; continue; }
+      if(a.skipDry && !wq){ seeds[j] = null; continue; }
       if(wv && wv.vx != null){
         vField = Math.sqrt(wv.vx * wv.vx + (wv.vz || 0) * (wv.vz || 0));
         const fq = wq ? wq.depth * vField : 0.0;
@@ -451,11 +510,10 @@ ARestlessOcean.WaterfallNappe = {};
       seeds[j] = {x: sx, z: sz, gy: gy, q: q, vField: vField, energy: e0,
                   share: (j === 0 || j === nS - 1) && nS > 1 ? 0.5 * share : share};
     }
-    return {chain: chain, env: env, o: o, hx: hx, hz: hz, lx: lx, lz: lz, up: up,
-            rail: Math.max(opt(o, 'upstreamStart') - up, 0.0),
-            W: W, Q: Q, span: span, nHalf: nHalf, spacing: spacing,
+    return {chain: chain, env: env, o: o, hx: hx, hz: hz, lx: a.lx, lz: a.lz, up: a.up, rail: a.rail,
+            W: W, Q: Q, span: span, nHalf: nHalf, spacing: spacing, site: a.site || null,
             seeds: seeds, strands: new Array(nS), next: 0, nappe: null};
-  };
+  }
 
   N.stepTrace = function(job, k){
     const nS = job.seeds.length;
@@ -1156,6 +1214,17 @@ ARestlessOcean.WaterfallNappe = {};
   //Corridor boxes (flat-ended) over the rows where the sheet draws: {ax, az, bx, bz, r}. The
   //flowing-water material fades its own surface out inside them (on steep level only).
   N.buildCorridors = function(nappe, o){
+    //the chain's carved sites (a-land 0.2.0), for the lead box of each later lip
+    const sites = (nappe.chain || []).map(N.siteOf).filter(Boolean);
+    const siteNear = function(x, z){
+      let best = null, bestD = Infinity;
+      for(const t of sites){
+        const cx = 0.5 * (t.lip[0][0] + t.lip[1][0]), cz = 0.5 * (t.lip[0][2] + t.lip[1][2]);
+        const d = Math.hypot(x - cx, z - cz);
+        if(d < bestD && d <= 0.5 * t.wetWidth + 4.0){ bestD = d; best = t; }
+      }
+      return best;
+    };
     const rows = nappe.rows, len = opt(o, 'corridorLength'), leadLen = opt(o, 'corridorLead');
     //Wide enough for the whole skirt as it strays from the spine (reach), and for the creek's wet
     //span at the lip. LIMIT: boxes run down the SPINE only; a strongly curved (horseshoe) lip
@@ -1213,7 +1282,9 @@ ARestlessOcean.WaterfallNappe = {};
       const lead = rows[i].s - rows[k].s;
       if(lead > 0.05){
         const first = caps.length === 0 && nappe.hx !== undefined;
-        let dx = first ? nappe.hx : rows[i].hx, dz = first ? nappe.hz : rows[i].hz;
+        //A carved staircase knows every lip's normal: the step's own site, nearest this takeoff.
+        const st = first ? null : siteNear(rows[i].x, rows[i].z);
+        let dx = first ? nappe.hx : (st ? st.normal[0] : rows[i].hx), dz = first ? nappe.hz : (st ? st.normal[1] : rows[i].hz);
         const dl = Math.hypot(dx, dz) || 1.0;
         dx /= dl; dz /= dl;
         caps.push({ax: rows[i].x - dx * lead, az: rows[i].z - dz * lead, bx: rows[i].x, bz: rows[i].z, r: boxR(rows[k].k, rows[i].k), lead: lead});
