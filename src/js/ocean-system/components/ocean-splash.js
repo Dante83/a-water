@@ -4,8 +4,9 @@
 //Design (see plan dreamy-noodling-petal):
 //  - One packed, fixed-capacity CPU particle pool (structure-of-arrays). Indices
 //    [0, liveCount) are alive; death is an O(1) swap-remove with the last live
-//    slot, which keeps the GPU draw range contiguous.
-//  - One THREE.Points mesh drawn ONLY in the main pass. OceanGrid owns this
+//    slot, which keeps the GPU instance range contiguous.
+//  - One mesh of instanced camera-facing quads (Phase 6b; it was THREE.Points, whose
+//    hardware point-size cap shrank near puffs) drawn ONLY in the main pass. OceanGrid owns this
 //    object and toggles mesh.visible so it never enters the refraction / shadow /
 //    foam offscreen passes (those run earlier in OceanGrid.tick).
 //  - Three emitters, one spawn pool:
@@ -176,9 +177,14 @@ ARestlessOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
                                     //Raise it to add droplets back under the mist.
   //Waterfall MIST (Phase 6 round 9): fine type-2 puffs rolling out from every traced impact —
   //the haze off the bottom of a fall. Type 2 is a haze puff at any wind (ocean-splash.glsl).
-  this.fallMistRate = 50.0;         //FUDGE: puffs per (m³/s) per second at IMPACT_REF_SPEED (20 -> 50
+  this.fallMistRate = 20.0;         //FUDGE: puffs per (m³/s) per second at FALL_ENERGY_REF_SPEED (50 -> 20
+                                    //2026-09-22 with the energy scaling: a 3 m step now gets ~1/3, an
+                                    //18 m plunge ~2.6×, and a-land's export carries the full Q; was 20 -> 50
                                     //2026-09-22 with fallMistOpacity: the plume hides the landing line).
-  this.fallMistSize = 1.0;          //m base puff radius.
+  this.fallMistSize = 0.7;          //m base puff radius (× sizeScale across). 1.0 -> 0.7 in Phase 6b:
+                                    //tuned at 1.0 while GL points capped near puffs at 512 px, so the
+                                    //plume Dante approved was drawn smaller than 1.0 up close. As quads
+                                    //0.7 gives back about that size at 8-10 m.
   this.fallMistOpacity = 0.6;       //the mist's own opacity (uOpacity is the sea spray's; 0.1 on
                                     //the hero-creek pages hid the plunge haze).  Live knob.
   this.fallMistLife = 2.8;          //s base life: it hangs and rolls, unlike crest mist's 0.6 s.
@@ -186,6 +192,19 @@ ARestlessOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
   this.fallMistRise = 0.5;          //m/s upward lift.
   this.fallMistSpread = 1.75;       //rad either side of downstream it rolls out over.
   this.fallSprayMinDrop = 0.5;      //m: a step lower than this is a riffle, not a plunge.
+  //Waterfall SPLASH (Phase 6b): type-3 white clumps and streaks thrown out of every traced
+  //impact, ballistic, dying when they fall back into the water (the lake, pool or creek level
+  //from a-land's getWaterAt, the sea's rendered surface, or the ground). Not the sea's beads.
+  this.fallSplashRate = 15.0;       //FUDGE: clumps per (m³/s) per second at FALL_ENERGY_REF_SPEED.
+  this.fallSplashSize = 0.04;       //m base radius; the quad is this × sizeScale across (~0.4 m).
+  this.fallSplashLife = 2.0;        //s cap; most die on the water well before it.
+  this.fallSplashSpeed = 0.5;       //launch speed as a fraction of the impact speed: a plunge's
+                                    //crown throws its droplets at a fraction of the arrival speed.
+  this.fallSplashMaxLaunch = 9.0;   //m/s cap (~4 m of rise) so a tall fall does not geyser.
+  this.fallSplashSpread = 0.45;     //cone half-spread around the reflected launch axis.
+  this.fallSplashOpacity = 0.9;     //the clumps' own opacity.  Live knob.
+  this.fallStreakTime = 0.08;       //s: a clump streaks over the path it covers in this time.
+  this.fallSplashWaterKill = true;  //die on a-land's inland water (known-dry aware), not just the sea.
   this.impactBurstPerSpeed = 6.0;//particles per m/s of impact speed (FUDGE).
   this.impactMinBurst = 4;
   this.impactMaxBurst = 60;
@@ -269,9 +288,10 @@ ARestlessOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
                                  //the world radius up over the spawn size. Bumped 5->10 (~2x) so
                                  //the haze reads bigger and softer.
   this.softRange = 1.5;          //m soft-particle fade depth.
-  this.maxPointSize = 512.0;     //raised from 256 so the 5x-larger near puffs are not
-                                 //clamped flat (watch fill-rate: big translucent sprites
-                                 //+ 3-octave noise is the main cost here).
+  this.maxPointSize = 512.0;     //RETIRED (Phase 6b): particles are instanced quads now, with no
+                                 //point-size cap. Kept so old configs setting it are harmless.
+                                 //(Watch fill-rate: big translucent quads + 3-octave noise is
+                                 //the main cost here.)
   this.debugMode = 0;            //0 normal, 1 tint-by-type.
   this.ambientScale = 1.8;       //multiplier on the sky-hemisphere ambient that lights the mist
                                  //(and anchors the drop sky-reflection). a-starry-sky's hemisphere
@@ -429,8 +449,8 @@ ARestlessOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
     if(cfg.hasOwnProperty(k)) this[k] = cfg[k];
   }
 
-  //── Pool storage (structure-of-arrays). position/aSize/aAge01/aSeed/aType are
-  //   GPU attribute backings; vel/age/lifetime stay CPU-only. ────────────────
+  //── Pool storage (structure-of-arrays). aCenter/aVel/aSize/aAge01/aSeed/aType/aCoarse are
+  //   the GPU instance-attribute backings; age/lifetime stay CPU-only. ───────
   this._positions = new Float32Array(capacity * 3);
   this._sizes = new Float32Array(capacity);
   this._age01 = new Float32Array(capacity);
@@ -441,20 +461,32 @@ ARestlessOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
   this._age = new Float32Array(capacity);
   this._life = new Float32Array(capacity);
 
-  const geometry = new THREE.BufferGeometry();
-  this._posAttr = new THREE.BufferAttribute(this._positions, 3).setUsage(THREE.DynamicDrawUsage);
-  this._sizeAttr = new THREE.BufferAttribute(this._sizes, 1).setUsage(THREE.DynamicDrawUsage);
-  this._ageAttr = new THREE.BufferAttribute(this._age01, 1).setUsage(THREE.DynamicDrawUsage);
-  this._seedAttr = new THREE.BufferAttribute(this._seeds, 1).setUsage(THREE.DynamicDrawUsage);
-  this._typeAttr = new THREE.BufferAttribute(this._types, 1).setUsage(THREE.DynamicDrawUsage);
-  this._coarseAttr = new THREE.BufferAttribute(this._coarse, 1).setUsage(THREE.DynamicDrawUsage);
-  geometry.setAttribute('position', this._posAttr);
+  //One camera-facing quad per particle (instanced), not GL points: gl_PointSize is capped by
+  //the hardware, so near mist puffs shrank as you approached (Phase 6b). `position` is the
+  //quad's corner in -1..1; the vertex stage expands it in view space.
+  const geometry = new THREE.InstancedBufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+    -1, -1, 0,  1, -1, 0,  1, 1, 0,  -1, 1, 0
+  ]), 3));
+  geometry.setIndex([0, 1, 2, 0, 2, 3]);
+  const inst = function(arr, n){
+    return new THREE.InstancedBufferAttribute(arr, n).setUsage(THREE.DynamicDrawUsage);
+  };
+  this._posAttr = inst(this._positions, 3);
+  this._velAttr = inst(this._vel, 3);
+  this._sizeAttr = inst(this._sizes, 1);
+  this._ageAttr = inst(this._age01, 1);
+  this._seedAttr = inst(this._seeds, 1);
+  this._typeAttr = inst(this._types, 1);
+  this._coarseAttr = inst(this._coarse, 1);
+  geometry.setAttribute('aCenter', this._posAttr);
+  geometry.setAttribute('aVel', this._velAttr);
   geometry.setAttribute('aSize', this._sizeAttr);
   geometry.setAttribute('aAge01', this._ageAttr);
   geometry.setAttribute('aSeed', this._seedAttr);
   geometry.setAttribute('aType', this._typeAttr);
   geometry.setAttribute('aCoarse', this._coarseAttr);
-  geometry.setDrawRange(0, 0);
+  geometry.instanceCount = 0;
   this.geometry = geometry;
 
   const def = ARestlessOcean.Materials.Ocean.splashMaterial;
@@ -465,7 +497,8 @@ ARestlessOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
     transparent: true,
     depthWrite: false,
     depthTest: true,
-    blending: THREE.NormalBlending
+    blending: THREE.NormalBlending,
+    side: THREE.DoubleSide           //a streak's quad may turn over; never cull a particle.
   });
 
   //Procedural soft-droplet sprite so the system renders before a real sprite is
@@ -473,7 +506,7 @@ ARestlessOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
   this._defaultSprite = ARestlessOcean.OceanSplash.makeRadialSprite();
   this.material.uniforms.splashSprite.value = this._defaultSprite;
 
-  this.mesh = new THREE.Points(geometry, this.material);
+  this.mesh = new THREE.Mesh(geometry, this.material);
   this.mesh.frustumCulled = false; //positions move every frame; bounds are stale.
   this.mesh.renderOrder = 10;      //draw after opaque scene + water.
   this.mesh.visible = false;       //OceanGrid flips this on after offscreen passes.
@@ -530,7 +563,8 @@ ARestlessOcean.OceanSplash.prototype.setSprite = function(texture){
   }
 };
 
-//Spawn one particle. type: 0 crest mist, 1 impact burst. coarse: [0,1] mist->droplet
+//Spawn one particle. type: 0 crest mist, 1 impact burst, 2 waterfall mist, 3 waterfall
+//splash. coarse: [0,1] mist->droplet
 //grade (optional; defaults to 0 = finest mist).
 ARestlessOcean.OceanSplash.prototype.spawn = function(px, py, pz, vx, vy, vz, size, life, type, coarse){
   if(this.liveCount >= this.capacity) return; //pool full: drop (cheap, bounded).
@@ -547,6 +581,35 @@ ARestlessOcean.OceanSplash.prototype.spawn = function(px, py, pz, vx, vy, vz, si
   this._seeds[i] = Math.random();
   this._types[i] = type;
   this._coarse[i] = coarse || 0.0;
+};
+
+//Launch axis for a burst off a surface with unit normal n: the normal itself, or (with the
+//incoming water velocity and impactReflect > 0) the mirror of that velocity bounced off the
+//surface plus run-up (see emitImpact). Shared by emitImpact and the waterfall splash. Returns
+//a scratch [x, y, z] (unit), valid until the next call.
+ARestlessOcean.OceanSplash.prototype._launchAxis = function(nx, ny, nz, inVx, inVy, inVz){
+  const out = this._scratchAxis || (this._scratchAxis = [0.0, 1.0, 0.0]);
+  out[0] = nx; out[1] = ny; out[2] = nz;
+  if(this.impactReflect > 0.0 && inVx !== undefined){
+    const vl = Math.sqrt(inVx * inVx + inVy * inVy + inVz * inVz);
+    if(vl > 1e-4){
+      const ivx = inVx / vl, ivy = inVy / vl, ivz = inVz / vl;
+      const idotn = ivx * nx + ivy * ny + ivz * nz; //<0 => water moves INTO the face.
+      if(idotn < 0.0){
+        const rx = ivx - 2.0 * idotn * nx; //mirror reflection (unit in, unit out).
+        const ry = ivy - 2.0 * idotn * ny;
+        const rz = ivz - 2.0 * idotn * nz;
+        const runUp = this.impactRunUp * (-idotn);
+        const b = this.impactReflect;
+        const ax = rx * b + nx * (1.0 - b);
+        const ay = ry * b + ny * (1.0 - b) + runUp;
+        const az = rz * b + nz * (1.0 - b);
+        const al = Math.sqrt(ax * ax + ay * ay + az * az);
+        if(al > 1e-4){ out[0] = ax / al; out[1] = ay / al; out[2] = az / al; }
+      }
+    }
+  }
+  return out;
 };
 
 //Unified impact burst — shore and hull both call this. worldPos is the contact
@@ -587,26 +650,8 @@ ARestlessOcean.OceanSplash.prototype.emitImpact = function(px, py, pz, nx, ny, n
   //run-up — upward lift scaled by how square-on the slam is (-incoming·n) — which is
   //what lifts a real sheet up the face. Glancing flat-beach backwash gets little of
   //either and washes low; head-on cliff strikes throw a tall directional sheet.
-  let axisX = nx, axisY = ny, axisZ = nz;
-  if(this.impactReflect > 0.0 && inVx !== undefined){
-    const vl = Math.sqrt(inVx * inVx + inVy * inVy + inVz * inVz);
-    if(vl > 1e-4){
-      const ivx = inVx / vl, ivy = inVy / vl, ivz = inVz / vl;
-      const idotn = ivx * nx + ivy * ny + ivz * nz; //<0 => water moves INTO the face.
-      if(idotn < 0.0){
-        const rx = ivx - 2.0 * idotn * nx; //mirror reflection (unit in, unit out).
-        const ry = ivy - 2.0 * idotn * ny;
-        const rz = ivz - 2.0 * idotn * nz;
-        const runUp = this.impactRunUp * (-idotn);
-        const b = this.impactReflect;
-        let ax = rx * b + nx * (1.0 - b);
-        let ay = ry * b + ny * (1.0 - b) + runUp;
-        let az = rz * b + nz * (1.0 - b);
-        const al = Math.sqrt(ax * ax + ay * ay + az * az);
-        if(al > 1e-4){ axisX = ax / al; axisY = ay / al; axisZ = az / al; }
-      }
-    }
-  }
+  const ax3 = this._launchAxis(nx, ny, nz, inVx, inVy, inVz);
+  const axisX = ax3[0], axisY = ax3[1], axisZ = ax3[2];
   //Cap the launch: shore "rise" can read 20+ m/s, which fires spray dozens of
   //metres up (the geyser). Torn shore spray actually leaves at a few m/s.
   let launch = speed * this.impactVelScale;
@@ -1020,6 +1065,8 @@ ARestlessOcean.OceanSplash.prototype._emitBreakers = function(field, t, camX, ca
 //speed that covers the run in its free-fall time.
 //falls: FlowFoamPass.nearFalls (nearest first, inside its window); .fall is the entry.
 ARestlessOcean.OceanSplash.IMPACT_REF_SPEED = 5.0;
+ARestlessOcean.OceanSplash.FALL_ENERGY_REF_SPEED = 10.0;  //m/s landing speed (~5 m of fall) where mist
+                                                          //and splash run at their base rates
 ARestlessOcean.OceanSplash.prototype._emitFalls = function(falls, dt, camX, camZ, nappes){
   if(!this.fallSprayEnabled) return;
   const maxD2 = this.maxEmitDistance * this.maxEmitDistance;
@@ -1031,24 +1078,34 @@ ARestlessOcean.OceanSplash.prototype._emitFalls = function(falls, dt, camX, camZ
         const im = nap.impacts[i];
         const dx = im.x - camX, dz = im.z - camZ;
         if(dx * dx + dz * dz > maxD2) continue;
+        //A skirt's impacts are clusters along the foot, each with its own width and share of the
+        //discharge (WaterfallNappe clusterImpacts); the fall's own where an impact has none.
+        const imW = im.width !== undefined ? im.width : nap.width;
+        const imQ = im.discharge !== undefined ? im.discharge : nap.discharge;
         const speed = Math.sqrt(im.vx * im.vx + im.vy * im.vy + im.vz * im.vz);
         let hx = im.vx, hz = im.vz;
         const hl = Math.sqrt(hx * hx + hz * hz);
         if(hl > 1e-3){ hx /= hl; hz /= hl; } else { hx = 1.0; hz = 0.0; }
         //im.w: the trace's weight for how far the water fell before this touchdown (a hop is 0).
         const share = Math.min(Math.max(im.vn / ref, 0.1), 1.5) * (im.w !== undefined ? im.w : 1.0);
+        //Mist and splash scale with the ENERGY the water brings down (∝ Q·vn², here vn^1.5 to keep
+        //a 3 m step visible): with the rate linear in vn, capped at 1.5×, B's 3 m steps threw
+        //as much mist as A's 18 m plunge (Dante, falls-lab, 2026-09-22). 1 at FALL_ENERGY_REF_SPEED.
+        const eRef = ARestlessOcean.OceanSplash.FALL_ENERGY_REF_SPEED;
+        const energy = Math.min(Math.max(Math.pow(im.vn / eRef, 1.5), 0.02), 3.0) * (im.w !== undefined ? im.w : 1.0);
+        const plume = Math.min(Math.max(Math.sqrt(im.vn / eRef), 0.6), 1.5);   //taller falls, bigger puffs
         if(this.fallSprayRate > 0.0){
           this.emitImpact(im.x, im.y + 0.05, im.z, im.nx, im.ny, im.nz, speed,
-            -hz, hx, nap.width, this.fallSprayRate * nap.discharge * share * dt,
+            -hz, hx, imW, this.fallSprayRate * imQ * share * dt,
             im.vx, im.vy, im.vz);
         }
         //The mist: spread across the fall's width at the impact, rolling out mostly
         //downstream and rising slowly; high drag and little gravity (coarse ≈ 0) let it hang.
-        const want = this.fallMistRate * nap.discharge * share * dt;
+        const want = this.fallMistRate * imQ * energy * dt;
         let count = Math.floor(want);
         if(Math.random() < want - count) ++count;
         for(let c = 0; c < count; ++c){
-          const along = (Math.random() - 0.5) * nap.width;
+          const along = (Math.random() - 0.5) * imW;
           const px = im.x - hz * along, pz = im.z + hx * along;
           const ang = (Math.random() * 2.0 - 1.0) * this.fallMistSpread;
           const ca = Math.cos(ang), sa = Math.sin(ang);
@@ -1056,10 +1113,11 @@ ARestlessOcean.OceanSplash.prototype._emitFalls = function(falls, dt, camX, camZ
           const v = this.fallMistSpeed * (0.5 + Math.random());
           this.spawn(px, im.y + 0.1 + Math.random() * 0.3, pz,
             dxo * v, this.fallMistRise * (0.3 + 0.7 * Math.random()), dzo * v,
-            this.fallMistSize * (0.7 + 0.6 * Math.random()),
+            this.fallMistSize * plume * (0.7 + 0.6 * Math.random()),
             this.fallMistLife * (0.8 + 0.5 * Math.random()),
             2.0, 0.03 * Math.random());
         }
+        this._emitFallSplash(im, nap, speed, energy, dt, hx, hz);
       }
     }
     return;
@@ -1085,6 +1143,50 @@ ARestlessOcean.OceanSplash.prototype._emitFalls = function(falls, dt, camX, camZ
   }
 };
 
+//Phase 6b: the splash at one traced impact — type-3 white clumps/streaks. Ballistic: launched
+//about the incoming velocity mirrored off the surface it lands on (+ run-up, _launchAxis) at a
+//fraction of the arrival speed, coarse (full gravity, low drag), smeared across the fall's
+//width. They die on the water they fall back into (tick's kill test), so the splash reads as
+//thrown up out of the pool and falling back in, not through it.
+//(hx, hz): unit horizontal heading of the arriving water.
+//energy: the impact's energy share (see _emitFalls), scaling the rate.
+ARestlessOcean.OceanSplash.prototype._emitFallSplash = function(im, nap, speed, energy, dt, hx, hz){
+  if(this.fallSplashRate <= 0.0) return;
+  const want = this.fallSplashRate * (im.discharge !== undefined ? im.discharge : nap.discharge) * energy * dt;
+  let count = Math.floor(want);
+  if(Math.random() < want - count) ++count;
+  if(count <= 0) return;
+  const ax = this._launchAxis(im.nx, im.ny, im.nz, im.vx, im.vy, im.vz);
+  const axX = ax[0], axY = ax[1], axZ = ax[2];
+  //Launch from the water's SURFACE: the trace's impact point is where the jet meets the bed or
+  //the pool, and a clump born under the surface would rise up through it.
+  let y0 = im.y;
+  if(this._getWaterAt){
+    const w = this._getWaterAt(im.x, im.z);
+    if(w && w.depth > 0.02 && w.level > y0) y0 = w.level;
+  }
+  let launch = speed * this.fallSplashSpeed;
+  if(launch > this.fallSplashMaxLaunch) launch = this.fallSplashMaxLaunch;
+  const spread = this.fallSplashSpread;
+  for(let c = 0; c < count; ++c){
+    const along = (Math.random() - 0.5) * (im.width !== undefined ? im.width : nap.width) * 0.9; //inside the sheet's edges
+    let dx = axX + (Math.random() * 2.0 - 1.0) * spread;
+    let dy = axY + (Math.random() * 2.0 - 1.0) * spread;
+    let dz = axZ + (Math.random() * 2.0 - 1.0) * spread;
+    if(dy < 0.25) dy = 0.25;
+    const dl = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    const sp = launch * (0.4 + 0.8 * Math.random());
+    const coarse = 0.85 + 0.15 * Math.random();
+    //spawn() stretches life by (1 + dropLifeBoost·coarse) for the sea's falling beads; undo it
+    //so fallSplashLife is the real cap.
+    const life = this.fallSplashLife * (0.7 + 0.6 * Math.random()) / (1.0 + this.dropLifeBoost * coarse);
+    this.spawn(im.x - hz * along, y0 + 0.1, im.z + hx * along,
+      (dx / dl) * sp, (dy / dl) * sp, (dz / dl) * sp,
+      this.fallSplashSize * (0.6 + 0.8 * Math.random()),
+      life, 3.0, coarse);
+  }
+};
+
 //$DEBUG_START$
 //Lazily build the debug surface-probe ball. It is a CHILD of the splash points
 //mesh (which sits at the origin and is never transformed), so it inherits that
@@ -1106,15 +1208,17 @@ ARestlessOcean.OceanSplash.prototype._ensureMarker = function(){
 //$DEBUG_END$
 
 //Per-frame update. ctx: {time, camX, camZ, windX, windZ, sunColor(THREE.Color),
-//skyAmbient(THREE.Color), viewportHeight, resW, resH, linearDepthTexture}.
+//skyAmbient(THREE.Color), viewportHeight, resW, resH, linearDepthTexture, falls, nappes,
+//getWaterAt(x, z) (a-land's CPU water, for the fall mist/splash water kill; optional)}.
 ARestlessOcean.OceanSplash.prototype.tick = function(ctx){
   const u = this.material.uniforms;
   //Push art / lighting uniforms regardless of enable state so a toggle is instant.
   u.uOpacity.value = this.opacity;
   if(u.uFallMistOpacity) u.uFallMistOpacity.value = this.fallMistOpacity;
+  if(u.uFallSplashOpacity) u.uFallSplashOpacity.value = this.fallSplashOpacity;
+  if(u.uFallStreakTime) u.uFallStreakTime.value = this.fallStreakTime;
   u.uSizeScale.value = this.sizeScale;
   u.uSoftRange.value = this.softRange;
-  u.uMaxPointSize.value = this.maxPointSize;
   u.uDebugMode.value = this.debugMode;
   u.uViewportHeight.value = ctx.viewportHeight;
   u.uResolution.value.set(ctx.resW, ctx.resH);
@@ -1215,6 +1319,7 @@ ARestlessOcean.OceanSplash.prototype.tick = function(ctx){
   }
   //$DEBUG_END$
 
+  this._getWaterAt = ctx.getWaterAt || null;
   if(this.enabled && field && dt > 0.0){
     this._emitCrest(field, field.currentTimeSeconds, ctx.camX, ctx.camZ, ctx.windX, ctx.windZ);
     this._emitSurfaceHaze(field, field.currentTimeSeconds, ctx.camX, ctx.camZ, ctx.windX, ctx.windZ);
@@ -1256,6 +1361,7 @@ ARestlessOcean.OceanSplash.prototype.tick = function(ctx){
   let windGrab = (windSpeed - this.windGrabStart) / Math.max(0.001, this.windGrabFull - this.windGrabStart);
   windGrab = windGrab < 0.0 ? 0.0 : (windGrab > 1.0 ? 1.0 : windGrab);
   windGrab = windGrab * windGrab * (3.0 - 2.0 * windGrab); //smoothstep
+  const waterAt = this.fallSplashWaterKill ? this._getWaterAt : null;
   let n = this.liveCount;
   let i = 0;
   while(i < n){
@@ -1316,6 +1422,13 @@ ARestlessOcean.OceanSplash.prototype.tick = function(ctx){
         const tY = this.sampleTerrainHeight(pos[p3], pos[p3 + 2]);
         if(tY !== null && tY > killY) killY = tY;
       }
+      //Waterfall mist/splash (types 2, 3) also die on INLAND water: the lake, pool or creek
+      //they fall back into. a-land's CPU level, taken only where it is wet (a dry texel answers
+      //null, or depth 0), so a borrowed neighbour level never lifts the kill.
+      if(waterAt && types[i] > 1.5 && vel[p3 + 1] < 0.0){
+        const w = waterAt(pos[p3], pos[p3 + 2]);
+        if(w && w.depth > 0.02 && w.level > killY) killY = w.level;
+      }
       //Droplets punch through the surface a little before dying (they splash, they do not blink
       //out at the waterline); mist (coarse ~0) still dies right at the surface. Sink margin is a
       //few particle radii scaled by coarseness.
@@ -1340,10 +1453,11 @@ ARestlessOcean.OceanSplash.prototype.tick = function(ctx){
   this.liveCount = n;
 
   this._posAttr.needsUpdate = true;
+  this._velAttr.needsUpdate = true;
   this._sizeAttr.needsUpdate = true;
   this._ageAttr.needsUpdate = true;
   this._seedAttr.needsUpdate = true;
   this._typeAttr.needsUpdate = true;
   this._coarseAttr.needsUpdate = true;
-  this.geometry.setDrawRange(0, n);
+  this.geometry.instanceCount = n;
 };

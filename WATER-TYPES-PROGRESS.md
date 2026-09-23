@@ -353,7 +353,400 @@ differently shaded waters swapped at once.
 - `carveMinDepthM`: narrow a channel where its water would run too thin.
 - Source reduction as a last resort.
 
-### ▶ RESUME HERE (end of 2026-09-22) — Phase 6b: the splash at the foot
+### 2026-09-23 (later) — falls square to their lips; the trace survives pits, sills and ponds
+
+Dante's first carved bake: sheets rotated off clean edges and started or ended in odd places.
+- **Heading = the lip's own downhill** (`N.lipDownhill`, ground gradient over a 3 m disc straddling
+  the edge). The field current was a-land's D8 step direction, 15-45° off (D's first step 40°).
+  The current is only the fallback on a flat lip.
+- **A landing's centre moves only as far as the jet spreads** (C slid 5.5 m).
+- **Pre-fall speed floor:** while within 0.5 m of its start height and within start + 4 m of path, the
+  parcel keeps at least v_c. After the carve, A had a 2 m pit behind its lip, E a 0.5 m sill with a
+  still pond behind it, and the parcel braked to a stop in both.
+  - Pre-fall climb stop 3× looser. The start search skips hollows (a dip that rises again).
+  - nappe-test case 14 (a sill pool). 32/32.
+- **a-land carve:** a steep run that ends at a sheer drop (a rounded brink) or is under 2 cells is
+  not stepped. Likely source of A's pit in Dante's bake: his editor's route crossed the brink at
+  an angle, which I couldn't reproduce offline.
+- **Performance:** the whole 2048 D8 solve now takes 3 s (was 220 s). The unbounded 5e ramp was the cost.
+- **Open:** C's half-width sheet is the carve. Its 21 m disc follows D8's off-centre route in C's flat
+  26 m channel, so the rest of the floor ships dry. B's third step stalls in Dante's bake (offline
+  its current carve gives a clean 3.2 m fall).
+
+### 2026-09-23 (small hours) — a-land: channels sized by the ground, steep chutes carved into steps
+
+Both in a-faraway-land `WaterSolve.js` (branch phase-6b-steep-chutes), both Dante's calls:
+- **Section hydraulics** (`sectionHydraulics`, `_sectionFlow`): each centre samples the ground
+  across the flow and bisects the level at which Manning over the REAL wetted section carries q.
+  - The section is aimed along the chord two steps down, or along the D8 step before a fall, so it
+    doesn't tilt over the lip. It is walled at widthK·√Q/2, so open ground keeps the old rectangle.
+    Ground below the channel's own low point is clamped.
+  - falls-lab: A runs 0.65 m deep at 2.2 m/s (was a 0.15 m film at 0.9 m/s, then 0.39 m at
+    4.5 m/s), full width to the lip. C below its pool runs 4.3 m/s.
+  - ⚠ C's pool outlet still steps ~0.5 m up out of its pool: 5c raises the pond, then 5e's rim
+    lowers it back to the flat floor it sits in. Possibly the generator's geometry. Open.
+  - ⚠ island-sholes D8 fixture: overhanging edges > 15 cm went 19% → 27% (deeper water in narrow
+    gullies). Its real bake uses FV.
+- **Steep chutes → steps** (`carveStepChutes`, `carveStepSlopeDeg` 25, `carveStepHeightM` 2.5; carve 1b).
+  Along each run steeper than 25° (a chord of 2 cells, skipping cells that already drop a full
+  step), the drop top→foot is split EVENLY into ~2.5 m steps: a sheer drop, then a flat tread.
+  - Tread and foot discs (plus one disc-reach below) don't reach back upstream over their step.
+  - Also in run(): a lake OUTLET can start a fall (a tread pool spilling over its step), and a
+    fall run bridges one non-fall cell, but only while it's under waterfallMinDropM.
+  - falls-lab carved: D 45° → 2.8/2.8/2.8/2.9 m steps, D 35° → one 2.1 m fall; A/B/C/E unchanged.
+    New check-carve case 6 (off: 1 chute, on: 5 falls ~2.3 m).
+  - ⚠ Only with carve ON: falls-lab has `carveChannels: false`, so it needs that flipped + a re-bake.
+  - island-sholes (2 m cells): steps barely engage (a 50° face already drops a step per cell), so its
+    cliff water is still the FV-bake question.
+- a-land tests: 131 ok (check-lake-preview's crash predates this).
+
+### 2026-09-22 (later night) — falls after the export fix: trace start + span fixes, energy-scaled mist
+
+Dante's second pass after the re-bake: A left its lip at an angle, E had no fall, B's second step
+never fell, B's small steps misted more than A, the clumps looked like footballs, a crescent bump
+sat on a creek, and D's chutes didn't read as falls. Headless on falls-lab-sky:
+- **Takeoff spans** were measured ON the lip cell, now a real few-cm brink. At A that gave a
+  lopsided sliver (2.8 m offset, the "yeet"). At E it gave nothing, so the landing span went
+  uncapped and took 26 m of sea (the grey slab).
+  - Now measured `takeoffSpanBack` 1.5 m upstream. A failed takeoff falls back to W, centred.
+- **Trace start** inherits the field's speed (≤ `maxStartSpeed` 10). A v_c start braked to a stall on
+  B's near-flat tread. The start also steps toward the lip past pools and hollows.
+  - All 9 falls now trace to a plunge or settle.
+- **Mist and splash rates follow impact energy:** (vn / 10 m/s)^1.5, clamped 0.02-3. Puff size goes
+  as √(vn/10). `fallMistRate` 50→20, `fallSplashRate` 40→15.
+- **Clumps:** a solid body whose outline the noise displaces (the interior erosion made rings).
+  Needs create-shader.py. They now read as white chips, so tuning is Dante's call.
+- **Open, a-land:** channel hydraulic geometry is a 4·√Q rectangle and ignores the ground. Honest
+  mass means 7-10 m/s creeks in narrow terrain channels, and a creek standing 0.36 m above its
+  pool at C's outlet (5c raises the pond, then 5e's rim lowers it back). Proposed: solve each
+  section's depth on the real terrain cross-section.
+- **Open, a-water:** D's chutes are attached, so by the settled round-3/4 rule the creek surface
+  draws them (the sheet is free fall only). Item 5 would reverse that for runs over ~35°.
+
+### 2026-09-22 (night) — falls-lab browser pass: a-land shipped 1/7 of the discharge
+
+Dante's first falls-lab look (7 shots): falls thin to streaks, football splash, A's landing tail
+climbing the cliff base, C's mist a solid cloud, E's creek necking before the lip, murky green water.
+- **Green water is grass beds** (debug 5/12/6: refraction of grass, Fresnel ~0). Not a bug.
+- **Root cause of the thin falls: a-land's D8 export was not mass-consistent.** Depth × speed across
+  a section carried 1/7 of Q at A. The trace reads the field, so it got q 0.19 instead of 0.75.
+  Four faults, fixed in a-faraway-land `WaterSolve.js` (branch phase-6b-steep-chutes):
+  1. Speed came from the first (farthest) disc to reach a cell, at 35-45% bank fade. Now the
+     nearest centre wins among equal Q (to within 1%). `stampD2`/`stampC`.
+  2. The Manning reach slope (8 cells) was measured across the fall, giving 9 cm at 34 m/s for 8 m
+     above an 18 m lip. `_reachSlope` now stops at a fall step (`fallStep`, computed up front).
+  3. The 5b surface smoothing averaged across the fall face, which dried the creek's sides for 6 m
+     above the lip. It no longer averages across a fall step.
+  4. The 5e edge ramp: it no longer seeds from ground downstream along the flow, never walks back
+     up the flow, and reaches at most `edgeRampMaxM` 6 m.
+  - New 6b: each section's speeds are rescaled so Σ depth·speed = Q (bounded 0.5-4×).
+  - falls-lab 1 m: A/B/C/D/E sections now carry 9.1/6.4/27.4/6.4/9.1 m³/s, with A 0.39 m deep to
+    the lip.
+  - ⚠ Creek SPEEDS rise where the terrain's channel is narrower than 4·√Q (A ~4.5 m/s): mass is
+    honest, but the hydraulic geometry isn't fitted to the ground.
+  - ⚠ island-sholes D8 (the fixture, lbm off): floating edges >15 cm 19→24%, +68 of them within
+    20 m of a fall (creeks now reach their lips at real depth).
+- **Fall min drop scales with the cell** (`0.5·min(1, spacing)`): falls-lab baked at 2048 had no
+  D falls. The D8 solve itself takes 220 s at 2048 vs 8 s at 1024 (superlinear): a perf bug.
+- New check-falls-autolakes case 5: the sections carry Q (±25%). The old engine gives 37-41%.
+
+### ▶ RESUME HERE (2026-09-23) — DESIGN BRIEF: the river owns its falls (fall-site carve)
+
+**Status:** design agreed in principle with Dante, nothing built. It starts in a NEW session.
+The skirt work below is committed on a-water `phase-6b-waterfall-splash`.
+⚠ a-faraway-land `phase-6b-steep-chutes` is still UNCOMMITTED (WaterSolve.js: sectionHydraulics,
+carveStepChutes, lake-outlet falls, D8 mass fixes; plus two test files) in the MAIN checkout.
+Run its tests and commit it before building on it. Never stash or reset that tree.
+
+**Why.** Every hiccup of the skirt passes came from the ground at a fall, not from the fall:
+- a sill behind the lip (E);
+- a rock notch in the lip (C);
+- a dry rib down the face (D);
+- jagged treads that funnel every parcel into one groove (B);
+- on the 1 m bilinear heightfield, every face is a one-texel ramp, and the field's level sinks
+  under the ground at every brink.
+
+Each fix covered one configuration, and the next world brings new ones. Dante's proposal: "I, the
+river, take ownership of the terrain between two river heights and make waterfalls I deal nicely
+with." Every fall becomes a clean drop over a cliff, and the renderer meets ONE shape.
+Rivers do this in nature too: knickpoints erode into steps with plunge pools. It is the same
+reasoning as his "carve steep chutes into steps" rule.
+
+**The canonical fall site** (a-land carves it; it is part of the Channels layer, like carveChannels
+and carveStepChutes in `src/js/runtime/terrain/WaterSolve.js`):
+1. **Approach.** A flat tread at lip height, as wide as the section's wet width (sectionHydraulics),
+   at least ~2 m (the sheet's lead-in) plus the landing of the step above. No sill, hollow or pool
+   in front of the edge.
+2. **Lip.** One straight edge, square to the reach's direction (not D8's axis/diagonal).
+   It is level across the channel, so every strand leaves together.
+3. **Face.** Vertical, or undercut by a texel. On 1 m texels it is still a one-texel ramp, but a
+   known, clean one.
+4. **Drop per step.** Between `waterfallMinDropM` and a maximum (~6-8 m?). A bigger total drop
+   becomes a staircase of equal steps. Tread length ≥ the landing distance of the jet from the
+   step above + the approach. For a jet of speed v over drop d, the landing is ≈ v·√(2d/g) out.
+5. **Foot.** A plunge pool dug under each landing: depth ~ 0.2-0.5 × the drop (look knob), and
+   long enough to hold the landing. Its surface sits at the next tread's level, so the creek's
+   level there is flat, not a ramp.
+6. **Banks.** The carve stays inside the channel corridor and blends into the banks over a few
+   metres. Hand-sculpted cliffs outside the channel are untouched.
+
+**What a-land EXPORTS per fall** (instead of just top/bottom bed points):
+- the lip line (two end points, height);
+- the face direction;
+- the drop;
+- the pool (centre, radius, level);
+- the tread level above and below;
+- the wet width;
+- Q.
+
+The a-water trace then stops DISCOVERING the lip: seeds sit on the exported approach, and the
+heading is the lip normal. The rail, the start rule, the lip-heading disc, the wet-span gap bridging
+and the steep-row complement become fallbacks for un-carved worlds, not the main path. Keep them;
+old worlds and hand-made terrain still need them.
+
+**Open questions for the session** (ask Dante; don't assume):
+- Max step height, and how deep the pools are.
+- Undercut faces or vertical?
+- Should the carve also run with `carveChannels:false`, i.e. is a fall site always carved, or opt-in?
+- Where a river meets the sea from a cliff (E), does the carve cut a notch into the cliff edge?
+- The WaterCarveLoop (carve ↔ FV solve) has to converge with the pools in place (the FV solve
+  must see them).
+
+**Test worlds.** falls-lab (A plunge, B cascade, C wide curtain, D steep chutes, E sea cliff) is the
+acceptance world: regenerate/bake it with the carve, then look at all five from Dante's angles.
+hero-creek and island-sholes are the regression worlds.
+**Harness.** Headless Chrome on the 4090 over CDP. Recipe in the entry below; scratch run.mjs,
+regen.py, replay.mjs and viewer.html (three.js over dumped ground/water grids) live in session
+77c7f435's scratchpad and are easy to rebuild.
+
+### (earlier) RESUME HERE (2026-09-23, later) — skirt hiccups: brink seams, shards, fading water
+
+Same branch, still uncommitted. Plan `~/.claude/plans/okies-got-a-couple-splendid-pillow.md`.
+**GLSL changed: run `create-shader.py`** (`waterfall-sheet.js` and `water-shader.js`).
+
+**Dante's report** (browser, falls-lab), 7 shots:
+1. a seam where the creek meets the fall (A);
+2. a very bad sawtooth gap at the sea-cliff drop (E);
+3. shards, overlaps and a river "fading in and out" on jagged steps (B, D);
+4. the wide curtain fading to nothing (C);
+5. a curtain that splits and never rejoins (D's upper face).
+
+Each was reproduced at his angle in the headless harness before any fix went in.
+
+**What the causes turned out to be** (the plan's guesses were wrong for two of them):
+- **E's gap.** Neither surface drew there. It was NOT dry texels (H1 in the plan: disproved, the
+  field is wet to the lip).
+  - The trace began 0.5 m from the lip: the start rule judged the bed, which lies below a raised
+    sill behind the lip.
+  - The lead-in rode 0.6 m above the creek: on the sill the field keeps its upstream depth while
+    its interpolated level runs under the ground.
+  - The creek's steep ramp showed as a white band just before the corridor began.
+- **A's seam.** The lead corridor box lay along the chord of the spine's path, which drifts 9°.
+  The creek's cross-dissolve lines ran diagonally across a straight lip.
+- **C's narrow curtain.** The lip heading came from a 3 m disc beside a rock notch (13° off). The
+  skewed wet scan then stopped at the notch's 1.5 m dry gap: 9 m of skirt on a 20 m lip.
+- **D's split (img 7) is TERRAIN.** The carve left a dry rib down the 45° face. The strands go
+  round it on both sides correctly. This is still open item 2 of the skirt entry below: a-land's call.
+- **The fading on B and D.** The corridor stepped the creek aside round the spine's whole path, as
+  wide as the skirt's widest reach plus 2 m. But:
+  - B's skirt narrows to a line on long ramps (every parcel slides into one groove);
+  - strands that slide over the brink without a real takeoff drew nothing.
+  So in both places neither surface drew.
+- **Streaming re-traces are not the cause.** Measured: two rebuilds in a minute of flying, with the
+  quad counts unchanged.
+
+**Fixes (`luts/waterfall-nappe.js` unless noted):**
+- **The rail.** Where the start had to move in toward the lip, the lead-in still reaches
+  `upstreamStart` back: the parcel is carried straight along the heading on the creek's surface,
+  with no physics. The start rule itself is unchanged: judged by the water level instead, E's
+  strands started in the still water behind the sill and stalled (`nolip`).
+- **`attachedOffset`** never lifts above the field's own level: `max(h, min(depth, level − ground))`.
+- **Lead corridor box** of its own, square to the lip (the chain's heading on the first fall,
+  the water's heading on later ones), ending at the takeoff.
+  - The boxes after it have lead 0.
+  - The old first box kept its lead ramp at 1 past the takeoff, and that hid hero-creek's plunge
+    pool from the foot of the curtain. The pool now draws up to the foot, as designed.
+- **Per-box corridor radius** from the skirt's reach over that box's own rows (+ margin).
+- **Lip heading disc** = ¼ W, clamped to 3-8 m.
+- **`wetSpan` bridges dry gaps** up to `wetGap` 2 m. Seeds on the dry rock are skipped, so the
+  sheet tears round it.
+- **Corridor cap 24 → 48** (the lead box adds one per fall; falls-lab needs 30). Changed in
+  water-shader.glsl, waterfall-sheet.glsl, the sheet template, the pass and ocean-grid.js.
+- **Weave rules (`buildRibbon.joined`):**
+  - along-flow leeway uses the slower strand's speed when one strand is flying and the other is not;
+  - fold test on the offset SQUARE to the flow (crossed by more than a strand spacing);
+  - ground test against the higher of the two strands' own ground, so no false tears along a face;
+  - relative velocity > g·`tearTime` + `tearRelSpeed` (1 m/s, LOOK KNOB) tears, but only once the
+    pair has drifted a spacing apart along the flow. Without that gate hero-creek's foot tore into teeth.
+- **Steep water after a fall (Dante, amending "free fall only"):**
+  - rows on bed steeper than `faceSlope` (55°) after the first real takeoff are FALLING (fall flag);
+  - rows steeper than `gentleSlope` (20°) are present as the creek's COMPLEMENT;
+  - a strand that crosses the spine's takeoff line without a real takeoff (`draws`) counts as past
+    the brink too;
+  - chute test 2 now asserts complement-only rows down the 45° chute.
+- **Manning friction × cos(bed slope)**, FUDGE: water on a face is not pressed to it.
+- **Vertex stage:** the attached lift onto the creek is capped at 0.3 m (`ATTACHED_LIFT_MAX`).
+
+**Tried and reverted: Phase B** (re-syncing material time at each later lip of a cascade).
+- It was built as a per-strand time warp at sync lines.
+- Measured on D's two-fall chain, it made things worse or no better: the 2nd fall's along-flow p90
+  went 4.35 → 5.71 m; the 4th fall's tears went 74 → 110.
+- D's strands are out of step because they take different PATHS (the rib, separate channels,
+  1-4 hops each), which re-timing cannot fix.
+
+**Verified.**
+- `node tests/waterfall-nappe/nappe-test.mjs`: 54/54.
+- Headless on the 4090 with a scratch regen (HEAD regen byte-identical to the committed JS):
+  - falls-lab A-E before and after;
+  - hero-creek (472, 765) before and after (no regression; the pool now reaches the foot).
+- Harness: scratch `run.mjs` (CDP), `regen.py`, `replay.mjs`, plus a three.js `viewer.html` over
+  dumped ground/water grids (offline trace iteration without the browser).
+
+**Open.**
+1. A's lip still shows a thin straight line where the creek fades into the lead-in (was a diagonal).
+2. B's middle ramp: the creek is thin and irregular, and the skirt collapses to a line there. The
+   real fix is Phase C: the creek steps aside only where the sheet's rendered footprint is, not in
+   boxes. Not started.
+3. D's rib (terrain) as above.
+
+### (earlier) RESUME HERE (2026-09-23) — the waterfall SKIRT: many strands woven into one sheet
+
+Same branch as 6b below (`phase-6b-waterfall-splash`), on top of its uncommitted work; nothing
+committed. Plan `~/.claude/plans/okies-so-our-waterfalls-tidy-oasis.md`.
+**GLSL changed: run `create-shader.py`** (`waterfall-sheet.js`: the vertex stage and the template).
+
+**Why.** Dante: the falls were "planes that don't blend to the terrain". The trace followed ONE
+parcel down the middle and `buildRibbon` extruded it into rows rigid across at one height, so no
+curved brink, sloped landing or rock in the fall could be met. His proposal (how others build
+falls): drop a parcel every half metre along the lip, trace each, and run a mesh between the paths.
+Decisions (Dante): strands are independent and the weave TEARS (no cloth coupling); wind is physical
+drag in the trace plus gusts in the shader.
+
+**What changed (`luts/waterfall-nappe.js`).**
+- `trace` = `beginTrace` (heading, start line, seeds every `strandSpacing` 0.5 m over the VISIBLE
+  water, each with its own q = depth × speed) → `stepTrace(job, k)` → `traceStrand` (the old state
+  machine, per seed). The spine (the middle strand that falls and ends as a plunge or settle) gives
+  `rows`, `samples`, corridors and the old single-parcel fields, so the old tests still read them.
+- **Rows are material time** (`timeGrid`): row k of every strand is its water at the same moment,
+  with steps sized so the fastest strand moves `rowSpacing`. Aligning at each strand's own takeoff
+  tore C's curtain into ribbons (a 1 m bilinear lip ramp: some strands leave at the top, some half
+  way down). tau is from the spine's takeoff, so the grain is one piece across.
+- **The weave** (`buildRibbon`): quads between neighbours, torn where they part ACROSS the flow
+  (> `tearFactor` × spacing), ALONG it past what speed explains (`tearTime` 0.3 s; a material
+  line stretches as the sheet accelerates, and that is not a tear), or with ground over their
+  midpoint. The across frame comes from the neighbours. The walls, spans, relax and "shrink and stay
+  shrunk" are deleted; `colSpacing`/`wallStep`/`fallSpread`/`takeoffSpanBack` are gone.
+- **Physics the single parcel never met**, each found on a skirt case:
+  - A flying parcel that crosses into a FACE (ground > `wallJump` above it) loses its speed into
+    the face (an impact) and falls on down it. It used to be snapped onto the rock's top.
+    Not when it is already embedded: that looped one strand for 60 s on D.
+  - A sliding parcel meeting a face slides along it, or stops head-on (`wall`); it used to climb it
+    in one step.
+  - **Across, a sliding parcel feels the water SURFACE slope** where it has water, not the bed's:
+    the bed shelves to the banks, and every edge strand was pushed to the middle (one crossed a
+    5 m creek before its lip).
+  - Rims and slots: a gap behind reads the bed ahead, a gap behind plus a face ahead reads flat
+    (in the slot between a cliff and a rock off it, the parcel ping-ponged).
+  - The critical-speed hold is forward only. `lipSearch` 10 m: a strand circling a pool beside
+    the lip gives up (`nolip`, was a 60 s budget).
+- **Wind:** air drag on the airborne sheet from the wind NORMAL to it, a = ½ρ_a·Cd·Un|Un|/(ρ_w·h),
+  with `sheetDragCd` 1 (FUDGE, flat plate). A 10 m/s downstream wind bows a 10 m curtain out; a wind
+  along the lip is edge-on and does nothing. `env.wind` = the ocean's `windVelocity`.
+- **Impacts** are clusters along the foot (`impactClusterWidth` 2.5 m), each with its own
+  `width` and `discharge` (they sum to the fall's). The splash `_emitFalls`/`_emitFallSplash` and
+  FlowFoamPass use them (with the fall's own as the fallback).
+
+**Pass + shader.** `WaterfallSheetPass` traces `STRANDS_PER_TICK` 2 (~0.85 ms each), swaps a chain's
+ribbon in whole when its last strand is done, and re-traces when the wind moves > 0.5 m/s.
+`aFlowLump` is now vec2 (lump weight, s since the latest takeoff). The vertex stage adds a gust
+sway about the traced bow: the same drag law, 2·`uWindSway` (0.3) × a slow noise, ½·a·t², free
+fall only (the lip and the foot stay put); FUDGE for the gust itself. `uWind` is written per tick.
+The fragment stage is unchanged: across × halfWidth is each strand's SEED offset, so the grain
+rides the water.
+
+**Verified.**
+- `node tests/waterfall-nappe/nappe-test.mjs`: 54/54. The new cases are a straight lip (11
+  strands, one lip line, no tears, and impacts that carry Q), a curved lip, a rock in the fall
+  (strands hit it and fall down it; nothing on or through it), a cross-sloped landing, wind
+  (down / along / still) and a creek shallow at its banks. Old 10 and 11 were rewritten for the
+  skirt.
+- Headless on the 4090, scratch regen (the regen of HEAD's GLSL is byte-identical to the
+  committed JS):
+  - All programs are runnable.
+  - hero-creek: 23 strands, 1303/1352 quads, trace 20 ms.
+  - falls-lab: every cascade builds. A is 23/23 plunging (2168/2245 quads), C 926/956, E 1521/1524.
+    No `budget` strands.
+- **Against HEAD's single-parcel version (swapped in on the same page):** C drew no curtain at
+  all (mist only), and E's sheet was a slab floating at the foot, apart from its lip. With the
+  skirt both are curtains from lip to water. (HEAD lacks 6b's own nappe fixes, so this is not
+  quite the pre-skirt working tree.)
+
+**Open.**
+1. Dante: `create-shader.py`, then look at falls-lab A/C/E and hero-creek (472, 765).
+2. **D's 45° face splits into two chutes round a central rib** (strands 0-9 end at x ≈ 673,
+   10-15 at x ≈ 667). The skirt shows the rib the old ribbon hid. Terrain call: did the carve
+   mean to leave it?
+3. C's brink has a ~1 m notch (strands 9-16 leave early); the sheet folds and shades darker there.
+   Real geometry.
+4. Impacts: D's chain alone gives 24 clusters and FlowFoamPass keeps its nearest 16 over all
+   falls. Raise the cap or thin clusters per landing if foam goes missing.
+5. The corridors still run down the spine only (radius = the skirt's reach); a horseshoe lip may
+   want boxes along the edge strands.
+6. Not built: lateral smoothing between strands (planned as optional; no jitter seen headless).
+
+### (earlier) RESUME HERE (2026-09-22, late) — Phase 6b built, awaiting create-shader.py + falls-lab bake
+
+Branches: a-water `phase-6b-waterfall-splash` (off development 113cb10), a-faraway-land
+`phase-6b-steep-chutes` (off main 5960a31, in the MAIN checkout). Plan
+`~/.claude/plans/ready-to-start-on-agile-wirth.md`. Nothing committed yet.
+
+**New test world `a-faraway-project/falls-lab`** (generated; `survey/make_terrain.py`, README).
+- Five straight creeks, one kind of fall each:
+  - A: 18 m plunge into a 2.5 m lake (x 210.5).
+  - B: 4 × 3 m cascade (x 360.5).
+  - C: 26 m wide curtain, 5 m drop (x 520.5).
+  - D: steep chutes at 45° and 35° (x 670.5).
+  - E: 18 m sea-cliff fall into a cove (x 820.5).
+- Pages: `examples/demos/falls-lab-sky.html` / `-ocean.html` (gitignored).
+- Dante's step: paste the 5 `_placeWaterIntent` lines, then Solve Water → Save → Bake & Export.
+- Offline D8 solve (`survey/falls-solve.js`) finds all five archetypes.
+- Generator lessons:
+  - Creek centrelines sit on cell centres (x = k + 0.5).
+  - The superellipse exponent is 8, or the corner land drops below the creek heads.
+  - Re-runs only rewrite the heights; `--force` keeps `survey/`.
+
+**Splash (needs create-shader.py: ocean-splash.js).** Headless-verified on hero-creek-sky with a
+scratch regen (the regen of HEAD's GLSL matches the committed JS).
+- **Instanced quads** replace THREE.Points: `aCenter` + `aVel` + the old per-particle attributes,
+  expanded in view space. `uMaxPointSize` is retired.
+- **Camera-inside fade:** a puff closer than its radius fades out (`vViewZ / vHalfW` 0.2 → 1).
+  Without it, 10 m fall-mist quads walled the view near the foot.
+- **Mist retuned:** `fallMistSize` 1.0 → 0.7. The 512 px cap had been shrinking the plume Dante
+  tuned, and 0.7 matches that size at 8-10 m.
+- **Type 3 = waterfall splash:** white aerated clumps with a ragged edge, streaked along the
+  view-projected velocity (`fallStreakTime`).
+  - `_emitFallSplash` runs per traced impact. It launches along `_launchAxis` (factored out of
+    emitImpact: reflect + run-up) at `fallSplashSpeed` 0.5 × the impact speed, capped at 9 m/s.
+  - It spawns at max(impact y, the water level).
+  - Knobs: `fallSplashRate/Size/Life/Speed/MaxLaunch/Spread/Opacity`, `fallStreakTime`.
+- **Water kill:** types 2 and 3 also die on a-land's CPU `getWaterAt` level when depth > 2 cm
+  (known-dry aware). ocean-grid passes `getWaterAt` in the splash ctx.
+- nappe-test case 13: the plunge lands at the lake SURFACE (y 24.30, vn 20). 31/31 pass.
+
+**Steep chutes (a-faraway-land WaterSolve `_isFallStep`).** A fall cell now also passes on the bed
+gradient projected along the flow (chord to the cell two D8 steps down), not only on the one D8 step.
+- **The bug:** D8's diagonal zig-zag measured a 35° face at 24°, split the run, and culled the
+  pieces under 2 m.
+- **Results:** falls-lab D's 35° face is now a fall, and its 45° face 11.5 m (was 10.9).
+  - New `check-falls-autolakes` case 4 (an oblique zig-zag chute): the old engine finds no fall.
+  - The suite passes, except `check-lake-preview`, which already crashed on main with
+    `ALand is not defined`.
+- **island-sholes 5_9: small effect.** Steep D8 cells covered by falls went from 12 to 14 of 18.
+  The cliff water there is the **FV bake's shipped surface on the faces**, not fall
+  classification: an open decision for Dante (ship steep FV flow dry at export, or make it
+  sheet corridors).
+
+### (earlier) RESUME HERE (end of 2026-09-22) — Phase 6b: the splash at the foot
 
 **State.** Dante: "we've really cooked already with this waterfall." Browser pass on hero-creek-sky
 after the sweep below, then these commits (all headless-verified over CDP against his server, with

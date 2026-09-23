@@ -84,7 +84,7 @@ uniform float underwaterFactor;
 uniform sampler2D waterFieldCascade0;
 uniform vec2 waterFieldCascadeCenter[3];
 uniform float waterFieldCascadeHalfWidth[3];
-const int FALL_CORRIDOR_MAX = 24;
+const int FALL_CORRIDOR_MAX = 48;
 uniform vec4 fallCorridorA[FALL_CORRIDOR_MAX];
 uniform vec4 fallCorridorB[FALL_CORRIDOR_MAX];
 uniform int fallCorridorCount;

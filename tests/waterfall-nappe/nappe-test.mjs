@@ -1,7 +1,9 @@
 //Node checks for ARestlessOcean.WaterfallNappe (Phase 6): synthetic terrain with known
 //answers — a hero-creek-like step, a 45° chute, a 10 m vertical drop, a four-step staircase
 //cascade, a chute into a dry bowl, an over-wide export over a narrow wet channel, a pool
-//reaching the lip, a jut below the lip, a lip over a lake and a hop run-out.
+//reaching the lip, a jut below the lip, a lip over a lake and a hop run-out; and the SKIRT
+//(many strands woven into one sheet): a straight lip, a curved lip, a rock in the fall, a
+//cross-sloped landing, wind on the sheet and a creek shallow at its banks.
 //Run: node tests/waterfall-nappe/nappe-test.mjs   (exit code 1 on any failure)
 import fs from 'fs'; import vm from 'vm';
 globalThis.ARestlessOcean = {};
@@ -15,6 +17,36 @@ function summarize(n){
   return `samples ${n.samples.length} rows ${n.rows.length} impacts ${n.impacts.length} plunge ${!!n.plunge} corr ${n.corridors.length} q ${f2(n.q)} hc ${f2(n.hc)} vc ${f2(n.vc)} airSteps ${air}`;
 }
 // 1. hero-creek-like: creek flows +Z with slope 0.01, step of 3 m over 1 m at z 764..765, pool (level 2.5) below on flat bed 1.5
+//Skirt helpers: vertices / triangle sample points (centroid and edge midpoints) under the ground.
+const verticesInside = (rib, ground, tol = 0.01) => {
+  let n = 0;
+  for(let v = 0; v < rib.vertexCount; v++){ const x = rib.position[v*3], y = rib.position[v*3+1], z = rib.position[v*3+2]; if(ground(x,z) > y + tol) n++; }
+  return n;
+};
+const trianglesInside = (rib, ground, tol = 0.05) => {
+  const P = i => [rib.position[i*3], rib.position[i*3+1], rib.position[i*3+2]];
+  let n = 0;
+  for(let t = 0; t < rib.index.length; t += 3){
+    const a = P(rib.index[t]), b = P(rib.index[t+1]), c = P(rib.index[t+2]);
+    const pts = [[(a[0]+b[0]+c[0])/3, (a[1]+b[1]+c[1])/3, (a[2]+b[2]+c[2])/3], [(a[0]+b[0])/2, (a[1]+b[1])/2, (a[2]+b[2])/2],
+                 [(b[0]+c[0])/2, (b[1]+c[1])/2, (b[2]+c[2])/2], [(a[0]+c[0])/2, (a[1]+c[1])/2, (a[2]+c[2])/2]];
+    if(pts.some(p => ground(p[0], p[2]) > p[1] + tol)) n++;
+  }
+  return n;
+};
+//Row k = 0 of every strand that falls: its water at the moment the spine leaves the lip.
+const lipRow = n => n.strands.filter(st => st && st.rows.length).map(st => st.rows.find(r => r.k === 0)).filter(Boolean);
+//The quads a weave without tears would have: neighbouring strands both holding rows k and k+1.
+const fullQuads = n => {
+  let full = 0;
+  for(let j = 0; j + 1 < n.strands.length; j++){
+    const a = n.strands[j], b = n.strands[j+1];
+    if(!a || !b) continue;
+    const kb = new Set(b.rows.map(r => r.k));
+    for(const r of a.rows) if(a.rows.some(q => q.k === r.k + 1) && kb.has(r.k) && kb.has(r.k + 1)) full++;
+  }
+  return full;
+};
 {
   const ground = (x,z) => z < 764.5 ? 4.5 + (764.5 - z)*0.01 : (z < 765.5 ? 4.5 - 3*(z-764.5) : 1.5);
   const water = (x,z) => z < 764.5 ? {level: ground(x,z)+0.25, depth:0.25, vx:0, vz:1.2} : (ground(x,z) < 2.5 ? {level: 2.5, depth: 2.5-ground(x,z), vx:0, vz:0.3} : null);
@@ -42,13 +74,12 @@ function summarize(n){
   check('chute: mostly attached', air < 0.2, 'air frac '+f2(air));
   const vmax = Math.max(...n.samples.map(s=>s.speed));
   check('chute: terminal speed 3..14 m/s (friction, < free-fall 14)', vmax>3 && vmax<14, f2(vmax));
-  //The chute itself is the creek's own surface: the sheet draws only the short flight off the
-  //sharp top edge (a 2 m/s parabola meets a 45° face ~0.8 m out), nothing down the slope.
-  //Past the flight and its 3 m landing tail (attached rows the material draws only where the
-  //creek does not), nothing down the slope.
+  //The chute itself is the creek's own surface: the sheet FALLS only over the short flight off the
+  //sharp top edge (a 2 m/s parabola meets a 45° face ~0.8 m out). Down the slope past it (45°,
+  //under faceSlope) the rows are the creek's COMPLEMENT only (fall flag 0: drawn where the creek
+  //is not, since 2026-09-23), never the free-fall sheet.
   const onChute = n.rows.filter(r => r.z > 4.5 && r.z < 9 && r.presence > 0.01);
-  const maxZ = n.rows.length ? Math.max(...n.rows.filter(r=>r.presence>0.01).map(r=>r.z)) : 0;
-  check('chute: no sheet down the chute past the landing tail', onChute.length === 0 && maxZ < 4.5, 'sheet ends z '+maxZ.toFixed(2));
+  check('chute: down the chute the sheet is only the creek\'s complement (no fall flag)', onChute.every(r => r.fallFlag <= 0.5), onChute.length+' rows');
   check('chute: aerated at bottom', n.samples.at(-1).aer > 0.5, f2(n.samples.at(-1).aer));
 }
 // 3. vertical 10 m drop
@@ -116,32 +147,28 @@ function summarize(n){
   check('lip pool: the fall is traced, not skipped', n.samples.filter(s=>s.air).length > 20 && n.rows.some(r=>r.fallFlag>0.5), 'airSteps '+n.samples.filter(s=>s.air).length);
   check('lip pool: plunges after really falling', n.plunge && n.plunge.vy < -8, n.plunge && 'vy '+f2(n.plunge.vy));
 }
-// 10. a rock jutting into one side of the fall BELOW the lip, open air under it: the sheet
-//     must shrink and stay shrunk, not re-grow out of the rock face
+// 10. a rock jutting into one side of the fall BELOW the lip, open air under it: the strands
+//     over it land on it and pour off its edge, the rest fall past it, and no part of the
+//     sheet passes through the rock or comes out of its face
 {
   const jut = (x,z) => x > 1.0 && z > 0.2 && z < 1.2;
   const ground = (x,z) => jut(x,z) ? 9.5 : (z < 0 ? 10 : 0);
   const n = N.trace([{top:[0,10,-0.5], bottom:[0,0,0.5], width:6, discharge:5, drop:10}], {groundAt: ground, waterAt: ()=>null});
   const rib = N.buildRibbon(n, {groundAt: ground, waterAt: ()=>null});
-  const nC = rib.vertexCount / n.rows.length;
-  const rowMaxX = i => { let m = -1e9; for(let c = 0; c < nC; c++) m = Math.max(m, rib.position[(i*nC+c)*3]); return m; };
-  let pinched = null, regrow = 0;
-  for(let i = 0; i < n.rows.length; i++){
-    const r = n.rows[i];
-    if(r.fallFlag <= 0.5) continue;
-    if(r.z > 0.2 && r.z < 1.2 && r.y < 9.5) pinched = pinched === null ? rowMaxX(i) : Math.min(pinched, rowMaxX(i));
-    else if(pinched !== null && r.z >= 1.2) regrow = Math.max(regrow, rowMaxX(i) - pinched);
-  }
-  check('jut: sheet pinched by the rock', pinched !== null && pinched <= 1.05, 'max x '+(pinched===null?'none':f2(pinched)));
-  check('jut: no re-growth below it (≤ fallSpread)', regrow <= 0.5, 'regrow '+f2(regrow));
+  const onJut = n.strands.filter(st => st && st.impacts.some(im => jut(im.x, im.z)));
+  check('jut: the strands over it land on it', onJut.length >= 2, 'strands '+onJut.length);
+  check('jut: no vertex inside the rock', verticesInside(rib, ground) === 0, 'inside '+verticesInside(rib, ground));
+  check('jut: no triangle through the rock', trianglesInside(rib, ground) === 0, 'inside '+trianglesInside(rib, ground)+' of '+rib.index.length/3);
 }
 // 11. a 3.75 m creek leaving a lip over a wide lake: the sheet must not flare to the lake's width
 {
   const ground = (x,z) => z < 0 ? 10 + (Math.abs(x) > 1.875 ? 1 : 0) : 0;
   const water = (x,z) => z < 0 ? (Math.abs(x) <= 1.875 ? {level: 10.3, depth: 0.3, vx:0, vz:1.5} : null) : (z < 0.3 ? null : {level: 3, depth: 3, vx:0, vz:0.05});
   const n = N.trace([{top:[0,10,-0.5], bottom:[0,0,0.5], width:14, discharge:3, drop:10}], {groundAt: ground, waterAt: water});
-  const wMax = Math.max(...n.rows.map(r=>r.w));
-  check('lake: no flare past the jet (+ spread)', n.rows.length > 0 && wMax < 3.75 + 1.0, 'max width '+f2(wMax)+' lip '+f2(n.width));
+  const rib = N.buildRibbon(n, {groundAt: ground, waterAt: water});
+  let xMax = 0;
+  for(let v = 0; v < rib.vertexCount; v++) if(rib.flowB[v*4+1] > 0.01) xMax = Math.max(xMax, Math.abs(rib.position[v*3]));
+  check('lake: no flare past the creek', xMax < 1.875 + 0.5, 'max |x| '+f2(xMax)+' lip '+f2(n.width));
 }
 // 12. a supercritical run-out of 8 cm steps below a real fall: the hops must not be impacts
 {
@@ -149,6 +176,130 @@ function summarize(n){
   const n = N.trace([{top:[0,10,-0.5], bottom:[0,0,0.5], width:4, discharge:4, drop:10}], {groundAt: ground, waterAt: ()=>null});
   const small = n.impacts.filter(i => i.z > 3.2);
   check('hops: only the real landing is an impact', n.impacts.length >= 1 && small.length === 0, n.impacts.map(i=>`z${f2(i.z)} w${f2(i.w)}`).join(' '));
+}
+// 13. falls-lab A (Phase 6b): an 18 m sheer ledge into a 2.5 m deep lake. The splash emits from
+//     the impacts, so the landing must be a real, fast plunge into the lake, not a slide.
+{
+  const ground = (x,z) => z < 0 ? 42.3 : 21.8;
+  const water = (x,z) => z < -0.05 ? {level: 42.55, depth: 0.25, vx:0, vz:1.3} : {level: 24.3, depth: 2.5, vx:0, vz:0.1};
+  const n = N.trace([{top:[0,42.3,-0.5], bottom:[0,24.3,0.5], width:12, discharge:9.1, drop:18}], {groundAt: ground, waterAt: water});
+  console.log(summarize(n));
+  const land = n.impacts.length ? n.impacts[n.impacts.length - 1] : null;
+  check('plunge lake: plunges into the lake', !!n.plunge && n.plunge.vy < -15, n.plunge && 'vy '+f2(n.plunge.vy));
+  check('plunge lake: lands 0.3..4 m out from the lip', n.plunge && n.plunge.z > 0.3 && n.plunge.z < 4, n.plunge && 'z '+f2(n.plunge.z));
+  check('plunge lake: the landing is an impact at the lake surface, weighted as a real fall',
+    land && Math.abs(land.y - 24.3) < 0.5 && land.vn > 15 && (land.w === undefined || land.w > 0.5),
+    land && `y ${f2(land.y)} vn ${f2(land.vn)} w ${land.w !== undefined ? f2(land.w) : '-'}`);
+}
+// 14. a still pool behind a 0.4 m sill at the lip (what a carve can leave, falls-lab E 2026-09-23):
+//     the creek still carries its discharge over the edge, so the trace must reach it and fall,
+//     not brake to a stop in the pool.
+{
+  //The sill ramps up 0.4 m over the last metre before the lip, like E's (0.5 m over ~1 m).
+  const ground = (x,z) => z >= 0 ? 0 : 10 + 0.4 * Math.min(Math.max((z + 1.4) / 1.0, 0), 1);
+  const water = (x,z) => z < -1.4 ? {level: 10.5, depth: 0.5, vx: 0, vz: 0} : (z < 0 ? {level: ground(x,z) + 0.1, depth: 0.1, vx: 0, vz: 1.0} : null);
+  const n = N.trace([{top:[0,10.4,-0.3], bottom:[0,0,0.7], width:6, discharge:5, drop:10}], {groundAt: ground, waterAt: water});
+  console.log(summarize(n));
+  check('sill pool: the fall is traced over the sill', n.samples.filter(s=>s.air).length > 20 && n.stop !== 'stopped' && n.stop !== 'stall' && n.stop !== 'climb', 'stop '+n.stop+' airSteps '+n.samples.filter(s=>s.air).length);
+}
+// 15. THE SKIRT (2026-09-22): a straight lip over a pool, a 5 m creek between banks. One strand
+//     per 0.5 m, every one falls, the lip row is one straight line across the creek, the weave
+//     has no tears, and the foot's impacts cover the width and carry the whole discharge.
+{
+  const ground = (x,z) => z < 0 ? 10 + (Math.abs(x) > 2.5 ? 1 : 0) : 0;
+  const water = (x,z) => z < 0 ? (Math.abs(x) <= 2.5 ? {level: 10.3, depth: 0.3, vx: 0, vz: 1.5} : null) : (z > 0.3 ? {level: 3, depth: 3, vx: 0, vz: 0.05} : null);
+  const env = {groundAt: ground, waterAt: water};
+  const n = N.trace([{top:[0,10,-0.5], bottom:[0,0,0.5], width:14, discharge:3, drop:10}], env);
+  const rib = N.buildRibbon(n, env);
+  const falling = n.strands.filter(st => st && st.rows.some(r => r.fallFlag > 0.5));
+  check('skirt: 11 strands over the 5 m creek, all fall', n.strands.length === 11 && falling.length === 11, 'strands '+n.strands.length+' falling '+falling.length);
+  const lip = lipRow(n), zs = lip.map(r => r.z), xs = lip.map(r => r.x);
+  check('skirt: the lip row is one straight line across', Math.max(...zs) - Math.min(...zs) < 0.1, 'z spread '+f2(Math.max(...zs) - Math.min(...zs)));
+  check('skirt: the lip row spans the creek', Math.abs(Math.max(...xs) - Math.min(...xs) - 5.0) < 0.6, 'span '+f2(Math.max(...xs) - Math.min(...xs)));
+  const full = fullQuads(n);
+  check('skirt: no tears over a plain pool', rib.index.length / 6 >= 0.9 * full, 'quads '+rib.index.length/6+' of '+full);
+  const plunges = n.impacts.filter(im => im.y > 2.5 && im.y < 3.5);
+  const wSum = plunges.reduce((s, im) => s + im.width, 0), qSum = n.impacts.reduce((s, im) => s + im.discharge, 0);
+  check('skirt: the plunge is a line of impacts across the width', plunges.length >= 2 && Math.abs(wSum - 5.0) < 1.5, 'clusters '+plunges.length+' width '+f2(wSum));
+  check('skirt: the impacts carry the discharge (each strand lands once)', Math.abs(qSum - n.discharge) < 0.05 * n.discharge, 'Σ '+f2(qSum)+' of '+f2(n.discharge));
+}
+// 16. a CURVED lip (the brink bows downstream toward the banks, z = 0.15·x²): each strand
+//     leaves the ground at the true edge in front of it, and the sheet's lip row follows it.
+{
+  const edge = x => 0.15 * x * x;
+  const ground = (x,z) => z < edge(x) ? 10 : 0;
+  const water = (x,z) => (z < edge(x) && Math.abs(x) <= 2.5) ? {level: 10.3, depth: 0.3, vx: 0, vz: 1.5} : null;
+  const env = {groundAt: ground, waterAt: water};
+  const n = N.trace([{top:[0,10,-0.5], bottom:[0,0,0.5], width:5, discharge:3, drop:10}], env);
+  let worst = 0;
+  for(const st of n.strands){
+    if(!st) continue;
+    const i = st.samples.findIndex(s => s.air);
+    if(i > 0){ const s = st.samples[i - 1]; worst = Math.max(worst, Math.abs(s.z - edge(s.x))); }
+  }
+  check('curved lip: every strand takes off at the edge (≤ 0.25 m)', worst <= 0.25, 'worst '+f2(worst));
+  //The edges leave later than the middle (0.94 m further to go), and the sheet holds together
+  //across that: rows are the water's time, not each strand's own lip.
+  const rib = N.buildRibbon(n, env), full = fullQuads(n);
+  check('curved lip: the sheet stays whole across the curve', rib.index.length / 6 >= 0.9 * full, 'quads '+rib.index.length/6+' of '+full);
+}
+// 17. a ROCK standing in the fall (a column a metre out from the lip, taller than it): the strands
+//     that hit it lose their speed into its face and fall down it, those beside it fall past,
+//     the sheet tears round it, and nothing is drawn on or through it.
+{
+  const rock = (x,z) => Math.abs(x) < 0.4 && z > 0.8 && z < 1.5;
+  const ground = (x,z) => rock(x,z) ? 12 : (z < 0 ? 10 : 0);
+  const env = {groundAt: ground, waterAt: () => null};
+  const n = N.trace([{top:[0,10,-0.5], bottom:[0,0,0.5], width:5, discharge:3, drop:10}], env);
+  const rib = N.buildRibbon(n, env);
+  const hit = n.strands.filter(st => st && st.impacts.some(im => im.ny === 0 && rock(im.x - im.nx * 0.05, im.z - im.nz * 0.05)));
+  check('rock: the strands in front of it hit its face', hit.length >= 1, 'strands '+hit.length);
+  const yMax = Math.max(...Array.from({length: rib.vertexCount}, (_, v) => rib.position[v*3+1]));
+  check('rock: nothing drawn on top of it', yMax < 11, 'max y '+f2(yMax));
+  check('rock: no vertex inside it', verticesInside(rib, ground) === 0, 'inside '+verticesInside(rib, ground));
+  check('rock: no triangle through it', trianglesInside(rib, ground) === 0, 'inside '+trianglesInside(rib, ground)+' of '+rib.index.length/3);
+  //Beside the rock the sheet still falls: strands past |x| 0.75 are unaffected.
+  const beside = n.strands.filter(st => st && st.rows.length && Math.abs(st.rows[0].x) > 0.75 && st.rows.some(r => r.fallFlag > 0.5));
+  check('rock: the water beside it falls as before', beside.length >= 6, 'strands '+beside.length);
+}
+// 18. landing on ground that slopes ACROSS the fall (0.4 m per m): each strand lands on the
+//     ground under it, so the foot follows the slope. A row rigid across lands at one height
+//     and is a metre off at each side of a 5 m sheet.
+{
+  const ground = (x,z) => z < 0 ? 10 : 0.4 * x;
+  const env = {groundAt: ground, waterAt: () => null};
+  const n = N.trace([{top:[0,10,-0.5], bottom:[0,0,0.5], width:5, discharge:3, drop:10}], env);
+  const rib = N.buildRibbon(n, env);
+  const lands = n.strands.filter(Boolean).map(st => st.impacts[0]).filter(Boolean);
+  const off = Math.max(...lands.map(im => Math.abs(im.y - ground(im.x, im.z))));
+  const ys = lands.map(im => im.y);
+  check('slope: every strand lands on the ground under it', off < 0.7 && lands.length >= 9, 'worst '+f2(off)+' landings '+lands.length);
+  check('slope: the foot is not one height (it follows the slope)', Math.max(...ys) - Math.min(...ys) > 1.5, 'spread '+f2(Math.max(...ys) - Math.min(...ys)));
+  check('slope: no vertex under the ground', verticesInside(rib, ground) === 0, 'inside '+verticesInside(rib, ground));
+}
+// 19. WIND on the sheet: 10 m/s blowing downstream bows a 10 m curtain out; the same wind
+//     across the fall is edge-on to the sheet and barely moves it; still air changes nothing.
+{
+  const ground = (x,z) => z < 0 ? 10 : 0;
+  const fall = {top:[0,10,-0.5], bottom:[0,0,0.5], width:4, discharge:3, drop:10};
+  const land = env => { const n = N.trace([fall], env); return n.strands[n.spine].impacts[0]; };
+  const base = land({groundAt: ground, waterAt: () => null});
+  const still = land({groundAt: ground, waterAt: () => null, wind: {x: 0, z: 0}});
+  const down = land({groundAt: ground, waterAt: () => null, wind: {x: 0, z: 10}});
+  const across = land({groundAt: ground, waterAt: () => null, wind: {x: 10, z: 0}});
+  check('wind: still air changes nothing', still.z === base.z && still.x === base.x, '');
+  check('wind: a downstream wind bows the curtain out 0.2..2.5 m', down.z - base.z > 0.2 && down.z - base.z < 2.5, 'Δz '+f2(down.z - base.z));
+  check('wind: a wind along the lip is edge-on (< 0.1 m)', Math.abs(across.x - base.x) < 0.1 && Math.abs(across.z - base.z) < 0.1, 'Δx '+f2(across.x - base.x)+' Δz '+f2(across.z - base.z));
+}
+// 20. a creek deep in the middle and shallow at the banks: the edge strands carry less and run thinner.
+{
+  const depth = x => 0.07 + 0.3 * (1 - (x / 2.5) * (x / 2.5));
+  const ground = (x,z) => z < 0 ? 10 - depth(Math.min(Math.abs(x), 2.5)) + (Math.abs(x) > 2.5 ? 1 : 0) : 0;
+  const water = (x,z) => (z < 0 && Math.abs(x) <= 2.5) ? {level: 10.07, depth: depth(x), vx: 0, vz: 1.2} : null;
+  const n = N.trace([{top:[0,10,-0.5], bottom:[0,0,0.5], width:5, discharge:6, drop:10}], {groundAt: ground, waterAt: water});
+  const S = n.strands.filter(Boolean), mid = n.strands[n.spine], edgeSt = S[0];
+  check('uneven: edge strands carry less than the middle', edgeSt.q < 0.5 * mid.q, 'edge q '+f2(edgeSt.q)+' mid q '+f2(mid.q));
+  check('uneven: ...and run thinner', edgeSt.samples[0].h < mid.samples[0].h, 'edge h '+f2(edgeSt.samples[0].h)+' mid h '+f2(mid.samples[0].h));
 }
 // 5. island-sholes chains (only when the sibling project is checked out)
 {

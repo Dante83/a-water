@@ -1,8 +1,8 @@
 precision highp float;
 
-//Ocean splash particle fragment stage (THREE.Points, GLSL1).
+//Ocean splash particle fragment stage (instanced quads, GLSL1).
 //
-//Each point is a camera-facing sprite quad (gl_PointCoord spans 0..1). We
+//Each particle is a camera-facing quad (vUv spans 0..1, y-down like gl_PointCoord). We
 //composite a supplied spray sprite, fade it in/out over the particle lifetime,
 //and soft-fade it against scene geometry using the refraction G-buffer linear
 //depth so droplets sink into terrain and hulls instead of hard-clipping.
@@ -13,6 +13,7 @@ uniform vec2 uResolution;         //G-buffer / drawing-buffer size in pixels
 uniform float uSoftRange;         //metres over which we soft-fade into geometry
 uniform float uOpacity;           //global artistic opacity (FUDGE)
 uniform float uFallMistOpacity;   //waterfall mist's own opacity (type 2): not scaled by uOpacity
+uniform float uFallSplashOpacity; //waterfall splash clumps' own opacity (type 3)
 uniform int uDebugMode;           //0 = normal, 1 = tint by emitter type
 uniform float uNoiseScale;        //3D noise frequency across the droplet
 uniform float uErode;             //silhouette erosion threshold (higher = grainier)
@@ -63,6 +64,8 @@ uniform float sunShadowRadius;    //PCF tap spread (light.shadow.radius)
 uniform float sunShadowBias;      //depth bias (light.shadow.bias + console offset)
 uniform int sunShadowEnabled;     //0 = no shadow map this frame
 
+varying vec2 vUv;           //0..1 across the quad, y-DOWN (the old gl_PointCoord)
+varying float vHalfW;       //world half-width of the quad
 varying float vAge01;
 varying float vSeed;
 varying float vType;
@@ -148,7 +151,7 @@ float wobbleDrop(vec2 p, float rad, vec2 axA, vec2 axP, float aspect, float wobA
   if(rho > edge) return 0.0;
   outZ = b * sqrt(max(0.0, edge * edge - rho * rho));
   //Surface normal: radial ellipsoid gradient tilted tangentially by the harmonic slope. Flip y:
-  //p is y-DOWN gl_PointCoord space, lighting wants a y-UP view normal (glint on top, not bottom).
+  //p is y-DOWN vUv space, lighting wants a y-UP view normal (glint on top, not bottom).
   vec2 tang = vec2(-sin(theta), cos(theta));
   vec2 nUV = vec2(u, v) - tang * dW;
   vec2 nxy = axA * (nUV.x / a) + axP * (nUV.y / b);
@@ -282,7 +285,7 @@ float getSplashSunShadow(){
 void main(){
   //Procedural mist droplet: a soft sphere whose silhouette is eroded by 3D noise so
   //each billboard reads as a rough-edged, cloud-like puff rather than a flat disc.
-  vec2 pc = (gl_PointCoord - 0.5) * 2.0;   //-1..1 across the quad
+  vec2 pc = (vUv - 0.5) * 2.0;             //-1..1 across the quad
   float r = length(pc);                    //0 at centre .. ~1.41 at the corner
   //Reconstruct a hemisphere height so the noise wraps over a 3D surface (a fake
   //volume cue) instead of lying flat on the disc.
@@ -312,16 +315,28 @@ void main(){
   float windMist = smoothstep(uMistWindMin, uMistWindMax, length(uWind));
   //Type 2 is WATERFALL mist (OceanSplash._emitFalls): made by the impact, not shredded by the
   //wind, so it is a haze puff at any wind — a still valley's fall still smokes.
-  float fallMist = step(1.5, vType);
-  windMist = max(windMist, fallMist);
-  float beadMix = mix(1.0, smoothstep(0.4, 0.65, vCoarse), windMist);
+  float fallMist = step(1.5, vType) - step(2.5, vType);
+  //Type 3 is the waterfall SPLASH (Phase 6b): white clumps of aerated water thrown out of the
+  //plunge, streaked along their motion by the vertex stage. Not the sea's glassy beads: a fall's
+  //spray is torn, bubbly water, so it is the dense-foam end of the one material (aer = 1), drawn
+  //as a coherent noise-eroded blob.
+  float fallSplash = step(2.5, vType);
+  aer = mix(aer, 1.0, fallSplash);
+  windMist = max(windMist, max(fallMist, fallSplash));
+  float beadMix = mix(1.0, smoothstep(0.4, 0.65, vCoarse), windMist) * (1.0 - fallSplash);
 
   //Mist PUFF silhouette (noise-eroded soft sphere) — used when beadMix is low.
   float corePow = mix(2.0, 4.0, vCoarse);
   float erode = mix(uErode, uErodeCoarse, vCoarse);
   float core = pow(clamp(1.0 - r, 0.0, 1.0), corePow);
+
   float carve = smoothstep(erode, erode + uSoftEdge, n);
   float hazeDensity = core * carve;
+  //A splash clump is a coherent lump of water: a SOLID body whose OUTLINE the noise pushes in
+  //and out. Eroding its interior (the puff's way) punched rings through it and every clump read
+  //as a little football (Dante, falls-lab, 2026-09-22).
+  float clump = smoothstep(1.0, 0.8, r * (1.0 + 0.9 * (n - 0.45)));
+  hazeDensity = mix(hazeDensity, clump, fallSplash);
 
   vec3 Hh = normalize(vSunDirView + vec3(0.0, 0.0, 1.0));//half-vector to the sun
   float sunShadow = getSplashSunShadow();
@@ -333,7 +348,7 @@ void main(){
   float dGlint = 0.0;
   vec3 rim = vec3(0.0);
   if(beadMix > 0.001){
-    dropCov = dropletCluster(gl_PointCoord, vSeed, dropN);
+    dropCov = dropletCluster(vUv, vSeed, dropN);
     dGlint = pow(max(0.0, dot(dropN, Hh)), 80.0) * uSparkle * sunShadow;
     float fres = pow(1.0 - clamp(dropN.z, 0.0, 1.0), 3.0);
     rim = skyReflect(dropN) * (fres * (1.0 - aer) * 1.2);
@@ -342,7 +357,7 @@ void main(){
   //ONE lighting model lights BOTH the mist puff (Nhaze) and the foam beads (dropN), so they share
   //the sun colour + form and never drift apart again. The mist puff Z-biases its normal off a
   //harsh terminator; the rim rides only the bead path.
-  vec3 Nhaze = normalize(vec3(pc.x, -pc.y, z + 0.3)); //negate y: gl_PointCoord is y-down
+  vec3 Nhaze = normalize(vec3(pc.x, -pc.y, z + 0.3)); //negate y: vUv is y-down
   vec3 litHaze = aeratedWater(Nhaze, aer, sunShadow, 0.0);
   vec3 litDrop = aeratedWater(dropN, aer, sunShadow, dGlint) + rim;
   vec3 lit = mix(litHaze, litDrop, beadMix);
@@ -351,11 +366,12 @@ void main(){
   //axis drives opacity so light waves read see-through and storm foam reads solid. Calmer seas thin
   //the whole thing (foamWind), matching the size break-up in the cluster.
   float density = mix(hazeDensity, dropCov, beadMix);
-  float foamWind = mix(mix(1.0 - uFoamCalmFade, 1.0, windE), 1.0, fallMist);
+  float foamWind = mix(mix(1.0 - uFoamCalmFade, 1.0, windE), 1.0, max(fallMist, fallSplash));
   float opacity = mix(uOpacity, uFoamOpacity, aer) * foamWind;
   //Waterfall mist is its own opacity. Through the global uOpacity (0.1 on the hero-creek pages,
   //tuned for sea spray) the plunge haze was all but invisible (Dante, 2026-09-22).
   opacity = mix(opacity, uFallMistOpacity, fallMist);
+  opacity = mix(opacity, uFallSplashOpacity, fallSplash);
 
   //Lifetime fade: a quick rise then a long ease-out, like real spray thinning.
   float fadeIn = smoothstep(0.0, 0.15, vAge01);
@@ -374,12 +390,21 @@ void main(){
     softFade = clamp((sceneZ - vViewZ) / max(0.001, uSoftRange), 0.0, 1.0);
   }
 
-  float alpha = density * ageAlpha * softFade * opacity;
+  //Camera-INSIDE fade. A puff closer than its own radius is a volume the camera is inside,
+  //so a flat billboard of it overstates the density (and fills the screen: a 10 m waterfall
+  //mist puff at 2 m is a white wall). Fades it out from one radius in to a fifth of it. GL
+  //points hid this behind their size cap until Phase 6b made particles quads.
+  float insideFade = smoothstep(0.2, 1.0, vViewZ / max(1e-3, vHalfW));
+
+  float alpha = density * ageAlpha * softFade * opacity * insideFade;
   vec3 color = linearToSrgb(acesTonemap(lit));
 
   if(uDebugMode == 1){
-    //Crest mist = red, impact burst = magenta; procedural density kept as the alpha.
+    //Crest mist = red, impact burst = magenta, fall mist = cyan, fall splash = yellow;
+    //procedural density kept as the alpha.
     vec3 tint = mix(vec3(1.0, 0.1, 0.1), vec3(1.0, 0.2, 0.8), step(0.5, vType));
+    tint = mix(tint, vec3(0.1, 0.9, 1.0), fallMist);
+    tint = mix(tint, vec3(1.0, 0.9, 0.1), fallSplash);
     color = tint;
     alpha = density * ageAlpha;
   } else if(uDebugMode == 2){

@@ -1,8 +1,9 @@
 precision highp float;
 
-//Waterfall sheet vertex stage (Phase 6). The ribbon is built on the CPU by
+//Waterfall sheet vertex stage (Phase 6). The sheet is built on the CPU by
 //ARestlessOcean.WaterfallNappe.buildRibbon in WORLD space and the mesh sits at the
-//origin: a smooth, rigid-across sheet along the traced path of the free fall.
+//origin: a skirt woven between the traced paths of the water, one strand every half
+//metre across the creek.
 //
 //THE SHAPE IS HERE. A real falling sheet is not a ribbon: it carries lumps and ridges
 //that travel down with the water, grow as it breaks up, and fray at the sides. So each
@@ -17,10 +18,12 @@ precision highp float;
 //model; uLumpAmp/uLumpScale/uLumpRate/uEdgeWobble are its knobs.
 
 attribute vec4 aFlowA;       //tau (s of flight since the trace began), across (-1..1), thickness (m), speed (m/s)
-attribute vec4 aFlowB;       //aeration (0..1), presence (0..1), free-fall flag (0..1), this side's half-width (m)
-attribute float aFlowLump;   //lump weight: 1 inside a fall, ramping to 0 inside its ends (WaterfallNappe.resample)
+attribute vec4 aFlowB;       //aeration (0..1), presence (0..1), free-fall flag (0..1), half-width (m): across x it is
+                             //the strand's seed offset from the middle, a coordinate that rides the water
+attribute vec2 aFlowLump;    //x lump weight: 1 inside a fall, ramping to 0 inside its ends (WaterfallNappe.resample)
+                             //y seconds since this stretch of the fall left the ground
 attribute vec3 aFlowTangent; //down the flow (unit)
-attribute vec3 aFlowAcross;  //horizontal, toward +across (unit)
+attribute vec3 aFlowAcross;  //toward +across, along the sheet to the neighbouring strands (unit)
 
 uniform mat4 sunShadowMatrix;
 uniform float t;
@@ -28,6 +31,8 @@ uniform float uLumpAmp;      //m of lump at full aeration
 uniform float uLumpScale;    //m across per lump
 uniform float uLumpRate;     //lumps per second of flight along the fall
 uniform float uEdgeWobble;   //m the side edges wander in and out
+uniform vec2 uWind;          //m/s, the ocean wind (world X, Z)
+uniform float uWindSway;     //gust strength as a fraction of the mean wind (0: steady)
 //The creek's WaterField, cascade 0 (the texture the flowing surface stands on; aliased).
 uniform sampler2D waterFieldCascade0;
 uniform vec2 waterFieldCascadeCenter[3];
@@ -85,7 +90,7 @@ void main(){
   float lumpPhase = mod(t * uLumpRate, lumpCells);
   //Lumps on the free fall only: the attached ends are the creek's surface carried on, and
   //the landing tail (the most aerated rows) poked white lumps up through the pool.
-  float amp = uLumpAmp * (0.15 + 0.85 * aeration) * aFlowLump;
+  float amp = uLumpAmp * (0.15 + 0.85 * aeration) * aFlowLump.x;
 
   vec3 N = normalize(normal);
   vec3 T = normalize(aFlowTangent);
@@ -108,9 +113,23 @@ void main(){
   float edge = smoothstep(0.6, 1.0, abs(aFlowA.y));
   //Free fall only (aFlowLump), like the lumps: on the attached tail the edge columns swung
   //40 cm sideways over the banks and stuck out as flags at both ends of the foot (round 10).
-  float wobble = uEdgeWobble * edge * (wfLump(q * vec2(0.6, 1.7) + vec2(41.7, 3.1), 1.7 * lumpCells) * 2.0) * (0.3 + 0.7 * aeration) * aFlowLump;
+  float wobble = uEdgeWobble * edge * (wfLump(q * vec2(0.6, 1.7) + vec2(41.7, 3.1), 1.7 * lumpCells) * 2.0) * (0.3 + 0.7 * aeration) * aFlowLump.x;
 
-  vec3 displaced = position + N * d0 + A * sign(aFlowA.y) * wobble;
+  //Wind gusts on the free fall. The steady bow downwind is already in the trace (air drag on
+  //the sheet, WaterfallNappe.traceStrand); this is the gusting about it, by the same law: the
+  //wind normal to the sheet Un pushes it at a = 0.5 rho_air Cd Un|Un| / (rho_water h), so a
+  //gust that changes the wind by a fraction s changes a by 2s, and the sheet moves 0.5 a t^2
+  //over the t seconds since this stretch left the ground. Free fall only, ramped in and out
+  //inside its ends (aFlowLump.x), so the lip and the foot stay where the trace put them.
+  //Cd 1 as in the trace (sheetDragCd). FUDGE: the gust itself (two slow octaves of noise,
+  //about 3 s across, drifting 20 m across the sheet) is a look choice.
+  float un = dot(vec3(uWind.x, 0.0, uWind.y), N);
+  float aDrag = 0.5 * 1.2 * un * abs(un) / (1000.0 * max(aFlowA.z, 0.02));
+  float gust = 2.0 * wfLump(vec2(acrossM * 0.05 + 7.3, mod(t * 0.35, 100.0)), 100.0);
+  float tf = aFlowLump.y;
+  float sway = clamp(0.5 * aDrag * 2.0 * uWindSway * gust * tf * tf, -1.5, 1.5) * aFlowLump.x;
+
+  vec3 displaced = position + N * (d0 + sway) + A * sign(aFlowA.y) * wobble;
   //ATTACHED rows stand on the creek: at its level where it has one above the traced height
   //(so the two surfaces coincide wherever the creek draws, and the creek, polygon-offset
   //toward the camera, wins), at the trace's height where the creek's interpolated level
@@ -134,6 +153,12 @@ void main(){
   //the camera and writes depth even where it has faded to nearly nothing), which left a hole
   //at the foot: a faint creek in front of a hidden tail (round 7).
   const float ATTACHED_LIFT = 0.03;
+  //...by at most ATTACHED_LIFT_MAX. Beside a step face the field's texels still hold the upper
+  //tread's level, and single vertices of a landing tail or a steep row were yanked up to it (up to a
+  //whole step, 2-3 m on falls-lab B): spikes out of the sheet. Where the creek really is higher
+  //than the trace (a pool over the tail) it is by centimetres, the trace rides the level.
+  const float ATTACHED_LIFT_MAX = 0.3;
+  creekY = min(creekY, displaced.y + ATTACHED_LIFT_MAX);
   displaced.y = mix(max(creekY, displaced.y) + ATTACHED_LIFT, displaced.y, aFlowB.z);
   vec4 worldPos = modelMatrix * vec4(displaced, 1.0);
   vWorldPos = worldPos.xyz;

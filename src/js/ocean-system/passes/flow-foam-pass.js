@@ -279,7 +279,10 @@ ARestlessOcean.Passes.FlowFoamPass.prototype._updateFalls = function(ctx){
         let dx = im.vx, dz = im.vz;
         const len = Math.sqrt(dx * dx + dz * dz);
         if(len > 1e-3){ dx /= len; dz /= len; } else { dx = 0.0; dz = 1.0; }
-        consider(im.x, im.z, 0.5 * nap.width, nap.discharge * (im.w !== undefined ? im.w : 1.0), dx, dz, im.vn * im.vn / (2.0 * 9.81), null);
+        //A skirt's impacts are clusters along the foot with their own width and discharge.
+        const imW = im.width !== undefined ? im.width : nap.width;
+        const imQ = im.discharge !== undefined ? im.discharge : nap.discharge;
+        consider(im.x, im.z, 0.5 * imW, imQ * (im.w !== undefined ? im.w : 1.0), dx, dz, im.vn * im.vn / (2.0 * 9.81), null);
       }
     }
   }

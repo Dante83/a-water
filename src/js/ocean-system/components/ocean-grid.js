@@ -1435,7 +1435,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     mat.uniforms.flowRingHole = {value: new THREE.Vector3(0, 0, 0)};
     //Phase 6: the waterfall corridors this surface steps aside in (WaterfallSheetPass).
     const nCorr = ARestlessOcean.Passes && ARestlessOcean.Passes.WaterfallSheetPass
-      ? ARestlessOcean.Passes.WaterfallSheetPass.MAX_CORRIDORS : 24;
+      ? ARestlessOcean.Passes.WaterfallSheetPass.MAX_CORRIDORS : 48;
     mat.uniforms.fallCorridorA = {value: Array.from({length: nCorr}, function(){ return new THREE.Vector4(); })};
     mat.uniforms.fallCorridorB = {value: Array.from({length: nCorr}, function(){ return new THREE.Vector4(); })};
     mat.uniforms.fallCorridorCount = {value: 0};
@@ -2659,7 +2659,10 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         falls: (self.flowSurfacePass && self.flowSurfacePass.enabled && self.flowSurfacePass.foamPass)
           ? self.flowSurfacePass.foamPass.nearFalls : null,
         //Phase 6: traced falls, whose impacts replace the bed-point placeholder above.
-        nappes: self.waterfallSheetPass ? self.waterfallSheetPass.liveNappes() : null
+        nappes: self.waterfallSheetPass ? self.waterfallSheetPass.liveNappes() : null,
+        //Phase 6b: a-land's CPU water level, so fall mist/splash dies on the pool it lands in.
+        getWaterAt: (self._landTerrainApi && typeof self._landTerrainApi.getWaterAt === 'function')
+          ? self._landTerrainApi.getWaterAt : null
       });
       //Airborne spray is an above-water phenomenon: hide it whenever the camera is submerged, or the
       //mist/foam billboards punch through the underwater ceiling (they render on OCEAN_LAYER in the

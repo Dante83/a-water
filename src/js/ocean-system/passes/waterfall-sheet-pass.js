@@ -4,10 +4,11 @@
 //
 //Through Phase 4 a fall was drawn by the flowing-water HEIGHTFIELD stretched over
 //the step, a steep ramp one or two cells long that the cliff clipped through. This
-//pass draws the fall as its own surface: a ribbon extruded across the fall's width
-//along the path ARestlessOcean.WaterfallNappe traces for the water (airborne off each
-//lip, sliding down chutes, landing on ledges, plunging into pools). Cascades are one
-//ribbon per chain of falls, not one per fall.
+//pass draws the fall as its own surface: a SKIRT woven between the paths
+//ARestlessOcean.WaterfallNappe traces for the water, one strand every half metre across
+//the creek (airborne off each lip, sliding down chutes, landing on ledges, plunging into
+//pools), torn where the strands part round a rock. Cascades are one skirt per chain of
+//falls, not one per fall.
 //
 //THE HAND-OFF WITH THE CREEK SURFACE
 //The ribbon draws where the nappe's `presence` is up (airborne, or sliding down a bed
@@ -24,9 +25,10 @@
 //stream to drift. See waterfall-sheet.glsl.
 //
 //BUILDING
-//Traces run on the CPU against a-land's height and water reads, one chain per frame, and
-//again whenever a-land's height cache changes (finer tiles sharpen the ground a trace was
-//run on) or its terrain is edited. A trace that meets unloaded ground is simply retried.
+//Traces run on the CPU against a-land's height and water reads, STRANDS_PER_TICK strands a
+//frame, and again whenever a-land's height or water residency changes (finer tiles sharpen
+//the ground a trace was run on), its terrain is edited or the ocean's wind moves (the
+//sheet's steady bow downwind is traced). A trace that meets unloaded ground is retried.
 //The ground read goes to the DIRECTOR with a NaN miss value: a-land's public
 //api.getHeightAt drops that argument and answers 0 m for unloaded ground, which is a
 //plausible height and would put a fall's landing at sea level.
@@ -52,6 +54,10 @@ ARestlessOcean.Passes.WaterfallSheetPass = function(oceanGrid){
   this._falls = null;
   this._heightVersion = -1;
   this._queue = [];
+  //The chain being traced, strand by strand: {i, job} (WaterfallNappe.beginTrace), or null.
+  this._job = null;
+  //The wind the built traces were run in: {x, z} m/s.
+  this._tracedWind = null;
   //Cascades whose trace met unloaded ground: {i, atMs}, retried on their own clock so one
   //fall on ground that never streams in cannot hold back the others (see tick).
   this._retry = [];
@@ -63,9 +69,12 @@ ARestlessOcean.Passes.WaterfallSheetPass = function(oceanGrid){
 };
 
 ARestlessOcean.Passes.WaterfallSheetPass.RENDER_ORDER = 5;
-ARestlessOcean.Passes.WaterfallSheetPass.MAX_CORRIDORS = 24;
+ARestlessOcean.Passes.WaterfallSheetPass.MAX_CORRIDORS = 48;   //water-shader.glsl + waterfall-sheet.glsl FALL_CORRIDOR_MAX (a lead box per fall since 2026-09-23: falls-lab needs 30)
 ARestlessOcean.Passes.WaterfallSheetPass.RETRY_MS = 1000;
 ARestlessOcean.Passes.WaterfallSheetPass.REBUILD_MS = 2000;
+ARestlessOcean.Passes.WaterfallSheetPass.STRANDS_PER_TICK = 2;   //~0.85 ms each on hero-creek (4090 box, 2026-09-22)
+//m/s the ocean's wind must change by before the sheets are re-traced (their steady bow is traced).
+ARestlessOcean.Passes.WaterfallSheetPass.WIND_RETRACE = 0.5;
 //The creek-material uniforms the sheet aliases (see the header).
 ARestlessOcean.Passes.WaterfallSheetPass.SHARED_UNIFORMS = [
   'brightestDirectionalLight', 'brightestDirectionalLightDirection', 'skyAmbientColor',
@@ -145,7 +154,9 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype._env = function(){
     },
     waterAt: function(x, z){
       return typeof dir.getWaterAt === 'function' ? dir.getWaterAt(x, z) : null;
-    }
+    },
+    //The ocean's wind (windVelocity.x → world X, .y → world Z): drag on the airborne sheet.
+    wind: og.windVelocity ? {x: og.windVelocity.x, z: og.windVelocity.y} : null
   };
 };
 
@@ -153,6 +164,7 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype._env = function(){
 ARestlessOcean.Passes.WaterfallSheetPass.prototype.invalidate = function(){
   this._queue.length = 0;
   this._retry.length = 0;
+  this._job = null;
   for(let i = 0; i < this.cascades.length; ++i) this._queue.push(i);
 };
 
@@ -177,10 +189,15 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype._syncFalls = function(now){
   const hc = og._landDirector && og._landDirector.heightCache;
   const ver = hc && typeof hc.version === 'number' ? hc.version : 0;
   const wver = og.waterFieldPass && typeof og.waterFieldPass.invalidationCount === 'number' ? og.waterFieldPass.invalidationCount : 0;
-  if((ver !== this._heightVersion || wver !== this._waterVersion) && !this._queue.length
+  //...and the WIND: the sheets' steady bow downwind is traced (air drag, WaterfallNappe), so a
+  //storm ramp re-traces them, coalesced the same way.
+  const wv = og.windVelocity, tw = this._tracedWind;
+  const windMoved = !!wv && (!tw || Math.hypot(wv.x - tw.x, wv.y - tw.z) > ARestlessOcean.Passes.WaterfallSheetPass.WIND_RETRACE);
+  if((ver !== this._heightVersion || wver !== this._waterVersion || windMoved) && !this._queue.length && !this._job
      && now - this._lastInvalidateMs >= ARestlessOcean.Passes.WaterfallSheetPass.REBUILD_MS){
     this._heightVersion = ver;
     this._waterVersion = wver;
+    if(wv) this._tracedWind = {x: wv.x, z: wv.y};
     this._lastInvalidateMs = now;
     this.invalidate();
   }
@@ -192,26 +209,44 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype.tick = function(ctx){
   this.enabled = ctx.enabled !== false;
   if(!this.mesh) return;
   this._syncFalls(ctx.timeMs);
-  //One trace per frame. A trace over unloaded ground returns null; it moves to the retry
-  //list with its own clock rather than back onto the queue, so the queue drains and the
-  //geometry publishes (it used to wait for an empty queue that one unstreamed fall kept full).
+  //STRANDS_PER_TICK strands a frame: a chain is a skirt of strands (WaterfallNappe.trace), one
+  //job at a time, and its ribbon is swapped in whole when the last strand is done (the old
+  //sheet stays up till then). A chain over unloaded ground (no job, or a null result) moves to
+  //the retry list with its own clock rather than back onto the queue, so the queue drains and
+  //the geometry publishes (it used to wait for an empty queue that one unstreamed fall kept full).
+  const WN = ARestlessOcean.WaterfallNappe;
   const env = this._env();
   if(env){
-    let i = -1;
-    if(this._queue.length) i = this._queue.shift();
-    else if(this._retry.length && ctx.timeMs >= this._retry[0].atMs) i = this._retry.shift().i;
-    const c = i >= 0 ? this.cascades[i] : null;
-    if(c){
-      const nappe = ARestlessOcean.WaterfallNappe.trace(c.chain, env);
-      if(nappe){
-        c.nappe = nappe;
-        c.ribbon = ARestlessOcean.WaterfallNappe.buildRibbon(nappe, env);
-        this._dirtyGeometry = true;
+    if(!this._job){
+      let i = -1;
+      if(this._queue.length) i = this._queue.shift();
+      else if(this._retry.length && ctx.timeMs >= this._retry[0].atMs) i = this._retry.shift().i;
+      const c = i >= 0 ? this.cascades[i] : null;
+      if(c){
+        const job = WN.beginTrace(c.chain, env);
+        if(job) this._job = {i: i, job: job};
+        else this._retry.push({i: i, atMs: ctx.timeMs + WS.RETRY_MS});
       }
-      else this._retry.push({i: i, atMs: ctx.timeMs + WS.RETRY_MS});
+    }
+    if(this._job){
+      const j = this._job;
+      //The job keeps the env it began with; a fresh one per tick reads the same director.
+      if(WN.stepTrace(j.job, WS.STRANDS_PER_TICK)){
+        this._job = null;
+        const c = this.cascades[j.i];
+        if(c && j.job.nappe){
+          c.nappe = j.job.nappe;
+          c.ribbon = WN.buildRibbon(c.nappe, env);
+          this._dirtyGeometry = true;
+        }
+        else if(c) this._retry.push({i: j.i, atMs: ctx.timeMs + WS.RETRY_MS});
+      }
     }
   }
-  if(this._dirtyGeometry && !this._queue.length) this._rebuildGeometry();
+  if(this._dirtyGeometry && !this._queue.length && !this._job) this._rebuildGeometry();
+  //The wind the gusts sway the sheet in (its steady part is in the trace).
+  const wv = this.oceanGrid.windVelocity;
+  if(wv && this.material.uniforms.uWind) this.material.uniforms.uWind.value.set(wv.x, wv.y);
   this.mesh.visible = this.enabled && this.mesh.geometry.index !== null && this.mesh.geometry.index.count > 0;
   //Atmospheric perspective, the water's way: with it ready, the fragment shader is rebuilt
   //with the atmosphere functions injected (the sheet then reflects a-starry-sky's sky and
@@ -242,7 +277,7 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype._rebuildGeometry = function()
   }
   const position = new Float32Array(nV * 3), normal = new Float32Array(nV * 3);
   const tangent = new Float32Array(nV * 3), across = new Float32Array(nV * 3);
-  const flowA = new Float32Array(nV * 4), flowB = new Float32Array(nV * 4), lump = new Float32Array(nV);
+  const flowA = new Float32Array(nV * 4), flowB = new Float32Array(nV * 4), lump = new Float32Array(nV * 2);
   const index = new Uint32Array(nI);
   let v = 0, k = 0;
   for(let i = 0; i < this.cascades.length; ++i){
@@ -250,7 +285,7 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype._rebuildGeometry = function()
     if(!r) continue;
     position.set(r.position, v * 3); normal.set(r.normal, v * 3);
     tangent.set(r.tangent, v * 3); across.set(r.across, v * 3);
-    flowA.set(r.flowA, v * 4); flowB.set(r.flowB, v * 4); lump.set(r.lump, v);
+    flowA.set(r.flowA, v * 4); flowB.set(r.flowB, v * 4); lump.set(r.lump, v * 2);
     for(let j = 0; j < r.index.length; ++j) index[k + j] = r.index[j] + v;
     v += r.vertexCount; k += r.index.length;
   }
@@ -262,12 +297,13 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype._rebuildGeometry = function()
   geo.setAttribute('aFlowAcross', new THREE.BufferAttribute(across, 3));
   geo.setAttribute('aFlowA', new THREE.BufferAttribute(flowA, 4));
   geo.setAttribute('aFlowB', new THREE.BufferAttribute(flowB, 4));
-  geo.setAttribute('aFlowLump', new THREE.BufferAttribute(lump, 1));
+  geo.setAttribute('aFlowLump', new THREE.BufferAttribute(lump, 2));
   geo.setIndex(new THREE.BufferAttribute(index, 1));
   if(nV){
     geo.computeBoundingSphere();
-    //The vertex stage displaces by up to ~uLumpAmp along the normal and uEdgeWobble across.
-    geo.boundingSphere.radius += 1.0;
+    //The vertex stage displaces by up to ~uLumpAmp along the normal and uEdgeWobble across,
+    //and the wind gusts by up to 1.5 m more.
+    geo.boundingSphere.radius += 2.5;
   }
   this.mesh.geometry = geo;
   old.dispose();
@@ -327,4 +363,5 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype.dispose = function(){
   this.nappes.length = 0;
   this._queue.length = 0;
   this._retry.length = 0;
+  this._job = null;
 };

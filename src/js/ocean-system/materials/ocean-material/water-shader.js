@@ -445,7 +445,7 @@ ARestlessOcean.Materials.Ocean.waterMaterial = {
       '//Inside one, the waterfall sheet draws wherever the level is steep, so this surface',
       '//steps aside there (see flowFallOwn). Flat ends, not capsules: a round cap reaches a',
       '//half-width (~5 m) past the lip and would erase the creek running up to it.',
-      'const int FALL_CORRIDOR_MAX = 24;',
+      'const int FALL_CORRIDOR_MAX = 48;',
       'uniform vec4 fallCorridorA[FALL_CORRIDOR_MAX];',
       'uniform vec4 fallCorridorB[FALL_CORRIDOR_MAX];',
       'uniform int fallCorridorCount;',
