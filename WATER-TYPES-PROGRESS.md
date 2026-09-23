@@ -321,6 +321,38 @@ differently shaded waters swapped at once.
   foam covers the water layer by the light it scatters, and reflections show only in its gaps.
   Round 11 had only faded the foam-normal reflection; it still drove the glints.
 
+### 2026-09-22 (late) — island-sholes rivers: stale bake, then thin sheets
+
+**Symptom.** Rivers show in the a-land editor but not in `island-sholes-ocean.html`.
+- **Cause 1, a stale bake.** The water tiles were from 09-18 and the terrain from 09-19, with the
+  channels smoothed shut, so 99 % of the oval island's river sat about 1 m underground.
+  - Fix: Solve Water and then **Bake & Export**. Save alone never rewrites the water tiles.
+  - `WaterTileDecoder._checkStaleBake` now warns once when the baked bed disagrees with the
+    ground (0-1 % of texels on hero-creek, 64-96 % on the stale tiles).
+- **Cause 2, thin sheets.** After a fresh bake, the shallow-water pass spread the water into
+  2-3 cm sheets: 4.55x the ground D8 wetted, 49 % of the oval's flowing texels under 3 cm.
+  - The carve was a fixed point of D8, not of the shallow water that ships.
+
+**Built (a-faraway-land-lbm worktree, `lbm-river-solver`, uncommitted):**
+- **`WaterCarveLoop.js`:** carve, solve the shallow water, then keep side channels carrying
+  ≥ 25 % of Q or wall the rest, and repeat. Plus spring pools and "D8 lakes count as channel".
+  - Fixture: spill 4.65x → 1.18x; oval and long islands at a median ~30 cm, 3 % under 3 cm.
+  - Tests: `check-carve-loop.js` and `check-carve-loop-gpu.mjs`.
+- **`WaterFVBake` `shipMinDepthM` 0.03:** flowing water thinner than a-water can draw ships dry.
+
+**Built here, needs `create-shader.py`** (water-shader.glsl, waterfall-sheet.glsl): the popping fix.
+- The thin-water fade now runs on the **baked** depth (RT0.g), which does not move with the view.
+- The rendered-ground thickness only guards 0.5-3 cm, against displacement or LOD poking
+  through. It used to run the whole 3-10 cm fade, and the ground shifts with LOD, so water
+  blinked as the camera moved.
+- The hand-off band cuts at 6 cm baked, 2 cm rendered.
+- Debug mode 66 now shows both rules.
+
+**Open:**
+- Dante's in-editor re-solve on the lbm worktree.
+- `carveMinDepthM`: narrow a channel where its water would run too thin.
+- Source reduction as a last resort.
+
 ### ▶ RESUME HERE (end of 2026-09-22) — Phase 6b: the splash at the foot
 
 **State.** Dante: "we've really cooked already with this waterfall." Browser pass on hero-creek-sky
@@ -350,6 +382,23 @@ width, and a splash strip ~1 m tall is where ballistic arcs are close to exact.
 3. **Die on water contact.** Particles already die on land; add a kill below the field's
    water level (known-dry aware), so a splash falls back INTO the pool instead of through it.
 4. Knobs live on `oceanGrid.oceanSplash`, like `fallMistRate`/`fallMistOpacity`.
+5. **Steep chutes: water on cliff faces (found 2026-09-22, stowed for 6b by Dante).**
+   - **Symptom:** on island-sholes' steep island (tile 5_9), the rivers run on faces of 45-53°
+     (median gradient 1.1-1.3). There a heightfield surface cannot sit on 1 m texels: half a
+     texel of misalignment is half a metre of height. The level ends up metres under or over
+     the rock (26-50 % buried; level minus ground p10 −2 m, p90 +5 m).
+   - **What it looks like:** mode 66 shows deep water drawn under green terrain, with magenta
+     guard rims where they almost meet. The flowing surface leaks through as "phantom water
+     rushing down".
+   - **The shallow-water pass misbehaves there too:** median depth 1.4 m on a 53° face, and
+     ~30 pothole "lakes" of 1-32 m² at 22-65 m up the cliff.
+   - **Cause:** a-land only calls a segment a waterfall when it drops ≥ `waterfallMinDropM`
+     (2 m) past 30°. Everything else steep goes to the flowing surface, which cannot draw it.
+   - **Plan:** treat any continuous flowing run steeper than ~35° as a fall segment (the
+     sheet's attached mode, hugging the rock) whatever its drop, and suppress potholes on
+     steep ground.
+   - **Fallback if that stalls:** ship flowing water steeper than ~40° dry at export.
+   - Every other island-sholes tile matches its terrain to a few cm, so this is steep-only.
 
 **Not now:** PBF / MLS-MPM / DFSPH baked into a loop. Every fall and cascade step differs (width,
 speed, landing), so a loop needs a bake per fall and repeats visibly, and the curtain already

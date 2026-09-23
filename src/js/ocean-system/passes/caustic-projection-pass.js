@@ -37,6 +37,24 @@
 
 ARestlessOcean.Passes = ARestlessOcean.Passes || {};
 
+//THE CAUSTIC MODEL'S NUMBERS, for a sibling that evaluates it outside our shaders: a-land's
+//terrain receives them through TerrainMaterial.setCaustics (a-land-water-contract §4,
+//water-caustics-receive) and runs the same math on the ground a submerged viewer looks at.
+//KEEP IN STEP with the CAUSTIC_* constants in water-shader.glsl's seabed branch; they are
+//the same model, written out twice because GLSL consts cannot be read from here.
+ARestlessOcean.CAUSTIC_MODEL = Object.freeze({
+  amplitude: 3.0,           //CAUSTIC_AMP
+  textureMean: 0.25,        //CAUSTIC_TEXTURE_MEAN
+  contrastDepthM: 8.0,      //CAUSTIC_CONTRAST_DEPTH
+  focusM: 0.25,             //CAUSTIC_FOCUS_M
+  baseUV: 0.3,              //CAUSTIC_BASE_UV
+  tilePerDepth: 0.65,       //CAUSTIC_TILE_PER_DEPTH
+  minTileM: 0.25,           //CAUSTIC_MIN_TILE_M, still water
+  minTileFlowingM: 1.0,     //CAUSTIC_MIN_TILE_M, $flowing_water
+  dispersionPerM: 0.0006,   //CAUSTIC_DISPERSION_PER_M
+  advectPeriodS: 2.0        //CAUSTIC_ADVECT_PERIOD, $flowing_water
+});
+
 ARestlessOcean.Passes.CausticProjectionPass = function(oceanGrid){
   this.oceanGrid = oceanGrid;
   this.renderer = oceanGrid.renderer;

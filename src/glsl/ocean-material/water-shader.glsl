@@ -1631,10 +1631,22 @@ void main(){
     //examples' near 0.1), not the half-float linear depth, whose steps are 3 cm by 50 m.
     //Positive where the ground is under the sheet, negative where the polygon offset
     //pulled the sheet in front of ground that is really above it.
+    //
+    //TWO RULES SINCE 2026-09-22 (Dante: "water popping in and out everywhere"). The fade
+    //used to run on that rendered thickness alone, and the rendered ground moves: terrain
+    //LOD morphs and material displacement shift it by centimetres as the camera moves, so
+    //every patch of 3-10 cm water blinked. Now:
+    //  - how MUCH water is here is a-land's baked depth (RT0.g, dryTestField.g), which does
+    //    not move with the view: the 3 cm -> 10 cm fade runs on it;
+    //  - the rendered thickness only GUARDS against ground that really comes up through the
+    //    sheet (displacement, a bump the bake did not have): 0.5 cm -> 3 cm, a band the
+    //    rendered ground crosses far less often than the old 3-10 cm one.
     const float FLOW_FADE_MIN_M = 0.03;
     const float FLOW_FADE_FULL_M = 0.10;
+    const float FLOW_GUARD_MIN_M = 0.005;
+    const float FLOW_GUARD_FULL_M = 0.03;
     float flowSheetThickness = 1000.0;
-    float flowThicknessAlpha = 1.0;
+    float flowThicknessAlpha = smoothstep(FLOW_FADE_MIN_M, FLOW_FADE_FULL_M, dryTestField.g);
     if(underwaterFactor < 0.5){
       vec2 flowGroundUV = gl_FragCoord.xy / screenResolution;
       float flowGroundRaw = texture2D(refractionDepthTexture, flowGroundUV).r;
@@ -1643,7 +1655,14 @@ void main(){
         vec4 flowGroundView = inverseProjectionMatrix * vec4(flowGroundUV * 2.0 - 1.0, flowGroundRaw * 2.0 - 1.0, 1.0);
         flowGroundView /= flowGroundView.w;
         flowSheetThickness = worldPosition.y - (inverseViewMatrix * flowGroundView).y;
-        flowThicknessAlpha = smoothstep(FLOW_FADE_MIN_M, FLOW_FADE_FULL_M, flowSheetThickness);
+        //Only while the view ray DESCENDS into the water: the ground behind the sheet along a
+        //rising ray (a camera below a sloped creek, looking up it) is higher than the sheet by
+        //construction, and the guard dropped the whole river until the camera climbed (Dante,
+        //2026-09-22). A ray that barely descends measures the far bed, not the one under this
+        //pixel, so it fades in over the first few degrees.
+        float flowRayDown = -normalize(worldPosition.xyz - cameraPosition.xyz).y;
+        flowThicknessAlpha *= mix(1.0, smoothstep(FLOW_GUARD_MIN_M, FLOW_GUARD_FULL_M, flowSheetThickness),
+                                  smoothstep(0.03, 0.12, flowRayDown));
       }
     }
     //$DEBUG_START$
@@ -1669,6 +1688,15 @@ void main(){
     if(flowFallOwn >= 0.998) discard;
   #else
     if(flowHandoffW >= 0.998) discard;
+    //BEYOND THE FLOWING WINDOW (2026-09-22: creeks z-fighting from above, far off). Past
+    //~228 m no flowing surface exists and this opaque surface draws the creek at its level,
+    //a few centimetres over a terrain the depth buffer cannot tell it apart from: 24-bit depth
+    //with the demos near of 0.1 resolves about z*z / (0.1 * 2^24), 15 cm at 500 m. Drop
+    //flowing water thinner than that (baked depth, never under the band cut of 6 cm).
+    if(flowHandoffW <= 0.002 && flowHandoffFieldWeightAt(worldPosition.xz) > 0.5){
+      float farCreekDist = distance(worldPosition.xyz, cameraPosition.xyz);
+      if(dryTestField.g < max(0.06, 6.0e-7 * farCreekDist * farCreekDist)) discard;
+    }
     //In the hand-off band this surface stands in for FLOWING water, so it keeps the
     //flowing surface's rule that thin water is not a surface. a-land wets a creek's slow
     //fringe with millimetres (hero-creek (548, 640): 3 mm); the flowing surface fades that
@@ -1677,14 +1705,19 @@ void main(){
     //2026-09-22, (546, 643)). Opaque, so no fade: it cuts at the middle of the flowing
     //surface's 3-10 cm ramp (the waterfall sheet's visibleDepth). Only in the band: lake and
     //sea shores keep drawing to the terrain's depth test as before.
+    //Since 2026-09-22 the flowing surface judges "how much water" by the baked depth; this
+    //keeps in step: under the middle of that ramp it is not a surface, whatever the view.
+    if(flowHandoffW > 0.002 && dryTestField.g < 0.06) discard;
     if(flowHandoffW > 0.002 && underwaterFactor < 0.5){
       vec2 stillGroundUV = gl_FragCoord.xy / screenResolution;
       float stillGroundRaw = texture2D(refractionDepthTexture, stillGroundUV).r;
       if(stillGroundRaw < 1.0){
         vec4 stillGroundView = inverseProjectionMatrix * vec4(stillGroundUV * 2.0 - 1.0, stillGroundRaw * 2.0 - 1.0, 1.0);
         stillGroundView /= stillGroundView.w;
-        const float STILL_BAND_MIN_THICKNESS_M = 0.06;
-        if(worldPosition.y - (inverseViewMatrix * stillGroundView).y < STILL_BAND_MIN_THICKNESS_M) discard;
+        const float STILL_BAND_MIN_THICKNESS_M = 0.02;   //the flowing guard's middle; depth decides above
+        //Descending rays only, as on the flowing surface (a rising ray reads the ground behind).
+        float stillRayDown = -normalize(worldPosition.xyz - cameraPosition.xyz).y;
+        if(stillRayDown > 0.08 && worldPosition.y - (inverseViewMatrix * stillGroundView).y < STILL_BAND_MIN_THICKNESS_M) discard;
       }
     }
   #endif
@@ -3601,13 +3634,16 @@ void main(){
     gl_FragColor = vec4(dbgRgb * dbgSpeed, 1.0);
   }
   else if(oceanShadowDebugMode == 66){
-    //Mode 66: rendered sheet thickness (surface minus G-buffer ground under the pixel),
-    //grey 0 to 0.5 m. Red = below FLOW_FADE_MIN_M (the sheet is dropped there), yellow
-    //= inside the fade band, blue = no ground under the pixel (deep).
-    vec3 dbgCol = vec3(clamp(flowSheetThickness / 0.5, 0.0, 1.0));
-    if(flowSheetThickness > 999.0) dbgCol = vec3(0.0, 0.2, 0.8);
-    else if(flowSheetThickness < FLOW_FADE_MIN_M) dbgCol = vec3(0.8, 0.0, 0.0);
-    else if(flowSheetThickness < FLOW_FADE_FULL_M) dbgCol = mix(vec3(0.9, 0.8, 0.0), dbgCol, flowThicknessAlpha);
+    //Mode 66: the two thin-water rules. Grey 0 to 0.5 m = the BAKED depth (RT0.g). Red =
+    //baked depth below FLOW_FADE_MIN_M (dropped), yellow = baked depth inside the 3-10 cm
+    //fade, magenta = the rendered ground comes up within FLOW_GUARD_FULL_M of the sheet
+    //(the guard fades it), blue = no ground under the pixel (deep).
+    float dbgBaked = dryTestField.g;
+    vec3 dbgCol = vec3(clamp(dbgBaked / 0.5, 0.0, 1.0));
+    if(dbgBaked < FLOW_FADE_MIN_M) dbgCol = vec3(0.8, 0.0, 0.0);
+    else if(dbgBaked < FLOW_FADE_FULL_M) dbgCol = mix(vec3(0.9, 0.8, 0.0), dbgCol, smoothstep(FLOW_FADE_MIN_M, FLOW_FADE_FULL_M, dbgBaked));
+    if(flowSheetThickness > 999.0) dbgCol = mix(dbgCol, vec3(0.0, 0.2, 0.8), 0.5);
+    else if(flowSheetThickness < FLOW_GUARD_FULL_M) dbgCol = mix(vec3(0.9, 0.0, 0.9), dbgCol, smoothstep(FLOW_GUARD_MIN_M, FLOW_GUARD_FULL_M, flowSheetThickness));
     gl_FragColor = vec4(dbgCol, 1.0);
   }
   #endif

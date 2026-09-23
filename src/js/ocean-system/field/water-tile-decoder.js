@@ -269,9 +269,67 @@ ARestlessOcean.WaterTileDecoder.prototype._load = function(lod, tileX, tileY, ke
         }
       }
     }
+    if(lod === 0) self._checkStaleBake(tileX, tileY, tiles[0].data, w, 0);
     //Tell the field to re-fill — see the onTileLoaded note in the constructor.
     if(self.onTileLoaded) self.onTileLoaded();
   })['catch'](function(){ self._cache.set(key, 'dry'); });
+};
+
+//STALE-BAKE CHECK. The water tiles are baked against one set of height tiles; edit the
+//terrain afterwards without re-running Solve Water and the rivers silently vanish
+//(island-sholes, 2026-09-22: the channels got smoothed shut on 09-19, the water bake
+//was from 09-18, and 99 % of the oval island's river texels sat ~1 m UNDER the ground,
+//so the thin-water rule dropped them — it looked like a rendering bug). Nothing in the
+//export says which height bake the water belongs to, so test it: every wet texel carries
+//its own bed height (level − depth), which must agree with the terrain we render.
+//Calibrated on both test worlds: a fresh bake (hero-creek) has 0-1 % of inland texels
+//off by > 0.5 m; the stale island-sholes tiles 64-96 %. Inland only (the ocean bed is
+//the deep-water clamp, not a carve) and never a saturated depth byte (bed unknown).
+//Warns once per world; heights must be resident at LOD 0, so it retries a few times.
+ARestlessOcean.WaterTileDecoder.STALE_BED_TOLERANCE = 0.5;   //m, |terrain − baked bed|
+ARestlessOcean.WaterTileDecoder.STALE_FRACTION = 0.5;
+ARestlessOcean.WaterTileDecoder.prototype._checkStaleBake = function(tileX, tileY, L, w, attempt){
+  if(this._staleWarned) return;
+  const self = this;
+  const dir = this.director;
+  if(typeof ALand === 'undefined' || !ALand.core || !ALand.core.tileMath || !dir || !dir.heightCache) return;
+  const span = this.spanForLod(0);
+  const cx = (tileX + 0.5) * span, cz = (tileY + 0.5) * span;
+  const hs = dir.heightSource;
+  const tp = hs ? ALand.core.tileMath.worldToTile(cx, cz, 0, hs.tileSize) : null;
+  if(!tp || !dir.heightCache.get(ALand.core.tileMath.tileId(0, tp.x, tp.y))){
+    //A coarser height LOD would smear narrow channels shut and read as stale.
+    if(attempt < 6) setTimeout(function(){ self._checkStaleBake(tileX, tileY, L, w, attempt + 1); }, 2000);
+    return;
+  }
+  const vr = ALand.core.heightEncoding(dir.mapJson);
+  const vScale = vr[1] - vr[0];
+  const maxDepth = this.sim.maxDepth || 60;
+  const inlandAbove = (this.sim.seaLevel || 0) + 0.5;
+  const tol = ARestlessOcean.WaterTileDecoder.STALE_BED_TOLERANCE;
+  let n = 0, off = 0, buried = 0;
+  for(let i = 0; i < w * w; ++i){
+    const o = i * 4, db = L[o + 3];
+    if(db === 0 || db === 255) continue;
+    const level = vr[0] + ((L[o] << 16) | (L[o + 1] << 8) | L[o + 2]) / 16777215 * vScale;
+    if(level < inlandAbove) continue;
+    const x = i % w, y = (i / w) | 0;
+    //Edge-aligned texels, texel 0 on the min edge (WaterReader.sampleTile's convention).
+    const ground = dir.getHeightAt(tileX * span + x / (w - 1) * span,
+                                   tileY * span + y / (w - 1) * span, NaN);
+    if(!(ground === ground)) continue;
+    const t = db / 255;
+    const bed = level - t * t * maxDepth;
+    ++n;
+    if(Math.abs(ground - bed) > tol) ++off;
+    if(ground > level) ++buried;
+  }
+  if(n < 16 || off / n <= ARestlessOcean.WaterTileDecoder.STALE_FRACTION) return;
+  this._staleWarned = true;
+  console.warn('[a-restless-ocean] water bake looks STALE vs the terrain: tile ' + tileX + '_' + tileY
+    + ', ' + Math.round(100 * off / n) + '% of ' + n + ' river texels disagree with the ground by > '
+    + tol + ' m (' + Math.round(100 * buried / n) + '% buried under it, so those rivers will not draw).'
+    + ' The terrain was edited after the water was solved: re-run Solve Water in a-land and save.');
 };
 
 ARestlessOcean.WaterTileDecoder.prototype.dispose = function(){

@@ -677,6 +677,11 @@ neither side wins silently."* Ordered by how soon we hit a wall without them.
    props and boats. Nearly free on their side.
 5. **`shoreline.fetchBake`** *(optional, Phase 3 quality)* — per-shore open-water exposure
    so surf amplitude follows geography. Absence means "use the ocean's own wind fetch".
+6. **Water-bake provenance** *(quality of life)* — stamp `simulation.heightBakeId` with the
+   id of the height bake the water was solved against. Today a terrain edit without a
+   re-solve silently buries the rivers (island-sholes 2026-09-22: 99 % of the oval island's
+   river texels ~1 m under smoothed-shut channels). a-water now detects this heuristically
+   (`WaterTileDecoder._checkStaleBake`, baked bed vs rendered ground); an id would make it exact.
 
 ### Corrections to the companion documents
 
