@@ -450,7 +450,61 @@ climbing the cliff base, C's mist a solid cloud, E's creek necking before the li
   D falls. The D8 solve itself takes 220 s at 2048 vs 8 s at 1024 (superlinear): a perf bug.
 - New check-falls-autolakes case 5: the sections carry Q (±25%). The old engine gives 37-41%.
 
-### ▶ RESUME HERE (2026-09-23, fall-site carve) — BUILT: the river owns its falls
+### ▶ RESUME HERE (2026-09-23, fall sites round 2) — one plunge, grabby sites, water over the lip
+
+a-land `fall-site-carve` c4b8c11 + the site.shoulder export. a-water needs no code change.
+
+**Dante's falls-lab bake** (5 shots) was diagnosed from the exported tiles (a `tiles.py` decoder in
+scratch) before anything changed:
+1. **Only 6 of the 13 falls carried a site.** The bake solves at 0.5 m on 1 m tiles, and a segment's
+   top sat 2.2 cells behind the lip, outside the two-cell match window. So C and D were the OLD trace.
+2. **C's "upwelling."** Over the flat approach the water stood 2.3 m deep, 7 m behind the lip,
+   rising downstream. My 6b reach slope stops at the lip, so Manning saw almost no slope.
+3. **B's "bump up."** Each pool is a lake at its spill level (the tread's bed), with the tread's water
+   0.2 m above it. The tread carried about 12% of Q to the lip.
+4. **A's "leaks."** The 12 m vertical gorge walls drew water on their tops at 1 m tile sampling.
+5. **The lip cell itself** was a 2 cm film: Manning measured on its own step.
+
+**Decisions (Dante):**
+- No limit on a fall's height.
+- Sites are grabbier: a longer approach, wider shoulders, the pool basin, and the cliff face.
+- Physics fix plus site water.
+
+**Built (a-land):**
+- `carveFallMaxStepM` 0: one plunge. Chutes are still fitted into steps.
+- The first approach is `carveFallApproachK`·W long (shortened to the plateau), ramping into the
+  creek at both ends.
+- Shoulders of max(1.5 m, 0.25 W).
+- The pool disc may be wider than the water.
+- A shaped band past the shoulders (cut and fill, capped) carries the face on straight.
+- Lips sit where the whole width holds them.
+- The cut cap counts the hill cut back past the lip.
+- `attachFallSites` matches in metres.
+- `run()`:
+  - `_brinkDrawdown` (gradually varied flow from 1.02·yc at each lip) caps depth upstream and
+    floors the lip cell;
+  - `_stampFallSiteWater` (stage 6c, `opts.fallSites`): each approach on the drawdown with
+    q = Q/W, each dug pool (the whole auto-lake and the wet width over its reach) at its next
+    tread's water.
+- Sites reach every re-solve (worker, inline, carve loop, Bake & Export).
+- check-fall-sites is rewritten for one plunge, plus the site-water case and case 9 (drawdown).
+  All 8 checks pass.
+
+**Offline, the bake emulated at 2048** (carve → 1 m tiles → 2048 → re-solve), then the a-water trace:
+- all 11 sites attached;
+- A 1×17.8 m, B 4 steps, C 1, D 2+1, E 1×11 m;
+- every fall carries 97-100% of Q in its sheet;
+- 97-100% of quads intact;
+- takeoff lines within 1-3 cm.
+
+The remaining floating edges at the falls are the lips themselves (the face below).
+
+**NEXT (Dante):**
+1. Solve Water, then **⌘S** (falls-lab's layers.json had NO Channels layer, last written 09-22),
+   then Bake & Export.
+2. Look at A-E.
+
+### (earlier) RESUME HERE (2026-09-23, fall-site carve) — BUILT: the river owns its falls
 
 Branches `fall-site-carve` in both repos. a-land's is the MAIN checkout, off `main`, which was
 fast-forwarded to the 6b steep-chutes commit.
