@@ -450,7 +450,68 @@ climbing the cliff base, C's mist a solid cloud, E's creek necking before the li
   D falls. The D8 solve itself takes 220 s at 2048 vs 8 s at 1024 (superlinear): a perf bug.
 - New check-falls-autolakes case 5: the sections carry Q (±25%). The old engine gives 37-41%.
 
-### ▶ RESUME HERE (2026-09-23) — DESIGN BRIEF: the river owns its falls (fall-site carve)
+### ▶ RESUME HERE (2026-09-23, fall-site carve) — BUILT: the river owns its falls
+
+Branches `fall-site-carve` in both repos. a-land's is the MAIN checkout, off `main`, which was
+fast-forwarded to the 6b steep-chutes commit.
+- **a-land:** 1d7929c (the 6b base), 49a1376, 6b9c437, 2424a6b.
+- **a-water:** 460b1a0, off `development` (fast-forwarded to 19e3ac6).
+
+Plan: `~/.claude/plans/pasted-content-id-75e0-new-session-jiggly-whistle.md`. No GLSL changed, so
+there is nothing to regenerate.
+
+**Dante's decisions:**
+- Steps are at most 8 m; pools are 0.3 × the drop; faces are vertical.
+- Sites are carved only when `carveChannels` is on.
+- A sheer face over 8 m becomes a gorge staircase, capped at `carveFallMaxCutM` 15 m of tread cut.
+- A sea landing gets a scour pool in the seabed with a sand rim ring (kept 0.3 m under sea level).
+
+**a-land (`WaterSolve.carveChannels` stage 1c, `_carveFallSites`):**
+- Each fall run (fall cells ∪ 1b's steep cells) becomes a site: level approach, straight lip on the
+  reach's chord, vertical face, equal steps, and a pool at each landing. On a chute, the most steps
+  whose treads hold landing + pool + approach win. Lake landings: the lake is the pool.
+- Sites override the discs in their footprint.
+- **Gorge rule:** lips move back only over creek whose ground holds the top tread; otherwise the site
+  is skipped (never drain a lake or pit behind).
+- **Staircases link:** a site whose lip is within 12 m below another's foot continues its cascade, and
+  its approach reaches back to that pool (not over a lake landing).
+- **`carveFallAxisSnapDeg` 6 (FUDGE):** a lip within 6° of an axis or diagonal is laid on it. That
+  avoids a one-cell jog, and the chord over a pool is only good to a few degrees.
+- **Plumbing:** sites persist in the Channels op payload. `_park` attaches them to segments
+  (`attachFallSites`); the Bake & Export re-solve reads them back from the payload (`rescaleFallSites`).
+  `save.js` exports `waterfalls[].site` (simulation 0.2.0). Editor ribbons for sited falls are mint.
+- **Tests:** new `tests/test-water/check-fall-sites.js` (8 cases, including the carve loop holding with
+  pools); check-carve 6 re-controlled. All 8 checks pass.
+
+**a-water (`waterfall-nappe.js`):**
+- `beginTrace` → `siteTrace` when the entry has a site: heading = normal, seeds on the approach
+  across the wet width, rail 0.
+- `N.chains` links by `site.cascade/step`, and later lead boxes are square to their own site.
+- Otherwise the old discovery path runs unchanged (the fallback).
+- `nappe-test.mjs`: 61/61 (7 new).
+- The contract §2 documents the site block.
+
+**Offline acceptance** (scratch `falls-carve.js` / `falls-trace.mjs` over `make_terrain.py --grid` into
+scratch, NOT the world). falls-lab at 1 m: 13 sites, all 13 segments attached.
+- A: 3×5.9 m gorge steps into the lake.
+- B: one 4-step cascade.
+- C: one 21 m lip, 41 strands all plunging, 22.8 of 27.4 m³/s. The discovered trace gave 23 strands
+  over 11 m, 18° off, with 5 nolip.
+- D: 2×6 m and 1×2.7 m.
+- E: 2×5.6 m, the second into a sea scour pool.
+- Takeoff lines sit within 2 cm along every lip, 0.2-0.5 m before it (the 1 m bilinear face ramp).
+- hero-creek: 1 site at (472, 765), attached; floating edges 0.5 → 0.8%.
+
+**NEXT (Dante):**
+1. Editor on falls-lab: Solve Water (the Channels layer now carries the sites), then Save, then Bake &
+   Export. `map.json` should show `simulation.version` 0.2.0 and a `site` on each fall. The console logs
+   "fall sites: N carved, M of K waterfalls drop over one".
+2. Look at A-E in `examples/demos/falls-lab-ocean.html`, then hero-creek and island-sholes.
+
+**Not done:** the headless browser pass (it needs the bake above), and island-sholes offline (no
+generator grid).
+
+### (earlier) RESUME HERE (2026-09-23) — DESIGN BRIEF: the river owns its falls (fall-site carve)
 
 **Status:** design agreed in principle with Dante, nothing built. It starts in a NEW session.
 The skirt work below is committed on a-water `phase-6b-waterfall-splash`.
