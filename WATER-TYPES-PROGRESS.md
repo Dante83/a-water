@@ -450,7 +450,44 @@ climbing the cliff base, C's mist a solid cloud, E's creek necking before the li
   D falls. The D8 solve itself takes 220 s at 2048 vs 8 s at 1024 (superlinear): a perf bug.
 - New check-falls-autolakes case 5: the sections carry Q (±25%). The old engine gives 37-41%.
 
-### ▶ RESUME HERE (2026-09-23, fall sites round 2) — one plunge, grabby sites, water over the lip
+### ▶ RESUME HERE (2026-09-23, fall sites round 3) — every step a sheet, whole curtains
+
+Commits: a-water f8bc9e3 (**GLSL: run create-shader.py**), a-land 452ccef.
+
+Dante's round-2 bake shots, each reproduced headless before a fix went in:
+1. **"Skipped" waterfalls on B and D**, draped creek on the faces. Chained by cascade, every strand
+   ended in the first pool. Now a carved fall is a chain of its own.
+2. **C's missing chunks.** Half the strands "plunged" 0.4 m under the lip into a 1 m water texel that
+   straddles the brink and holds the lip's level over the face. Now a sited strand's pool must lie
+   half the site's drop below its start, in both the airborne and the sliding plunge.
+3. **River behind A's sheet** (right side). The STILL/opaque water surface (not the flowing one; it
+   has no corridor uniforms) drew a lip-straddling texel's drape where the hand-off weight fell
+   short near the still pool. Now the still surface discards level steeper than tan 30° (4 water
+   field taps, no uniforms).
+4. **Foam on A's approach, cut off at the sheet.** FlowFoamPass now has calm boxes (MAX_CALM 8) over
+   each site's approach: no sources there, and foam decays toward the lip. a-land's site water
+   also calms approach energy to 0 at the lip and dries the shoulders (films were drawing as
+   shards).
+
+**Harness (scratch, rebuilt):**
+- `run.mjs`: CDP, `--use-angle=vulkan` on the 4090, per-view `js` hooks, `look` targets, and
+  `swap` (Fetch fulfils a scratch JS such as a regenerated water-shader.js).
+- `regen.py`: a byte-exact create-shader twin.
+- `tiles.py`: decodes the exported tiles.
+- `falls-carve.js` with BAKE=1: the 2048 bake emulated through the 1 m tiles.
+- `prof2.js`.
+
+**NEXT (Dante):**
+1. `create-shader.py`.
+2. falls-lab: Solve Water, **⌘S** (layers.json STILL has no Channels layer: last written 09-22),
+   then Bake & Export.
+3. Look at A-E. Only the a-land half (dry shoulders, calm approach energy) needs the rebake; the
+   a-water fixes act on the current bake.
+
+**Open:** small shards at the lip ends (C's corners, left of B's top step) were seen headless before
+the shoulder-drying fix, and are not re-checked on a new bake.
+
+### (earlier) RESUME HERE (2026-09-23, fall sites round 2) — one plunge, grabby sites, water over the lip
 
 a-land `fall-site-carve` c4b8c11 + the site.shoulder export. a-water needs no code change.
 
