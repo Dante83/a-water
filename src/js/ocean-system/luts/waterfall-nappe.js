@@ -443,7 +443,7 @@ ARestlessOcean.WaterfallNappe = {};
   //cut the ground at this fall into one shape: a flat approach, a straight lip level across,
   //square to the reach, a vertical face and a pool. So nothing is discovered: the heading is the
   //lip's normal, the seeds sit on the approach one line back from the lip, as wide as the wet
-  //width, and no rail is needed (the approach is flat and at least carveFallApproachM long).
+  //width, and the rail carries them to just short of the lip (see below).
   //The start rule, the lip-heading disc and the wet-span scan above stay for un-carved falls.
   function siteTrace(chain, env, o, t, Q){
     const last = chain[chain.length - 1], tl = N.siteOf(last) || t;
@@ -460,7 +460,11 @@ ARestlessOcean.WaterfallNappe = {};
     //the flat bed runs the whole wet width; the edge seeds sit half a spacing in from its ends,
     //where the bank starts to rise
     const span = Math.max(t.wetWidth - opt(o, 'strandSpacing'), opt(o, 'minWidth'));
-    return seedTrace(chain, env, o, {hx: hx, hz: hz, lx: lx, lz: lz, up: up, rail: 0.0,
+    //The strands ride the approach (the rail: carried along the heading on the creek's surface)
+    //to a metre short of the lip line, where the 1 m tiles' face ramp begins. Free to take off
+    //anywhere, slow water (1.4 m/s on falls-lab D's lower step) left 2 m early and flew flat over
+    //the last of the approach: a white slab jutting over the lip, the fall hanging behind it.
+    return seedTrace(chain, env, o, {hx: hx, hz: hz, lx: lx, lz: lz, up: up, rail: Math.max(0.0, up - 1.0),
                                       px: px, pz: pz, W: t.wetWidth, Q: t.discharge > 0 ? t.discharge : Q,
                                       span: span, spanOff: 0.0, skipDry: false, site: t});
   }
@@ -599,11 +603,13 @@ ARestlessOcean.WaterfallNappe = {};
     const maxTime = opt(o, 'maxTime'), maxPath = opt(o, 'maxPath');
     const detach = opt(o, 'detachMargin');
     const plungeDepth = opt(o, 'plungeDepth');
-    //A carved site's pool is a known drop below its lip: water met in the first half of that drop
-    //is the creek it just left, carried a texel past the brink by the 1 m water tiles (a 1 m
-    //texel half on the lip holds the lip's level over the face). There half of falls-lab C's
-    //strands "plunged" 0.4 m under the lip and drew nothing (Dante's missing chunks, 2026-09-23).
+    //A carved site says where its pool stands (site.pool.centre[1]: the dug pool's water, the
+    //lake's or the sea's level): water met above it is the creek it just left, carried a texel
+    //past the brink by the 1 m water tiles (a 1 m texel half on the lip holds the lip's level
+    //over the face). There half of falls-lab C's strands "plunged" 0.4 m under the lip, and D's
+    //middle strands 1.2 m under it, and drew nothing (holes in the sheet, 2026-09-23).
     const plungeFall = job.site ? Math.max(opt(o, 'plungeMinFall'), 0.5 * (job.site.drop || 0)) : opt(o, 'plungeMinFall');
+    const sitePool = job.site && job.site.pool && job.site.pool.centre ? job.site.pool.centre[1] + 0.5 : Infinity;
     const minImpact = opt(o, 'minImpactSpeed');
     const steep = opt(o, 'chuteSlope'), gentle = opt(o, 'gentleSlope');
 
@@ -639,7 +645,7 @@ ARestlessOcean.WaterfallNappe = {};
         const level = w ? g2 + w.depth : -Infinity;
         //A pool only counts once the jet has really fallen: water right at a lip is
         //the creek it just left.
-        if(isPool(w, o) && py <= level && (takeoffY - py) > plungeFall){
+        if(isPool(w, o) && py <= level && (takeoffY - py) > plungeFall && level <= sitePool){
           //Into a pool: the impact is where the jet crosses its surface.
           if(!plunge){
             plunge = {x: px, y: level, z: pz, vx: vx, vy: vy, vz: vz, nx: 0, ny: 1, nz: 0, vn: -vy, level: level, w: 1.0};
@@ -848,7 +854,7 @@ ARestlessOcean.WaterfallNappe = {};
         //Gated on having come down something, so the deep creek above a lip is not a pool.
         const w = waterHere(env, px, pz);
         //(At a carved site, only the pool the site's drop leads to: see plungeFall.)
-        if(everAirborneOrSteep && isPool(w, o) && (!job.site || startY - py > plungeFall)){
+        if(everAirborneOrSteep && isPool(w, o) && (!job.site || (startY - py > plungeFall && gb + w.depth <= sitePool))){
           const level = gb + w.depth;
           //Only the first plunge is THE plunge: a jet that dove into a pool and was carried back
           //out over its shallow edge (the airborne branch's touchdown) is still that pool's water.
@@ -951,6 +957,23 @@ ARestlessOcean.WaterfallNappe = {};
                    hx: job.hx, hz: job.hz};
     nappe.impacts = clusterImpacts(nappe, o);
     N.buildCorridors(nappe, o);
+    //A carved fall: the creek's level runs down the face over a 1 m texel or two past where a
+    //slow sheet lands (0.8 m out off falls-lab D's 2.4 m step), so the corridor reaches at least
+    //landing + 2 m past the lip. Short of that the creek's whitewater stand-in drew a second fall
+    //inside the sheet (Dante's "falls within falls", B and D, 2026-09-23).
+    const t = N.siteOf(nappe.chain[0]);
+    if(t && nappe.corridors.length){
+      const nl = Math.hypot(t.normal[0], t.normal[1]) || 1.0, nx = t.normal[0] / nl, nz = t.normal[1] / nl;
+      const cx = 0.5 * (t.lip[0][0] + t.lip[1][0]), cz = 0.5 * (t.lip[0][2] + t.lip[1][2]);
+      const reach = (t.landing || 0) + 2.0;
+      const last = nappe.corridors[nappe.corridors.length - 1];
+      const endS = (last.bx - cx) * nx + (last.bz - cz) * nz;
+      if(endS < reach){
+        const r = Math.max(last.r, 0.5 * t.wetWidth + 1.0);
+        nappe.corridors.push({ax: cx + nx * Math.max(endS, 0), az: cz + nz * Math.max(endS, 0),
+                              bx: cx + nx * reach, bz: cz + nz * reach, r: r, lead: 0.0});
+      }
+    }
     return nappe;
   }
 

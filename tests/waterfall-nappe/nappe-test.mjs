@@ -325,7 +325,7 @@ const siteFrame = (nx, nz) => ({s: (x,z) => x * nx + z * nz, t: (x,z) => x * nz 
   const job = N.beginTrace([fall], env);
   check('site: heading is the lip normal exactly', Math.abs(job.hx - nx) < 1e-9 && Math.abs(job.hz - nz) < 1e-9, 'h '+job.hx.toFixed(4)+','+job.hz.toFixed(4));
   const seeds = job.seeds.filter(Boolean), ss = seeds.map(q => F.s(q.x, q.z)), ts = seeds.map(q => F.t(q.x, q.z));
-  check('site: the seeds are one line on the approach, no rail', job.rail === 0 && Math.max(...ss.map(v => Math.abs(v + job.up))) < 1e-9,
+  check('site: the seeds are one line on the approach, railed to a metre short of the lip', Math.abs(job.rail - Math.max(0, job.up - 1)) < 1e-9 && Math.max(...ss.map(v => Math.abs(v + job.up))) < 1e-9,
         'up '+f2(job.up)+' rail '+job.rail);
   check('site: ...as wide as the wet width', Math.abs(Math.max(...ts) - Math.min(...ts) - (2 * hw - 0.5)) < 0.01 && job.W === 2 * hw && job.Q === 4.8,
         'span '+f2(Math.max(...ts) - Math.min(...ts))+' W '+job.W+' Q '+job.Q);
