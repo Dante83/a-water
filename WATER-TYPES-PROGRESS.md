@@ -450,7 +450,29 @@ climbing the cliff base, C's mist a solid cloud, E's creek necking before the li
   D falls. The D8 solve itself takes 220 s at 2048 vs 8 s at 1024 (superlinear): a perf bug.
 - New check-falls-autolakes case 5: the sections carry Q (±25%). The old engine gives 37-41%.
 
-### ▶ RESUME HERE (2026-09-23, fall sites round 3) — every step a sheet, whole curtains
+### ▶ RESUME HERE (2026-09-23, fall sites round 4) — the straddling texel, falls within falls
+
+Commits: a-land 56e8321, a-water 68dd6d5 (plus 330139b, Dante's regen of round 3). No GLSL this
+round.
+
+Dante's round-3 bake shots, reproduced headless at his camera positions:
+- **A's brink band ("sea foam").** The flowing surface drew the 1 m texel straddling the lip (lip
+  level held half a texel over the face). Root fix in a-land's export: texels straddling a carved
+  lip (across wet width + shoulders) are DRY. The same texel was behind A's strip, C's false
+  plunges and the floating tile at the lip corner. check-export has a new case.
+- **"Falls within falls" (B, D).** The corridor ended where a slow sheet lands (0.8 m out), and the
+  creek's whitewater stand-in drew a fall past it. Sited corridors now reach landing + 2 m.
+- **Hole in D's lower sheet.** Middle strands plunged into the lip texel 1.2 m up. Sited strands
+  now plunge only into water at or below site.pool level + 0.5.
+- **White slab over D's lower lip.** Slow water took off 2 m early. Sited strands now ride the rail
+  to a metre short of the lip line.
+
+**NEXT (Dante):**
+1. Solve Water, then Bake & Export (the export fix acts on the tiles).
+2. Look at A (the brink band and the corner tile), and at A's side seam, which was not reproduced
+   headless.
+
+### (earlier) RESUME HERE (2026-09-23, fall sites round 3) — every step a sheet, whole curtains
 
 Commits: a-water f8bc9e3 (**GLSL: run create-shader.py**), a-land 452ccef.
 
