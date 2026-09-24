@@ -967,6 +967,16 @@ ARestlessOcean.WaterfallNappe = {};
       const cx = 0.5 * (t.lip[0][0] + t.lip[1][0]), cz = 0.5 * (t.lip[0][2] + t.lip[1][2]);
       const reach = (t.landing || 0) + 2.0;
       const last = nappe.corridors[nappe.corridors.length - 1];
+      //...and from the takeoff to half a metre past the lip line the sheet owns the surface
+      //outright: the creek's last row there is flat, so the level-slope rule kept drawing it, and
+      //its end (cut at the dry lip texels along the mesh's diagonals) showed as a row of teeth in
+      //front of the sheet (Dante, falls-lab B, 2026-09-23).
+      const leadBox = nappe.corridors.find(function(b){ return b.lead > 0.05; });
+      if(leadBox){
+        const s0 = (leadBox.bx - cx) * nx + (leadBox.bz - cz) * nz;
+        if(s0 < 0.5) nappe.corridors.push({ax: leadBox.bx, az: leadBox.bz, bx: cx + nx * 0.5, bz: cz + nz * 0.5,
+                                           r: Math.max(leadBox.r, 0.5 * t.wetWidth + 1.0), lead: 0.01});
+      }
       const endS = (last.bx - cx) * nx + (last.bz - cz) * nz;
       if(endS < reach){
         const r = Math.max(last.r, 0.5 * t.wetWidth + 1.0);
