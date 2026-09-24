@@ -450,7 +450,31 @@ climbing the cliff base, C's mist a solid cloud, E's creek necking before the li
   D falls. The D8 solve itself takes 220 s at 2048 vs 8 s at 1024 (superlinear): a perf bug.
 - New check-falls-autolakes case 5: the sections carry Q (±25%). The old engine gives 37-41%.
 
-### ▶ RESUME HERE (2026-09-23, fall sites round 4) — the straddling texel, falls within falls
+### ▶ RESUME HERE (2026-09-23, fall sites round 5) — stadium pools, dry faces
+
+Commits: a-land 115234b, a-water def2213. No GLSL. **Needs Solve Water + Bake & Export.**
+
+Dante's round-4 shots (6), reproduced headless at his camera positions:
+- **Base clipping (B i22, D i32).** The dug pool was a disc, and a sheet's edges landed on
+  tread-level rock in front of the face. The pool is now a STADIUM across the whole wet width.
+- **C's lopsided foam (i28).** The bowl lake is narrower than the 21 m curtain. A lake is the pool
+  now only where it takes all 5 samples along the landing line; otherwise the site digs a pool that
+  runs into it at the lake's level.
+- **"Chunk of lake floating in the sky" (i30), and A's foot.** Face cells past the lip kept the D8
+  fall water (1.8-2.2 m on the rock under a 1 m texel). Site water now dries the face (past the lip,
+  over its reach; everywhere that is neither pool nor body). Offline: 0 cells stand > 0.6 m over the
+  pool on any face.
+- **Sheet/creek interface.** A box from takeoff to lip + 0.5 m where the sheet owns the surface
+  outright.
+
+**Open** (Dante: "perfect is the enemy of the good"):
+- **Teeth where the sheet's lead rows meet the creek (i26).** They are in the SHEET's complement
+  cross-dissolve (they stay with the creek hidden). Every strand's first row starts on one line
+  (z 330, presence 1), so it is the per-pixel complement, not the geometry.
+- **B i24's "white surrounded by blue".** Aeration grows with drop, so a 3 m step stays mostly
+  glassy at its top and edges. A look knob, not a bug.
+
+### (earlier) RESUME HERE (2026-09-23, fall sites round 4) — the straddling texel, falls within falls
 
 Commits: a-land 56e8321, a-water 68dd6d5 (plus 330139b, Dante's regen of round 3). No GLSL this
 round.
