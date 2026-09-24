@@ -973,8 +973,10 @@ ARestlessOcean.WaterfallNappe = {};
       //front of the sheet (Dante, falls-lab B, 2026-09-23).
       const leadBox = nappe.corridors.find(function(b){ return b.lead > 0.05; });
       if(leadBox){
+        //along the lip's normal through its centre: from the spine's takeoff (the spine can sit
+        //metres off-centre) it made a skewed box that ate a parallelogram out of the approach
         const s0 = (leadBox.bx - cx) * nx + (leadBox.bz - cz) * nz;
-        if(s0 < 0.5) nappe.corridors.push({ax: leadBox.bx, az: leadBox.bz, bx: cx + nx * 0.5, bz: cz + nz * 0.5,
+        if(s0 < 0.5) nappe.corridors.push({ax: cx + nx * s0, az: cz + nz * s0, bx: cx + nx * 0.5, bz: cz + nz * 0.5,
                                            r: Math.max(leadBox.r, 0.5 * t.wetWidth + 1.0), lead: 0.01});
       }
       const endS = (last.bx - cx) * nx + (last.bz - cz) * nz;
