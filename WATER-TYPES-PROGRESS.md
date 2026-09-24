@@ -450,7 +450,24 @@ climbing the cliff base, C's mist a solid cloud, E's creek necking before the li
   D falls. The D8 solve itself takes 220 s at 2048 vs 8 s at 1024 (superlinear): a perf bug.
 - New check-falls-autolakes case 5: the sections carry Q (±25%). The old engine gives 37-41%.
 
-### ▶ RESUME HERE (2026-09-23, fall sites round 5) — stadium pools, dry faces
+### ▶ RESUME HERE (2026-09-23, fall sites round 6) — last polish before switching projects
+
+Commits: a-land 3105c0a, a-water 1597900. **Needs Solve Water + Bake & Export** for the a-land half.
+
+Three fixes:
+- **B's "giant polygon."** Round 5's takeoff-to-lip strip box ran from the SPINE's takeoff (2.4 m
+  off-centre) to the lip centre: a skewed box that ate a parallelogram of creek. It now runs along
+  the lip normal.
+- **D's lower pool cut off from the creek.** The round-5 face-drying also dried the pool's
+  downstream rim. It now dries only between the lip and the landing. Offline, the pool (26.39 m)
+  runs on into the creek (26.40 m, then down).
+- **Floating pond beside D's upper pool.** The stadium's round ends dug into the shaped band. The
+  pool is now no wider than the water plus half a shoulder, in both the carve and the site water.
+
+**State:** Dante suggested switching projects soon. The known seams left are the sheet-lead
+complement teeth (i26, partly gone with the strip fix) and short-step aeration.
+
+### (earlier) RESUME HERE (2026-09-23, fall sites round 5) — stadium pools, dry faces
 
 Commits: a-land 115234b, a-water def2213. No GLSL. **Needs Solve Water + Bake & Export.**
 
