@@ -147,6 +147,14 @@ Knobs on `ALand.runtime.waterCaustics`: `shimmer`, `shimmerStrength` 0.25, `shim
 `shimmerReachM` 8, `shimmerShadowRadiusM` 12 (`shimmerGain/LobeScale/MinSlope` are gone). a-water's
 `slopeVariance` is still sent and now unused (kept for a baked water view).
 Verified: compile page on the 4090, all variants link, the bake reads back 1/0 on both channels.
+**Round 2 (Dante):** (1) "doesn't follow the camera past the first island": the code does follow
+(cascade 0 re-centres every metre, `water-field-pass.js:672`; the bake reads the centre live and
+publishes its frame), so the likely cause is (2): the glow landed on sunlit horizontal shore, where it
+is invisible, and only read on the first island's shaded cliffs. Check if it persists:
+`sharedWaterUniforms().caustics.u_waterLightFrame.value` should track the camera. (2) FIXED (a-land):
+view factor `(1 − N.y)/2` of the water plane below, ×2, weighted by facing toward or away from the
+water along the shoreSDF gradient (the span's lookup is now `alandCausticShoreAt` → (dist, grad)).
+Flat ground and beaches get none; sea-facing cliffs and overhangs get it all.
 **Future (Dante's idea):** an authored a-land editor "caustic light", like a point light that casts
 the caustic onto terrain, for placed water features.
 
