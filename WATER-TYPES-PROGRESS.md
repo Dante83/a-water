@@ -129,6 +129,23 @@ sun, a rock face or bank beside the water: dappled shimmer (view 12); none on fl
 where the reflecting water is shaded. Suspects if wrong: shimmer too faint at a high sun is
 PHYSICAL (2%); the object field lookup ends at 256 m (cascade 0).
 
+### 9b round 2 (2026-09-25): the shimmer is physical, so noon is invisible; a shoreline bug
+
+Dante on island-sholes-sky near midday: shimmer only appears at `shimmerGain` 1000, on one rock,
+never below the damp line. Two causes:
+- **Physics, correct:** at a 65° sun F ≈ 0.02, and the reflected ray climbs at 65°, so
+  `dot(N, −dR)` is ~0.05 on a near-vertical face: ~0.1% of the sun. At a 10° sun F ≈ 0.4 and the
+  ray is nearly horizontal: ~100× more. **Dante chose to stay physical and judge it at a low
+  sun** (not a look gain, and not a projected caustic band; that stays available as a separate
+  flagged term if wanted later).
+- **Bug, fixed (a-land 2nd commit, needs regen):** the water test at the reflecting point
+  (`smoothstep(-0.5, 0.5, shoreSDF)`) called the first half-metre-plus beside a steep rock dry
+  (the field's shoreline sits half way between 1 m texel centres), and for low points the
+  reflecting point is that close (h / tan(elev)). Now `smoothstep(-1.5, 0, sdf)`, both sides.
+- Reflection no longer disperses (one grey tap per octave).
+- Not Jerlov-shaded, by design: reflected light never enters the water. Only F and the sun's
+  visibility at the water point dim it.
+
 ### 9a round 4 (2026-09-25): both fixes live, "my land feels alive for the first time"; damp tail
 
 The round-3 "not taking effect" was a regen run in the wrong folder (a-land's create-shader.py
