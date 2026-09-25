@@ -129,7 +129,30 @@ sun, a rock face or bank beside the water: dappled shimmer (view 12); none on fl
 where the reflecting water is shaded. Suspects if wrong: shimmer too faint at a high sun is
 PHYSICAL (2%); the object field lookup ends at 256 m (cascade 0).
 
-### ▶ RESUME HERE — 9b.3 (2026-09-25): the WATER GLOW replaces the physical shimmer
+### ▶ RESUME HERE — PAUSED on an a-starry-sky sun-direction bug (2026-09-25)
+
+**Paused at Dante's request while he works in A-Starry-Sky. Do not edit A-Starry-Sky from here.**
+
+The water glow "races" with the camera. Cause, verified in A-Starry-Sky: `LightingManager.js` puts
+the sun light at `RADIUS_OF_SKY (5000) × sunDir` around the WORLD ORIGIN (`:591-593`, `:524-526`),
+adds it to the scene root (`:40`), and makes its target THE CAMERA (`:23`). Every
+`target − position` sun direction is therefore off by up to ~asin(|camera.xz| / 5000): about 36° at
+island-sholes' (1537, 2522), and it swings as the camera moves. The glow places its pattern at
+`h / tan(elevation)` metres along that direction, so at sunset it slides metres per step.
+**It isn't only the glow:** three.js's own direct sun and shadows on a-land terrain and objects, and
+every a-water sun term (`ocean-grid.js:1978, 2196, 2415, 2615`, `caustic-projection-pass.js:306`,
+`ocean-shadow-pass.js:66`) use `position − target`.
+Proposed fix (Dante to choose, in A-Starry-Sky): place the light at `camera + 5000 × sunDir` each frame
+(target stays the camera), so every consumer gets the exact direction. Alternative: a-water-only
+workaround `−normalize(position)` (leaves three's own terrain/object sun skewed).
+
+Glow state before the pause (a-land `f922a43`, needs regen): the wet-strip cutoff is removed (it glows
+down to the troughs); strength follows the sun's height, `shimmerStrength` 1.5 (30°+) →
+`shimmerStrengthLowSun` 2.0 (5°), Dante's tuning; `shimmerPatternDepthM` 5 (cells as the underwater
+caustic at 5 m; the size caps at ~3.3 m); debug views 12 (glow ×20) and 13 (factors: sunlit / falloff / facing).
+Still to settle with Dante: default `shimmerFalloffM` / `shimmerReachM` / `shimmerShadowRadiusM`.
+
+### 9b.3 (2026-09-25): the WATER GLOW replaces the physical shimmer
 
 Dante on 9b.2: "the areas that are lit are so well lit you can't even see it". Physics agrees:
 the rough mirror's mean is ~2% of the sun at 14:00, lost under direct light; the physical effect
