@@ -129,7 +129,28 @@ sun, a rock face or bank beside the water: dappled shimmer (view 12); none on fl
 where the reflecting water is shaded. Suspects if wrong: shimmer too faint at a high sun is
 PHYSICAL (2%); the object field lookup ends at 256 m (cascade 0).
 
-### ▶ RESUME HERE — 9b.2 (2026-09-25): the water as a light source, a ROUGH mirror
+### ▶ RESUME HERE — 9b.3 (2026-09-25): the WATER GLOW replaces the physical shimmer
+
+Dante on 9b.2: "the areas that are lit are so well lit you can't even see it". Physics agrees:
+the rough mirror's mean is ~2% of the sun at 14:00, lost under direct light; the physical effect
+is only worthwhile in shade. His spec, now built (a-land, needs regen): a GI-style fake for shade
+near water. `alandShimmer` is now a **look term** (flagged in the shader):
+- falloff `1/(1+(r/r0)²)` in the 3D distance r to the water (height above the still level, distance
+  from the shore): 1 at the waterline;
+- occlusion = the SUNLIT FRACTION of the water within `shimmerShadowRadiusM` (12 m), from the
+  WaterLightField mips (now RG: sunlit water, water; R/G is exact even in half-shore patches). A
+  mountain's shadow on the water kills it, a tree's barely dents it;
+- the grey caustic pattern, projected along the sun's mirror direction (no vertical streaks), moving
+  on the water's clock;
+- strength `shimmerStrength` (0.25 of the sun) × falloff × sunlit fraction; additive, so it reads in shade.
+Knobs on `ALand.runtime.waterCaustics`: `shimmer`, `shimmerStrength` 0.25, `shimmerFalloffM` 1.5,
+`shimmerReachM` 8, `shimmerShadowRadiusM` 12 (`shimmerGain/LobeScale/MinSlope` are gone). a-water's
+`slopeVariance` is still sent and now unused (kept for a baked water view).
+Verified: compile page on the 4090, all variants link, the bake reads back 1/0 on both channels.
+**Future (Dante's idea):** an authored a-land editor "caustic light", like a point light that casts
+the caustic onto terrain, for placed water features.
+
+### (superseded by 9b.3) 9b.2 (2026-09-25): the water as a light source, a ROUGH mirror
 
 Dante: the flat-mirror shimmer "reads too sharp and is invisible in any shaded areas, even though
 those might be in range of a secondary bounce". Right: a choppy sea throws the sun into a lobe
