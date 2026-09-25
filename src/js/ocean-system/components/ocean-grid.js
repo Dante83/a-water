@@ -2201,8 +2201,19 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         const cf = self.waterFlowAt(self.globalCameraPosition.x, self.globalCameraPosition.z, self._causticFlowScratch);
         self._causticFlowScratch = cf;
         const inCreek = cf.flowWeight > 0.5;
+        //The sea's wave-slope variance (slope²): the width of the reflected sun's lobe, for a-land's
+        //shimmer. The per-cascade σ² the horizon roughness uses, scaled by the height multiplier²
+        //(ocean-height-band-library.js computeCascadeSlopeVariance).
+        let slopeVariance = 0.0;
+        const rms = self.oceanHeightBandLibrary && self.oceanHeightBandLibrary.cascadeRMSSlope;
+        if(rms){
+          const hm = self.oceanHeightComposer ? self.oceanHeightComposer.waveHeightMultiplier : 1.0;
+          for(let i = 0; i < rms.length; i++) slopeVariance += rms[i];
+          slopeVariance *= hm * hm;
+        }
         ALand.runtime.TerrainMaterial.setCaustics({
           map: self.causticMap,
+          slopeVariance: slopeVariance,
           time: time * 0.001,
           intensity: self.causticsStrength,
           sunDir: d,

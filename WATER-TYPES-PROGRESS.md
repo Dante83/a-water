@@ -129,6 +129,39 @@ sun, a rock face or bank beside the water: dappled shimmer (view 12); none on fl
 where the reflecting water is shaded. Suspects if wrong: shimmer too faint at a high sun is
 PHYSICAL (2%); the object field lookup ends at 256 m (cascade 0).
 
+### ▶ RESUME HERE — 9b.2 (2026-09-25): the water as a light source, a ROUGH mirror
+
+Dante: the flat-mirror shimmer "reads too sharp and is invisible in any shaded areas, even though
+those might be in range of a secondary bounce". Right: a choppy sea throws the sun into a lobe
+(half-angle ≈ atan(2σ)), so a receiver gathers sunlit water from a patch around the mirror point.
+a-land's probes can't supply it (LightBake bakes static lights only; sun and sky are real-time,
+the sky only as `skyVis`), so it is a runtime field. Plan: `~/.claude/plans/validated-rolling-pretzel.md`.
+**Needs Dante: a-land regen.** a-water: JS only.
+
+- **a-water:** `setCaustics` carries `slopeVariance` = Σ `cascadeRMSSlope` × `waveHeightMultiplier²`.
+- **a-land `ALand.runtime.WaterLightField`** (inside ObjectMaterial.js's closure: it needs `SUN_GLSL`
+  and the bus, and no page needs a new script tag). A 512² R16F top-down map over field cascade 0,
+  texel = `water (texel of slack) × horizonShadow × objects' sun shadow` at the still level, mip-mapped,
+  baked every frame by `land-terrain._tickWaterLight` while caustics are handed over and the viewer is
+  above water. Published as `u_waterLight` + `u_waterLightFrame` (the frame recorded AT BAKE TIME, so
+  tick order can't put the map one cascade snap off).
+- **`alandShimmer` now gathers:** footprint `r = t·tan θ / max(dR.y, 0.2)` → one `textureLod` at the
+  matching mip; facing softened by sin θ (no hard cutoff line); caustic contrast × `exp(−r/tile)` (crisp
+  just above the water, a glow higher up). Energy-consistent with the flat mirror over uniformly lit
+  water, so `shimmerGain` 1 is still physical. New knobs: `shimmerLobeScale` (1; **0 = the old flat
+  mirror, for A/B**), `shimmerMinSlope` (0.05, calm lakes and creeks). `alandCausticWaterAt` /
+  `alandCausticSunVisAt` removed from the span (the map does that work now).
+- Budget: terrain 18 lit / 19 editor, armed objects 7, the bake 3 (4090 limit 32).
+- Verified on the 4090 (compile page): every variant links, and a synthetic 16² field (water left, land
+  right) bakes to **1.000 / 0.000** read back. splat-index, layer-lifecycle, project-file pass. **Not
+  seen rendered.**
+
+What to look at: island-sholes-sky, view 12 and lit, at 14:00 and at a low sun. A shaded rock face looking
+onto sunlit water should now glow softly; crisp ripples just above the waterline, softer higher up; no
+hard line. Physics still says a noon shimmer is faint (F ≈ 2%).
+Deferred: a baked "water view" (the `skyVis` analogue) if light visibly leaks behind rocks (the gather
+can't see an occluder between the water and the receiver).
+
 ### 9b round 2 (2026-09-25): the shimmer is physical, so noon is invisible; a shoreline bug
 
 Dante on island-sholes-sky near midday: shimmer only appears at `shimmerGain` 1000, on one rock,
