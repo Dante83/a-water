@@ -5,11 +5,13 @@
 ARestlessOcean.OCEAN_CONFIG_ELEMENTS['ocean-caustics'] = {
   'enabled':  'caustics_enabled',
   'strength': 'caustics_strength',
-  'map':      'caustics_map'
+  'map':      'caustics_map',
+  'projector': 'caustics_projector'
 };
 
 Object.assign(ARestlessOcean.OCEAN_CONFIG_VALUE_TAGS, {
   'ocean-caustics-enabled':  'caustics_enabled',
   'ocean-caustics-strength': 'caustics_strength',
-  'ocean-caustics-map':      'caustics_map'
+  'ocean-caustics-map':      'caustics_map',
+  'ocean-caustics-projector': 'caustics_projector'
 });

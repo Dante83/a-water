@@ -247,6 +247,20 @@ ARestlessOcean.Passes.CausticProjectionPass.prototype.foreignExposureCompensatio
 ARestlessOcean.Passes.CausticProjectionPass.prototype.tick = function(ctx){
   const grid = this.oceanGrid;
   const light = this.light;
+  //STOOD DOWN ENTIRELY (ctx.enabled false): a sibling owns the caustics on everything it shades
+  //(a-faraway-land, WATER-TYPES Phase 9b), or <ocean-caustics projector="off">. Not parked but
+  //REMOVED: a parked light still costs every lit program a spotShadowMap and a spotLightMap unit
+  //and a shadow depth pass a frame. Removing it recompiles lit materials ONCE (the light count
+  //changes), which is at load, when the sibling is discovered, never per waterline crossing.
+  if(ctx.enabled === false){
+    if(this._lightAdded && this.scene){
+      this.scene.remove(light);
+      this.scene.remove(light.target);
+      this._lightAdded = false;
+    }
+    light.intensity = 0.0;
+    return;
+  }
   //Scene isn't available at construction — add the projector + its target
   //once, on the first tick that has a scene.
   if(!this._lightAdded && this.scene){

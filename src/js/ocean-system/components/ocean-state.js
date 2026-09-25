@@ -59,6 +59,10 @@ AFRAME.registerComponent('ocean-state', {
     'foam_camera_height': {type: 'number', default: 100.0},
     'caustics_enabled': {type: 'bool', default: true},
     'caustics_strength': {type: 'number', default: 1.0},
+    //The underwater SpotLight projector: 'auto' stands it down (removed from the scene, which
+    //frees two texture units in every lit program) when a-faraway-land advertises its own
+    //caustics (ALand.runtime.waterCaustics); 'on' forces it; 'off' never casts it.
+    'caustics_projector': {type: 'string', default: 'auto', oneOf: ['auto', 'on', 'off']},
     'foam_enabled': {type: 'bool', default: true},
     'foam_start': {type: 'number', default: 0.10},
     //Jerlov water type preset selector. 0 = custom (use the explicit

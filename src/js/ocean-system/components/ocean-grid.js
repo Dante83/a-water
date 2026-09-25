@@ -67,6 +67,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.heightOffset = data.height_offset;
   this.causticsEnabled = data.caustics_enabled;
   this.causticsStrength = data.caustics_strength;
+  this.causticsProjector = data.caustics_projector || 'auto';   //'auto' | 'on' | 'off', see ocean-state
   this.reflectionScale = data.reflection_scale;
   this.reflectionDistanceFalloff = data.reflection_distance_falloff;
   //SSR march step cap (live-tunable via window.setSsrMaxSteps). 48 = original
@@ -1908,16 +1909,25 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         causticFlowKeep = 1.0 - cf.flowWeight * ARestlessOcean.FlowHandoff.windowFade(
           self.globalCameraPosition.x, self.globalCameraPosition.z, self._flowHandoffState);
       }
-      //a-land's terrain takes its caustics from its own socket (setCaustics, in the underwater
-      //fog block below), which works under any body and rides a creek's current. The cookie
-      //would land on the same ground a second time, so it stands down (intensity 0, not
-      //removed: removing a light recompiles every lit material).
+      //a-land's terrain takes its caustics from its own socket (setCaustics, published below),
+      //which works under any body and rides a creek's current, so the cookie would land on the
+      //same ground a second time. An a-land that ALSO advertises ALand.runtime.waterCaustics
+      //(Phase 9b: it owns the caustics on its objects too) gets the projector REMOVED, which
+      //frees two texture units in every lit program; an older a-land with only the terrain
+      //socket keeps the old stand-down (intensity 0, parked). <ocean-caustics projector="on">
+      //overrides both; "off" removes it with or without a sibling.
       const landCausticSocket = !!(self._landTerrainApi && typeof ALand !== 'undefined'
         && ALand.runtime && ALand.runtime.TerrainMaterial && ALand.runtime.TerrainMaterial.setCaustics);
+      const landOwnsCaustics = landCausticSocket && !!(ALand.runtime.waterCaustics
+        && ALand.runtime.waterCaustics.version >= 1);
+      const projMode = self.causticsProjector;
+      const projectorEnabled = projMode === 'on' || (projMode !== 'off' && !landOwnsCaustics);
+      const projectorStandDown = projMode !== 'on' && landCausticSocket;
       self.causticProjectionPass.tick({
+        enabled: projectorEnabled,
         time: time,
         waterSurfaceY: waterSurfaceY,
-        underwaterFactor: landCausticSocket ? 0.0 : underwaterFactor * causticFlowKeep,
+        underwaterFactor: projectorStandDown ? 0.0 : underwaterFactor * causticFlowKeep,
         causticMap: self.causticMap,
         cameraX: self.globalCameraPosition.x,
         cameraZ: self.globalCameraPosition.z,
@@ -2145,33 +2155,6 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
             murk: self._uwLandMurk,
             downwell: 1.0
           });
-          //...and our caustics on that ground (a-land-water-contract §4, water-caustics-receive).
-          //From above, the seabed passes through our shader and gets them there; from below,
-          //the viewer sees a-land's terrain directly, which is why they used to vanish on the
-          //dip. a-land evaluates the same model with our numbers (CAUSTIC_MODEL), measured from
-          //the surfaceY just handed over. In a creek the pattern rides the current the viewer is
-          //in, at the creek's coarser cells, as the flowing surface draws it from above.
-          if(ALand.runtime.TerrainMaterial.setCaustics && self.causticMap && self.brightestDirectionalLight){
-            const CM = ARestlessOcean.CAUSTIC_MODEL;
-            const sun = self.brightestDirectionalLight;
-            if(!self._uwCausticSun){ self._uwCausticSun = new THREE.Vector3(); }
-            const d = self._uwCausticSun.copy(sun.target.position).sub(sun.position).normalize();
-            //Snell into a flat surface (n = 1.33): the direction the light travels in the water.
-            const eta = 1.0 / 1.33, cosI = -d.y, k = 1.0 - eta * eta * (1.0 - cosI * cosI);
-            if(k > 0.0){ d.multiplyScalar(eta); d.y += eta * cosI - Math.sqrt(k); d.normalize(); }
-            const cf = self.waterFlowAt(self.globalCameraPosition.x, self.globalCameraPosition.z, self._causticFlowScratch);
-            self._causticFlowScratch = cf;
-            const inCreek = cf.flowWeight > 0.5;
-            ALand.runtime.TerrainMaterial.setCaustics({
-              map: self.causticMap,
-              time: time * 0.001,
-              intensity: self.causticsStrength,
-              sunDir: d,
-              shape: {x: CM.amplitude, y: CM.textureMean, z: CM.contrastDepthM, w: CM.focusM},
-              scale: {x: CM.baseUV, y: CM.tilePerDepth, z: inCreek ? CM.minTileFlowingM : CM.minTileM, w: CM.dispersionPerM},
-              flow: inCreek ? {x: cf.vx, z: cf.vz, period: CM.advectPeriodS} : null
-            });
-          }
         }
         const yBias = ARestlessOcean.Passes.UnderwaterFogChunk.SURFACE_Y_BIAS;
         self._oceanFog.near = -Math.max(waterSurfaceY + yBias, 0.001);
@@ -2185,11 +2168,52 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         if(typeof ALand !== 'undefined' && ALand.runtime && ALand.runtime.TerrainMaterial
            && ALand.runtime.TerrainMaterial.setOceanFog){
           ALand.runtime.TerrainMaterial.setOceanFog(null);
-          if(ALand.runtime.TerrainMaterial.setCaustics){ ALand.runtime.TerrainMaterial.setCaustics(null); }
         }
       } else {
         //Above water: track whatever fog A-Starry-Sky currently wants mounted.
         self._capturedSkyFog = self.scene.fog;
+      }
+    }
+
+    //Our caustic model, handed to a-land's terrain and objects EVERY frame (a-land-water-contract
+    //§4, water-caustics-receive; WATER-TYPES Phase 9b). a-land owns the look on everything it
+    //shades: under the water for a submerged viewer (viewerUnderwater), and the sun reflected
+    //off the water onto banks, rocks and hulls for a viewer above it. From above, the seabed
+    //seen THROUGH the surface is still ours: it passes through our shader, which draws its own.
+    //a-land evaluates the same model with our numbers (CAUSTIC_MODEL), measuring depth from its
+    //field's still level. In a creek the pattern rides the current the viewer is in, at the
+    //creek's coarser cells, as the flowing surface draws it from above.
+    if(self._landTerrainApi && typeof ALand !== 'undefined' && ALand.runtime && ALand.runtime.TerrainMaterial
+       && ALand.runtime.TerrainMaterial.setCaustics){
+      //An a-land without ALand.runtime.waterCaustics predates viewerUnderwater and would apply
+      //its underwater receive regardless, so it keeps the old contract: caustics only while submerged.
+      const landV1 = !!(ALand.runtime.waterCaustics && ALand.runtime.waterCaustics.version >= 1);
+      if(self.causticMap && self.brightestDirectionalLight && (landV1 || isUnderwater)){
+        const CM = ARestlessOcean.CAUSTIC_MODEL;
+        const sun = self.brightestDirectionalLight;
+        if(!self._uwCausticSun){ self._uwCausticSun = new THREE.Vector3(); }
+        if(!self._causticSunAir){ self._causticSunAir = new THREE.Vector3(); }
+        const air = self._causticSunAir.copy(sun.target.position).sub(sun.position).normalize();
+        const d = self._uwCausticSun.copy(air);
+        //Snell into a flat surface (n = 1.33): the direction the light travels in the water.
+        const eta = 1.0 / 1.33, cosI = -d.y, k = 1.0 - eta * eta * (1.0 - cosI * cosI);
+        if(k > 0.0){ d.multiplyScalar(eta); d.y += eta * cosI - Math.sqrt(k); d.normalize(); }
+        const cf = self.waterFlowAt(self.globalCameraPosition.x, self.globalCameraPosition.z, self._causticFlowScratch);
+        self._causticFlowScratch = cf;
+        const inCreek = cf.flowWeight > 0.5;
+        ALand.runtime.TerrainMaterial.setCaustics({
+          map: self.causticMap,
+          time: time * 0.001,
+          intensity: self.causticsStrength,
+          sunDir: d,
+          sunDirAir: air,
+          viewerUnderwater: isUnderwater,
+          shape: {x: CM.amplitude, y: CM.textureMean, z: CM.contrastDepthM, w: CM.focusM},
+          scale: {x: CM.baseUV, y: CM.tilePerDepth, z: inCreek ? CM.minTileFlowingM : CM.minTileM, w: CM.dispersionPerM},
+          flow: inCreek ? {x: cf.vx, z: cf.vz, period: CM.advectPeriodS} : null
+        });
+      } else {
+        ALand.runtime.TerrainMaterial.setCaustics(null);
       }
     }
 

@@ -90,6 +90,45 @@ level within 1 m of the shore reads wet.
   so it should not twitch, but this is exactly the double-draw Dante's toggle decision
   (a-water's caustics off when a-land's are on) removes. That's 9b.
 
+### ▶ RESUME HERE — 9b built (2026-09-25): a-land owns the caustics
+
+Plan: `~/.claude/plans/validated-rolling-pretzel.md`. a-land branch `phase-9b-caustics` (off
+`phase-9a-wet-band`); a-water stays on `phase-9-terrain-feedback`.
+**Needs Dante: a-land regen** (`cd a-faraway-land/src/python && python3 create-shader.py`). a-water
+changed JS only, no regen.
+
+- **a-water, the switch:** `<ocean-caustics projector="auto|on|off">` (`caustics_projector`, default
+  auto). Auto REMOVES the SpotLight projector when a-land advertises `ALand.runtime.waterCaustics`
+  (v1): one recompile at load, never per crossing, and every lit program gets back the
+  `spotShadowMap` + `spotLightMap` units and loses a shadow depth pass. An older a-land keeps the old
+  stand-down. `setCaustics` is now sent EVERY frame with `viewerUnderwater` and `sunDirAir`; an
+  a-land without the capability still only gets it while submerged. The water shader's own
+  above-water seabed caustics are unchanged.
+- **a-land, one copy of the math:** terrain.frag's caustic block is fenced
+  (`// @aland-caustics-begin/end`) and self-contained. ObjectMaterial cuts that span out of
+  `ALand.runtime.shaders.terrainFrag` (no new generated file, no page edits). Each side supplies
+  `alandCausticLevelAt` / `alandCausticWaterAt` / `alandCausticSunVisAt` (terrain: 3 cascades,
+  horizon + object shadow; objects: cascade 0, `alandHorizonShadow` + `alandObjectSunShadow`).
+- **Objects underwater:** caustic on light 0 in `_sunLitChunk` (twin of terrain's `dlColor *=
+  sunCaustic`). ARMED LAZILY: compiled in only after the first `setCaustics`
+  (`ObjectMaterial.armCaustics` → `invalidate()`), so a scene without an ocean pays nothing.
+- **Reflected-sun shimmer (terrain + objects, viewer above water):** `alandShimmer`: the water point
+  W under the reflected sun ray, Schlick r0 0.02 at the sun's incidence, water presence at W, the
+  sun's visibility AT W, faces that see the water only (`dot(N, −dR)`), the same caustic pattern
+  along the path. Diffuse only, not under P's own shadow. Knobs on `ALand.runtime.waterCaustics`:
+  `shimmer` (true), `shimmerReachM` (20), `shimmerGain` (1 = physical). Debug view 12 (×20).
+- Verified: `check-shader-compiles.mjs` on the 4090, terrain unchanged (worst 18), and the page
+  now arms caustics through a real `setCaustics` and compiles BOTH object variants: unarmed 4
+  units, armed 6, both link. `node --check` on all edited JS. **Not seen rendered.**
+- Stages 2 and 3 landed together (they share the span). To judge the underwater half alone,
+  set `ALand.runtime.waterCaustics.shimmer = false`.
+
+What to look at: (1) swim near rocks/trees in island-sholes: one caustic pattern on terrain AND
+objects, no twitch; `oceanGrid.causticSpotLight.parent` should be null. (2) Above water at a low
+sun, a rock face or bank beside the water: dappled shimmer (view 12); none on flat ground; none
+where the reflecting water is shaded. Suspects if wrong: shimmer too faint at a high sun is
+PHYSICAL (2%); the object field lookup ends at 256 m (cascade 0).
+
 ### 9a round 4 (2026-09-25): both fixes live, "my land feels alive for the first time"; damp tail
 
 The round-3 "not taking effect" was a regen run in the wrong folder (a-land's create-shader.py
