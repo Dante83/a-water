@@ -175,6 +175,14 @@ a-land places two reserved `MaterialExtensions` sockets in the terrain shaders:
   waterlines (lakes, rivers) need no per-frame feed — the `waterLevel` tiles suffice.
 - **`water-caustics-receive`** — depth-gated caustics from the ocean's projector.
 
+> **Amended 2026-09-25 (Phase 9).** Neither socket is an `@inject` chunk: terrain materials
+> splice once at construction and never re-subscribe, so both arrived as TYPED channels on
+> `TerrainMaterial` instead. Caustics come through `setCaustics`. The static wet band needs no
+> channel of its own: it reads the RT0 cascades `setWaterField` already binds (level, depth,
+> shoreSDF, flow weight), with porosity per material in a-land's MaterialLibrary. The ocean's
+> per-frame swash feed (below) is still to come (Phase 9c). And a-land owns the caustic LOOK on
+> everything it shades (terrain and objects); a-water's own caustics get an off switch.
+
 Additionally (a-land-internal, but it affects what shores look like): water depth and
 flow speed join a-land's procedural mask family (height/slope/aspect/curvature), so
 texture layers can key riverbed/wet-margin materials off the solve automatically.

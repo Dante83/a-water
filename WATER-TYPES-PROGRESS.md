@@ -8,6 +8,200 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
+## Phase 9 — terrain feedback: wet ground and caustics — **9a written + compile-verified, awaiting a-land regen + browser** (2026-09-25)
+
+Branches: a-land `phase-9a-wet-band` (off main 3105c0a, in the MAIN checkout), a-water
+`phase-9-terrain-feedback`. The `a-faraway-land-lbm` worktree was removed (lbm-river-solver was
+fully merged into main).
+
+### ▶ RESUME HERE — 9a built (2026-09-25)
+
+**Needs Dante: run a-land's `src/python/create-shader.py`** (terrain.frag → shaders.js). No
+a-water regen and no re-bake: the band reads the RT0 cascades a-water already hands over.
+
+What shipped (a-land only):
+- `terrain.frag`: `alandWaterFieldAt` (all of RT0, same cascade ownership and crossfade;
+  `alandWaterFieldLevelAt` wraps it), `alandWetState` → (wet, porosity, film, submerged).
+  Wet albedo (darken + saturate by wet × porosity) and film normal flattening go in BEFORE the
+  surface capture, so a-water's seabed and SSR see wet ground too. Wet gloss =
+  `mix(wet, film, porosity)` outside water. **F0 now runs through `g_dielectricF0` at all
+  three sites** (0.04 dry → 0.02 film → 0.004 submerged, grain-to-water). Debug view 11
+  (`aland-debug-render` HUD, "wet ground"): red bank, green film, blue submerged.
+- `MaterialLibrary`: row 1 b/a of paramsTex = porosity / capillary rise, from
+  `WETNESS_BY_SURFACE[surfaceType]` with per-material `porosity` / `capillaryRiseM`
+  overrides (schema-validated; add/update handle them). Existing worlds need no re-save.
+- `TerrainMaterial`: `u_wetOn/u_wetBand/u_wetLook` shared like the other field uniforms, on
+  only while all three cascades are bound; live knobs on `ALand.runtime.TerrainMaterial.wetness`
+  (copied in every `setWaterField`, so console edits stick):
+  `enabled, bankBandM 1.5, runningBandM 2.5, capillaryScale 1, submergeFadeM 0.05,
+  albedoAtFullPorosity 0.55, saturation 0.35, filmRoughness 0.08, filmFlatten 0.6`.
+  **All starting points, none measured.**
+
+Verified: `tests/test-sampler-budget/check-shader-compiles.mjs` on the 4090 (every variant
+compiles and links, worst 18/32, no new samplers: the clip already pulled all three cascades
+into every shading variant); splat-index (93+58+26), height-blend (25), layer-lifecycle (19),
+project-file materials/manifest/save-writes all pass. **Not seen rendered yet.**
+
+What to look at: island-sholes-ocean and hero-creek(-sky). Debug view 11 first (is the band
+where the water is, at a sane width?), then lit. Suspects if it looks wrong: (1) cascade-2
+texels are coarse, so far banks band blockily (expected; fade `bankBandM` by distance if it
+shows); (2) ocean beaches only get a band at the MEAN sea level (the swash wetting is 9c);
+(3) `sub` uses a 1 m slop on the dry side of shoreSDF, so a painted dry zone below a lake's
+level within 1 m of the shore reads wet.
+
+### 9a round 2 — Dante's first look (2026-09-25): "looks good", two problems
+
+- **Caustics swim forward, then twitch back. FIXED (a-land, needs regen): round 17's bug, on a
+  newer path.** a-land's underwater receive (`alandCausticMod`, added 09-22) measured depth
+  from `u_uwSurfaceY`, which a-water fills with `probeWaterSurfaceY()`, the WAVE-DISPLACED
+  surface at the camera. `hitXZ = xz − L.xz/upY · below`, so each wave slid the pattern by its
+  height × the refracted sun's slope and back again. That is round 17 (projector pose on the
+  probe) again, in code written after that fix. It now reads the STILL level per fragment from
+  the field (`alandWaterFieldLevelAt`, new `u_waterFieldOn`), falling back to the probe only
+  without a field. The fog keeps the probe (the air/water swap needs the real surface). This is
+  also 9b's per-body depth. ⚠ If the twitch was seen from ABOVE water in a creek, this is not it:
+  suspect the two-phase advection crossfade there (`CAUSTIC_ADVECT_PERIOD` 2 s × creek speed vs
+  1 m cells; the smoothstep threshold is applied AFTER the mix, which turns the crossfade into a
+  switch). Not changed until Dante says where.
+- **White stair-stepped rings where the water meets the bank. NOT diagnosed yet.** Stair-stepped
+  at field-texel scale, so something keyed to per-texel wet/dry. Suspects: (1) 9a's film strip
+  (glossy, roughness 0.08, right at the waterline); (2) the still path's `dryTaps > 0.999` cut,
+  which its own comment says draws "the one-metre texel staircase"; (3) foam. A/B asked of
+  Dante: `ALand.runtime.TerrainMaterial.wetness.enabled = false`, then `filmRoughness = 1,
+  filmFlatten = 0`, and a-land debug view 11 at the same spot.
+
+### 9a round 3 (2026-09-25): the ring was the wet band; the caustic fix was not live yet
+
+- **Ring: FIXED (a-land, needs regen).** Dante's A/B: it's the wet band, and it runs around
+  the OUTSIDE of a damp patch. Cause: `sub` (depth under the local level > 5 cm) switched the
+  gloss OFF (F0 0.004, the grain-to-water look) and the film switched it ON only where the
+  depth ran out. Where a-water does not draw thin water, the patch was dull inside with a
+  glossy rim. The dull look is the VIEWER's: only a submerged viewer sees the grain-to-water
+  interface. From above, submerged ground is either under a-water's surface (whose seabed
+  shading replaces ours) or under water too thin to draw, which is a film. `sub` is now
+  gated on `u_uwFogOn`, and the film covers submerged ground above water. This also takes
+  `sub`'s texel-scale shoreSDF gate out of the gloss.
+- **Caustic twitch "still present": the fix wasn't in the regenerated file.** shaders.js was
+  regenerated 09:55 (it has alandWetState, but `u_waterFieldOn` appears 0 times); the fix
+  landed in terrain.frag at 10:06. Not a cache: needs one more a-land regen. ⚠ Still open after
+  that: underwater, a-land's terrain ALSO receives a-water's projector SpotLight cookie
+  (`terrain.frag` spot loop, `spotLightMap`), so the bed carries two caustic patterns. The
+  projector is still anchored to the still level (round 17 intact, `caustic-projection-pass.js:354`),
+  so it should not twitch, but this is exactly the double-draw Dante's toggle decision
+  (a-water's caustics off when a-land's are on) removes. That's 9b.
+
+### 9a round 4 (2026-09-25): both fixes live, "my land feels alive for the first time"; damp tail
+
+The round-3 "not taking effect" was a regen run in the wrong folder (a-land's create-shader.py
+only works from `a-faraway-land/src/python/`, and it is a watcher). Once regenerated, the ring and
+the caustic twitch are both gone.
+**Damp tail added (needs regen):** darkening now reaches past the wet band, dark but never
+glossy (the partly saturated zone above the capillary fringe). The same profile stretched by
+`wetness.dampReach` (2.5×, in height and width) at `wetness.dampDarkness` (0.6 of full), squared
+so it thins out. Gloss/F0 still follow the wet band only. Debug view 11's red is now the full
+moisture (band + tail).
+
+### Caustics ownership — Dante's decision (2026-09-25)
+
+**a-faraway-land owns the look on everything it shades** (terrain chunks AND objects such as
+trees): the enhanced caustics become a chunk in a-land's shaders. a-water keeps its current
+caustics but gains a **toggle to switch them off**, and it only reports above- vs below-water
+view to a-land. When a-land's enhanced caustics are on, a-water's own are disabled. This
+replaces the "who draws a creek bed seen from the bank" question in 9b below.
+Deferred to its own branch: replace a-water's underwater fog on a-land's side with real
+raymarched underwater fog + god rays, instead of tuning the built-in fog. It's error-prone,
+so it stays out of 9b.
+
+### The brief (as written before building)
+
+Nothing built yet. Chosen over Phase 7 on 2026-09-25. Most of Phase 7's visible payoff (plunge
+pools) was already covered by the fall-site carve and traced impacts, and its export amendment
+would force a re-bake of every world. Phase 7's a-land export change (`bodies[].id`, `edges[]`,
+`waterfalls[].from/to`) plus amendment 6 (`heightBakeId`) should ride along with one of Dante's
+Solve + Bake runs whenever it happens, rather than force a bake of their own.
+
+### What exists already (checked 2026-09-25, do not rebuild)
+
+- **a-land's terrain already binds our three RT0 cascades** (`terrain.frag:756-793`,
+  `TerrainMaterial.setWaterField`) for the mirror clip. RT0 = `level, depth, shoreSDF, dryMask`,
+  and on a DRY texel `level` is the **nearest water's level** (`water-field-pass.js:479`), `.a` is
+  `1 + w` of that water's still/flowing weight, and `shoreSDF` is negative metres to the shore.
+  A bank fragment therefore already knows how high it sits above the water beside it, how far
+  it is from it, and whether that water flows. **The static wet band needs no new texture.**
+- **The contract's `@inject` sockets are superseded by typed channels.** Terrain materials splice
+  once at construction and never re-subscribe (`TerrainMaterial.js:145` banner), so
+  `setWaterField` / `setCaustics` / `setOceanFog` are how the two repos talk to each other now.
+  Wetness follows the same pattern. Amend contract §4 when this lands.
+- **Terrain caustics underwater already respect shadow**: `sunCaustic` multiplies `dlColor` beside
+  `dirShadow` (`terrain.frag:~1900/1950`). But the depth comes from ONE `u_uwSurfaceY`, so it is
+  ocean-only, and it is gated on the viewer being submerged.
+- **Objects**: a-water registers nothing with `material-extensions`. The `ObjectMaterial.js` header
+  promises wetness + caustics, but neither exists. Whatever objects get now comes from the caustic
+  SpotLight projector (verify).
+- a-land reserves `weather.wetness` (`editor/src/save.js:1528`): rain feeds the same function later.
+
+### The F0 trap (Dante asked, 2026-09-25)
+
+Disney's `specular` 0.5 → F0 0.04 (IOR 1.5). Water's IOR is 1.333 → F0 0.020 (specular ≈ 0.25).
+**Our water is right everywhere** (`r0 = 0.02` in water-shader, waterfall-sheet and horizon-skirt; the
+Karis ceiling, the CT glint and the underwater path all use it). **a-land hardcodes F0 0.04 at three
+sites**: `ggxBRDF` (`terrain.frag:1074`), the area-light LTC (`:2101`) and the environment (`:2148`).
+Wet ground reflects off a water film, so its F0 goes **DOWN** to 0.02 as the film forms. The "shine"
+of wet ground is roughness dropping, not F0 rising. All three sites must take the same
+wetness-driven F0, or direct and environment specular disagree at the waterline.
+
+### 9a — static wet band (lakes, rivers, ocean mean level). a-land `terrain.frag` only, a few ALU
+
+Insert after the material is final (after the impressions block, `terrain.frag:~1793`), before lighting:
+- `vec4 wf = alandWaterFieldAt(xz)`: generalize `alandWaterFieldLevelAt` to return all of RT0
+  with the same cascade crossfade (⚠ each cascade's SDF overestimates near its rim).
+- Submerged (`y < level`, depth > 0): `wet = 1`. Wet sand under water IS darker (pores filled
+  with water, not air). ⚠ Verify the refraction G-buffer picks up the wet albedo exactly once,
+  and that Jerlov absorption doesn't darken it a second time for the same reason.
+- Bank: `h = y − level`, `d = −shoreSDF`. Capillary fringe in height ×
+  splash/lap band in distance: `wet = (1 − smoothstep(0, hCap, h)) · (1 − smoothstep(0, dMax, d))`.
+  `hCap` follows porosity (sand ~0.3 m, soil ~0.5 m, rock ~0.03 m. Soil-physics ballpark from
+  memory, **verify before tuning on it**). `dMax` widens with the flow weight `w` from `.a` (a river
+  wets more bank than a pond). Gate on `u_waterClipOn`-style "field bound".
+- Response (Lagarde, "Water drop 2 — rendering wet surfaces", 2013; Lekner & Dorf 1988 for why wet
+  albedo darkens. **Quoted from memory, re-read before fixing the numbers**):
+  - albedo `pow(albedo, 1 + k·wet·porosity)`. The power saturates as it darkens, which is the
+    "saturate/dim" look. Porosity is from the layer (rock ~0.1, sand/soil ~1).
+  - roughness → `mix(roughness, 0.08, wet²)`. Damp only glosses a little; a film glosses fully.
+  - F0 → `mix(0.04, 0.02, smoothstep(0.7, 1.0, wet))`. Only once a film forms (see the trap above).
+  - Normal: flatten toward the geometric normal only as a film forms (water fills the pores).
+- Debug: a wetness view mode in a-land's existing debug switch.
+- Cost: no new samplers (worst program unchanged), one extra RT0 tap per fragment where the
+  field is bound.
+
+### 9b — caustics everywhere the water is
+
+- **Underwater, per body**: swap `u_uwSurfaceY` for the fragment's own `wf.level` so lakes and rivers
+  get caustics with the right depth. Drop the "viewer submerged" gate: a creek bed seen from the bank
+  should carry caustics too, unless a-water's own seabed relight already draws them there. Decide
+  that ownership line first, so nothing doubles.
+- **Above water: the reflected sun.** A bank, rock or hull within a few metres of the surface and
+  facing it gets sun light reflected off the waves: `E_sun · F(θ_sun) · pattern`, sampled along
+  the REFLECTED ray (mirror of the refracted-ray projection underwater), fading with `h` and
+  `d`, gated by whether that water point is sunlit. It uses the same caustic model numbers
+  (`ARestlessOcean.CAUSTIC_MODEL`), so it stays one look.
+- **Objects**: the same two terms in `ObjectMaterial` through `material-extensions` (it does
+  subscribe), or a typed channel like the terrain's.
+
+### 9c — the ocean's moving swash and a drying clock
+
+Per the contract, land owns an accumulation map (a world-anchored ring around the camera,
+never saved to disk); we publish only this frame's surface height near shore (the Phase 3a
+swash/breaker output as a small ortho RT + world→UV). Land sets `wet = max(wet, surfaceAbove)`, then
+dries it at a per-porosity rate (τ ~ 30–120 s). Rain (`weather.wetness`) and splash impacts
+add to the same map later. Biggest plumbing of the three, so it goes last.
+
+### Order
+
+9a → 9b underwater-per-body → 9b above-water → objects → 9c. Each step is visible alone.
+
+---
+
 ## Phase 6 — waterfalls: the nappe and the sheet — **written, GPU-headless-verified on hero-creek, awaiting regen + browser** (2026-09-21)
 
 Branch `phase-6-waterfalls`, off `development` at `4917375`. Plan:
