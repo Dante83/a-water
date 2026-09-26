@@ -188,6 +188,7 @@ ARestlessOcean.Passes.UnderwaterFogChunk.prototype.installStandaloneScaffold = f
 //otherwise. Runs once, then forces a one-time recompile so already-built
 //materials pick up the new chunk.
 ARestlessOcean.Passes.UnderwaterFogChunk.prototype.inject = function(){
+  const self = this;
   const grid = this.oceanGrid;
   if(this._fogChunkInjected) return;
   const fragToken = '//$$OCEAN_SHADER_SHADER_FRAGMENT_RESERVATION$$';
@@ -203,6 +204,12 @@ ARestlessOcean.Passes.UnderwaterFogChunk.prototype.inject = function(){
   //repeated calls don't accumulate copies.
   if(parsFragChunk && parsFragChunk.indexOf('uniform vec3 uwSunDir;') === -1){
     THREE.ShaderChunk.fog_pars_fragment = parsFragChunk + '\nuniform vec3 uwSunDir;\n';
+  }
+  //...and the underwater light volume's lookup (UnderwaterVolumePass). Its uniforms are
+  //shared objects, attached to each material by attachVolume() below.
+  if(THREE.ShaderChunk.fog_pars_fragment.indexOf('uwVolumeInscatter') === -1){
+    THREE.ShaderChunk.fog_pars_fragment += '\n#ifdef USE_FOG\n' +
+      ARestlessOcean.Passes.UnderwaterVolumePass.CONSUMER_GLSL + '\n#endif\n';
   }
 
   //Per-channel extinction (1/m) baked into the chunk as a const vec3 —
@@ -425,7 +432,18 @@ ARestlessOcean.Passes.UnderwaterFogChunk.prototype.inject = function(){
     '  if(UW_DEBUG_FOG_MODE == 1){ /* raw input, no fog */ }',
     '  else if(UW_DEBUG_FOG_MODE == 2){ uwLinear = vec3(0.5) * uwT + uwMurk * (vec3(1.0) - uwT); }',
     '  else if(UW_DEBUG_FOG_MODE == 3){ uwLinear = uwMurk; }',
-    '  else { uwLinear = uwLinear * uwDownwell * uwT + uwMurk * (vec3(1.0) - uwT); }',
+    //The underwater light volume, when this is its camera's pass: the light the water
+    //actually scatters along THIS ray (lit where the water is lit, brighter toward the
+    //surface, the sun halo), in place of the one murk colour. In-scatter only; the
+    //transmittance stays the analytic uwT. See UnderwaterVolumePass.
+    '  else {',
+    '    vec4 uwVol = uwInputIsSRGB ? uwVolumeInscatter(vFogWorldPosition) : vec4(0.0);',
+    '    if(uwVol.w > 0.5){',
+    '      uwLinear = (uwVolOn > 1.5) ? uwVol.rgb : uwLinear * uwDownwell * uwT + uwVol.rgb;',
+    '    } else {',
+    '      uwLinear = uwLinear * uwDownwell * uwT + uwMurk * (vec3(1.0) - uwT);',
+    '    }',
+    '  }',
     //sRGB (main-canvas) path: TONEMAP the fogged result with MyAES before
     //encoding — the renderer is NoToneMapping, so scene geometry arrives here
     //un-tonemapped (raw linear radiance), and without this it would sRGB-encode
@@ -489,10 +507,51 @@ ARestlessOcean.Passes.UnderwaterFogChunk.prototype.inject = function(){
         if(m.uniforms && !m.uniforms.uwSunDir){
           m.uniforms.uwSunDir = { value: new THREE.Vector3(0.0, -1.0, 0.0) };
         }
+        self.attachVolume(m);
         m.needsUpdate = true;
       }
     });
   }
+};
+
+//Give a fog material the underwater light volume's SHARED uniform objects. Returns
+//whether it changed anything (the caller then recompiles it).
+//
+//A ShaderMaterial holds them in its own uniforms. A built-in material cannot: three
+//deep-clones ShaderLib uniforms per material (and nulls render-target textures in the
+//clone), so a shared texture has to be added in onBeforeCompile, where the uniforms
+//object handed in is the one the program keeps. The hook CHAINS whatever was there
+//(a-land's ObjectMaterial installs its own), and the cache key is extended rather than
+//replaced: three's default key is onBeforeCompile.toString(), and our wrapper's source
+//is the same for every material, so without this two materials with DIFFERENT original
+//hooks would share one program. If a sibling later reinstalls its hook, the traversal
+//sees ours gone and wraps again.
+ARestlessOcean.Passes.UnderwaterFogChunk.prototype.attachVolume = function(m){
+  const vol = this.oceanGrid.underwaterVolumePass;
+  if(!vol || !m) return false;
+  const VU = vol.uniforms;
+  if(m.isShaderMaterial){
+    if(m.uniforms.uwVolAtlas === VU.uwVolAtlas) return false;
+    for(const k in VU) m.uniforms[k] = VU[k];
+    return true;
+  }
+  if(m.onBeforeCompile && m.onBeforeCompile._aroUwVol) return false;
+  const prevHook = m.onBeforeCompile;
+  const prevKey = m.customProgramCacheKey;
+  const defaultKey = THREE.Material.prototype.customProgramCacheKey;
+  const hook = function(shader, renderer){
+    if(prevHook) prevHook.call(this, shader, renderer);
+    for(const k in VU) shader.uniforms[k] = VU[k];
+  };
+  hook._aroUwVol = true;
+  m.onBeforeCompile = hook;
+  m.customProgramCacheKey = function(){
+    const base = (!prevKey || prevKey === defaultKey)
+      ? (prevHook ? prevHook.toString() : '')
+      : prevKey.call(this);
+    return base + '|aroUwVol';
+  };
+  return true;
 };
 
 //Per-frame broadcast of the current sun direction to every fog-receiving
@@ -500,6 +559,7 @@ ARestlessOcean.Passes.UnderwaterFogChunk.prototype.inject = function(){
 //tick updates once after probing the directional-light list. Cost is one
 //scene traversal per frame; the per-material write is a Vector3.copy().
 ARestlessOcean.Passes.UnderwaterFogChunk.prototype.broadcastSunDir = function(){
+  const self = this;
   const grid = this.oceanGrid;
   if(!grid.scene || !this._sharedUwSunDir) return;
   const src = this._sharedUwSunDir;
@@ -508,7 +568,11 @@ ARestlessOcean.Passes.UnderwaterFogChunk.prototype.broadcastSunDir = function(){
     const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
     for(let i = 0; i < mats.length; ++i){
       const m = mats[i];
-      if(!m || !m.fog || !m.uniforms) continue;
+      if(!m || !m.fog) continue;
+      //Self-heal the volume too: a material added later, or one whose hook a sibling
+      //reinstalled (see attachVolume). One recompile when it happens, never per frame.
+      if(self._fogChunkInjected && self.attachVolume(m)) m.needsUpdate = true;
+      if(!m.uniforms) continue;
       //Self-heal: a material added to the scene AFTER the chunk-injection
       //traversal won't have the slot yet. Attach it on first sight and
       //flag needsUpdate so the next render rebuilds the program with the

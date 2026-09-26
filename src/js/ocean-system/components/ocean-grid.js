@@ -623,6 +623,14 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   if(this._terrainProvider === 'a-faraway-land'){
     this._discoverTerrainDirector();
   }
+  //The underwater light volume (UNDERWATER-VOLUME.md). Built before the fog chunk,
+  //which hands its shared uniforms to every fog material it patches.
+  if(ARestlessOcean.Passes && ARestlessOcean.Passes.UnderwaterVolumePass){
+    this.underwaterVolumePass = new ARestlessOcean.Passes.UnderwaterVolumePass(this);
+    this.underwaterVolumePass.init();
+  } else {
+    this.underwaterVolumePass = null;
+  }
   if(ARestlessOcean.Passes && ARestlessOcean.Passes.UnderwaterFogChunk){
     this.underwaterFogChunk = new ARestlessOcean.Passes.UnderwaterFogChunk(this);
     this.underwaterFogChunk.init(this._skyProvider);
@@ -2159,6 +2167,40 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         //shaders, which collapses `uwHGiso` to 1/4π and makes `uwAngFactor` the
         //view-independent `2 - sunFrac`. ⚠ If that constant is ever raised, this
         //stops being exact and the sibling needs the sun direction too.
+        //The underwater light volume: the same sun, sky and water, but evaluated at every
+        //point along every camera ray instead of once at the camera (UnderwaterVolumePass).
+        //The murk above stays as every consumer's fallback.
+        if(self.underwaterVolumePass){
+          if(!self._uwVolSunWater){
+            self._uwVolSunWater = new THREE.Vector3();
+            self._uwVolSunColor = new THREE.Vector3();
+            self._uwVolSkyDown = new THREE.Vector3();
+          }
+          let sunCosAir = 0.0;
+          if(self.brightestDirectionalLight){
+            const ml = self.brightestDirectionalLight;
+            const sd = self._uwVolSunWater.copy(self._uwSunDirScratch);
+            sunCosAir = Math.max(-sd.y, 0.0);
+            //Snell into a flat surface (n = 1.33): the direction the light travels in the water.
+            const eta = 1.0 / 1.33, cosI = -sd.y, k = 1.0 - eta * eta * (1.0 - cosI * cosI);
+            if(k > 0.0){ sd.multiplyScalar(eta); sd.y += eta * cosI - Math.sqrt(k); sd.normalize(); }
+            self._uwVolSunColor.set(ml.color.r * ml.intensity, ml.color.g * ml.intensity, ml.color.b * ml.intensity);
+          } else {
+            self._uwVolSunWater.set(0.0, -1.0, 0.0);
+            self._uwVolSunColor.set(0.0, 0.0, 0.0);
+          }
+          self._uwVolSkyDown.set(ambX, ambY, ambZ);
+          self.underwaterVolumePass.tick({
+            camera: self.camera,
+            sunWater: self._uwVolSunWater,
+            sunColor: self._uwVolSunColor,
+            sunCosAir: sunCosAir,
+            skyDown: self._uwVolSkyDown,
+            absorption: absV,
+            scattering: sctV,
+            fallbackLevel: self.waterLevelAt(self.globalCameraPosition.x, self.globalCameraPosition.z)
+          });
+        }
         if(self._landTerrainApi && typeof ALand !== 'undefined'
            && ALand.runtime && ALand.runtime.TerrainMaterial
            && ALand.runtime.TerrainMaterial.setOceanFog){
@@ -2176,7 +2218,9 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
             surfaceY: waterSurfaceY,
             extinction: {x: extX, y: extY, z: extZ},
             murk: self._uwLandMurk,
-            downwell: 1.0
+            downwell: 1.0,
+            //The light volume (an a-land that predates it ignores this and keeps `murk`).
+            volume: self.underwaterVolumePass ? self.underwaterVolumePass.handover() : null
           });
         }
         const yBias = ARestlessOcean.Passes.UnderwaterFogChunk.SURFACE_Y_BIAS;
@@ -2186,6 +2230,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       } else if(self.scene.fog === self._oceanFog){
         //Surfaced (or chunk not injected): hand scene.fog back to A-Starry-Sky.
         self.scene.fog = (self._capturedSkyFog !== undefined) ? self._capturedSkyFog : null;
+        if(self.underwaterVolumePass) self.underwaterVolumePass.stand();
         //...and stand the sibling terrain's underwater fog down with it, or the
         //ground keeps its murk after we break the surface.
         if(typeof ALand !== 'undefined' && ALand.runtime && ALand.runtime.TerrainMaterial
