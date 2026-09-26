@@ -240,6 +240,11 @@ ARestlessOcean.Passes.ReflectionPass.prototype.renderUnderwaterReflection = func
   const prevFogFar = grid._oceanFog.far;
   const sunFracForRT = (grid._uwSunFrac !== undefined) ? grid._uwSunFrac : 0.5;
   grid._oceanFog.far = sunFracForRT + 10.0;
+  //The waterline the chunk splits the bounce at must be THIS pass's mirror plane (h, the
+  //displaced surface). The main pass carries the STILL level there (ocean-grid, 2026-09-26:
+  //fog depth from the probe pumped the seabed with every wave), so swap it for the pass.
+  const prevFogNear = grid._oceanFog.near;
+  grid._oceanFog.near = -Math.max(h + ARestlessOcean.Passes.UnderwaterFogChunk.SURFACE_Y_BIAS, 0.001);
 
   //Clip everything above the waterline out of the mirror cam's render.
   //Without this, cave walls, the above-water portion of the lighthouse, and
@@ -316,6 +321,7 @@ ARestlessOcean.Passes.ReflectionPass.prototype.renderUnderwaterReflection = func
     landMatClip.setOceanFogLinearOutput(prevLandLinearOut);
   }
   grid._oceanFog.far = prevFogFar;
+  grid._oceanFog.near = prevFogNear;
   grid._oceanFog.color.setRGB(prevFogColorR, prevFogColorG, prevFogColorB);
   scene.fog = prevFog;
   this.renderer.setClearColor(s.clearColor, prevClearAlpha);

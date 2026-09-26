@@ -412,6 +412,43 @@ uniform sampler2D aboveWaterTransmissionTexture;
   #include <fog_pars_fragment>
 #endif
 
+//The underwater light volume (UnderwaterVolumePass, UNDERWATER-VOLUME.md): the light the water
+//scatters toward the camera, per froxel. The fog chunk declares this lookup inside USE_FOG, so
+//it is declared here only where the chunk is not in this shader. Hand copy of the pass
+//CONSUMER_GLSL: keep in step.
+#if($atmospheric_perspective_enabled)
+  #define ARO_UWVOL_OWN
+#endif
+#ifndef USE_FOG
+  #define ARO_UWVOL_OWN
+#endif
+#ifdef ARO_UWVOL_OWN
+  uniform sampler2D uwVolAtlas;
+  uniform float uwVolOn;
+  uniform mat4 uwVolViewProj;
+  uniform vec4 uwVolCam;
+  uniform vec4 uwVolGrid;
+  uniform vec4 uwVolShape;
+  vec3 uwVolSlice(vec2 px, float k){
+    float ty = floor(k / uwVolGrid.w);
+    float tx = k - ty * uwVolGrid.w;
+    return texture2D(uwVolAtlas, (vec2(tx, ty) * uwVolGrid.xy + px) / uwVolShape.yz).rgb;
+  }
+  vec4 uwVolumeInscatter(vec3 worldPos){
+    if(uwVolOn < 0.5) return vec4(0.0);
+    if(length(cameraPosition - uwVolCam.xyz) > 0.25) return vec4(0.0);
+    vec4 clip = uwVolViewProj * vec4(worldPos, 1.0);
+    if(clip.w <= 1e-4) return vec4(0.0);
+    vec2 px = clamp((clip.xy / clip.w * 0.5 + 0.5) * uwVolGrid.xy, vec2(0.5), uwVolGrid.xy - 0.5);
+    float s = pow(clamp(length(worldPos - uwVolCam.xyz) / uwVolCam.w, 0.0, 1.0), 1.0 / uwVolShape.x);
+    float c = s * uwVolGrid.z - 1.0;
+    if(c < 0.0) return vec4(uwVolSlice(px, 0.0) * (c + 1.0), 1.0);
+    float k0 = floor(c);
+    float k1 = min(k0 + 1.0, uwVolGrid.z - 1.0);
+    return vec4(mix(uwVolSlice(px, k0), uwVolSlice(px, k1), c - k0), 1.0);
+  }
+#endif
+
 #if($atmospheric_perspective_enabled)
   precision highp sampler3D;
   uniform sampler2D atmosphereTransmittance;
@@ -1160,6 +1197,14 @@ vec3 applyUnderwaterFog(vec3 color, float dist, vec3 viewDirWorld){
   //The equilibrium is camera-depth-darkened inside underwaterInscatterSurface
   //(inscatter is front-loaded near the eye), so there is no per-fragment depth
   //term here — every long ray fades to the same camera-depth water colour.
+  //The underwater light volume, when this is its camera pass: the same light the seabed, the
+  //objects and the curtain fade into, so they all meet the ceiling at the same colour at the
+  //horizon (the analytic murk below is view independent and was darkened by the probed,
+  //wave displaced depth, so it never quite matched). dist is the camera to fragment path.
+  vec4 uwVol = uwVolumeInscatter(cameraPosition + viewDirWorld * dist);
+  if(uwVol.w > 0.5){
+    return (uwVolOn > 1.5) ? uwVol.rgb : color * transmittance + uwVol.rgb;
+  }
   vec3 inscatter = underwaterInscatterSurface(viewDirWorld);
   //UW_DEBUG_FOG_MODE isolation taps (see const above), matched to the fog chunk.
   if(UW_DEBUG_FOG_MODE == 1){ return color; }                                          //raw input, no fog
@@ -3721,7 +3766,11 @@ void main(){
   }
 
   #if(!$atmospheric_perspective_enabled)
-    #include <fog_fragment>
+    //Not under the water: the ceiling has already had its underwater fog (applyUnderwaterFog,
+    //the light volume included), and the chunk would add it a second time.
+    if(underwaterFactor < 0.5){
+      #include <fog_fragment>
+    }
   #endif
 
   #if($flowing_water)

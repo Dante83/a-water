@@ -348,7 +348,10 @@ ARestlessOcean.Passes.UnderwaterFogChunk.prototype.inject = function(){
     '  vec3 dir = vFogWorldPosition - cameraPosition;',
     '  float totalLen = length(dir);',
     '  float uwDist;',
-    '  if(cameraPosition.y < uwSurfaceY){',
+    //The split is the MIRROR pass's (linear target), not "camera above uwSurfaceY": that is
+    //the still level now, and a submerged camera in a wave trough can sit above it.
+    '  bool uwMirrorPass = fogFar >= 5.0;',
+    '  if(!uwMirrorPass || cameraPosition.y < uwSurfaceY){',
     '    uwDist = totalLen * UW_DIST_SCALE;',
     '  } else {',
     '    float t = (uwSurfaceY - cameraPosition.y) / dir.y;',

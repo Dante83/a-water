@@ -1,6 +1,7 @@
 # UNDERWATER-VOLUME — world-space underwater light: fog, shadows, god rays
 
-Status: PHASE 1 BUILT (2026-09-26), awaiting Dante's a-land regen + browser look.
+Status: PHASES 1-3a + CEILING BUILT (2026-09-26). Needs BOTH regens (a-land `create-shader.py`
+for terrain.frag, a-water `create-shader.py` for water-shader.glsl), then a browser look.
 Branches: `underwater-volume` in a-water (off `development` a801d1a) and a-faraway-land (off `main` e00915b).
 
 Decisions (Dante, 2026-09-26): the volume REPLACES the four fog copies (the analytic murk stays
@@ -29,6 +30,49 @@ only as the fallback), and the sun halo is PHYSICAL (`gazeWeight` 1, a live knob
 - Debug: `oceanGrid.underwaterVolumePass.debugInscatterOnly = true` draws only the volume's
   light (short paths toward the surface read dark, long horizontal ones bright). Knobs on the
   same object: `width/height/depth`, `maxRangeM`, `slicePower`, `phaseG`, `gazeWeight`, `enabled`.
+**Round 2 (2026-09-26, Dante: "the floor jumps bright and dark in chunks"; "the horizon colours
+don't match"; "some texture to the fog"). Measured, then fixed:**
+- **Floor pumping = round 17 again, in the fog.** Every fog term measured depth from
+  `probeWaterSurfaceY()` (the wave-displaced surface at the camera, async readback): the fog
+  chunk's per-fragment downwelling, the camera-depth murk, a-land's `u_uwSurfaceY` (its ground's
+  downwelling). Every wave over the camera dimmed the whole floor, stepping as readbacks landed.
+  Headless, looking down, 60 frames: seabed brightness vs probe **r = −0.978 → −0.044** after the
+  fix. Now: ocean-grid passes the STILL level (`waterLevelAt(camera)`) as the fog surface and
+  a-land's `surfaceY`; a-land's downwelling reads each fragment's own level from the field; the
+  path split (mirror bounce) keys on the mirror pass (linear target) instead of "camera above
+  the surface" (a camera in a trough is above the still level); the reflection pass swaps
+  `fog.near` to its own mirror plane for its render. The probe still drives the air/water swap.
+- **Froxel pops (phase 1).** Froxels in air or under the bed were zeroed, so the slice
+  straddling the seabed flipped whole columns lit/unlit as the camera moved. Depth now clamps
+  at 0; nothing is zeroed.
+- **Horizon mismatch = two different suns.** The water shader lights with the sibling's
+  METERED sun (`_readSiblingPhotometry`, (2.15, 1.78, 1.46) on island-sholes-sky); the murk
+  block (fog chunk, a-land murk, the volume) read the raw light (white × 0.5). Seabed vs ceiling
+  at the horizon: (2, 13, 17) vs (9, 45, 41) sRGB → (7, 36, 33) after. The rest closes when the
+  ceiling reads the volume (needs the a-water regen).
+- **Ceiling consumer** (water-shader.glsl `applyUnderwaterFog`): the volume at the ceiling
+  fragment when valid. Declared locally (`ARO_UWVOL_OWN`) only where the fog chunk is not in the
+  shader. On pages WITHOUT atmospheric perspective the water shader ran the fog chunk after its
+  own underwater fog (double fog on the ceiling); `fog_fragment` is now skipped underwater.
+- **Phase 2, shafts:** the caustic web at the surface crossing S (same map, model and clock as
+  a-land's seabed caustics, grey, LOD from the froxel footprint), centred on the web's MEASURED
+  mean (1×1 GPU reduction, read by the shader: CPU float readbacks come back empty in headless
+  Chrome) so shafts move light instead of dimming it (with the model's 0.25 they darkened the
+  water 15% per unit of strength). Visible as radial streaks toward the sun when looking up.
+  `shaftStrength` 2, `shaftCellM` 3 (look choices: fine cells average away along a ray).
+- **Temporal:** R2-jittered sample point per froxel (depth and lateral) + reprojected history
+  of the scatter atlas (ping-pong), `historyWeight` 0.85, reset on surfacing.
+- **Phase 3a, shadow:** a-land's WaterLightField (R = water × sun visibility: horizon shadow ×
+  object CSM, at the still level) at S for the beam, at a 10 m radius for the glow. a-land now
+  bakes it underwater too (`ALand.runtime.waterCaustics.volumeLight`) and exposes it
+  (`TerrainMaterial.waterLightField()`). Covers islands, cliffs and objects ABOVE the water.
+  **Phase 3b (deferred):** underwater occluders (arches, ridges, the hull below the waterline)
+  need the refracted-sun depth map.
+- **Fog texture (LOOK TERM, flagged):** drifting 3-octave value noise on the scattering,
+  `textureAmplitude` 0.3, `textureScaleM` 8, `textureDrift` (0.08, 0.03, 0.05) m/s. 0 = the
+  physical homogeneous medium. Transmittance stays homogeneous.
+- Cost: 0.16-0.27 ms GPU (timer query, 4090) for both passes with everything on.
+
 - Physical change to flag: the sun beam uses the refracted irradiance across the beam,
   `E·(1−F)·cos θair / cos θwater`, not the level-plane `E·(1−F)·cos θair` the murk used for its
   single scatter (the multi-scatter glow keeps the level-plane value). About 30% more single

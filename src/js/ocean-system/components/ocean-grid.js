@@ -2013,8 +2013,19 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           const oneMinusCos = 1.0 - cosZ;
           const fres = 0.02037 + (1.0 - 0.02037) * (oneMinusCos*oneMinusCos*oneMinusCos*oneMinusCos*oneMinusCos);
           const trans = 1.0 - fres;
-          const k = i * trans * cosZ;
-          dirX = ml.color.r * k; dirY = ml.color.g * k; dirZ = ml.color.b * k;
+          //The SAME sun the water shader lights with: the sibling's metered one when it meters
+          //(see _readSiblingPhotometry at the brightestDirectionalLight upload), the light's raw
+          //colour x intensity otherwise. This block read the raw light unconditionally, so on a
+          //metered page (a-starry-sky / a-land) the murk, the fog on every object, a-land's
+          //ground and the light volume were lit by the pre-metering 0.5 while the ceiling took
+          //(2.15, 1.78, 1.46): the seabed and the ceiling met at the horizon ~3x apart
+          //(measured 2026-09-26 on island-sholes-sky).
+          const photometry = self._readSiblingPhotometry();
+          if(!self._uwSunRadiance){ self._uwSunRadiance = new THREE.Vector3(); }
+          if(photometry){ self._uwSunRadiance.copy(photometry.sun); }
+          else { self._uwSunRadiance.set(ml.color.r * i, ml.color.g * i, ml.color.b * i); }
+          const k = trans * cosZ;
+          dirX = self._uwSunRadiance.x * k; dirY = self._uwSunRadiance.y * k; dirZ = self._uwSunRadiance.z * k;
         }
         //skyAmbient = hemisphere-mean sky downwelling (see _readSkyAmbient).
         //MUST match the GPU side: the skyAmbientColor uniform set below feeds
@@ -2027,7 +2038,15 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           ambZ = self._skyAmbientScratch.z;
         }
         const inv4Pi = 0.07957747154;
-        const camDepth = Math.max(0.0, -cameraSubmersion);
+        //The STILL level, not the probe. The probe (waterSurfaceY) is the wave-displaced surface
+        //at the camera: right for the air/water swap, wrong for anything a fog term measures
+        //depth from. Every wave over the camera moved it, and with it the murk, each fragment's
+        //downwelling and a-land's ground: the whole floor pumped bright and dark with the swell,
+        //stepping as the async readbacks landed (measured 2026-09-26: seabed brightness vs probe,
+        //r = -0.98). Round 17's bug, in the fog. The seabed does not bob; the mean surface
+        //above it is what dims it.
+        const stillY = self.waterLevelAt(self.globalCameraPosition.x, self.globalCameraPosition.z);
+        const camDepth = Math.max(0.0, stillY - self.globalCameraPosition.y);
         const dDarkenX = Math.exp(-extX * camDepth);
         const dDarkenY = Math.exp(-extY * camDepth);
         const dDarkenZ = Math.exp(-extZ * camDepth);
@@ -2184,7 +2203,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
             //Snell into a flat surface (n = 1.33): the direction the light travels in the water.
             const eta = 1.0 / 1.33, cosI = -sd.y, k = 1.0 - eta * eta * (1.0 - cosI * cosI);
             if(k > 0.0){ sd.multiplyScalar(eta); sd.y += eta * cosI - Math.sqrt(k); sd.normalize(); }
-            self._uwVolSunColor.set(ml.color.r * ml.intensity, ml.color.g * ml.intensity, ml.color.b * ml.intensity);
+            self._uwVolSunColor.copy(self._uwSunRadiance);   //the metered sun, as the murk above
           } else {
             self._uwVolSunWater.set(0.0, -1.0, 0.0);
             self._uwVolSunColor.set(0.0, 0.0, 0.0);
@@ -2198,7 +2217,15 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
             skyDown: self._uwVolSkyDown,
             absorption: absV,
             scattering: sctV,
-            fallbackLevel: self.waterLevelAt(self.globalCameraPosition.x, self.globalCameraPosition.z)
+            fallbackLevel: stillY,
+            time: time * 0.001,
+            //The shafts use the caustic web a-land draws on the seabed: same map, model and clock.
+            causticMap: self.causticMap,
+            causticModel: ARestlessOcean.CAUSTIC_MODEL,
+            causticTime: time * 0.001,
+            //The shadow on the water column: a-land's sunlit-water map, when it has one.
+            waterLight: (typeof ALand !== 'undefined' && ALand.runtime && ALand.runtime.TerrainMaterial
+              && ALand.runtime.TerrainMaterial.waterLightField) ? ALand.runtime.TerrainMaterial.waterLightField() : null
           });
         }
         if(self._landTerrainApi && typeof ALand !== 'undefined'
@@ -2215,7 +2242,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
             self._uwMurkScratch.z * (angFactor + msRatioZ) * dDarkenZ
           );
           ALand.runtime.TerrainMaterial.setOceanFog({
-            surfaceY: waterSurfaceY,
+            surfaceY: stillY,
             extinction: {x: extX, y: extY, z: extZ},
             murk: self._uwLandMurk,
             downwell: 1.0,
@@ -2224,7 +2251,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           });
         }
         const yBias = ARestlessOcean.Passes.UnderwaterFogChunk.SURFACE_Y_BIAS;
-        self._oceanFog.near = -Math.max(waterSurfaceY + yBias, 0.001);
+        self._oceanFog.near = -Math.max(stillY + yBias, 0.001);
         self._oceanFog.far = sunFrac;                            //> 0: sRGB-encoded output + |fogFar| = sunFrac
         self.scene.fog = self._oceanFog;
       } else if(self.scene.fog === self._oceanFog){
