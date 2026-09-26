@@ -98,7 +98,7 @@ don't match"; "some texture to the fog"). Measured, then fixed:**
     12 m it all but vanishes, which is right for extinction 0.17-0.36 /m.
   - ⚠ Headless lesson: synchronous float readbacks inside the frame loop (and some outside it)
     return 0 in headless Chrome here; draw the texture on a HUD quad and screenshot instead.
-    Two hours of "the map is empty" were the instrument.
+    Several rounds of "the map is empty" were the instrument.
   - Also set the depth mask before the clear (glClear respects it; three leaves it wherever the
     last draw put it). Not the bug here, but a real trap.
 - Cost: 0.16-0.27 ms GPU (timer query, 4090) for both passes with everything on.
