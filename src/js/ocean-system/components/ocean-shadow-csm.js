@@ -69,6 +69,41 @@ ARestlessOcean.OceanShadowCSM = function(oceanGrid, scene, configOverrides){
   //slabs up to 10 km. Receiver's evsmExpC uniform MUST match this.
   this._evsmExpC = 5.0;
 
+  //PLANE-RELATIVE DEPTH (OCEAN-SHADOWS.md step 1): the casters and the water store the height
+  //above the still level over this many metres instead of the depth across the slab. The slab
+  //is sized to the SEA PLANE'S TILT across the cascade (158 m for C0 at a 12 deg sun), so a
+  //2 m wave used 2.5% of it; in height it uses 1/8 of this. Must hold the tallest crest and the
+  //deepest trough: +-relief/2. 0 = the old slab depth. Live knob; the pass copies it to the water.
+  this.relief = 16.0;
+  //ELEVATION-CORRECTED BLUR (step 2, a-land core/csm blurStrides): an ortho texel lands
+  //1/sin(elevation) long on the sea ALONG the sun, so the isotropic kernel smeared a thin
+  //trailing shadow 4.8x further along the sun than across it at 12 deg. The along-sun stride
+  //(the map's v axis: the light camera's up lies in the vertical plane through the sun) is
+  //scaled by sin(elevation), floored at blurFloor of the stride, as a-land does. false = old.
+  this.blurElevationCorrect = true;
+  this.blurFloor = 0.35;
+  //Blur stride in texels (9 taps each way: reach = 4 x stride). Was a constant 2. The blur is
+  //what gives EVSM a variance to work with, but it also ERODES a shadow inward from its edge
+  //(a-land core/csm: the blur eats casters narrower than the kernel), so it wants the smallest
+  //reach that still hides the texel grid.
+  this.blurStride = 1.0;
+  //Receiver normal-offset bias, metres (water-vertex.glsl oceanShadowNormalBias; the pass pushes
+  //it). The template's 0.05 was sized for the slab depth; with plane-relative depth it lifted
+  //receivers out of real shadows.
+  this.normalBiasM = 0.02;
+  //MEASURED (OCEAN-SHADOWS.md, frozen waves, ground truth mode 68, cascade 0, total error):
+  //                     12 deg   20 deg   30 deg
+  //  old (slab, iso blur stride 2, bias 0.05)   0.186   0.057   0.0103
+  //  relief 16 + elevation blur + stride 1 + bias 0.02   0.070   0.033   0.0078
+  //Light bleed 0.1/0.2/0, warp c 5/10 and relief 8/16 measured flat; bias 0.015-0.02 is the
+  //knee (0 = acne, 0.05 = misses). The smaller bias only works WITH plane-relative depth: on the
+  //old slab it trades the misses for acne (0.166 / 0.057 / 0.0117).
+  //
+  //All of it needs the regenerated caster + water shaders. Until they load, the old settings
+  //stand (supportsRelief below), so a stale build never gets the acne combination.
+  this.supportsRelief = !!(ARestlessOcean.Materials.Ocean.oceanShadowMaterial &&
+    String(ARestlessOcean.Materials.Ocean.oceanShadowMaterial.fragmentShader).indexOf('oceanShadowRelief') !== -1);
+
   //Cascade parameters. extent sets the ortho frustum's lateral size;
   //mapSize sets moment-texture resolution. layer is the THREE.Layers bit
   //used to gate which meshes render into this cascade. maxRing is the
@@ -109,6 +144,7 @@ ARestlessOcean.OceanShadowCSM = function(oceanGrid, scene, configOverrides){
   if(ARestlessOcean.ShoreReflection) Object.assign(shadowUniforms, ARestlessOcean.ShoreReflection.createUniforms());
   //Phase 4: the still/flowing hand-off flattens the receiver, so it flattens the caster.
   Object.assign(shadowUniforms, ARestlessOcean.FlowHandoff.createUniforms());
+  shadowUniforms.oceanShadowRelief = {value: 0.0};
   this._shadowMatDef = {
     uniforms: shadowUniforms,
     vertexShader: baseShadowMat.vertexShader
@@ -393,6 +429,7 @@ ARestlessOcean.OceanShadowCSM.prototype.render = function(renderer, mainCamera, 
     u.sizeOfOceanPatch.value = sharedOceanUniforms.sizeOfOceanPatch.value;
     u.chop.value = sharedOceanUniforms.chop.value;
     u.mainCameraPosition.value.copy(this._cameraWorldPos);
+    u.oceanShadowRelief.value = this.supportsRelief ? Math.max(0.0, +this.relief || 0.0) : 0.0;
     //Phase 2 — see the constructor note on _shadowMatDef.
     u.baseHeightOffset.value = sharedOceanUniforms.baseHeightOffset.value;
     u.waterFieldCascade0.value = sharedOceanUniforms.waterFieldCascade0.value;
@@ -516,7 +553,7 @@ ARestlessOcean.OceanShadowCSM.prototype.render = function(renderer, mainCamera, 
     //oceanCascadeMarginUV must stay >= 9 texels to keep cascade-edge
     //fragments out of the blur footprint.
     const blurTarget = this._blurTarget;
-    const texelUv = 2.0 / cfg.mapSize;
+    const texelUv = (this.supportsRelief ? this.blurStride : 2.0) / cfg.mapSize;
 
     //Horizontal: read this cascade's LAYER of the moment array, write the shared
     //2D scratch. Vertical: read the scratch, write the layer back. Two materials
@@ -529,7 +566,9 @@ ARestlessOcean.OceanShadowCSM.prototype.render = function(renderer, mainCamera, 
     renderer.render(this._blurArrayScene, this._blurCamera);
 
     this._blurMaterial.uniforms.sourceTexture.value = blurTarget.texture;
-    this._blurMaterial.uniforms.blurDirection.value.set(0.0, texelUv);
+    const upScale = (this.blurElevationCorrect && this.supportsRelief)
+      ? Math.max(Math.min(-sunDirection.y, 1.0), this.blurFloor) : 1.0;
+    this._blurMaterial.uniforms.blurDirection.value.set(0.0, texelUv * upScale);
     renderer.setRenderTarget(this.cascadeArray, cascade.layer);
     renderer.render(this._blurScene, this._blurCamera);
   }

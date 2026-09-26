@@ -86,6 +86,13 @@ ARestlessOcean.Passes.OceanShadowPass.prototype.tick = function(ctx){
     //Matrices live as separate uniform names (oceanShadowMatrix0..3) and must be
     //projected per-vertex; mapSize stays a plain vec2 array.
     u.oceanShadowMap.value = this.csm.cascadeArray.texture;
+    //Plane-relative depth: the receiver must store what the casters stored (OCEAN-SHADOWS.md).
+    //...and with it the smaller normal bias it allows (see OceanShadowCSM.normalBiasM). Both only
+    //once the regenerated shaders are loaded; a stale build keeps the template's values.
+    if(u.oceanShadowRelief && this.csm.supportsRelief){
+      u.oceanShadowRelief.value = Math.max(0.0, +this.csm.relief || 0.0);
+      if(u.oceanShadowNormalBias) u.oceanShadowNormalBias.value = this.csm.normalBiasM;
+    }
     for(let c = 0; c < numCascades; c++){
       u.oceanShadowMapSize.value[c].set(cascades[c].cfg.mapSize, cascades[c].cfg.mapSize);
     }

@@ -122,6 +122,15 @@ uniform float patchDataSize;
 //the caster surface plane so triangle-edge sampling mismatches no longer
 //cross the depth-comparison threshold.
 uniform float oceanShadowNormalBias;
+//PLANE-RELATIVE DEPTH (OCEAN-SHADOWS.md step 1). The ocean CSM's light camera is orthographic
+//along the sun, so a map texel IS one light ray, and "which of two points on it is nearer the
+//sun" is just "which is higher". The caster and this receiver therefore store the height above
+//the STILL level (the field's, so a lake uses its own) instead of the depth across the whole
+//slab, mapped to [0,1] over oceanShadowRelief metres (0 = the old depth). The slab was sized to
+//the sea plane's tilt across the cascade: 158 m for C0 at a 12 deg sun, for waves of +-2 m, so a
+//wave used 2.5% of it and Chebyshev had no contrast left (the reason for the zenith fade).
+//MUST match the caster (ocean-shadow-vertex.glsl); ocean-shadow-pass.js writes both.
+uniform float oceanShadowRelief;
 uniform mat4 sunShadowMatrix;
 //One shadow matrix per ocean CSM cascade. ocean-shadow-csm.js fits each
 //cascade's light camera every frame and pushes its world→light-uv-space
@@ -293,6 +302,15 @@ void main() {
   vOceanShadowCoord1 = oceanShadowMatrix1 * shadowSamplePos;
   vOceanShadowCoord2 = oceanShadowMatrix2 * shadowSamplePos;
   vOceanShadowCoord3 = oceanShadowMatrix3 * shadowSamplePos;
+  if(oceanShadowRelief > 0.0){
+    //Orthographic light, so w = 1 and .z is used as-is. The normal-offset bias carries over:
+    //shadowSamplePos is the lifted point.
+    float relZ = clamp(0.5 - (shadowSamplePos.y - field.r) / oceanShadowRelief, 0.0, 1.0);
+    vOceanShadowCoord0.z = relZ * vOceanShadowCoord0.w;
+    vOceanShadowCoord1.z = relZ * vOceanShadowCoord1.w;
+    vOceanShadowCoord2.z = relZ * vOceanShadowCoord2.w;
+    vOceanShadowCoord3.z = relZ * vOceanShadowCoord3.w;
+  }
 
   //Add support for three.js fog
   #if(!$atmospheric_perspective_enabled)

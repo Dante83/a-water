@@ -25,9 +25,14 @@ precision highp float;
 //across the linear-filtered + Gaussian-blurred reads.
 
 uniform float evsmExpC;
+//Plane-relative depth (water-vertex.glsl oceanShadowRelief): the height above the still level,
+//not the depth across the slab. The hardware depth test still picks the caster nearest the sun;
+//only what is STORED changes.
+uniform float oceanShadowRelief;
+varying float vRelZ;
 
 void main(){
-  float z = gl_FragCoord.z;
+  float z = oceanShadowRelief > 0.0 ? clamp(vRelZ, 0.0, 1.0) : gl_FragCoord.z;
   float pos = exp(evsmExpC * z);
   float neg = -exp(-evsmExpC * z);
   gl_FragColor = vec4(pos, pos * pos, neg, neg * neg);

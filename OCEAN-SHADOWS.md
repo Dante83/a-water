@@ -1,13 +1,45 @@
 # OCEAN-SHADOWS: the ocean CSM next to what a-land learned
 
-Status: REVIEW (2026-09-26). Nothing changed yet. Branch `underwater-occluders`.
+Status: STEPS 0-2 BUILT + MEASURED (2026-09-26), branch `underwater-occluders`. Needs Dante's
+`create-shader.py` (water-vertex, water-shader, ocean-shadow, ocean-shadow-vertex, template).
+Until it runs, the old settings stand automatically (`OceanShadowCSM.supportsRelief`).
+
+## Result (frozen waves, ground truth mode 68, cascade 0, total error = false + missed)
+
+| | 12° | 20° | 30° | 45° | 65° (no zenith fade) |
+|---|---|---|---|---|---|
+| old: slab depth, isotropic stride-2 blur, normal bias 0.05 | 0.186 | 0.057 | 0.0103 | 0.0023 | 0.0001 |
+| **new: relief 16 m, elevation-corrected blur, stride 1, bias 0.02** | **0.070** | **0.033** | **0.0078** | 0.0018 | 0.0007 |
+| old + bias 0.02 alone | 0.166 | 0.057 | 0.0117 | | |
+
+- False shadow at 12°: 0.0054 → ~0.009 (the smaller bias trades a little acne for far fewer misses).
+  Missed shadow at 12°: 0.20 → 0.06. The misses were the erosion rings a-land warned about.
+- Flat within noise: light bleed 0 / 0.1 / 0.2, warp c 5 / 10, relief 8 / 16. Left at 0.2 / 5 / 16.
+- Blur correction pulls its weight: without it 0.154 vs 0.128 (stride 1, bias 0.05).
+- The smaller normal bias only works WITH plane-relative depth (last row).
+- Lit render: no visible breakage; at a low sun the self-shadow only dims the sun terms.
+
+## Still open
+
+- **Cascade 1 at a low sun** misses about half of what the ground truth shadows (12°: 0.52 missed, old
+  and new alike). Either its caster set (rings 0-1 only, `maxRing: 1`) or the ground truth at
+  that range (it marches the continuous field; the far receivers are a coarse mesh). Next thing
+  to look at.
+- **Zenith fade** kept: cascade 1 still shows some false shadow at 65° without it (0.032, was 0.044).
+- Measure GPU cost of the CSM (4 cascades re-rendered every frame) once the above settles.
+
+## Knobs (live, `oceanGrid.oceanShadowCSM`)
+
+`relief` (16 m; 0 = old slab depth), `blurElevationCorrect` (true), `blurFloor` (0.35),
+`blurStride` (1), `normalBiasM` (0.02, pushed to the water's `oceanShadowNormalBias`).
+Debug: `setOceanShadowDebug(67)` ground truth, `(68)` CSM vs truth (red = false shadow, green = missed).
 
 a-water's ocean self-shadow (`ocean-shadow-csm.js`, receiver in `water-shader.glsl`
 `getOceanShadow`) and a-land's object/terrain CSM (`a-faraway-land/src/js/core/csm.js`,
 `TerrainSunCSM.js`) are both EVSM, both cascaded, both RGBA32F. a-land has since measured
 a lot about how EVSM misbehaves on a CONTINUOUS HEIGHTFIELD, and the sea is one.
 
-## Measured baseline (headless, island-sholes-ocean, debug mode 1 = ocean shadow factor)
+## First look (before the ground truth; kept for the record)
 
 | sun | C0 (60 m) | C1 (240 m) | C2 |
 |---|---|---|---|

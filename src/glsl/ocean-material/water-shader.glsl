@@ -781,6 +781,49 @@ float getOceanShadow(vec4 shadowCoord0, vec4 shadowCoord1, vec4 shadowCoord2, ve
   return 1.0;
 }
 
+//$DEBUG_START$
+//GROUND TRUTH for the ocean self-shadow (debug modes 67 and 68, OCEAN-SHADOWS.md step 0).
+//March from the fragment toward the sun through the SAME cascade displacement field the CSM
+//casters draw (same masks, same distance fades, same chop) and report lit or shadowed. The
+//surface height at a world xz inverts the horizontal chop by fixed-point iteration: the
+//displaced surface point above xz came from the grid point x0 with x0 + d(x0).xz = xz.
+//It ignores the breaker and shore-reflection lifts, and it is the continuous field rather than
+//the tessellated mesh, so read it as the physics the CSM is approximating.
+vec3 gtDisplacementAt(vec2 xz, vec4 maskA, vec3 maskB){
+  float dist = distance(cameraPosition.xz, xz);
+  vec3 d = vec3(0.0);
+  d += maskA.y * texture(cascadeDisplacementArray, vec3((xz + cascadeSpatialOffsets[0]) / cascadePatchSizes[0], 0.0)).xyz;
+  d += maskA.z * texture(cascadeDisplacementArray, vec3((xz + cascadeSpatialOffsets[1]) / cascadePatchSizes[1], 1.0)).xyz;
+  d += maskA.w * smoothstep(cascadePatchSizes[2] *  50.0, 0.0, dist) * texture(cascadeDisplacementArray, vec3((xz + cascadeSpatialOffsets[2]) / cascadePatchSizes[2], 2.0)).xyz;
+  d += maskB.x * smoothstep(cascadePatchSizes[3] * 100.0, 0.0, dist) * texture(cascadeDisplacementArray, vec3((xz + cascadeSpatialOffsets[3]) / cascadePatchSizes[3], 3.0)).xyz;
+  d += maskB.y * smoothstep(cascadePatchSizes[4] * 250.0, 0.0, dist) * texture(cascadeDisplacementArray, vec3((xz + cascadeSpatialOffsets[4]) / cascadePatchSizes[4], 4.0)).xyz;
+  d += maskB.z * smoothstep(cascadePatchSizes[5] * 500.0, 0.0, dist) * texture(cascadeDisplacementArray, vec3((xz + cascadeSpatialOffsets[5]) / cascadePatchSizes[5], 5.0)).xyz;
+  d *= waveHeightMultiplier;
+  d.x *= -chop;
+  d.z *= -chop;
+  return d;
+}
+float gtSurfaceHeightAt(vec2 xz, vec4 maskA, vec3 maskB){
+  vec2 x0 = xz;
+  for(int i = 0; i < 4; ++i){ x0 = xz - gtDisplacementAt(x0, maskA, maskB).xz; }
+  return maskA.x + gtDisplacementAt(x0, maskA, maskB).y;
+}
+float oceanShadowGroundTruth(vec3 P, vec4 maskA, vec3 maskB, vec3 toSun){
+  if(toSun.y <= 0.0) return 0.0;
+  //Start ON the continuous field: far out the mesh is coarse and its flat triangles cut under
+  //the crests, so a march from the mesh point would begin inside the wave.
+  P.y = gtSurfaceHeightAt(P.xz, maskA, maskB);
+  float t = 0.05;
+  for(int i = 0; i < 160; ++i){
+    vec3 R = P + toSun * t;
+    if(R.y > maskA.x + 8.0) return 1.0;
+    if(R.y < gtSurfaceHeightAt(R.xz, maskA, maskB) - 0.02) return 0.0;
+    t += 0.05 + 0.02 * t;
+  }
+  return 1.0;
+}
+//$DEBUG_END$
+
 #if($atmospheric_perspective_enabled)
   //Forward declaration — defined later, alongside applyAtmosphericPerspective.
   vec3 computeSkyRadiance(vec3 worldDir);
@@ -2238,6 +2281,7 @@ void main(){
   //around 53° from zenith and is fully gone by ~32°.
   float sunZenithFactor = -brightestDirectionalLightDirection.y;
   float oceanShadowZenithFade = 1.0 - smoothstep(0.4, 0.85, sunZenithFactor);
+  float oceanShadowCsmRaw = oceanShadowRaw;   //before the zenith fade: debug modes 67/68
   oceanShadowRaw = mix(1.0, oceanShadowRaw, oceanShadowZenithFade);
   float oceanShadowBoosted = clamp(1.0 - OCEAN_SHADOW_DEBUG_DARKNESS_BOOST * (1.0 - oceanShadowRaw), 0.0, 1.0);
   float sunShadowFactor = getSunShadow(vSunShadowCoord) * oceanShadowBoosted;
@@ -3147,7 +3191,19 @@ void main(){
   //Mode 1: shadow factor as grayscale. White = lit, black = fully shadowed.
   //Mode 2: cascade-index tint per fragment. Red=C0, green=C1, blue=C2,
   //        yellow=C3, black = fragment outside every cascade.
-  if(oceanShadowDebugMode == 1){
+  if(oceanShadowDebugMode == 67 || oceanShadowDebugMode == 68){
+    //67: ground-truth self-shadow (white lit, black shadowed). 68: the CSM (before the zenith
+    //fade) against it: RED where the CSM darkens what the truth lights (false shadow), GREEN
+    //where it lights what the truth shadows (missed shadow), grey where they agree.
+    float gt = oceanShadowGroundTruth(vWorldPosition, vFieldLevelMaskA, vFieldMaskB, -brightestDirectionalLightDirection);
+    if(oceanShadowDebugMode == 67){
+      gl_FragColor = vec4(vec3(gt), 1.0);
+    } else {
+      float err = oceanShadowCsmRaw - gt;
+      gl_FragColor = vec4(0.5 + max(-err, 0.0) * 0.5, 0.5 + max(err, 0.0) * 0.5, 0.5 - abs(err) * 0.5, 1.0);
+    }
+  }
+  else if(oceanShadowDebugMode == 1){
     //Show ONLY the ocean cascade shadow (not multiplied by scene sun shadow)
     //so debug captures isolate cascade-side acne from scene-shadow acne.
     gl_FragColor = vec4(vec3(oceanShadowBoosted), 1.0);

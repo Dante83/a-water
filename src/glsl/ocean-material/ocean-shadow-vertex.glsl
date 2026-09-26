@@ -30,6 +30,9 @@ uniform vec2 cascadeSpatialOffsets[6];
 uniform float waveHeightMultiplier;
 uniform float chop;
 uniform vec3 mainCameraPosition;
+//Plane-relative depth: see water-vertex.glsl oceanShadowRelief. 0 = the hardware depth.
+uniform float oceanShadowRelief;
+varying float vRelZ;
 
 //Phase 2: the receiver lifts each vertex to the WaterField level and weighs
 //every cascade by WaveMask, so the caster must too — a masked (flatter)
@@ -122,5 +125,7 @@ void main() {
   offsetPosition.y += stillKeep * shoreBreakerHeightAt(worldXZ, field, shoreBreakerDistanceFade(worldPositionOfVertex.xyz));
   offsetPosition.y += stillKeep * shoreReflectionHeightAt(worldXZ);
   offsetPosition.y += (field.r - baseHeightOffset);
-  gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);
+  vec4 casterWorld = modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);
+  vRelZ = 0.5 - (casterWorld.y - field.r) / max(oceanShadowRelief, 1e-3);
+  gl_Position = projectionMatrix * viewMatrix * casterWorld;
 }

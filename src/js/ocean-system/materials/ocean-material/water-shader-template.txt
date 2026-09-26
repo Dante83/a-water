@@ -148,6 +148,7 @@ ARestlessOcean.Materials.Ocean.waterMaterial = {
     //artifact, so the default is much smaller than the depth-comparison
     //era (was 0.5). Kept as a small belt-and-suspenders nudge.
     oceanShadowNormalBias: {type: 'f', value: 0.05},
+    oceanShadowRelief: {type: 'f', value: 0.0},
     oceanShadowEnabled: {type: 'i', value: 0},
     //Debug visualisation switch (see water-shader.glsl). 0 = normal,
     //1 = shadow-factor full-screen, 2 = cascade-index full-screen.
