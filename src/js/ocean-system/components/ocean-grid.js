@@ -2548,6 +2548,20 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         } else {
           uniformsRef.sunShadowEnabled.value = 0;
         }
+        //...and the sibling terrain's own sun shadow on the water (a-land's WaterLightField; see
+        //landSunVisibilityAt in water-shader.glsl). With a-land on the page the branch above is
+        //off: a-land drops the sky light's shadow map because it shadows its ground itself.
+        if(uniformsRef.landWaterLightFrame){
+          const wl = (self._sunShadowOverride !== false && typeof ALand !== 'undefined' && ALand.runtime
+            && ALand.runtime.TerrainMaterial && ALand.runtime.TerrainMaterial.waterLightField)
+            ? ALand.runtime.TerrainMaterial.waterLightField() : null;
+          if(wl){
+            uniformsRef.landWaterLightMap.value = wl.map;
+            uniformsRef.landWaterLightFrame.value.set(wl.frame.x, wl.frame.y, wl.frame.z, 0.0);
+          } else {
+            uniformsRef.landWaterLightFrame.value.z = 0.0;
+          }
+        }
 
       }
       else{

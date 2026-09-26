@@ -281,6 +281,22 @@ uniform int sunShadowEnabled;
 //project arbitrary world-space points (e.g. the Snell-refracted seabed-emergence
 //point) into shadow space.
 uniform mat4 sunShadowMatrix;
+//THE SIBLING TERRAIN SUN SHADOW ON THE WATER. a-land draws its own sun shadows (a horizon map
+//for the terrain, a CSM for its objects) and drops the sky light shadow map, so with a-land on
+//the page sunShadowEnabled is 0 and the water had no terrain or object shadow at all. a-land
+//already bakes exactly the answer the water needs: its WaterLightField, R = water x sun
+//visibility at the still level, G = water, 1 m texels around the camera. Sampled at a water
+//surface point it is the island or cliff shadow on the sea. Frame: (centre x, centre z,
+//half-width m, 0); half-width 0 = none, and the factor is 1.
+uniform sampler2D landWaterLightMap;
+uniform vec4 landWaterLightFrame;
+float landSunVisibilityAt(vec2 xz){
+  if(landWaterLightFrame.z <= 0.0) return 1.0;
+  vec2 uv = (xz - landWaterLightFrame.xy) / (2.0 * landWaterLightFrame.z) + 0.5;
+  if(any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return 1.0;
+  vec2 m = textureLod(landWaterLightMap, uv, 0.0).rg;
+  return m.y > 0.01 ? clamp(m.x / m.y, 0.0, 1.0) : 1.0;
+}
 
 //Ocean-only cascaded shadow map — EVSM (Exponential Variance Shadow Map).
 //Each cascade's texture stores 4 warped depth moments per texel (written
@@ -2284,7 +2300,7 @@ void main(){
   float oceanShadowCsmRaw = oceanShadowRaw;   //before the zenith fade: debug modes 67/68
   oceanShadowRaw = mix(1.0, oceanShadowRaw, oceanShadowZenithFade);
   float oceanShadowBoosted = clamp(1.0 - OCEAN_SHADOW_DEBUG_DARKNESS_BOOST * (1.0 - oceanShadowRaw), 0.0, 1.0);
-  float sunShadowFactor = getSunShadow(vSunShadowCoord) * oceanShadowBoosted;
+  float sunShadowFactor = getSunShadow(vSunShadowCoord) * landSunVisibilityAt(vWorldPosition.xz) * oceanShadowBoosted;
 
   //Foam textures use a fixed meter-scale tile (~2 m / ~3 m perpendicular pair) so
   //individual bubble structure in the source photo reads at human scale.
@@ -2681,6 +2697,7 @@ void main(){
       vec4 seabedShadowCoord = sunShadowMatrix * vec4(pSurfaceHit, 1.0);
       seabedShadowFactor = getSunShadow(seabedShadowCoord);
     }
+    seabedShadowFactor *= landSunVisibilityAt(pSurfaceHit.xz);
 
     vec3 causticMod = vec3(1.0);
     #if($caustics_enabled)
@@ -2817,6 +2834,7 @@ void main(){
       vec4 terrainShadowCoord = sunShadowMatrix * vec4(pointXYZ, 1.0);
       terrainShadowFactor = getSunShadow(terrainShadowCoord);
     }
+    terrainShadowFactor *= landSunVisibilityAt(pointXYZ.xz);
     //Lambertian direct sun (/pi), same convention as the seabed branch above and
     //the foam plate: Phase 3a tuning pass 3.
     const float TERRAIN_INV_PI = 0.31830988618;

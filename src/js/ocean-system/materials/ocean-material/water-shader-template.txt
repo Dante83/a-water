@@ -106,6 +106,8 @@ ARestlessOcean.Materials.Ocean.waterMaterial = {
     //Directional-light shadow-map receive. Zero flag when no caster exists; the
     //shader defaults to "unshadowed" so the pass is a no-op until a caster wires up.
     sunShadowMap: {type: 't', value: null},
+    landWaterLightMap: {type: 't', value: null},
+    landWaterLightFrame: {type: 'v4', value: new THREE.Vector4(0, 0, 0, 0)},
     sunShadowMatrix: {type: 'mat4', value: new THREE.Matrix4()},
     sunShadowMapSize: {type: 'vec2', value: new THREE.Vector2(1024.0, 1024.0)},
     sunShadowRadius: {type: 'f', value: 1.0},
