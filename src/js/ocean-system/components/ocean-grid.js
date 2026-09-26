@@ -739,6 +739,29 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     return pass && pass.handoffState ? pass.handoffState() : null;
   };
   this._flowHandoffState = null;
+  //The current per point for a-land's caustics (setCaustics flowField): FlowFoamPass's window,
+  //whose gb is the current the flowing surface's ripples ride, or null when nothing flows here.
+  //Texture and centre are read together, so a hand-over before or after this frame's foam step
+  //is a consistent pair (the step writes the OTHER ping-pong target). Reused object, per frame.
+  this._causticFlowFieldOut = null;
+  this._causticFlowField = function(CM){
+    const surf = self.flowSurfacePass;
+    const fp = surf && surf.enabled ? surf.foamPass : null;
+    const tex = fp && fp.enabled ? fp.texture() : null;
+    if(!tex) return null;
+    const wf = self.waterFieldPass;
+    const out = self._causticFlowFieldOut || (self._causticFlowFieldOut = {});
+    out.map = tex;
+    out.centerX = fp.centerX;
+    out.centerZ = fp.centerZ;
+    out.halfWidth = ARestlessOcean.Passes.FlowFoamPass.HALF_WIDTH;
+    out.period = CM.advectPeriodS;
+    out.flowLo = wf ? wf.flowLo : ARestlessOcean.FlowHandoff.FLOW_LO;
+    out.flowHi = wf ? wf.flowHi : ARestlessOcean.FlowHandoff.FLOW_HI;
+    out.minTileM = CM.minTileM;
+    out.minTileFlowingM = CM.minTileFlowingM;
+    return out;
+  };
   //The analytic Gerstner twin is pointed at this same seam too — see
   //_syncWaveFieldSeam below. It cannot be done here: ARestlessOcean.waveField
   //does not exist until the band library is constructed a few lines down.
@@ -2221,7 +2244,11 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           viewerUnderwater: isUnderwater,
           shape: {x: CM.amplitude, y: CM.textureMean, z: CM.contrastDepthM, w: CM.focusM},
           scale: {x: CM.baseUV, y: CM.tilePerDepth, z: inCreek ? CM.minTileFlowingM : CM.minTileM, w: CM.dispersionPerM},
-          flow: inCreek ? {x: cf.vx, z: cf.vz, period: CM.advectPeriodS} : null
+          flow: inCreek ? {x: cf.vx, z: cf.vz, period: CM.advectPeriodS} : null,
+          //The current PER POINT (supersedes `flow` and scale.z in an a-land that reads it): the
+          //flowing surface's own FlowFoamPass window, so each caustic rides the water it formed
+          //under, not the water under the camera. `flow` stays for an a-land that predates it.
+          flowField: self._causticFlowField(CM)
         });
       } else {
         ALand.runtime.TerrainMaterial.setCaustics(null);
