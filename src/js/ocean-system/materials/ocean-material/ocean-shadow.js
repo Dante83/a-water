@@ -55,9 +55,14 @@ ARestlessOcean.Materials.Ocean.oceanShadowMaterial = {
     '//across the linear-filtered + Gaussian-blurred reads.',
 
     'uniform float evsmExpC;',
+    '//Plane-relative depth (water-vertex.glsl oceanShadowRelief): the height above the still level,',
+    '//not the depth across the slab. The hardware depth test still picks the caster nearest the sun;',
+    '//only what is STORED changes.',
+    'uniform float oceanShadowRelief;',
+    'varying float vRelZ;',
 
     'void main(){',
-      'float z = gl_FragCoord.z;',
+      'float z = oceanShadowRelief > 0.0 ? clamp(vRelZ, 0.0, 1.0) : gl_FragCoord.z;',
       'float pos = exp(evsmExpC * z);',
       'float neg = -exp(-evsmExpC * z);',
       'gl_FragColor = vec4(pos, pos * pos, neg, neg * neg);',
@@ -97,6 +102,9 @@ ARestlessOcean.Materials.Ocean.oceanShadowMaterial = {
     'uniform float waveHeightMultiplier;',
     'uniform float chop;',
     'uniform vec3 mainCameraPosition;',
+    '//Plane-relative depth: see water-vertex.glsl oceanShadowRelief. 0 = the hardware depth.',
+    'uniform float oceanShadowRelief;',
+    'varying float vRelZ;',
 
     '//Phase 2: the receiver lifts each vertex to the WaterField level and weighs',
     '//every cascade by WaveMask, so the caster must too — a masked (flatter)',
@@ -189,7 +197,9 @@ ARestlessOcean.Materials.Ocean.oceanShadowMaterial = {
       'offsetPosition.y += stillKeep * shoreBreakerHeightAt(worldXZ, field, shoreBreakerDistanceFade(worldPositionOfVertex.xyz));',
       'offsetPosition.y += stillKeep * shoreReflectionHeightAt(worldXZ);',
       'offsetPosition.y += (field.r - baseHeightOffset);',
-      'gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);',
+      'vec4 casterWorld = modelMatrix * instanceMatrix * vec4(offsetPosition, 1.0);',
+      'vRelZ = 0.5 - (casterWorld.y - field.r) / max(oceanShadowRelief, 1e-3);',
+      'gl_Position = projectionMatrix * viewMatrix * casterWorld;',
     '}',
   ].join('\n'),
 };

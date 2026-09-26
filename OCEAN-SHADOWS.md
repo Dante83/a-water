@@ -1,8 +1,8 @@
 # OCEAN-SHADOWS: the ocean CSM next to what a-land learned
 
-Status: STEPS 0-2 BUILT + MEASURED (2026-09-26), branch `underwater-occluders`. Needs Dante's
-`create-shader.py` (water-vertex, water-shader, ocean-shadow, ocean-shadow-vertex, template).
-Until it runs, the old settings stand automatically (`OceanShadowCSM.supportsRelief`).
+Status: MERGED 2026-09-26 into `development` (Dante: "we got this one really well"), with the
+regenerated shaders. Also merged: the water now takes its terrain/object sun shadow from a-land's
+WaterLightField (a-land drops the sky light's shadow map). Open items below still stand.
 
 ## Result (frozen waves, ground truth mode 68, cascade 0, total error = false + missed)
 
