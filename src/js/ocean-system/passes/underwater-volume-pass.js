@@ -53,18 +53,18 @@ ARestlessOcean.Passes.UnderwaterVolumePass = function(oceanGrid){
   this.renderer = oceanGrid.renderer;
   //Live knobs (console: oceanGrid.underwaterVolumePass.<knob>).
   this.enabled = true;
-  this.width = 160;            //froxels across
-  this.height = 90;            //froxels down
+  this.width = 320;            //froxels across (320x180: sharp enough to read the shafts, Dante 2026-09-26)
+  this.height = 180;           //froxels down
   this.depth = 64;             //slices (≤ MAX_SLICES)
   this.maxRangeM = 200.0;      //the volume ends at min(this, where 1% of the light survives)
   this.slicePower = 2.0;       //slice s ∈ [0,1] sits at range · s^power
   this.phaseG = 0.5;           //Henyey-Greenstein asymmetry of the sun term (matches UW_HG_G)
   this.gazeWeight = 1.0;       //1 = the physical sun halo; 0 = the old view-independent murk
-  this.shaftStrength = 2.0;    //the caustic on the sun beam: 1 = the seabed web contrast, 0 = none (2: a look choice, 2026-09-26)
+  this.shaftStrength = 6.0;    //the caustic on the sun beam: 1 = the seabed web contrast, 0 = none (6: a look choice, Dante 2026-09-26)
   //Smallest caustic cell the SHAFTS use (the seabed keeps its own). A view ray drifts across the
   //web as it goes deeper and the integral averages whatever cells it crosses, so fine cells
   //cancel to a flat dimming; shafts are the coarse part of the web. A look knob.
-  this.shaftCellM = 3.0;
+  this.shaftCellM = 2.0;
   this.shadow = true;          //the sun's visibility where the beam entered (a-land's WaterLightField)
   this.glowShadowRadiusM = 10.0; //the glow's shadow: the sunlit fraction of the water this far around
   //FOG TEXTURE: a LOOK TERM, not physics (flagged per convention). Real water is patchy
@@ -74,7 +74,7 @@ ARestlessOcean.Passes.UnderwaterVolumePass = function(oceanGrid){
   this.textureScaleM = 8.0;    //size of the patches
   this.textureDrift = new THREE.Vector3(0.08, 0.03, 0.05);  //m/s the patches drift
   this.jitter = true;          //jitter each froxel's sample point every frame...
-  this.historyWeight = 0.85;   //...and blend with the reprojected last frame (0 = no history)
+  this.historyWeight = 0.6;    //...and blend with the reprojected last frame (0 = no history; higher = smoother, softer)
   this.debugInscatterOnly = false; //consumers draw only the volume's light (like UW_DEBUG_FOG_MODE 3)
   this.active = false;
 

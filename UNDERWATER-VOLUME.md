@@ -59,7 +59,8 @@ don't match"; "some texture to the fog"). Measured, then fixed:**
   mean (1×1 GPU reduction, read by the shader: CPU float readbacks come back empty in headless
   Chrome) so shafts move light instead of dimming it (with the model's 0.25 they darkened the
   water 15% per unit of strength). Visible as radial streaks toward the sun when looking up.
-  `shaftStrength` 2, `shaftCellM` 3 (look choices: fine cells average away along a ray).
+  Defaults retuned with Dante: `shaftStrength` 6, `shaftCellM` 2, grid 320×180, `historyWeight`
+  0.6 (was 2 / 3 / 160×90 / 0.85: shafts there but too fuzzy to read). 0.60 ms GPU at 320×180.
 - **Temporal:** R2-jittered sample point per froxel (depth and lateral) + reprojected history
   of the scatter atlas (ping-pong), `historyWeight` 0.85, reset on surfacing.
 - **Phase 3a, shadow:** a-land's WaterLightField (R = water × sun visibility: horizon shadow ×
