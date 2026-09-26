@@ -67,6 +67,20 @@ ARestlessOcean.Passes.UnderwaterVolumePass = function(oceanGrid){
   this.shaftCellM = 2.0;
   this.shadow = true;          //the sun's visibility where the beam entered (a-land's WaterLightField)
   this.glowShadowRadiusM = 10.0; //the glow's shadow: the sunlit fraction of the water this far around
+  //OCCLUDERS (phase 3b): a depth map rendered ALONG THE REFRACTED SUN over the volume's
+  //footprint, so what stands in the water column between a point and the surface (a rock
+  //arch, a ridge, the part of a hull below the waterline) shades the beam. It holds whatever
+  //sits below occluderAboveM above the still level: a floating hull is caught whole (its deck
+  //is above the surface), while tall cliffs are left to the WaterLightField, which shadows
+  //them along the AIR sun (the refracted direction is only right under the surface).
+  this.occluderShadow = true;
+  this.occluderMapSize = 1024;
+  this.occluderAboveM = 10.0;
+  this.occluderBiasM = 0.1;
+  //Re-render the map only when it has to: the view moved more than this fraction of the map's
+  //half-width, the sun turned, or this many frames passed (so a drifting boat still updates).
+  this.occluderMoveFraction = 0.1;
+  this.occluderRefreshFrames = 6;
   //FOG TEXTURE: a LOOK TERM, not physics (flagged per convention). Real water is patchy
   //(plankton, silt, bubbles), but nothing here measures where; this is a drifting world-space
   //noise on the scattering coefficient. 0 = the homogeneous, physical medium.
@@ -84,6 +98,7 @@ ARestlessOcean.Passes.UnderwaterVolumePass = function(oceanGrid){
   this.integratedTarget = null;
   this._frame = 0;
   this._causticMean = null;    //{map, mean}: the web's measured average (see _measureCausticMean)
+  this._occ = null;            //the occluder map's target, camera and materials (built lazily)
   this._historyValid = false;
   this._prevViewProj = new THREE.Matrix4();
   this._prevCam = new THREE.Vector4();
@@ -188,6 +203,10 @@ ARestlessOcean.Passes.UnderwaterVolumePass.prototype.init = function(){
       uLightMap: {value: null},
       uLightFrame: {value: new THREE.Vector4()},         //(centre x, centre z, half-width m, map size px); hw 0 = none
       uGlowRadius: {value: 10.0},
+      //Occluders along the refracted sun (phase 3b): depth map + its bias·proj·view.
+      uOccMap: {value: null},
+      uOccMatrix: {value: new THREE.Matrix4()},
+      uOccParams: {value: new THREE.Vector2(0, 0)},      //(on, depth bias in map units)
       uTexture: {value: new THREE.Vector4()},            //(amplitude, 1 / scale m, 0, 0)
       uTexOffset: {value: new THREE.Vector3()},
       uJitter: {value: new THREE.Vector3()},             //per-frame phase (x, y, depth); 0.5 = centre
@@ -210,7 +229,9 @@ ARestlessOcean.Passes.UnderwaterVolumePass.prototype.init = function(){
       'uniform vec3 uScattering, uExtinction, uRInf, uSunWater, uSunBeam, uSunDown, uSkyDown, uTexOffset, uJitter;',
       'uniform vec2 uPhase;',
       'uniform vec4 uCausticShape, uCausticScale, uLightFrame, uTexture, uPrevCam;',
-      'uniform sampler2D uCausticMap, uCausticMeanTex, uLightMap, uHistory;',
+      'uniform sampler2D uCausticMap, uCausticMeanTex, uLightMap, uHistory, uOccMap;',
+      'uniform mat4 uOccMatrix;',
+      'uniform vec2 uOccParams;',
       'const float PI = 3.14159265359;',
       'const float INV_4PI = 0.07957747154;',
       'float hg(float c, float g){',
@@ -251,6 +272,16 @@ ARestlessOcean.Passes.UnderwaterVolumePass.prototype.init = function(){
       '  vec2 m = textureLod(uLightMap, uv, log2(max(radiusM / texelM, 1.0))).rg;',
       '  return m.y > 0.01 ? clamp(m.x / m.y, 0.0, 1.0) : 1.0;',
       '}',
+      //── occluders: is anything between P and the surface, along the refracted sun ──
+      //The map looks straight down the refracted beam, so P and the point where its ray
+      //crossed the surface share one texel: a single depth tap answers it.
+      'float occluderVis(vec3 P){',
+      '  if(uOccParams.x < 0.5) return 1.0;',
+      '  vec4 c = uOccMatrix * vec4(P, 1.0);',
+      '  vec3 pc = c.xyz / c.w;',
+      '  if(any(lessThan(pc, vec3(0.0))) || any(greaterThan(pc, vec3(1.0)))) return 1.0;',
+      '  return textureLod(uOccMap, pc.xy, 0.0).r < pc.z - uOccParams.y ? 0.0 : 1.0;',
+      '}',
       //── fog texture (a look term) ──
       'float hash31(vec3 p){',
       '  p = fract(p * 0.1031);',
@@ -281,6 +312,7 @@ ARestlessOcean.Passes.UnderwaterVolumePass.prototype.init = function(){
       '  float beam = 1.0, glow = 1.0;',
       '  if(uLightFrame.z > 0.0){ beam = sunlitAt(S, 1.0); glow = sunlitAt(S, uGlowRadius); }',
       '  if(uCausticShape.x > 0.0) beam *= causticPattern(S, d / cw, footM);',
+      '  beam *= occluderVis(P);',
       //cos θ between the light's travel and the scattered ray back to the eye (−viewDir).
       '  float p = mix(INV_4PI, hg(-dot(viewDir, uSunWater), uPhase.x), uPhase.y);',
       '  vec3 single = uScattering * (uSunBeam * sunAtP * (p * beam) + uSkyDown * skyAtP / (2.0 * PI));',
@@ -421,6 +453,173 @@ ARestlessOcean.Passes.UnderwaterVolumePass.prototype._measureCausticMean = funct
   return rt.texture;
 };
 
+//── Occluder map (phase 3b) ──────────────────────────────────────────────────
+//An orthographic depth render along the refracted sun, centred on the camera at the still
+//level, as wide as the volume. What draws, by the RefractionGBufferPass rules:
+//  - a sibling's terrain (a-land): its vertex stage + a depth-only fragment (the twin; its
+//    geometry only exists in its vertex shader)
+//  - ordinary meshes: MeshDepthMaterial (instancing-aware, so a-land's props and trees too),
+//    or the mesh's own customDepthMaterial; double-sided, as thin hulls are shells
+//  - HIDDEN: our own ShaderMaterials (the water, the sky dome, spray), the curtain, and
+//    anything that is not a mesh
+//Restored in a finally: a throw mid-pass would otherwise strand the scene swapped.
+ARestlessOcean.Passes.UnderwaterVolumePass.prototype._renderOccluders = function(ctx, range, L){
+  const grid = this.oceanGrid;
+  const scene = grid.scene;
+  if(!scene || !ctx.camera) return false;
+  const size = Math.max(64, this.occluderMapSize | 0);
+  let O = this._occ;
+  if(!O || O.size !== size){
+    if(O){ O.target.dispose(); }
+    O = O || {
+      camera: new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 100),
+      matrix: new THREE.Matrix4(),
+      depthMat: new THREE.MeshDepthMaterial({side: THREE.DoubleSide}),
+      twins: ARestlessOcean.Passes.ForeignTerrainTwin ? new ARestlessOcean.Passes.ForeignTerrainTwin([
+        'layout(location = 0) out vec4 oColor;',
+        'void main(){ oColor = vec4(1.0); }'
+      ].join('\n')) : null,
+      swapped: [], hidden: [],
+      fwd: new THREE.Vector3(), right: new THREE.Vector3(), up: new THREE.Vector3(),
+      pivot: new THREE.Vector3(), tex: new THREE.Matrix4().set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1),
+      lastCentre: new THREE.Vector3(Infinity, 0, 0), lastSun: new THREE.Vector3(), lastHalf: 0, age: Infinity,
+      stats: null
+    };
+    const depthTexture = new THREE.DepthTexture(size, size);
+    depthTexture.type = THREE.FloatType;
+    O.target = new THREE.WebGLRenderTarget(size, size, {
+      minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
+      depthBuffer: true, stencilBuffer: false, depthTexture: depthTexture
+    });
+    O.size = size;
+    this._occ = O;
+  }
+  //Still good? The map stores its own matrix, so any point inside it reads correctly after the
+  //camera moves on; it only needs redrawing once the volume's footprint could leave it.
+  const camNow = ctx.camera.getWorldPosition(O.pivot);
+  const wantHalf = range * 1.2 + 2.0;
+  O.age++;
+  const moved = Math.hypot(camNow.x - O.lastCentre.x, camNow.z - O.lastCentre.z);
+  const sunTurned = O.lastSun.dot(L) < Math.cos(0.2 * Math.PI / 180.0) * Math.hypot(L.x, L.y, L.z);
+  if(O.stats && moved < this.occluderMoveFraction * O.lastHalf && !sunTurned
+     && Math.abs(wantHalf - O.lastHalf) < 0.05 * O.lastHalf && O.age < this.occluderRefreshFrames){
+    return true;
+  }
+  O.lastCentre.copy(camNow);
+  O.lastSun.set(L.x, L.y, L.z).normalize();
+  O.lastHalf = wantHalf;
+  O.age = 0;
+  //Light frame: forward along the refracted beam; snap the centre to whole texels across
+  //it so the map does not crawl as the camera moves (the ocean CSM's snap).
+  const fwd = O.fwd.set(L.x, L.y, L.z).normalize();
+  O.right.set(0, 1, 0).cross(fwd);
+  if(O.right.lengthSq() < 1e-6) O.right.set(1, 0, 0); else O.right.normalize();
+  O.up.copy(fwd).cross(O.right).normalize();
+  const half = wantHalf;
+  const texel = 2.0 * half / size;
+  const camPos = ctx.camera.getWorldPosition(O.pivot);
+  const cx = camPos.x, cz = camPos.z, cy = ctx.fallbackLevel || 0.0;
+  O.pivot.set(cx, cy, cz);
+  const r = Math.round(O.pivot.dot(O.right) / texel) * texel;
+  const u = Math.round(O.pivot.dot(O.up) / texel) * texel;
+  const f = O.pivot.dot(fwd);
+  O.pivot.set(0, 0, 0).addScaledVector(O.right, r).addScaledVector(O.up, u).addScaledVector(fwd, f);
+  //Depth: from occluderAboveM above the surface (measured along the beam) to past the
+  //deepest point the volume can reach.
+  const back = this.occluderAboveM / Math.max(-fwd.y, 0.2) + 1.0;
+  const cam = O.camera;
+  cam.left = -half; cam.right = half; cam.top = half; cam.bottom = -half;
+  cam.near = 0.5; cam.far = back + range * 1.25 + 5.0;
+  cam.position.copy(O.pivot).addScaledVector(fwd, -(back + 0.5));
+  cam.up.copy(O.up);
+  cam.lookAt(O.pivot);
+  cam.updateProjectionMatrix();
+  cam.updateMatrixWorld(true);
+  cam.matrixWorldInverse.copy(cam.matrixWorld).invert();
+  O.matrix.copy(O.tex).multiply(cam.projectionMatrix).multiply(cam.matrixWorldInverse);
+  O.depthSpan = cam.far - cam.near;
+
+  const landRoot = grid._landTerrainRoot;
+  const curtain = grid.underwaterCurtainMesh;
+  const twins = O.twins;
+  const depthMat = O.depthMat;
+  O.swapped.length = 0; O.hidden.length = 0;
+  //a-land's patches place themselves in their vertex shader, so three cannot frustum-cull them
+  //and every patch in the world would draw (measured: 86 draws, 2.9 M triangles, ~2 ms for a
+  //60 m map). Cull by each patch's own node rect (u_patchOrigin / u_patchSize), the way
+  //a-land's TerrainSunCSM does, against the ground this map can see: its square plus the
+  //beam's horizontal run from occluderAboveM above the surface to the volume's depth.
+  const run = (this.occluderAboveM + range) * Math.sqrt(Math.max(0, 1 - fwd.y * fwd.y)) / Math.max(-fwd.y, 0.2);
+  const cullR = half * 1.42 + run;
+  const skirts = O.skirts || (O.skirts = []);
+  skirts.length = 0;
+  let patchesDrawn = 0, patchesCulled = 0;
+  scene.traverse(function(obj){
+    if(!obj.visible) return;
+    if(!obj.isMesh){
+      if(obj.isPoints || obj.isLine || obj.isSprite){ obj.visible = false; O.hidden.push(obj); }
+      return;
+    }
+    if(!obj.material || obj === curtain){ obj.visible = false; O.hidden.push(obj); return; }
+    const isShader = Array.isArray(obj.material) ? obj.material.some(function(m){ return m.isShaderMaterial; }) : obj.material.isShaderMaterial;
+    if(isShader){
+      if(twins && !Array.isArray(obj.material) && ARestlessOcean.Passes.ForeignTerrainTwin.isForeignTerrain(obj, landRoot)){
+        const pu = obj.material.uniforms;
+        if(pu && pu.u_patchOrigin && pu.u_patchSize && pu.u_patchSize.value > 0){
+          const ox = pu.u_patchOrigin.value.x, oz = pu.u_patchOrigin.value.y, sz = pu.u_patchSize.value;
+          const nx = Math.max(ox, Math.min(cx, ox + sz)), nz = Math.max(oz, Math.min(cz, oz + sz));
+          if(Math.hypot(nx - cx, nz - cz) > cullR){ obj.visible = false; O.hidden.push(obj); patchesCulled++; return; }
+        }
+        //THE SKIRT MUST NOT CAST (a-land TerrainSunCSM): the 1.5 m wall each patch hangs off
+        //its edges to plug LOD cracks is invisible in the lit image but a phantom occluder to a
+        //light camera. Zero collapses it onto the perimeter; restored below.
+        if(pu && pu.u_skirtDepth){ skirts.push(pu, pu.u_skirtDepth.value); pu.u_skirtDepth.value = 0; }
+        O.swapped.push({mesh: obj, original: obj.material});
+        obj.material = twins.resolve(obj.material);
+        patchesDrawn++;
+        return;
+      }
+      obj.visible = false; O.hidden.push(obj);
+      return;
+    }
+    O.swapped.push({mesh: obj, original: obj.material});
+    obj.material = obj.customDepthMaterial || depthMat;
+  });
+  if(twins) twins.updateCamera(cam, size, size);
+
+  const renderer = this.renderer;
+  const prevRT = renderer.getRenderTarget();
+  const savedBackground = scene.background;
+  const prevXr = renderer.xr ? renderer.xr.enabled : false;
+  const prevAutoUpdate = renderer.shadowMap.autoUpdate;
+  try {
+    scene.background = null;
+    if(renderer.xr) renderer.xr.enabled = false;
+    renderer.shadowMap.autoUpdate = false;
+    renderer.setRenderTarget(O.target);
+    //⚠ glClear RESPECTS THE DEPTH WRITE MASK, and three leaves it wherever the last draw set
+    //it. This pass's own inject/integrate quads are depthWrite:false, so inside the tick the
+    //mask was off: the clear wrote nothing, the fresh depth texture stayed at 0 (the near
+    //plane), every caster failed the depth test, and the whole map read "occluded". From the
+    //console it worked, because something had turned the mask back on in between.
+    renderer.state.buffers.depth.setMask(true);
+    renderer.state.buffers.depth.setTest(true);
+    renderer.clear(true, true, false);
+    renderer.render(scene, cam);
+  } finally {
+    renderer.setRenderTarget(prevRT);
+    scene.background = savedBackground;
+    if(renderer.xr) renderer.xr.enabled = prevXr;
+    renderer.shadowMap.autoUpdate = prevAutoUpdate;
+    for(let i = 0; i < O.swapped.length; ++i) O.swapped[i].mesh.material = O.swapped[i].original;
+    for(let i = 0; i < O.hidden.length; ++i) O.hidden[i].visible = true;
+    for(let i = 0; i < skirts.length; i += 2) skirts[i].u_skirtDepth.value = skirts[i + 1];
+    O.swapped.length = 0; O.hidden.length = 0; skirts.length = 0;
+  }
+  O.stats = {patchesDrawn: patchesDrawn, patchesCulled: patchesCulled, halfM: +half.toFixed(1), texelM: +texel.toFixed(3)};
+  return true;
+};
+
 //(Re)build the atlases when the froxel counts change.
 ARestlessOcean.Passes.UnderwaterVolumePass.prototype._ensureTargets = function(){
   const w = Math.max(1, this.width | 0), h = Math.max(1, this.height | 0);
@@ -533,6 +732,14 @@ ARestlessOcean.Passes.UnderwaterVolumePass.prototype.tick = function(ctx){
     I.uLightFrame.value.set(0, 0, 0, 1);
   }
   I.uGlowRadius.value = this.glowShadowRadiusM;
+  //Occluders along the refracted sun.
+  if(this.occluderShadow && this._renderOccluders(ctx, range, sw)){
+    I.uOccMap.value = this._occ.target.depthTexture;
+    I.uOccMatrix.value.copy(this._occ.matrix);
+    I.uOccParams.value.set(1.0, this.occluderBiasM / this._occ.depthSpan);
+  } else {
+    I.uOccParams.value.set(0.0, 0.0);
+  }
   //Fog texture.
   const t = ctx.time || 0.0;
   I.uTexture.value.set(Math.max(this.textureAmplitude, 0.0), 1.0 / Math.max(this.textureScaleM, 0.01), 0, 0);
@@ -607,6 +814,7 @@ ARestlessOcean.Passes.UnderwaterVolumePass.prototype.resize = function(){};
 ARestlessOcean.Passes.UnderwaterVolumePass.prototype.dispose = function(){
   this._disposeTargets();
   if(this._causticMean){ this._causticMean.target.dispose(); this._causticMean = null; }
+  if(this._occ){ this._occ.target.dispose(); this._occ.depthMat.dispose(); if(this._occ.twins) this._occ.twins.dispose(); this._occ = null; }
   if(this.injectMaterial) this.injectMaterial.dispose();
   if(this.integrateMaterial) this.integrateMaterial.dispose();
   if(this._quad) this._quad.geometry.dispose();

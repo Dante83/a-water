@@ -79,6 +79,28 @@ don't match"; "some texture to the fog"). Measured, then fixed:**
   copy comes first): 0 failures there, 0 on island-sholes-ocean/-sky and hero-creek-sky.
   ⚠ three keys ShaderMaterial programs on the UNRESOLVED source, so a chunk change alone never
   recompiles a cached water program: that is why this hid in most sessions.
+- **Phase 3b, occluders (2026-09-26, branch `underwater-occluders`):** a depth map rendered ALONG
+  THE REFRACTED SUN over the volume's footprint (1024², ±(1.2·range + 2) m, 6.7 cm texels at
+  27 m range). Terrain via the foreign-terrain twin, ordinary meshes via MeshDepthMaterial
+  (instancing-aware) or their customDepthMaterial, double-sided; water/sky/spray ShaderMaterials,
+  the curtain and non-meshes hidden. It holds occluders from `occluderAboveM` (10 m) above the
+  still level down, so a floating hull is caught whole while tall cliffs stay with the
+  WaterLightField (air direction). The camera looks down the beam, so P and its surface crossing
+  share a texel: ONE depth tap per froxel, on the sun beam only (the glow stays unshadowed).
+  - Cost: a-land patches place themselves in the vertex shader, so three drew EVERY patch
+    (86 draws, 2.9 M triangles, ~2 ms). Culled by each patch's node rect (u_patchOrigin /
+    u_patchSize, as a-land's TerrainSunCSM) → 31 drawn / 72 culled; skirts zeroed for the pass
+    (a-land's phantom-occluder lesson). Re-rendered only when the view moves 10% of the map,
+    the sun turns 0.2°, or every 6 frames (a drifting boat): +0.4-0.6 ms per render, ~0.1 ms
+    amortized.
+  - Verified with a 6×1.2×6 m box floated just under the surface: the in-scatter view shows its
+    shadow wedge down the water column (43% of pixels darker, up to 18 levels, 5 m away); at
+    12 m it all but vanishes, which is right for extinction 0.17-0.36 /m.
+  - ⚠ Headless lesson: synchronous float readbacks inside the frame loop (and some outside it)
+    return 0 in headless Chrome here; draw the texture on a HUD quad and screenshot instead.
+    Two hours of "the map is empty" were the instrument.
+  - Also set the depth mask before the clear (glClear respects it; three leaves it wherever the
+    last draw put it). Not the bug here, but a real trap.
 - Cost: 0.16-0.27 ms GPU (timer query, 4090) for both passes with everything on.
 
 - Physical change to flag: the sun beam uses the refracted irradiance across the beam,
