@@ -413,16 +413,13 @@ uniform sampler2D aboveWaterTransmissionTexture;
 #endif
 
 //The underwater light volume (UnderwaterVolumePass, UNDERWATER-VOLUME.md): the light the water
-//scatters toward the camera, per froxel. The fog chunk declares this lookup inside USE_FOG, so
-//it is declared here only where the chunk is not in this shader. Hand copy of the pass
+//scatters toward the camera, per froxel. Declared ONCE per program: the fog chunk copy (when
+//this shader includes the chunk AND the chunk has been injected) defines ARO_UWVOL_DECLARED, and
+//this copy fills in every other case. Keying it on USE_FOG was wrong: a water program compiled
+//before the chunk injection has USE_FOG but no lookup, and failed to link. Hand copy of the pass
 //CONSUMER_GLSL: keep in step.
-#if($atmospheric_perspective_enabled)
-  #define ARO_UWVOL_OWN
-#endif
-#ifndef USE_FOG
-  #define ARO_UWVOL_OWN
-#endif
-#ifdef ARO_UWVOL_OWN
+#ifndef ARO_UWVOL_DECLARED
+  #define ARO_UWVOL_DECLARED
   uniform sampler2D uwVolAtlas;
   uniform float uwVolOn;
   uniform mat4 uwVolViewProj;

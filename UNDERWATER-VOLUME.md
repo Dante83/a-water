@@ -59,7 +59,7 @@ don't match"; "some texture to the fog"). Measured, then fixed:**
   mean (1×1 GPU reduction, read by the shader: CPU float readbacks come back empty in headless
   Chrome) so shafts move light instead of dimming it (with the model's 0.25 they darkened the
   water 15% per unit of strength). Visible as radial streaks toward the sun when looking up.
-  Defaults retuned with Dante: `shaftStrength` 6, `shaftCellM` 2, grid 320×180, `historyWeight`
+  Defaults retuned with Dante: `shaftStrength` 5 (6, then "a smidge" less), `shaftCellM` 2, grid 320×180, `historyWeight`
   0.6 (was 2 / 3 / 160×90 / 0.85: shafts there but too fuzzy to read). 0.60 ms GPU at 320×180.
 - **Temporal:** R2-jittered sample point per froxel (depth and lateral) + reprojected history
   of the scatter atlas (ping-pong), `historyWeight` 0.85, reset on surfacing.
@@ -72,6 +72,14 @@ don't match"; "some texture to the fog"). Measured, then fixed:**
 - **Fog texture (LOOK TERM, flagged):** drifting 3-octave value noise on the scattering,
   `textureAmplitude` 0.3, `textureScaleM` 8, `textureDrift` (0.08, 0.03, 0.05) m/s. 0 = the
   physical homogeneous medium. Transmittance stays homogeneous.
+- **Link failure (Dante's console, after the regen):** `uwVolumeInscatter` undeclared in the
+  water shader. The water declared its own copy only for AP pages or without USE_FOG, assuming
+  the fog chunk had it otherwise; a water program compiled BEFORE the chunk injection has
+  USE_FOG and no lookup. Reproduced headless by stripping the block and forcing a recompile
+  (84 programs fail), fixed with a declared-once guard (`ARO_UWVOL_DECLARED`, set by whichever
+  copy comes first): 0 failures there, 0 on island-sholes-ocean/-sky and hero-creek-sky.
+  ⚠ three keys ShaderMaterial programs on the UNRESOLVED source, so a chunk change alone never
+  recompiles a cached water program: that is why this hid in most sessions.
 - Cost: 0.16-0.27 ms GPU (timer query, 4090) for both passes with everything on.
 
 - Physical change to flag: the sun beam uses the refracted irradiance across the beam,

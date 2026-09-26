@@ -60,7 +60,7 @@ ARestlessOcean.Passes.UnderwaterVolumePass = function(oceanGrid){
   this.slicePower = 2.0;       //slice s ∈ [0,1] sits at range · s^power
   this.phaseG = 0.5;           //Henyey-Greenstein asymmetry of the sun term (matches UW_HG_G)
   this.gazeWeight = 1.0;       //1 = the physical sun halo; 0 = the old view-independent murk
-  this.shaftStrength = 6.0;    //the caustic on the sun beam: 1 = the seabed web contrast, 0 = none (6: a look choice, Dante 2026-09-26)
+  this.shaftStrength = 5.0;    //the caustic on the sun beam: 1 = the seabed web contrast, 0 = none (5: a look choice, Dante 2026-09-26)
   //Smallest caustic cell the SHAFTS use (the seabed keeps its own). A view ray drifts across the
   //web as it goes deeper and the integral averages whatever cells it crosses, so fine cells
   //cancel to a flat dimming; shafts are the coarse part of the web. A look knob.
@@ -108,6 +108,9 @@ ARestlessOcean.Passes.UnderwaterVolumePass.MAX_SLICES = 128;
 //a-land carries a hand copy with its own u_ names (terrain.frag alandUwVolume), and
 //so does the water shader: keep the three in step.
 ARestlessOcean.Passes.UnderwaterVolumePass.CONSUMER_GLSL = [
+  //Declared once per program: the water shader carries its own copy under the same guard.
+  '#ifndef ARO_UWVOL_DECLARED',
+  '#define ARO_UWVOL_DECLARED',
   'uniform sampler2D uwVolAtlas;',
   'uniform float uwVolOn;',
   'uniform mat4 uwVolViewProj;',
@@ -133,7 +136,8 @@ ARestlessOcean.Passes.UnderwaterVolumePass.CONSUMER_GLSL = [
   '  float k0 = floor(c);',
   '  float k1 = min(k0 + 1.0, uwVolGrid.z - 1.0);',
   '  return vec4(mix(uwVolSlice(px, k0), uwVolSlice(px, k1), c - k0), 1.0);',
-  '}'
+  '}',
+  '#endif'
 ].join('\n');
 
 ARestlessOcean.Passes.UnderwaterVolumePass.prototype.init = function(){
