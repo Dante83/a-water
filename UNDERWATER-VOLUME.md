@@ -1,8 +1,7 @@
 # UNDERWATER-VOLUME — world-space underwater light: fog, shadows, god rays
 
-Status: PHASES 1-3a + CEILING BUILT (2026-09-26). Needs BOTH regens (a-land `create-shader.py`
-for terrain.frag, a-water `create-shader.py` for water-shader.glsl), then a browser look.
-Branches: `underwater-volume` in a-water (off `development` a801d1a) and a-faraway-land (off `main` e00915b).
+Status: MERGED 2026-09-26 (Dante: "perfect"). a-water `development` c16685d, a-land `main` 9227c6a,
+generated shaders included. Next: Phase 3b (refracted-sun depth map for underwater occluders).
 
 Decisions (Dante, 2026-09-26): the volume REPLACES the four fog copies (the analytic murk stays
 only as the fallback), and the sun halo is PHYSICAL (`gazeWeight` 1, a live knob).
