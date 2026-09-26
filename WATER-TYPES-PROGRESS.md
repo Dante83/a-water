@@ -129,9 +129,58 @@ sun, a rock face or bank beside the water: dappled shimmer (view 12); none on fl
 where the reflecting water is shaded. Suspects if wrong: shimmer too faint at a high sun is
 PHYSICAL (2%); the object field lookup ends at 256 m (cascade 0).
 
-### ▶ RESUME HERE — PAUSED on an a-starry-sky sun-direction bug (2026-09-25)
+### ▶ RESUME HERE (2026-09-26): sun-direction fix BUILT, test the water glow
 
-**Paused at Dante's request while he works in A-Starry-Sky. Do not edit A-Starry-Sky from here.**
+**Next:** on `examples/demos/island-sholes-sky.html` (now on the new sky build), fly at a low sun
+and check the glow holds still on the ground instead of sliding with the camera (debug views
+12/13; `StarrySky.Methods.getDominantLightDirection()` should not change as you move). If it
+still moves: confirm a-land `f922a43`'s glow shaders were regenerated, then suspect the glow's
+own `h / tan(elevation)` placement. Then settle `shimmerFalloffM` / `shimmerReachM` /
+`shimmerShadowRadiusM` defaults with Dante.
+
+What landed (a-land + a-water now committed; A-Starry-Sky still UNCOMMITTED):
+- **A-Starry-Sky, branch `camera-anchored-sun-light`** (off development): `LightingManager.js`
+  owns `sourceLightTarget` (named `starry-sky-source-light-target`), set to the camera's world
+  position each tick, light at target + 5000 × dir; new `StarrySky.Methods.getDominantLightDirection(out?)`.
+  Plus two development-branch bugs that blacked out the dome: `starSkyWashoutRate` /
+  `starDaylightCutoffFade` declared outside the metering pass (moved into `#if(!$isSunPass)`),
+  and the dome's `AgXToneMapping` / `PBRNeutralToneMapping` colliding with three's injected
+  tone-mapping chunk (renamed `sky…`, as the fog chunk already did). Dome confirmed back.
+- **a-faraway-land, on `phase-9b-caustics`** (beside a staged `shaders.js` that is not ours):
+  `land-terrain.js _anchorForeignSun` keeps the new rig (only drops its shadow map);
+  `SkyEnvironment.js` also recognises the `skyToneMap` grade line. Tests 701/701, 8/8.
+- **Consumer pages:** every page on the new sky build needs
+  `<sky-assets-dir dir="milky_way" milky-way-path>` + the two Milky Way webps, or the dome
+  waits forever. Added to peaceful-island and all five `examples/demos` sky pages (gitignored).
+  `examples/personal-ocean/islands.html` not done.
+- Open side issues: Liam's fragment shader declares 33 samplers (limit 32) in headless;
+  peaceful-island 404s three wind files that aren't on a-faraway-land's current branch.
+
+#### Caustics ride the water they formed under, not the camera's (2026-09-26, CONFIRMED by Dante)
+
+Committed: a-land `e00915b` (+ `8ea606c`, the sun rig below), a-water on `phase-9-terrain-feedback`;
+both fast-forwarded (a-water `development`, a-land `main`). A-Starry-Sky left uncommitted (another session).
+
+Dante: the caustic current follows the water under the CAMERA. It did: `setCaustics` sent
+`waterFlowAt(camera)` as one uniform (`u_causticFlow`, "the current the viewer is in"), and the
+flowing-water min tile (`scale.z`) was picked by the same camera test. So a creek dragged the sea
+bed's web, and the sea froze the creek's. No bake: the per-point current is already on the GPU.
+- **a-water** (`ocean-grid.js _causticFlowField`): `setCaustics` also sends `flowField`,
+  FlowFoamPass's window (gb = the current, the field the flowing surface's ripples ride) + centre,
+  half-width, advect period, the FlowHandoff speed ramp and both min tiles. `flow` is kept for an
+  a-land that predates it.
+- **a-land** (`terrain.frag` caustic span, `TerrainMaterial.js`): `alandCausticCurrentAt(pxz)`
+  reads the current where the light CROSSED THE SURFACE, and 0 outside the ±128 m window (faded
+  over its last 10%). The min tile blends still→flowing on the same ramp. Two phases run
+  everywhere once the window is bound (the branch must stay uniform); phase B's decorrelating
+  offset scales with "flowing", so still water can't pulse. Objects get it through the shared
+  uniforms. +1 sampler: `check-shader-compiles.mjs` all link, worst 20/32, caustics object 8.
+- a-land regen done by Dante; "That's a bingo".
+- Look for: stand in a creek and look at the sea bed (still web); stand at sea and look up a creek
+  (web moving downstream). If the 2 s crossfade reads as a pulse on fast water, that's round 2's
+  open item (smoothstep after the mix), now visible everywhere a creek is in view.
+
+#### (history) PAUSED on an a-starry-sky sun-direction bug (2026-09-25)
 
 The water glow "races" with the camera. Cause, verified in A-Starry-Sky: `LightingManager.js` puts
 the sun light at `RADIUS_OF_SKY (5000) × sunDir` around the WORLD ORIGIN (`:591-593`, `:524-526`),
