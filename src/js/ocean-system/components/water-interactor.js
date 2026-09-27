@@ -76,6 +76,13 @@ ARestlessOcean.WaterInteraction.Interactor = function(opts){
   //than the body's own volume, and that hole is what rings. Depth = craterK · radius ·
   //closing speed (m), capped; 0 turns it off. A foot at 3 m/s: ~10 cm.
   this.craterK = (opts.craterK === undefined) ? 0.5 : opts.craterK;
+  //Moving through the water pushes it aside: the stagnation head v²/2g of the speed
+  //relative to the water, added to the footprint while the point is at the surface.
+  //1 = that head as is (1 m/s: 5 cm, 2 m/s: 20 cm). Displaced volume alone rang a
+  //treading hand at millimetres; it is the motion that makes a swimmer's rings.
+  this.dragK = (opts.dragK === undefined) ? 1.0 : opts.dragK;
+  //Spray amount: multiplies the particles every entry and wade burst throws.
+  this.sprayScale = (opts.sprayScale === undefined) ? 1.0 : opts.sprayScale;
   //Ask a-water for an exact surface probe at this point (getWaterStateAt opts.probe), so
   //the waterline is the DRAWN one — the one a body riding the waves is floating on. Against
   //the coarse snapshot a chest riding the swell flickered in and out of the water with the
@@ -142,6 +149,14 @@ ARestlessOcean.WaterInteraction.Interactor.prototype.update = function(x, y, z, 
   const depth = s.surfaceY - y;
   const frac = WI.sphereFraction((depth + r) / (2.0 * r));
   const was = st.submerged;
+  //Speed through the water (the probe's water velocity is the drawn water's own, so a
+  //body riding the waves is not "moving" through them), for the drag head below.
+  //Without the probe the horizontal orbital is the twin's, phase-random against the drawn
+  //sea (~1 m/s rms at 8 m/s wind): measure against the current only, as wading spray does.
+  const inPhase = s.source === 'probe';
+  const ux = st.vx - (inPhase ? st.waterVX : s.flowX), uy = st.vy - st.waterVY,
+        uz = st.vz - (inPhase ? st.waterVZ : s.flowZ);
+  this._rel2 = known ? (ux * ux + uy * uy + uz * uz) : 0.0;
   this._setSubmerged(frac, depth, x, y, z, was);
 
   if(known && this.splash && this._cool <= 0.0 && frac > this.contactFraction){
@@ -149,7 +164,7 @@ ARestlessOcean.WaterInteraction.Interactor.prototype.update = function(x, y, z, 
     //still straddles the surface.
     const closing = st.waterVY - st.vy;
     if(frac < 0.98 && closing > this.splashMinSpeed){
-      WI.impact(x, s.surfaceY, z, closing);
+      WI.impact(x, s.surfaceY, z, closing, undefined, undefined, undefined, this.sprayScale);
       WI.crater(x, z, r, closing, this.craterK);
       this._cool = this.splashCooldown;
     } else if(frac < 0.9){
@@ -161,7 +176,7 @@ ARestlessOcean.WaterInteraction.Interactor.prototype.update = function(x, y, z, 
       const rel = Math.sqrt(rx * rx + rz * rz);
       if(rel > this.wadeMinSpeed){
         const inv = 1.0 / rel;
-        WI.impact(x + rx * inv * r, s.surfaceY, z + rz * inv * r, rel, 0.6 * rx * inv, 0.8, 0.6 * rz * inv, 0.35);
+        WI.impact(x + rx * inv * r, s.surfaceY, z + rz * inv * r, rel, 0.6 * rx * inv, 0.8, 0.6 * rz * inv, 0.35 * this.sprayScale);
         this._cool = this.splashCooldown;
       }
     }
@@ -198,7 +213,9 @@ ARestlessOcean.WaterInteraction.Interactor.prototype._setSubmerged = function(fr
   const deep = depth > r ? Math.exp(-(depth - r) / r) : 1.0;
   e.x = x; e.z = z;
   e.radius = R;
-  e.depth = deep * vol / (Math.PI * R * R);
+  const head = (frac > this.contactFraction && this.dragK > 0.0)
+    ? Math.min(0.3, this.dragK * (this._rel2 || 0.0) / (2.0 * 9.81)) : 0.0;
+  e.depth = deep * (vol / (Math.PI * R * R) + head);
   e.active = true;
 };
 
@@ -221,6 +238,8 @@ if(typeof AFRAME !== 'undefined' && !AFRAME.components['water-interactor']){
       splashMinSpeed: {type: 'number', default: 0.8},
       wadeMinSpeed: {type: 'number', default: 1.2},
       craterK: {type: 'number', default: 0.5},
+      dragK: {type: 'number', default: 1.0},
+      sprayScale: {type: 'number', default: 1.0},
       probe: {type: 'boolean', default: true},
       enabled: {type: 'boolean', default: true}
     },
@@ -243,6 +262,8 @@ if(typeof AFRAME !== 'undefined' && !AFRAME.components['water-interactor']){
       i.splashMinSpeed = d.splashMinSpeed;
       i.wadeMinSpeed = d.wadeMinSpeed;
       i.craterK = d.craterK;
+      i.dragK = d.dragK;
+      i.sprayScale = d.sprayScale;
       i.probe = d.probe;
       i._wsOpts.probe = d.probe ? i._probeKey : undefined;
       this._target = null;   //re-resolve (the model may have changed)
