@@ -8,6 +8,36 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
+## ▶▶ RESUME HERE (2026-09-27): back to Phase 9 after the Liam pass
+
+The Liam pass is done and lives in peaceful-island (branch `liam-swim`, ea947bc). It left
+two a-water commits on `phase-8-water-state`, which is NOT yet merged into `development`:
+- 09f437e: `getWaterStateAt` keeps the height snapshot live and adds `opts.probe`, an exact
+  point probe of the drawn surface plus its particle velocity.
+- c07e43f: the refraction G-buffer no longer double-decodes sRGB albedo (everything seen
+  through the water was dark and over-saturated), captures skinned meshes posed, and honours
+  alphaTest.
+
+Branch state: a-water `phase-8-water-state` contains `phase-9-terrain-feedback` and
+`development`. a-land is on `phase-8-body-id` (not merged). A-Starry-Sky's
+`camera-anchored-sun-light` IS merged into its development.
+
+**Phase 9, next in order:**
+1. **Water glow check (9b.3).** On `examples/demos/island-sholes-sky.html` at a low sun,
+   the glow should hold still on the ground as the camera moves (debug views 12/13). Then
+   settle the `shimmerFalloffM` / `shimmerReachM` / `shimmerShadowRadiusM` defaults with
+   Dante. Details: "RESUME HERE (2026-09-26): sun-direction fix BUILT" below.
+2. **9c: the ocean's moving swash and a drying clock.** The plan is in the "9c" section
+   below. a-water publishes this frame's near-shore surface (swash/breaker) as a small ortho
+   RT; a-land keeps a world-anchored wetness accumulation ring and dries it per porosity.
+   It's the biggest plumbing of Phase 9. (Liam's per-bone wet/dry in peaceful-island is the
+   same idea on a character, and it read well.)
+
+⚠ Dante's page server (http-server :8080) sends `cache-control: max-age=3600`. Hard-reload,
+or run `http-server -c-1`, or a test runs hour-old JS.
+
+---
+
 ## Phase 8 — `getWaterStateAt`, dynamic waves, interaction — **CLOSED: 8a/8b/8c done, 8d rain deferred** (2026-09-26)
 
 Branches: a-water `phase-8-water-state` (off development 917055d), a-land `phase-8-body-id`
