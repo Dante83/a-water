@@ -740,7 +740,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //halfWidth}), or null when nothing draws flowing water — then the clipmap keeps
   //every creek (see FlowHandoff).
   //Sanctioned global, in the spirit of Crest's QueryFlow (last grid wins, like
-  //the sampleWater* globals). Phase 8 folds it into getWaterStateAt.
+  //the sampleWater* globals). Phase 8: WaterState.install replaces it with a shim over getWaterStateAt.
   ARestlessOcean.queryFlow = function(x, z, out){ return self.waterFlowAt(x, z, out); };
   this.flowHandoffState = function(){
     const pass = self.flowSurfacePass;
@@ -1349,6 +1349,10 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     this.sampleFFTHeightAt = function(){ return null; };
     this.sampleWaterHeightFieldCached = function(){ return null; };
   }
+
+  //Phase 8: getWaterStateAt, and the legacy height/flow globals rewired as shims
+  //over it. After the readback pass and queryFlow, whose globals it replaces.
+  if(ARestlessOcean.WaterState){ ARestlessOcean.WaterState.install(this); }
 
   //Phase 3b: shore reflection — a camera-following wave equation that carries
   //only the wave the shore sends back (ARestlessOcean.Passes.ShoreReflectionPass;

@@ -585,8 +585,9 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.tick = function(){
 
 //Install the public ARestlessOcean.sampleWater* surface. Consumers call
 //requestFFTSnapshot() each frame they want the field kept warm.
-//Phase 8 will make these thin shims over getWaterStateAt(x, z); until then they
-//keep their 0.2.0 signatures exactly.
+//Phase 8: WaterState.install (field/water-state.js) then replaces
+//sampleWaterHeightFFT with a shim over getWaterStateAt — same answer, same
+//0.2.0 signature. The rest here are shape queries and stay as they are.
 ARestlessOcean.Passes.HeightReadbackPass.prototype.installGlobalAPI = function(){
   const self = this;
   ARestlessOcean.requestFFTSnapshot = function(){ self.request(); };

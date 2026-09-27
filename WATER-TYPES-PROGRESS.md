@@ -8,6 +8,66 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
+## Phase 8 — `getWaterStateAt` — **8a built + Node-verified, awaiting browser** (2026-09-26)
+
+Branches: a-water `phase-8-water-state` (off development 917055d), a-land `phase-8-body-id`
+(off main, in the MAIN checkout).
+
+### ▶ RESUME HERE — 8a built (2026-09-26)
+
+**No create-shader.py run is needed.** No shader changed. **For body ids, run Solve Water +
+Bake & Export** on a world (island-sholes has the ocean plus lakes). Until then `bodyId` is
+null everywhere, because old tiles have class.B = 0.
+
+**What 8a is.** `ARestlessOcean.getWaterStateAt(x, z, out?, {source, velocity})` in
+`src/js/ocean-system/field/water-state.js`, installed by OceanGrid right after
+HeightReadbackPass. It returns status, level, surfaceY (+ which source answered it),
+depth, flow (vx/vz/energy/flowWeight), orbital velocity, type/waterType and
+bodyId/waterBody. It is one front door onto the three existing sources (a-land getWaterAt,
+the FFT snapshot, the Gerstner twin), not a new source of truth.
+
+**The premise was stale** (see the note under Phase 8 in WATER-TYPES.md): rivers already
+answered with river level. 8a's actual fix is `status`: the decoder's `answerAt` now tells dry,
+loading and outside-the-world apart, where every caller used to read all three as sea.
+
+**Shims, answers unchanged.** `sampleWaterHeight` (twin), `sampleWaterHeightFFT`
+(snapshot) and `queryFlow` are rewired over getWaterStateAt. A Node harness checked them
+byte-identical against the pre-8a implementations across wet/dry/loading/outside/standalone.
+Kept on their own samplers, because they are shape queries rather than state:
+`sampleWaterDisplacement/Normal`, `sampleWaterRiseFFT/SlopeFFT`, `sampleWaterHeightFFTExact`.
+For `dry`, level/surfaceY still hold the legacy fallback number so the shims stay exact. Read
+`status` before floating anything.
+
+**Orbital velocity.** The twin's analytic d/dt of the Gerstner sum without chop: water
+moves at A·ω, and chop only leans the drawn crest. Node-checked against a numeric derivative
+of sampleDisplacement. Inside the snapshot, the vertical part is replaced by the rendered
+surface's rise (right phase); the horizontal part stays the twin's (right statistics, phase
+unknown). In flowing water it is ~0, because the masks already hand the FFT off there.
+
+**Body ids (a-land).** The worker now always ships `body` (it used to only with routing).
+It is parked on `B._waterSolve.body`, and WaterTileExport writes class.B = id + 1 from the
+wettest cell (like type). WaterReader decodes it as `body`. The contract §2 is updated.
+Rivers get none, because WaterSolve claims only the ocean and lakes. River bodies wait for
+Phase 7's hydrograph. The FV pass doesn't touch `body`, so its extra wet cells read as no
+body. Tests: check-export (+7 asserts), whole water suite, navmesh/lighting/compile checks
+all pass.
+
+**Browser check.** On island-sholes-ocean, `ARestlessOcean.debugWaterStateAt()` at the
+camera, then at a creek, a lake, dry ground, and past the world edge. Expect: creek → wet +
+flow + body null; lake → wet + body (lake) after a rebake; dry → dry, depth 0; outside →
+open-ocean. Also confirm floats and spray behave exactly as before (the shims).
+
+**Liam will not show any of this yet.** Wading and swimming come from a-land's
+`NavmeshQueryCore` (→ a-land `getWaterAt`, static level, no waves). Making the avatar ride
+the moving surface is a consumer change: navmesh/avatar asks
+`ARestlessOcean.getWaterStateAt` for surfaceY + orbital velocity when a-water is present.
+That is next, alongside 8b.
+
+**Next.** 8b local dynamic-waves sim; 8c the interaction-emitter API (generalise
+`buoyancy-splash`); 8d rain. The avatar hookup above belongs with 8c.
+
+---
+
 ## Phase 9 — terrain feedback: wet ground and caustics — **9a written + compile-verified, awaiting a-land regen + browser** (2026-09-25)
 
 Branches: a-land `phase-9a-wet-band` (off main 3105c0a, in the MAIN checkout), a-water

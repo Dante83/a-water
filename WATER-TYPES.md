@@ -512,6 +512,14 @@ contract amendment.
 
 ### Phase 8 — `getWaterStateAt(x, z)` and interaction
 
+> **8a built 2026-09-26** (`field/water-state.js`; log in WATER-TYPES-PROGRESS.md). **The
+> premise below was stale when 8a started**, the same way Phase 10's was: by Phases 1b–4 both
+> the Gerstner twin (levelProvider → waterLevelAt) and the FFT snapshot (per-texel field
+> level, masks, flow hand-off) already answered a loaded river with the RIVER's level. The
+> real remaining lie was that a-land's `getWaterAt` answers null for dry, loading AND outside
+> the world alike, and every caller read all three as open sea. 8a adds `status`
+> (wet/dry/loading/open-ocean) for that, orbital velocity, and body ids (a-land class.B).
+
 One sanctioned entry point returning `{level, depth, flow, orbitalVelocity, bodyId, type,
 energy}`, consolidating the analytic Gerstner twin (`ocean-wave-field.js`), the
 triple-buffered FFT readback (`ocean-grid.js:1160-1381`) and the field. The five existing

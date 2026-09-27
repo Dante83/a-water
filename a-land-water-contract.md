@@ -69,7 +69,13 @@ streamed tiles byte-equal to live-composited ones at every lod).
   boundaries — this is the backend cross-fade field.
 - **G**: water type — index into `simulation.waterTypes[]` (Jerlov preset + turbidity),
   quantized; consumers may treat it as a blendable scalar between adjacent entries.
-- **B, A**: reserved (candidates: foam persistence, shoreline fetch/exposure).
+- **B**: body — index into `simulation.bodies[]` **+ 1**; 0 = no body. Rivers and creeks
+  carry 0 (the solve claims only the ocean and lakes as bodies), as does every tile baked
+  before Phase 8 and any body past the 254th. From the wettest-weighted cell, like G. Not
+  blendable: consumers take the nearest/wettest texel, never an interpolated id. Read by
+  `WaterReader.getWaterAt` as `body` (null for 0) and by a-water's `getWaterStateAt` as
+  `bodyId` + `waterBody`. *(Phase 8, 2026-09-26.)*
+- **A**: reserved, written 255 (candidates: foam persistence, shoreline fetch/exposure).
 
 **Dry tiles are omitted.** A tile with no wet texels is simply not written; consumers
 treat a missing water tile as all-dry (depth 0 everywhere). Water coverage is sparse,
