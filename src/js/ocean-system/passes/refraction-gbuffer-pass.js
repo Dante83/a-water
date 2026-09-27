@@ -105,18 +105,36 @@ ARestlessOcean.Passes.RefractionGBufferPass.prototype.init = function(width, hei
   //onto the base transform, so the G-buffer shows one clump of geometry where
   //a field of it should be. three.js declares the attribute and USE_INSTANCING
   //for ShaderMaterial too, so this costs nothing when there is no instancing.
+  //
+  //⚠ So are skinning and morph targets, for the same reason: three decides
+  //USE_SKINNING / USE_MORPHTARGETS from the OBJECT (isSkinnedMesh, the
+  //geometry's morphAttributes), not the material, and binds the bone texture
+  //and influences for ShaderMaterial too. Without the chunks below an animated
+  //character is captured in its bind pose at its model origin, so the water
+  //refracts the seabed where his legs actually are: he vanishes at the
+  //waterline. The chunks compile out when neither define is set.
   this._vertexShader = [
+    '#include <morphtarget_pars_vertex>',
+    '#include <skinning_pars_vertex>',
     'out vec3 vWorldNormal;',
     'out float vViewZ;',
     'out vec2 vUv;',
     'void main(){',
+    '  vec3 objectNormal = vec3(normal);',
+    '  #include <morphinstance_vertex>',
+    '  #include <morphnormal_vertex>',
+    '  #include <skinbase_vertex>',
+    '  #include <skinnormal_vertex>',
+    '  vec3 transformed = vec3(position);',
+    '  #include <morphtarget_vertex>',
+    '  #include <skinning_vertex>',
     '  #ifdef USE_INSTANCING',
     '    mat4 instModel = modelMatrix * instanceMatrix;',
-    '    vec4 mvPosition = viewMatrix * instModel * vec4(position, 1.0);',
-    '    vWorldNormal = normalize(mat3(instModel) * normal);',
+    '    vec4 mvPosition = viewMatrix * instModel * vec4(transformed, 1.0);',
+    '    vWorldNormal = normalize(mat3(instModel) * objectNormal);',
     '  #else',
-    '    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);',
-    '    vWorldNormal = normalize(mat3(modelMatrix) * normal);',
+    '    vec4 mvPosition = modelViewMatrix * vec4(transformed, 1.0);',
+    '    vWorldNormal = normalize(mat3(modelMatrix) * objectNormal);',
     '  #endif',
     '  vViewZ = -mvPosition.z;',
     '  vUv = uv;',
@@ -143,9 +161,18 @@ ARestlessOcean.Passes.RefractionGBufferPass.prototype.init = function(width, hei
     ].join('\n'));
   }
 
-  //Albedo path stores LINEAR values into the HalfFloat target. Source albedo
-  //maps from GLTF (the island model) are sRGB-encoded, so decode here once.
+  //Albedo path stores LINEAR values into the HalfFloat target, sampled the way
+  //three's own render samples the map. ⚠ An 8-bit map tagged SRGBColorSpace is
+  //uploaded as SRGB8_ALPHA8 (three r152+) and the GPU decodes it on read, so
+  //texture() already returns linear. This shader used to decode it AGAIN, which
+  //squared every colour: dark, over-saturated albedo on anything seen through
+  //the water (skin turned deep orange, 2026-09-27). Only video textures decode
+  //in the shader in three, so only they do here. An untagged map is data to
+  //three and is left as-is, like the main render leaves it.
   //Material.color values are already linear (THREE.Color stores linear).
+  //
+  //alphaTest is honoured (hair cards, foliage cards): without it the cut-out
+  //quads were captured as solid opaque cards.
   this._fragmentShader = [
     'precision highp float;',
     'layout(location = 0) out vec4 gAlbedo;',
@@ -157,13 +184,19 @@ ARestlessOcean.Passes.RefractionGBufferPass.prototype.init = function(width, hei
     'uniform vec3 baseColor;',
     'uniform sampler2D albedoMap;',
     'uniform int hasAlbedoMap;',
+    'uniform int decodeAlbedo;',
+    'uniform float alphaCut;',
+    'uniform float baseAlpha;',
     'vec3 srgbToLinear(vec3 c){ return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }',
     'void main(){',
     '  vec3 albedo = baseColor;',
+    '  float alpha = baseAlpha;',
     '  if(hasAlbedoMap == 1){',
-    '    vec3 texel = texture(albedoMap, vUv).rgb;',
-    '    albedo *= srgbToLinear(texel);',
+    '    vec4 texel = texture(albedoMap, vUv);',
+    '    albedo *= decodeAlbedo == 1 ? srgbToLinear(texel.rgb) : texel.rgb;',
+    '    alpha *= texel.a;',
     '  }',
+    '  if(alphaCut > 0.0 && alpha < alphaCut) discard;',
     '  gAlbedo = vec4(albedo, 1.0);',
     '  gNormal = vec4(normalize(vWorldNormal), 1.0);',
     '  gLinearDepth = vec4(vViewZ, 0.0, 0.0, 1.0);',
@@ -190,7 +223,11 @@ ARestlessOcean.Passes.RefractionGBufferPass.prototype._buildMaterialFor = functi
     uniforms: {
       baseColor: { value: baseColorRef },
       albedoMap: { value: hasMap ? srcMat.map : this._whitePixel },
-      hasAlbedoMap: { value: hasMap ? 1 : 0 }
+      hasAlbedoMap: { value: hasMap ? 1 : 0 },
+      decodeAlbedo: { value: (hasMap && srcMat.map.isVideoTexture &&
+                              srcMat.map.colorSpace === THREE.SRGBColorSpace) ? 1 : 0 },
+      alphaCut: { value: srcMat.alphaTest > 0 ? srcMat.alphaTest : 0.0 },
+      baseAlpha: { value: srcMat.opacity !== undefined ? srcMat.opacity : 1.0 }
     },
     vertexShader: this._vertexShader,
     fragmentShader: this._fragmentShader,
