@@ -1150,7 +1150,9 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         const d = evt.detail || {};
         const p = d.point;
         if(!p) return;
-        s.emitImpact(p.x, p.y, p.z, 0.0, 1.0, 0.0, d.speed || 0.0);
+        //Phase 8c: the same spray path every water interactor uses.
+        if(ARestlessOcean.WaterInteraction) ARestlessOcean.WaterInteraction.impact(p.x, p.y, p.z, d.speed || 0.0);
+        else s.emitImpact(p.x, p.y, p.z, 0.0, 1.0, 0.0, d.speed || 0.0);
       });
     }
   } else {

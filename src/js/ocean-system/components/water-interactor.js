@@ -1,0 +1,239 @@
+//=============================================================================
+// WaterInteraction — anything that touches the water (Phase 8c).
+//=============================================================================
+//
+// One way in for everything that is not the water: a hand, a foot, a hull, a
+// thrown rock. Each contact point is an Interactor, a sphere that follows a
+// world position. Every frame it asks getWaterStateAt where the water is and
+// answers three things:
+//
+//   RIPPLES  a DynamicWaves emitter: a Gaussian of the waterline radius pressed
+//            down by the displaced volume. Only the change is injected, so a
+//            leg held still is quiet, a leg dipping rings, a leg walking wakes.
+//   SPRAY    WaterInteraction.impact() into the shared splash emitter: on entry
+//            (the water closing on the point faster than splashMinSpeed) and
+//            while wading (moving through the waterline faster than
+//            wadeMinSpeed relative to the current).
+//   EVENTS   'water-enter' / 'water-exit' on the entity, and a `state` object
+//            (submerged fraction, depth, surface height, the water's velocity)
+//            for whoever animates the thing: swim vs wade vs walk.
+//
+// The buoyant component predates this and keeps its own box-footprint emitter;
+// its buoyancy-splash event now goes through WaterInteraction.impact() too, so
+// spray from floats and from interactors is the same spray.
+//
+// A-Frame:  <a-entity water-interactor="radius: 0.3">
+//           Several per entity, one per contact point, following named objects
+//           inside it (bones work):
+//           water-interactor__lhand="target: mixamorigLeftHand; radius: 0.08"
+// JS:       const i = new ARestlessOcean.WaterInteraction.Interactor({radius: 0.3});
+//           i.update(x, y, z, dtSeconds);  ...  i.dispose();
+
+ARestlessOcean.WaterInteraction = {};
+
+//Spray at a contact point: (x, y, z) on the surface, (nx, ny, nz) the direction
+//the water is thrown (up for an entry), speed the closing speed in m/s. countScale
+//thins it (wading sprays a little, continuously). Returns false when there is no
+//splash system to take it.
+ARestlessOcean.WaterInteraction.impact = function(x, y, z, speed, nx, ny, nz, countScale){
+  const grid = ARestlessOcean.WaterState && ARestlessOcean.WaterState.grid;
+  const splash = grid && grid.oceanSplash;
+  if(!splash || !(speed > 0.0)) return false;
+  if(nx === undefined){ nx = 0.0; ny = 1.0; nz = 0.0; }
+  splash.emitImpact(x, y, z, nx, ny, nz, speed, undefined, undefined, undefined, countScale);
+  return true;
+};
+
+//Volume fraction of a sphere under a plane cutting it at normalised height t
+//(0 = touching from above, 1 = just covered): t²(3 − 2t).
+ARestlessOcean.WaterInteraction.sphereFraction = function(t){
+  t = Math.min(1.0, Math.max(0.0, t));
+  return t * t * (3.0 - 2.0 * t);
+};
+
+//─────────────────────────────────────────────────────────────────────────────
+ARestlessOcean.WaterInteraction.Interactor = function(opts){
+  opts = opts || {};
+  this.radius = opts.radius || 0.3;
+  this.ripples = opts.ripples !== false;
+  this.splash = opts.splash !== false;
+  //Entry spray: the water closing on the point at least this fast (m/s).
+  this.splashMinSpeed = (opts.splashMinSpeed === undefined) ? 0.8 : opts.splashMinSpeed;
+  //Wading spray: moving through the waterline at least this fast relative to the water.
+  this.wadeMinSpeed = (opts.wadeMinSpeed === undefined) ? 1.2 : opts.wadeMinSpeed;
+  this.splashCooldown = (opts.splashCooldown === undefined) ? 0.15 : opts.splashCooldown;
+  //Below this submerged fraction the point counts as out of the water.
+  this.contactFraction = 0.02;
+  //What the owner reads.
+  this.state = {
+    inWater: false,
+    submerged: 0.0,       //volume fraction of the sphere under the surface, 0..1
+    depth: 0.0,           //centre below the surface, m (negative: above)
+    surfaceY: null,
+    status: null,         //getWaterStateAt status
+    //Current + wave orbital velocity. Vertical is the rendered surface's own rise
+    //near the camera; horizontal orbital is the twin's (right size, phase unknown).
+    waterVX: 0.0, waterVY: 0.0, waterVZ: 0.0,
+    vx: 0.0, vy: 0.0, vz: 0.0                   //the point's own velocity
+  };
+  this.onEnter = opts.onEnter || null;
+  this.onExit = opts.onExit || null;
+  this._emitter = null;
+  this._prev = null;
+  this._cool = 0.0;
+  this._ws = null;
+};
+
+ARestlessOcean.WaterInteraction.Interactor.prototype.update = function(x, y, z, dt){
+  const WI = ARestlessOcean.WaterInteraction;
+  const st = this.state;
+  const r = this.radius;
+  dt = (dt > 1e-4) ? Math.min(dt, 0.1) : 0.0;
+
+  //Own velocity, by difference. A first frame (or a teleport) reads as still,
+  //and sprays nothing: in a current, "still" would read as wading upstream.
+  let known = !!(this._prev && dt > 0.0);
+  if(known){
+    st.vx = (x - this._prev.x) / dt;
+    st.vy = (y - this._prev.y) / dt;
+    st.vz = (z - this._prev.z) / dt;
+    if(st.vx * st.vx + st.vy * st.vy + st.vz * st.vz > 400.0){ st.vx = 0.0; st.vy = 0.0; st.vz = 0.0; known = false; }
+  } else {
+    st.vx = 0.0; st.vy = 0.0; st.vz = 0.0;
+  }
+  this._prev = this._prev || {};
+  this._prev.x = x; this._prev.y = y; this._prev.z = z;
+  this._cool = Math.max(0.0, this._cool - dt);
+
+  const s = ARestlessOcean.getWaterStateAt
+    ? (this._ws = ARestlessOcean.getWaterStateAt(x, z, this._ws, {velocity: true})) : null;
+  const wet = !!(s && s.status !== 'dry' && s.surfaceY !== null);
+  st.status = s ? s.status : null;
+  st.surfaceY = wet ? s.surfaceY : null;
+  if(!wet){
+    this._setSubmerged(0.0, 0.0, x, y, z, 0.0);
+    return st;
+  }
+  st.waterVX = s.flowX + s.orbitalX;
+  st.waterVY = s.orbitalY;
+  st.waterVZ = s.flowZ + s.orbitalZ;
+  const depth = s.surfaceY - y;
+  const frac = WI.sphereFraction((depth + r) / (2.0 * r));
+  const was = st.submerged;
+  this._setSubmerged(frac, depth, x, y, z, was);
+
+  if(known && this.splash && this._cool <= 0.0 && frac > this.contactFraction){
+    //Entry: the water closing on the point (water up, point down) while the sphere
+    //still straddles the surface.
+    const closing = st.waterVY - st.vy;
+    if(frac < 0.98 && closing > this.splashMinSpeed){
+      WI.impact(x, s.surfaceY, z, closing);
+      this._cool = this.splashCooldown;
+    } else if(frac < 0.9){
+      //Wading: through the waterline sideways, relative to the CURRENT. Not to the
+      //waves' orbital velocity: the analytic twin's phases are not the rendered
+      //sea's, and its ~1 m/s rms orbital (8 m/s wind) made a slow wader spray at
+      //random (headless 2026-09-26). state.waterV* keeps the full velocity.
+      const rx = st.vx - s.flowX, rz = st.vz - s.flowZ;
+      const rel = Math.sqrt(rx * rx + rz * rz);
+      if(rel > this.wadeMinSpeed){
+        const inv = 1.0 / rel;
+        WI.impact(x + rx * inv * r, s.surfaceY, z + rz * inv * r, rel, 0.6 * rx * inv, 0.8, 0.6 * rz * inv, 0.35);
+        this._cool = this.splashCooldown;
+      }
+    }
+  }
+  return st;
+};
+
+//Submerged fraction → the ripple emitter and the enter/exit edges.
+ARestlessOcean.WaterInteraction.Interactor.prototype._setSubmerged = function(frac, depth, x, y, z, was){
+  const st = this.state;
+  const r = this.radius;
+  st.submerged = frac;
+  st.depth = depth;
+  const inWater = frac > this.contactFraction;
+  if(inWater !== st.inWater){
+    st.inWater = inWater;
+    const cb = inWater ? this.onEnter : this.onExit;
+    if(cb) cb(this, st);
+  }
+  const DW = ARestlessOcean.DynamicWaves;
+  if(!this.ripples || !DW) return;
+  if(!this._emitter || this._emitter._removed) this._emitter = DW.addEmitter();
+  const e = this._emitter;
+  //Waterline radius where the surface cuts the sphere; a fully covered sphere
+  //still bulges the surface over itself, less the deeper it goes.
+  const a = Math.sqrt(Math.max(0.0, r * r - depth * depth));
+  const R = Math.max(a, 0.5 * r);
+  const vol = frac * (4.0 / 3.0) * Math.PI * r * r * r;
+  const deep = depth > r ? Math.exp(-(depth - r) / r) : 1.0;
+  e.x = x; e.z = z;
+  e.radius = R;
+  e.depth = deep * vol / (Math.PI * R * R);
+  e.active = true;
+};
+
+ARestlessOcean.WaterInteraction.Interactor.prototype.dispose = function(){
+  if(this._emitter){ this._emitter.remove(); this._emitter = null; }
+};
+
+//─────────────────────────────────────────────────────────────────────────────
+if(typeof AFRAME !== 'undefined' && !AFRAME.components['water-interactor']){
+  AFRAME.registerComponent('water-interactor', {
+    multiple: true,
+    schema: {
+      //Name of an object inside this entity to follow (a bone, a mesh); '' = the entity.
+      target: {type: 'string', default: ''},
+      radius: {type: 'number', default: 0.3},
+      //Local offset from the target, in the target's space.
+      offset: {type: 'vec3', default: {x: 0, y: 0, z: 0}},
+      ripples: {type: 'boolean', default: true},
+      splash: {type: 'boolean', default: true},
+      splashMinSpeed: {type: 'number', default: 0.8},
+      wadeMinSpeed: {type: 'number', default: 1.2},
+      enabled: {type: 'boolean', default: true}
+    },
+    init: function(){
+      const self = this;
+      this._world = new THREE.Vector3();
+      this._target = null;
+      this.interactor = new ARestlessOcean.WaterInteraction.Interactor({
+        onEnter: function(i, st){ self.el.emit('water-enter', {id: self.id, state: st}, false); },
+        onExit: function(i, st){ self.el.emit('water-exit', {id: self.id, state: st}, false); }
+      });
+      this.state = this.interactor.state;
+    },
+    update: function(){
+      const d = this.data;
+      const i = this.interactor;
+      i.radius = Math.max(0.01, d.radius);
+      i.ripples = d.ripples;
+      i.splash = d.splash;
+      i.splashMinSpeed = d.splashMinSpeed;
+      i.wadeMinSpeed = d.wadeMinSpeed;
+      this._target = null;   //re-resolve (the model may have changed)
+      if(!d.enabled) i.dispose();
+    },
+    _resolveTarget: function(){
+      if(this._target) return this._target;
+      const name = this.data.target;
+      const root = this.el.object3D;
+      this._target = name ? root.getObjectByName(name) : root;
+      return this._target;   //null until a model with that name has loaded
+    },
+    tick: function(time, timeDelta){
+      if(!this.data.enabled) return;
+      const t = this._resolveTarget();
+      if(!t) return;
+      const o = this.data.offset;
+      t.updateWorldMatrix(true, false);
+      this._world.set(o.x, o.y, o.z);
+      t.localToWorld(this._world);
+      this.interactor.update(this._world.x, this._world.y, this._world.z, (timeDelta || 16.7) / 1000.0);
+    },
+    remove: function(){
+      this.interactor.dispose();
+    }
+  });
+}

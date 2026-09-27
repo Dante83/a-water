@@ -8,7 +8,7 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
-## Phase 8 — `getWaterStateAt` + dynamic waves — **8a DONE (browser-approved), 8b built + headless-verified** (2026-09-26)
+## Phase 8 — `getWaterStateAt`, dynamic waves, interaction — **CLOSED: 8a/8b/8c done, 8d rain deferred** (2026-09-26)
 
 Branches: a-water `phase-8-water-state` (off development 917055d), a-land `phase-8-body-id`
 (off main, in the MAIN checkout). 8a committed (a-water 97e9a22, a-land 722fd03). Dante
@@ -16,7 +16,60 @@ rebaked island-sholes; body ids are live (around spawn: wet/ocean, wet/lake, and
 with none). His "rivers 100% better" came from that rebake picking up the recent solver
 work, **not** from 8a: the GPU decode reads class R/G only.
 
-### ▶ RESUME HERE — 8b built (2026-09-26)
+### ▶ RESUME HERE — Phase 8 closed; next is the Liam pass (2026-09-26)
+
+8b committed (24343d2). **8c needs no regen**: pure JS, no GLSL. (8b's ripples still need
+`create-shader.py` to draw.)
+
+**What 8c is.** `src/js/ocean-system/components/water-interactor.js`:
+- **`ARestlessOcean.WaterInteraction.impact(x, y, z, speed, n?, countScale?)`**: the one
+  spray path. The grid's `buoyancy-splash` listener now goes through it too.
+- **`WaterInteraction.Interactor`**: a sphere following a point. Each frame it reads
+  `getWaterStateAt` (with velocity) and does three things:
+  - Keeps a DynamicWaves **emitter**: waterline radius, volume-matched depth, fading once
+    the sphere is covered deeper than its radius.
+  - **Sprays** on entry (the water closing faster than 0.8 m/s) and while **wading**
+    (through the waterline faster than 1.2 m/s relative to the CURRENT).
+  - Keeps a **`state`** (inWater, submerged fraction, depth, surfaceY, the water's
+    velocity, its own velocity) and fires enter/exit callbacks.
+- **`water-interactor` component**, multiple instances allowed.
+  `target` names an object inside the entity (a bone, e.g.
+  `water-interactor__lhand="target: mixamorigLeftHand; radius: 0.08"`), and `offset` is in
+  the target's space. The entity gets `water-enter` / `water-exit` events. This is the
+  hook Liam will use: a handful per limb plus the torso, with `state.submerged` choosing
+  walk / wade / swim.
+- **Flow-riding debris**: `buoyant` gains `drift` (default on) and `driftTime` (1.5 s). The
+  horizontal velocity relaxes toward the current at a rate scaled by the submerged fraction,
+  and the body runs aground where the next step would be dry. It uses the current only, not
+  the orbital velocity: the twin's phases would rock a float out of time with the visible
+  waves.
+
+**Verified.** Node unit test (mocked water state, 10 checks), including:
+- one enter and one exit, and entry spray at the closing speed;
+- the Gaussian volume equal to the displaced volume;
+- wading at 2 m/s sprays and at 0.5 m/s doesn't;
+- riding a 2 m/s current doesn't spray; dry ground is never "in water".
+
+Two bugs came out of it. The first frame (and a teleport) read as "still" and sprayed in a
+current; spray now waits for a known velocity. Headless on island-sholes (4090):
+- A 3 m/s plunge gives one `water-enter` and two spray events, plus a ring.
+- Wading 2 m/s: 17 sprays in 3 s and a visible V-wake. At 0.5 m/s: 1.
+- A debris box in a 2.9 m/s creek reaches ~2.2 m/s and travels 15 m downstream in 10 s,
+  following the creek's level down (11.4 → 10.6 m).
+
+The second bug: wading was first measured against current + orbital. The twin's ~1 m/s
+rms orbital (right size: Hs 2.9 m gives 0.94 m/s, theory ~0.8) is phase-random against the
+rendered sea, so slow waders sprayed at random.
+
+Harness note: calling `regenerateH0(wind)` directly leaves the twin at the old wind. The
+real path (ocean-state.js:182) updates `data.wind_velocity` first, so there is no bug.
+
+**Phase 8 CLOSED (2026-09-26).** 8d rain is **deferred by Dante**: no rain this iteration.
+When it comes back, it is a field of ring kernels fed through the same DynamicWaves emitters.
+The avatar (Liam swimming via `water-interactor` on his bones) is Dante's Liam pass, and it
+doubles as the browser check of 8b/8c ripples.
+
+### (earlier) RESUME HERE — 8b built (2026-09-26)
 
 **Needs Dante: run `create-shader.py`** (water-shader.glsl → water-shader.js). Before the
 regen the pass runs but nothing draws it: the old water-shader.js has no

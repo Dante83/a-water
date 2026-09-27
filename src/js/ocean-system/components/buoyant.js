@@ -158,7 +158,13 @@ AFRAME.registerComponent('buoyant', {
     'bobPeriod': {type: 'number', default: 1.6},
 
     //Phase 8b: ring and wake the water (ARestlessOcean.DynamicWaves emitter).
-    'ripples': {type: 'boolean', default: true}
+    'ripples': {type: 'boolean', default: true},
+    //Phase 8c: ride the current (getWaterStateAt flow). driftTime is how long a
+    //fully submerged body takes to pick up ~63% of the current's speed; a body
+    //riding high picks it up slower, by its submerged fraction. Runs aground
+    //where the next step would be dry.
+    'drift': {type: 'boolean', default: true},
+    'driftTime': {type: 'number', default: 1.5}
   },
   init: function(){
     //Reusable scratch so tick allocates nothing.
@@ -243,7 +249,38 @@ AFRAME.registerComponent('buoyant', {
     } else {
       this._solveRigid(local, field, obj, time, timeDelta);
     }
+    this._drift(obj, local.length, timeDelta);
     this._updateRipples(local.length);
+  },
+
+  //===========================================================================
+  // DRIFT — carried by the current (Phase 8c). Horizontal only; the solvers own y.
+  //===========================================================================
+  //Only the current, not the waves' orbital velocity: the analytic twin's phases
+  //are not the rendered sea's, so orbital sway would rock a float out of time
+  //with the waves you see. Over a wave period the orbital part averages out anyway.
+  _drift: function(obj, nProbes, timeDelta){
+    if(!this.data.drift || !ARestlessOcean.getWaterStateAt){ this._dvx = 0.0; this._dvz = 0.0; return; }
+    const dt = Math.min(0.05, Math.max(0.0, (timeDelta || 16.7) / 1000.0));
+    if(dt <= 0.0) return;
+    const body = this._ensureBody(nProbes);
+    if(!body) return;
+    if(this._submH !== null) this._driftGate = Math.min(1.0, Math.max(0.0, this._submH / (2.0 * body.halfH)));
+    else if(this.data.solver === 'kinematic') this._driftGate = 1.0;
+    const gate = this._driftGate || 0.0;
+    const p = obj.position;
+    const ws = this._driftWS = ARestlessOcean.getWaterStateAt(p.x, p.z, this._driftWS);
+    if(this._dvx === undefined){ this._dvx = 0.0; this._dvz = 0.0; }
+    if(ws.status === 'dry'){ this._dvx = 0.0; this._dvz = 0.0; return; }
+    const k = Math.min(1.0, gate * dt / Math.max(0.05, this.data.driftTime));
+    this._dvx += (ws.flowX - this._dvx) * k;
+    this._dvz += (ws.flowZ - this._dvz) * k;
+    const nx = p.x + this._dvx * dt, nz = p.z + this._dvz * dt;
+    if(this._dvx === 0.0 && this._dvz === 0.0) return;
+    //Aground: the next step would leave the water.
+    const ahead = ARestlessOcean.getWaterStateAt(nx, nz, this._driftWS);
+    if(ahead.status === 'dry'){ this._dvx = 0.0; this._dvz = 0.0; return; }
+    p.x = nx; p.z = nz;
   },
   remove: function(){
     this._releaseRipples();

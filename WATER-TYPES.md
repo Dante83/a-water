@@ -524,6 +524,12 @@ contract amendment.
 > 512² at 0.125 m, with a kernel bank fitted to k·tanh(k·h), the pair-depth symmetric form,
 > advection by the current, and emitters (buoyant bodies ring and wake). Normals only, on the
 > sea and the flowing surface.
+>
+> **8c built 2026-09-26** (`components/water-interactor.js`): `WaterInteraction.impact` (one
+> spray path) and the `Interactor` / `water-interactor` component (ripples + entry/wading spray
+> + enter/exit state, bone-targetable for avatars). `buoyant` rides the current (`drift`).
+>
+> **Phase 8 closed 2026-09-26.** Rain (8d) is deferred: none this iteration.
 
 One sanctioned entry point returning `{level, depth, flow, orbitalVelocity, bodyId, type,
 energy}`, consolidating the analytic Gerstner twin (`ocean-wave-field.js`), the

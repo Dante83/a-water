@@ -83,6 +83,7 @@ JS_FILE_NAMES = [
     'ocean-system/components/a-restless-ocean.js',
     'ocean-system/components/ocean-static-mask.js',
     'ocean-system/components/buoyant.js',
+    'ocean-system/components/water-interactor.js',
 ]
 
 #Drop the UMD `if(typeof exports !== 'undefined'){...}` tails so the bundle stays
