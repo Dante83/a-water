@@ -576,11 +576,255 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.probeWaterSurfaceY = function
   return waterSurfaceY;
 };
 
+//── Surface point probes (Phase 8, for bodies IN the water) ──────────────────
+//The local height field is 2 m a texel, bakes each texel's height at its REST
+//position, and refreshes at ~15 Hz. That is right for spray and many floats,
+//and wrong for one body a camera is looking at: a calm sea is all short waves
+//the field cannot resolve, the drawn surface is pushed sideways by chop (the
+//height above a point came from somewhere else), and nothing in it says which
+//way the water is MOVING. A swimmer read it and sat still in water that moved
+//around him (2026-09-27).
+//
+//A probe is one named point, evaluated by the SAME displacement sum as
+//water-vertex.glsl (all cascades, masks, distance fades, chop, breakers, the
+//shore reflection, the field level) into a 16x2 float target, every frame:
+//  row 0  the rest point P0 whose displaced particle lands on the query point
+//         (fixed-point inversion of P = P0 + D(P0)), and the drawn height there.
+//  row 1  where the particle from LAST read's P0 is now. Against last read's
+//         query point, that is the drawn water's own particle velocity: the
+//         orbit that should carry a floating body, in the rendered phase.
+ARestlessOcean.Passes.HeightReadbackPass.PROBE_MAX = 16;
+ARestlessOcean.Passes.HeightReadbackPass.PROBE_EXPIRE_MS = 1000;
+
+ARestlessOcean.Passes.HeightReadbackPass.prototype._initSurfaceProbe = function(){
+  const HF_N = this._hfN;
+  const MAX = ARestlessOcean.Passes.HeightReadbackPass.PROBE_MAX;
+  const fieldReady = this._hfFieldReady;
+  const reflectionReady = !!(ARestlessOcean.ShoreReflection && ARestlessOcean.ShoreReflection.ENABLED);
+  const breakerReady = fieldReady && !!ARestlessOcean.ShoreBreaker;
+  //The distance fades of water-vertex.glsl, cascade by cascade (0 and 1 unfaded).
+  const FADE = [0.0, 0.0, 50.0, 100.0, 250.0, 500.0];
+  const maskSwizzle = ['mA.x', 'mA.y', 'mA.z', 'mB.x', 'mB.y', 'mB.z'];
+  let sum = '';
+  for(let c = 0; c < HF_N; c++){
+    const m = c < maskSwizzle.length ? maskSwizzle[c] + ' * ' : '';
+    const f = (c < FADE.length && FADE[c] > 0.0) ? 'smoothstep(spCascadePatch[' + c + '] * ' + FADE[c].toFixed(1) + ', 0.0, dist) * ' : '';
+    //textureLod 0, not texture: neighbouring pixels here are unrelated points, so
+    //texture()'s derivatives picked the coarsest mip, where displacement averages
+    //to nothing. The water vertex samples level 0 (vertex shaders have no LOD).
+    sum += '  d += ' + m + f + 'textureLod(spCascadeArray, vec3((xz + spCascadeOffset[' + c + ']) / spCascadePatch[' + c + '], ' + c + '.0), 0.0).xyz;\n';
+  }
+  const frag = [
+    'precision highp float;',
+    'precision highp sampler2DArray;',
+    'uniform sampler2DArray spCascadeArray;',
+    'uniform vec2 spCascadeOffset[' + HF_N + '];',
+    'uniform float spCascadePatch[' + HF_N + '];',
+    'uniform float spWhm;',
+    'uniform float spChop;',
+    'uniform float spHeightOffset;',
+    'uniform float spUseField;',
+    'uniform vec3 spCamPos;',
+    'uniform vec4 spProbe[' + MAX + '];',   //xy query point, zw last read's rest point
+    fieldReady ? ARestlessOcean.Passes.WaterFieldPass.SAMPLE_GLSL : '',
+    fieldReady ? ARestlessOcean.WaveMask.GLSL : '',
+    fieldReady ? ARestlessOcean.FlowHandoff.GLSL : 'float flowHandoffWeightAt(vec2 xz){ return 0.0; }',
+    breakerReady ? ARestlessOcean.ShoreBreaker.GLSL : '',
+    reflectionReady ? ARestlessOcean.ShoreReflection.GLSL : 'float shoreReflectionHeightAt(vec2 xz){ return 0.0; }',
+    //Displacement of the rest point xz (chop applied), and its height with
+    //level + breaker + reflection, exactly as the water vertex builds it.
+    'vec4 surfaceAt(vec2 xz){',
+    '  vec3 mA = vec3(1.0);',
+    '  vec3 mB = vec3(1.0);',
+    '  float level = spHeightOffset;',
+    '  float extra = 0.0;',
+    fieldReady ? [
+      '  if(spUseField > 0.5){',
+      '    vec4 field = waterFieldAt(xz);',
+      '    level = field.r;',
+      '    waveMaskCascades(field, mA, mB);',
+      '    float keep = 1.0 - flowHandoffWeightAt(xz);',
+      '    mA *= keep; mB *= keep;',
+      breakerReady ? '    extra = keep * (shoreBreakerHeightAt(xz, field, 1.0) + shoreReflectionHeightAt(xz));'
+                   : '    extra = keep * shoreReflectionHeightAt(xz);',
+      '  }'
+    ].join('\n') : '',
+    '  float dist = distance(spCamPos, vec3(xz.x, level, xz.y));',
+    '  vec3 d = vec3(0.0);',
+    sum,
+    '  d *= spWhm;',
+    '  d.x *= -spChop;',
+    '  d.z *= -spChop;',
+    '  return vec4(d.x, level + d.y + extra, d.z, 1.0);',
+    '}',
+    'void main(){',
+    '  int i = int(gl_FragCoord.x);',
+    '  vec4 p = spProbe[i];',
+    '  if(gl_FragCoord.y < 1.0){',
+    '    vec2 p0 = p.xy;',
+    '    for(int k = 0; k < 4; k++){ p0 = p.xy - surfaceAt(p0).xz; }',
+    '    gl_FragColor = vec4(surfaceAt(p0).y, p0, 1.0);',
+    '  } else {',
+    '    vec4 s = surfaceAt(p.zw);',
+    '    gl_FragColor = vec4(s.y, p.zw + s.xz, 1.0);',
+    '  }',
+    '}'
+  ].join('\n');
+  const probes = [];
+  for(let i = 0; i < MAX; i++) probes.push(new THREE.Vector4());
+  const uniforms = {
+    spCascadeArray: {value: null},
+    spCascadeOffset: {value: (function(){ const a = []; for(let i = 0; i < HF_N; i++) a.push(new THREE.Vector2()); return a; })()},
+    spCascadePatch: {value: new Array(HF_N).fill(1.0)},
+    spWhm: {value: 1.0},
+    spChop: {value: 1.0},
+    spHeightOffset: {value: 0.0},
+    spUseField: {value: 0.0},
+    spCamPos: {value: new THREE.Vector3()},
+    spProbe: {value: probes}
+  };
+  if(fieldReady){
+    Object.assign(uniforms, ARestlessOcean.Passes.WaterFieldPass.createSampleUniforms());
+    Object.assign(uniforms, ARestlessOcean.WaveMask.createUniforms());
+    Object.assign(uniforms, ARestlessOcean.FlowHandoff.createUniforms());
+    if(breakerReady) Object.assign(uniforms, ARestlessOcean.ShoreBreaker.createUniforms());
+  }
+  if(reflectionReady) Object.assign(uniforms, ARestlessOcean.ShoreReflection.createUniforms());
+  this._spMaterial = new THREE.ShaderMaterial({
+    uniforms: uniforms,
+    vertexShader: 'void main(){ gl_Position = vec4(position, 1.0); }',
+    fragmentShader: frag,
+    depthTest: false,
+    depthWrite: false
+  });
+  this._spScene = new THREE.Scene();
+  this._spScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this._spMaterial));
+  this._spRT = new THREE.WebGLRenderTarget(MAX, 2, {
+    minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
+    format: THREE.RGBAFormat, type: THREE.FloatType,
+    depthBuffer: false, stencilBuffer: false, generateMipmaps: false
+  });
+  this._spBuf = new Float32Array(MAX * 2 * 4);
+  this._spPending = false;
+  this._spIssued = null;        //the slots as they were when the in-flight read was drawn
+};
+
+//Register (or move) probe `key` to (x, z) and return its latest result, or null
+//until one has resolved. The result object is the probe's own and is updated in
+//place: {y, vx, vy, vz, time}. y is the drawn surface above the point the probe
+//stood on when it was ISSUED (time, performance.now() ms); v is the drawn water's
+//particle velocity there (m/s), 0 until two reads exist. A probe nobody asks
+//about for PROBE_EXPIRE_MS is dropped.
+ARestlessOcean.Passes.HeightReadbackPass.prototype.probeSurface = function(key, x, z){
+  if(!this._spProbes) this._spProbes = new Map();
+  const now = (typeof performance !== 'undefined') ? performance.now() : Date.now();
+  let p = this._spProbes.get(key);
+  if(!p){
+    if(this._spProbes.size >= ARestlessOcean.Passes.HeightReadbackPass.PROBE_MAX) return null;
+    p = {x: x, z: z, asked: now, p0x: x, p0z: z, has0: false, lastX: 0, lastZ: 0, lastY: 0, lastT: 0,
+         result: null};
+    this._spProbes.set(key, p);
+  }
+  p.x = x; p.z = z; p.asked = now;
+  return p.result;
+};
+
+ARestlessOcean.Passes.HeightReadbackPass.prototype._renderSurfaceProbe = function(){
+  if(!this._spProbes || this._spProbes.size === 0 || this._spPending) return false;
+  const grid = this.oceanGrid;
+  const composer = grid.oceanHeightComposer;
+  if(!composer || !composer.cascadeDisplacementTexture) return false;
+  if(typeof this.renderer.readRenderTargetPixelsAsync !== 'function') return false;
+  if(!this._spMaterial) this._initSurfaceProbe();
+  const now = (typeof performance !== 'undefined') ? performance.now() : Date.now();
+  const expire = ARestlessOcean.Passes.HeightReadbackPass.PROBE_EXPIRE_MS;
+  for(const [k, p] of this._spProbes){ if(now - p.asked > expire) this._spProbes['delete'](k); }
+  if(this._spProbes.size === 0) return false;
+
+  const u = this._spMaterial.uniforms;
+  const offsets = grid.oceanMaterial.uniforms.cascadeSpatialOffsets.value;
+  u.spCascadeArray.value = composer.cascadeDisplacementTexture;
+  for(let c = 0; c < this._hfN; c++){
+    u.spCascadePatch.value[c] = composer._cascadePatchSizes[c];
+    u.spCascadeOffset.value[c].copy(offsets[c]);
+  }
+  u.spWhm.value = composer.waveHeightMultiplier;
+  //The grid's own chop (ocean-grid.js writes data.chop into each water mesh), not
+  //the shared template's default.
+  u.spChop.value = (grid.data && grid.data.chop !== undefined) ? grid.data.chop
+    : (grid.oceanMaterial.uniforms.chop ? grid.oceanMaterial.uniforms.chop.value : 1.0);
+  u.spCamPos.value.copy(grid.globalCameraPosition);
+  const issued = [];
+  let i = 0;
+  for(const p of this._spProbes.values()){
+    //The first read has no rest point yet: invert from the query point itself.
+    u.spProbe.value[i].set(p.x, p.z, p.has0 ? p.p0x : p.x, p.has0 ? p.p0z : p.z);
+    issued.push({probe: p, x: p.x, z: p.z, hadP0: p.has0});
+    i++;
+  }
+  u.spHeightOffset.value = grid.waterLevelAt(issued[0].x, issued[0].z);
+  u.spUseField.value = 0.0;
+  if(this._hfFieldReady && grid.waterFieldPass && grid.waterFieldPass.bindUniforms(u)){
+    const wp = grid.waveMaskParams ? grid.waveMaskParams() : null;
+    if(wp){
+      ARestlessOcean.WaveMask.writeUniforms(u, wp);
+      const sbp = grid._shoreBreakerParams;
+      if(sbp && ARestlessOcean.ShoreBreaker && u.shoreBreakerEnabled !== undefined) ARestlessOcean.ShoreBreaker.writeUniforms(u, sbp);
+      ARestlessOcean.FlowHandoff.writeUniforms(u, grid._flowHandoffState);
+      u.spUseField.value = 1.0;
+    }
+  }
+  if(ARestlessOcean.ShoreReflection && ARestlessOcean.ShoreReflection.ENABLED){
+    ARestlessOcean.ShoreReflection.writeUniforms(u, grid.shoreReflectionPass ? grid.shoreReflectionPass.consumerState() : null);
+  }
+  const prevRT = this.renderer.getRenderTarget();
+  this.renderer.setRenderTarget(this._spRT);
+  this.renderer.render(this._spScene, this._heightFieldCamera);
+  this.renderer.setRenderTarget(prevRT);
+  this._spIssued = {slots: issued, time: now};
+  return true;
+};
+
+ARestlessOcean.Passes.HeightReadbackPass.prototype._readSurfaceProbe = function(){
+  const self = this;
+  const MAX = ARestlessOcean.Passes.HeightReadbackPass.PROBE_MAX;
+  const issued = this._spIssued;
+  const buf = this._spBuf;
+  this._spPending = true;
+  this.renderer.readRenderTargetPixelsAsync(this._spRT, 0, 0, MAX, 2, buf).then(function(){
+    self._spPending = false;
+    const t = issued.time;
+    for(let i = 0; i < issued.slots.length; i++){
+      const s = issued.slots[i], p = s.probe;
+      const r0 = i * 4, r1 = (MAX + i) * 4;
+      const y = buf[r0];
+      if(!isFinite(y)) continue;
+      const res = p.result || (p.result = {y: 0, vx: 0, vy: 0, vz: 0, time: 0});
+      //Row 1 is last read's particle, now. Last read's particle was AT last
+      //read's query point, at last read's height. The difference is its path.
+      if(s.hadP0 && p.lastT > 0 && t > p.lastT){
+        const dt = (t - p.lastT) / 1000.0;
+        res.vx = (buf[r1 + 1] - p.lastX) / dt;
+        res.vy = (buf[r1] - p.lastY) / dt;
+        res.vz = (buf[r1 + 2] - p.lastZ) / dt;
+      }
+      res.y = y;
+      res.time = t;
+      p.p0x = buf[r0 + 1]; p.p0z = buf[r0 + 2]; p.has0 = true;
+      p.lastX = s.x; p.lastZ = s.z; p.lastY = y; p.lastT = t;
+    }
+  }).catch(function(){ self._spPending = false; });
+};
+
 //Per-frame entry: refresh the local field (no-ops unless something asked for it).
 //The submersion probe is called separately from OceanGrid.tick because its
 //result feeds the underwater state machine mid-tick.
+//three r173 leaves the pixel-pack buffer bound across readRenderTargetPixelsAsync's
+//await, so every draw goes ahead of every read (NEARSHORE-WAVES.md § 5.7).
 ARestlessOcean.Passes.HeightReadbackPass.prototype.tick = function(){
+  const probeDrawn = this._renderSurfaceProbe();
   this.updateHeightField();
+  if(probeDrawn) this._readSurfaceProbe();
 };
 
 //Install the public ARestlessOcean.sampleWater* surface. Consumers call
@@ -608,6 +852,11 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.dispose = function(){
   if(this._heightFieldRT) this._heightFieldRT.dispose();
   if(this._breakerProbeMaterial) this._breakerProbeMaterial.dispose();
   if(this._breakerProbeRT) this._breakerProbeRT.dispose();
+  if(this._spMaterial) this._spMaterial.dispose();
+  if(this._spRT) this._spRT.dispose();
+  this._spMaterial = null;
+  this._spRT = null;
+  this._spProbes = null;
   this._breakerProbeMaterial = null;
   this._breakerProbeRT = null;
   this._heightFieldRT = null;

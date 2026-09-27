@@ -40,12 +40,18 @@
 //                                               ({kind: 'ocean'|'lake', level, …}); null for
 //                                               rivers and creeks (a-land gives them no body)
 //                                               and for tiles baked before Phase 8 (class.B 0)
-//   source                                      'fft' | 'analytic' | null — who answered surfaceY
+//   source                                      'probe' | 'fft' | 'analytic' | null — who answered surfaceY
 //
 // opts (optional):
 //   source    'auto' (default: FFT snapshot, else twin) | 'fft' (snapshot only;
 //             surfaceY null outside it) | 'analytic' (twin only)
 //   velocity  true to fill orbital* (one extra sin/cos per wave component)
+//   probe     a key (any string) for ONE body that must ride the drawn water: a
+//             swimmer, a boat the camera follows. The point is evaluated exactly
+//             as the water mesh draws it (every cascade, chop inverted) and
+//             orbital* become the drawn water's own particle velocity, in phase.
+//             One probe per body, moved by calling again; up to 16 at once. The
+//             first frame or two answer as 'auto' while the probe warms up.
 //
 // The legacy globals are rewired as thin shims over this at install time, with
 // byte-identical answers: sampleWaterHeight (twin), sampleWaterHeightFFT
@@ -175,10 +181,41 @@ ARestlessOcean.getWaterStateAt = function(x, z, out, opts){
   const hrp = grid.heightReadbackPass;
 
   let y = null;
+  const probeKey = opts && opts.probe;
+  if(probeKey !== undefined && probeKey !== null && source === 'auto' && hrp && hrp.probeSurface){
+    const r = hrp.probeSurface(probeKey, x, z);
+    const pnow = (typeof performance !== 'undefined') ? performance.now() : Date.now();
+    const age = r ? (pnow - r.time) / 1000.0 : Infinity;
+    if(r && age < 0.5){
+      //Carried forward from when the probe was drawn, on the water's own rise.
+      out.surfaceY = r.y + r.vy * Math.min(0.3, age);
+      out.orbitalX = r.vx; out.orbitalY = r.vy; out.orbitalZ = r.vz;
+      out.source = 'probe';
+      return out;
+    }
+  }
   if(source !== 'analytic' && hrp){
-    y = hrp.sampleWaterHeightFieldCached(x, z);
-    if(y !== null && y !== undefined) out.source = 'fft';
-    else y = null;
+    //Asking IS wanting the field: the snapshot only refreshes while someone calls
+    //requestFFTSnapshot, and without it a caller read a field frozen at whenever
+    //splash or buoyant last asked — a swimmer held still while the drawn sea
+    //rolled up and down through him. A snapshot older than half a second (the
+    //field was asleep) is not the rendered surface; fall through to the twin.
+    hrp.request();
+    const snap = hrp._hfSnap;
+    const now = (typeof performance !== 'undefined') ? performance.now() : Date.now();
+    if(snap && now - snap.time < 500.0){
+      y = hrp.sampleWaterHeightFieldCached(x, z);
+      if(y !== null && y !== undefined){
+        out.source = 'fft';
+        //The snapshot is the surface when it was ISSUED (~15 Hz, then an async
+        //read): typically 100-150 ms ago. On a 1 m swell that is a decimetre or
+        //more behind the drawn water, so carry it forward on its own rise.
+        const rise = hrp.sampleRise(x, z);
+        if(rise !== null && rise !== undefined){
+          y += rise * Math.min(0.3, (now - snap.time) / 1000.0);
+        }
+      } else y = null;
+    }
   }
   if(y === null && source !== 'fft'){
     //Exactly what sampleWaterHeight always returned (twin level comes from the
