@@ -8,21 +8,70 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
-## ▶▶ RESUME HERE (2026-09-27): back to Phase 9 after the Liam pass
+## ▶▶ RESUME HERE (2026-09-27): Phase 8e (ripples you can see), then Phase 9
 
-The Liam pass is done and lives in peaceful-island (branch `liam-swim`, ea947bc). It left
-two a-water commits on `phase-8-water-state`, which is NOT yet merged into `development`:
+The Liam pass is done and lives in peaceful-island (branch `liam-swim`). Its a-water commits
+are on `phase-8-water-state`, and `development` has been fast-forwarded to it:
 - 09f437e: `getWaterStateAt` keeps the height snapshot live and adds `opts.probe`, an exact
   point probe of the drawn surface plus its particle velocity.
 - c07e43f: the refraction G-buffer no longer double-decodes sRGB albedo (everything seen
   through the water was dark and over-saturated), captures skinned meshes posed, and honours
   alphaTest.
+- b3b239c, 12d71f5: interactors ring the water. Footprints are at least 2 cells (they were
+  sub-cell, so the energy went in and no ring came out), each interactor has its own probe,
+  an entry crater grows with speed, a drag head v²/2g is added (`dragK`), and `sprayScale`.
 
-Branch state: a-water `phase-8-water-state` contains `phase-9-terrain-feedback` and
-`development`. a-land is on `phase-8-body-id` (not merged). A-Starry-Sky's
-`camera-anchored-sun-light` IS merged into its development.
+Branch state: a-water `development` = `phase-8-water-state` (it contains
+`phase-9-terrain-feedback`). a-land `main` = `phase-8-body-id`. Nothing is pushed.
+A-Starry-Sky's `camera-anchored-sun-light` IS merged into its development.
 
-**Phase 9, next in order:**
+### Phase 8e — dynamic waves you can see (NEXT)
+
+Dante, browser, 2026-09-27, with Liam (peaceful-island `island-sholes-swim.html`; wind is
+set to -1 there for calm testing): a little splash and a little ring, but nothing on the
+ocean. He named the causes, and the code agrees:
+
+1. **Ripples don't fade with distance.** `DynamicWaves.DAMPING` = 0.1/s, so a ring lives
+   ~10 s and crosses much of the ±32 m window. Real short ripples die in a second or two:
+   viscous damping 2νk² plus the surface film, strongest for SHORT waves. Make the damping
+   wavelength-aware: raise the global rate, and/or raise `VISCOSITY`, which already acts
+   on ∇² of the velocity and so hits short waves hardest. Judge by eye, a wake fading over
+   a few metres.
+2. **Ripples only touch the normals, not the height** (an 8b design choice: "centimetre
+   ripples live in the lighting"). The clipmap near the camera is 0.25 m/vertex (patch_size 8 /
+   32 cells), doubling each ring, and the ripple grid is 0.125 m. So:
+   - `water-vertex.glsl` adds `dynamicWavesHeightAt(worldXZ)` inside the window, faded out
+     where the ring's vertex spacing can no longer carry it (more than about half the ripple
+     wavelength). Needs uniforms and the GLSL in the VERTEX stage too; today it's
+     fragment-only (`$dynamic_waves_functions`).
+   - Keep the fragment micro slope as it is.
+   - Add the same height to the surface probe (`height-readback-pass.js` `surfaceAt`), so
+     Liam and floats bob on rings and wakes.
+   - Decide whether the ocean CSM caster and the height bake want it (probably not: they're
+     metre-scale).
+   - The flowing variant's vertex path (FlowSurfacePass) gets it too, which gives rivers
+     geometric wakes.
+   - ⚠ Needs Dante's `create-shader.py` (water-vertex.glsl + template). Don't run it
+     yourself.
+3. **No spray running through rough water.** Interactors are spheres at hands, feet and
+   chest. In waist-deep swell the feet are deep under and never straddle the surface, and
+   the shins and thighs that actually cut the waterline aren't modelled. Add a CAPSULE
+   interactor along a bone segment (`target` + `targetEnd`): the contact is where the
+   surface crosses the segment (clamped to it), and the footprint, drag head, entry and wade
+   spray all come from that point. Then give Liam calf→thigh and forearm capsules on the
+   swim pages.
+4. **Later, and its own design talk: river shape.** The flowing surface is the solved level
+   plus normal-only ripple profiles, so rivers read flat. 8e's item 2 gives them geometric
+   wakes and rings for free. Standing waves, riffles and chute shape would need the FV solve
+   (or a river heightmap) to supply the surface itself.
+
+Test bed: peaceful-island-swim `island-sholes-swim.html` (Liam + interactors; `?at=1990,2540`
+is swim depth, x≈1964 is knee-deep). Headless: a FRESH `--user-data-dir` plus CDP
+`Network.setCacheDisabled`, and Liam loads in ~50 s. `DynamicWavesPass.readback()` gives the
+field. ⚠ Headless runs ~1 fps, so probes go stale (>500 ms) and fall back to the analytic
+twin: test probes in the browser.
+
+### Then Phase 9, in order
 1. **Water glow check (9b.3).** On `examples/demos/island-sholes-sky.html` at a low sun,
    the glow should hold still on the ground as the camera moves (debug views 12/13). Then
    settle the `shimmerFalloffM` / `shimmerReachM` / `shimmerShadowRadiusM` defaults with
