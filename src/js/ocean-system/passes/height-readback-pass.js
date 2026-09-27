@@ -593,6 +593,11 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.probeWaterSurfaceY = function
 //  row 1  where the particle from LAST read's P0 is now. Against last read's
 //         query point, that is the drawn water's own particle velocity: the
 //         orbit that should carry a floating body, in the rendered phase.
+//Phase 8e: the drawn surface includes DynamicWaves rings and wakes, filtered
+//exactly as the clipmap vertex filters them near the camera, so the height (row
+//0 .r) carries them and row 0 .a says how much of it they are (result.ripple).
+//The velocity (row 1) leaves them out: an interactor's own crater springing back
+//read as the water rushing up at it, a new entry, a new crater.
 ARestlessOcean.Passes.HeightReadbackPass.PROBE_MAX = 16;
 ARestlessOcean.Passes.HeightReadbackPass.PROBE_EXPIRE_MS = 1000;
 
@@ -602,6 +607,8 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._initSurfaceProbe = function(
   const fieldReady = this._hfFieldReady;
   const reflectionReady = !!(ARestlessOcean.ShoreReflection && ARestlessOcean.ShoreReflection.ENABLED);
   const breakerReady = fieldReady && !!ARestlessOcean.ShoreBreaker;
+  const DW = ARestlessOcean.DynamicWaves;
+  const rippleReady = !!(DW && DW.ENABLED && this.oceanGrid.dynamicWavesPass && this.oceanGrid.dynamicWavesMesh);
   //The distance fades of water-vertex.glsl, cascade by cascade (0 and 1 unfaded).
   const FADE = [0.0, 0.0, 50.0, 100.0, 250.0, 500.0];
   const maskSwizzle = ['mA.x', 'mA.y', 'mA.z', 'mB.x', 'mB.y', 'mB.z'];
@@ -631,8 +638,10 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._initSurfaceProbe = function(
     fieldReady ? ARestlessOcean.FlowHandoff.GLSL : 'float flowHandoffWeightAt(vec2 xz){ return 0.0; }',
     breakerReady ? ARestlessOcean.ShoreBreaker.GLSL : '',
     reflectionReady ? ARestlessOcean.ShoreReflection.GLSL : 'float shoreReflectionHeightAt(vec2 xz){ return 0.0; }',
+    rippleReady ? DW.GLSL : DW ? DW.STUB_GLSL : 'float dynamicWavesVertexHeightAt(vec2 xz, float cell){ return 0.0; }\nfloat dynamicWavesMeshCellAt(vec2 xz, vec2 c){ return 0.0; }',
     //Displacement of the rest point xz (chop applied), and its height with
-    //level + breaker + reflection, exactly as the water vertex builds it.
+    //level + breaker + reflection + dynamic ripple, exactly as the water vertex
+    //builds it; .w is the ripple alone.
     'vec4 surfaceAt(vec2 xz){',
     '  vec3 mA = vec3(1.0);',
     '  vec3 mB = vec3(1.0);',
@@ -655,7 +664,8 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._initSurfaceProbe = function(
     '  d *= spWhm;',
     '  d.x *= -spChop;',
     '  d.z *= -spChop;',
-    '  return vec4(d.x, level + d.y + extra, d.z, 1.0);',
+    '  float ripple = dynamicWavesVertexHeightAt(xz, dynamicWavesMeshCellAt(xz, spCamPos.xz));',
+    '  return vec4(d.x, level + d.y + extra + ripple, d.z, ripple);',
     '}',
     'void main(){',
     '  int i = int(gl_FragCoord.x);',
@@ -663,10 +673,11 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._initSurfaceProbe = function(
     '  if(gl_FragCoord.y < 1.0){',
     '    vec2 p0 = p.xy;',
     '    for(int k = 0; k < 4; k++){ p0 = p.xy - surfaceAt(p0).xz; }',
-    '    gl_FragColor = vec4(surfaceAt(p0).y, p0, 1.0);',
+    '    vec4 s0 = surfaceAt(p0);',
+    '    gl_FragColor = vec4(s0.y, p0, s0.w);',
     '  } else {',
     '    vec4 s = surfaceAt(p.zw);',
-    '    gl_FragColor = vec4(s.y, p.zw + s.xz, 1.0);',
+    '    gl_FragColor = vec4(s.y - s.w, p.zw + s.xz, 1.0);',
     '  }',
     '}'
   ].join('\n');
@@ -690,6 +701,14 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._initSurfaceProbe = function(
     if(breakerReady) Object.assign(uniforms, ARestlessOcean.ShoreBreaker.createUniforms());
   }
   if(reflectionReady) Object.assign(uniforms, ARestlessOcean.ShoreReflection.createUniforms());
+  if(rippleReady){
+    Object.assign(uniforms, DW.createUniforms());
+    uniforms.dynamicWavesMeshCell.value = this.oceanGrid.dynamicWavesMesh.cell;
+    uniforms.dynamicWavesMeshRing.value = this.oceanGrid.dynamicWavesMesh.ring;
+  } else if(DW){
+    Object.assign(uniforms, {dynamicWavesEnabled: {value: 0.0}, dynamicWavesCenter: {value: new THREE.Vector2()}, dynamicWavesHalfWidth: {value: 1.0}});
+  }
+  this._spRippleReady = rippleReady;
   this._spMaterial = new THREE.ShaderMaterial({
     uniforms: uniforms,
     vertexShader: 'void main(){ gl_Position = vec4(position, 1.0); }',
@@ -711,7 +730,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._initSurfaceProbe = function(
 
 //Register (or move) probe `key` to (x, z) and return its latest result, or null
 //until one has resolved. The result object is the probe's own and is updated in
-//place: {y, vx, vy, vz, time}. y is the drawn surface above the point the probe
+//place: {y, vx, vy, vz, ripple, time}. y is the drawn surface above the point the probe
 //stood on when it was ISSUED (time, performance.now() ms); v is the drawn water's
 //particle velocity there (m/s), 0 until two reads exist. A probe nobody asks
 //about for PROBE_EXPIRE_MS is dropped.
@@ -777,6 +796,9 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._renderSurfaceProbe = functio
   if(ARestlessOcean.ShoreReflection && ARestlessOcean.ShoreReflection.ENABLED){
     ARestlessOcean.ShoreReflection.writeUniforms(u, grid.shoreReflectionPass ? grid.shoreReflectionPass.consumerState() : null);
   }
+  if(this._spRippleReady){
+    ARestlessOcean.DynamicWaves.writeUniforms(u, grid.dynamicWavesPass.consumerState());
+  }
   const prevRT = this.renderer.getRenderTarget();
   this.renderer.setRenderTarget(this._spRT);
   this.renderer.render(this._spScene, this._heightFieldCamera);
@@ -799,7 +821,8 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._readSurfaceProbe = function(
       const r0 = i * 4, r1 = (MAX + i) * 4;
       const y = buf[r0];
       if(!isFinite(y)) continue;
-      const res = p.result || (p.result = {y: 0, vx: 0, vy: 0, vz: 0, time: 0});
+      const ripple = isFinite(buf[r0 + 3]) ? buf[r0 + 3] : 0.0;
+      const res = p.result || (p.result = {y: 0, vx: 0, vy: 0, vz: 0, ripple: 0, time: 0});
       //Row 1 is last read's particle, now. Last read's particle was AT last
       //read's query point, at last read's height. The difference is its path.
       if(s.hadP0 && p.lastT > 0 && t > p.lastT){
@@ -809,9 +832,11 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._readSurfaceProbe = function(
         res.vz = (buf[r1 + 2] - p.lastZ) / dt;
       }
       res.y = y;
+      res.ripple = ripple;
       res.time = t;
       p.p0x = buf[r0 + 1]; p.p0z = buf[r0 + 2]; p.has0 = true;
-      p.lastX = s.x; p.lastZ = s.z; p.lastY = y; p.lastT = t;
+      //Ripple-free, like row 1 (see the header).
+      p.lastX = s.x; p.lastZ = s.z; p.lastY = y - ripple; p.lastT = t;
     }
   }).catch(function(){ self._spPending = false; });
 };

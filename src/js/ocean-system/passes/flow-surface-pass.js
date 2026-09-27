@@ -207,6 +207,13 @@ ARestlessOcean.Passes.FlowSurfacePass.prototype.init = function(scene){
     material.polygonOffset = true;
     material.polygonOffsetFactor = -1;
     material.polygonOffsetUnits = -2;
+    //Phase 8e: this ring's uniform vertex spacing, for the dynamic-waves vertex
+    //height (dynamic-waves-pass.js "Geometry"): the 1 m ring carries wakes longer
+    //than ~2 m, the 2 m ring none (it starts past the ripple window anyway).
+    if(material.uniforms.dynamicWavesMeshCell){
+      material.uniforms.dynamicWavesMeshCell.value = spec.cell;
+      material.uniforms.dynamicWavesMeshRing.value = 0.0;
+    }
     //InstancedMesh with one identity instance: the water vertex shader
     //multiplies by instanceMatrix. The mesh itself carries the snapped centre.
     const mesh = new THREE.InstancedMesh(geometry, material, 1);

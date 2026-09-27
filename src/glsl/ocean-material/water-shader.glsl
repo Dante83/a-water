@@ -2386,6 +2386,9 @@ void main(){
       }
     }
     #endif
+    //Phase 8e: whitewater bodies churn up (DynamicWavesPass foam channel), on the sea and
+    //on the flowing surface alike. It rides the current with the ripples and fades.
+    foamAmount = max(foamAmount, dynamicWavesFoamAt(vWorldXZ));
     } //end if(underwaterFactor < 0.5) — foam system off below the surface
   #else
     float foamAmount = 0.0;

@@ -8,7 +8,102 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
-## ▶▶ RESUME HERE (2026-09-27): Phase 8e (ripples you can see), then Phase 9
+## ▶▶ RESUME HERE (2026-09-27, later): Phase 8e BUILT, awaiting regen + browser; then Phase 9
+
+### 8e built (uncommitted on `phase-8-water-state`; Liam pages edited in peaceful-island-swim)
+
+**Needs Dante: run `create-shader.py`** (water-vertex.glsl AND water-shader.glsl → water-shader.js). Until then the
+old water-shader.js has no `$dynamic_waves_functions` in its vertex, so the ripples stay
+normal-only; everything else (damping, probes, capsules) is live without it. A scratch regen
+differs from the committed js by exactly the 8e lines, and it compiles clean on the 4090.
+
+1. **Ripples fade, the short ones first.** `DynamicWaves.DAMPING` 0.3/s (amplitude, every
+   wavelength) + `VISCOSITY` 0.01 m²/s on the vertical velocity (ν·k²/2), both LIVE console
+   knobs. e-folds: λ 0.25 m 0.3 s, 0.5 m 0.9 s, 1 m 2 s, 2 m 2.9 s → a wake is gone within ~4 m.
+   ⚠ Flagged fudge: clean water's ν is 1e-6; 0.01 stands in for films + turbulence.
+   **Found on the way:** 8b's damping was iWave's η(2 − a·dt)/(1 + a·dt), which damps the
+   HEIGHT: it also adds 2a/dt to every ω² (a 1 m ripple ran at a 0.63 s period instead of 0.79 s
+   at the new rate). Replaced by true velocity damping, which leaves the period within 0.2%.
+   Headless: a 5 cm poke peaks at 14 mm, then 4.9 mm at 1.2 s, 1 mm at 3 s, 0.5 mm at 4 s (8b: ~20 s).
+2. **Ripples move the surface.** `water-vertex.glsl` adds `dynamicWavesVertexHeightAt` in
+   both variants. It is BOX-FILTERED over the local vertex spacing (4×4 bilinear taps), because
+   a ripple shorter than 2 vertices would alias into a crawling false wave. The spacing estimate
+   `cell(d) = meshCell · max(1, 2d/R)` (Chebyshev distance to the camera, R = ring 0's
+   half-width, 16 m) is continuous, so stitched clipmap rings can't crack. Per-mesh uniforms:
+   `dynamicWavesMeshCell/Ring` (clipmap 0.25/16, flow rings 1/0 and 2/0, skirt 0 = off). Full
+   weight to cell 1 m, gone by 2 m: on the clipmap that is the whole ±32 m window. The flow 1 m
+   ring carries the part of a wake longer than ~2 m (so rivers get only the long wake, not
+   rings: say so if they read flat). The fragment micro slope is unchanged. The ocean CSM leaves
+   it out: the receiver subtracts it from its shadow position, since the caster doesn't draw it.
+   - **Surface probes** add the same filtered height; row 0 .a / `result.ripple` /
+     `getWaterStateAt(...).ripple` say how much of surfaceY is ripple. The probe VELOCITY
+     leaves ripples out (an interactor's own crater springing back read as water rushing up:
+     entry, new crater, loop).
+   - **Interactors size their footprint on surfaceY − ripple.** On the drawn surface a limb's
+     own depression read as "less submerged": shrink, spring back, grow, a ringing loop.
+   - Not done (deliberately): the camera submersion probe (it only sums cascades 0–1 anyway),
+     the CPU snapshot (2 m texels), so `buoyant` floats DON'T bob on rings yet, only
+     probe riders (Liam) do. Liam IGNORES the ripple under him (peaceful-island-swim
+     `liam-water.js` `selfRippleK`, default 1): at his own spot the ripple is almost all his,
+     and riding it was a sink-press-sink loop. He still rides every FFT wave, the breakers and
+     the swell; others' rings under him are lost (a point can't tell whose ring it is). His
+     wet-skin waterline keeps the DRAWN surface (`drawnSurfaceY`). Console:
+     `liam.components['liam-character'].water.selfRippleK`.
+3. **Capsule interactors.** `water-interactor` gains `targetEnd` (+ `offsetEnd`);
+   `Interactor.updateSegment(A, B, dt)`. The contact is where the (ripple-free) surface crosses
+   the segment, clamped (upper end if it's all under, lower end if it's all out, middle if
+   level). Its velocity is the LIMB's at that point, not the contact sliding as the water rises.
+   Liam on both swim pages (`island-sholes-swim(-nosky).html`): shins foot→calf r 0.05, thighs
+   calf→thigh r 0.07 (FOOT spray), forearms hand→lowerarm r 0.04 (HAND spray). That makes 11
+   interactors + the bridge = 12 of 16 probe slots, and 11 emitters. Headless: every bone resolves,
+   a wading shin sits at its waterline (t 0.34, 50% wet), no errors.
+
+4. **Body splash (Dante: "super thin and goes a mile high").** Interactor spray went through
+   `emitImpact`, which is tuned for waves slamming rock: a 7 m/s launch FLOOR, mostly faint type-1
+   mist. A 2 m/s hand entry measured a median rise of 1.4 m, max 3.5 m. New
+   `OceanSplash.emitBodySplash`, reached through `WaterInteraction.impact(…, radius)`, which
+   interactors now pass. It throws the waterfall's type-3 clumps (opaque, streaked, dying on the
+   water) from a crown ring of the contact radius, at 1.5× the closing speed (the crown sheet plus
+   its jet), with a floor of 1.2 m/s and a cap of 5 m/s. Measured: hand entry at 2 m/s, median
+   15 cm / max 0.6 m; wading foot at 1 m/s, max ~10 cm; chest plunge at 3 m/s, median 0.4 m / max
+   1.3 m. Knobs are `oceanSplash.bodySplash*`, live. Floats' `buoyancy-splash` still uses
+   `emitImpact`. This is the same clump the future waterfall plunge wants.
+5. **Foam off his ripples.** The DynamicWaves state's spare `.b` channel is whitewater:
+   - Emitters add `foam` (per second) and `foamBurst`. Interactors add
+     foamK·(speed − foamMinSpeed) while cutting the waterline, and an entry crater leaves
+     0.3·closing speed.
+   - It is carried by the current like the ripples and fades over `DynamicWaves.FOAM_LIFE` 3 s
+     (live).
+   - The water fragment (both variants) takes `max(foamAmount, dynamicWavesFoamAt)`. This is a
+     `water-shader.glsl` change too, so the regen covers both files.
+   - Headless: a shin wading 1.3 m/s leaves a ~0.3 m white trail (1.2 at the head, 0.44 after
+     3 s, gone by ~7 s). Knobs: interactor `foamK` / `foamMinSpeed`, FOAM_LIFE.
+   - ⚠ The same run's wake peaked at 55 mm even at rippleScale 0.25. The drag head dominates
+     (v²/2g: 8.6 cm at 1.3 m/s). If Liam is still loud, lower `dragK` next.
+
+**Tests.** `node tests/dynamic-waves/dynamic-waves-test.mjs` (28 checks): the per-mode decay
+rate matches DAMPING + ν·L/2 within 3%; damping doesn't detune; the old form would have; the grid
+corner stays stable at the viscosity clamp (8 cells²/s; it goes unstable from ~15, and the first
+clamp I wrote, 200, was wrong); the mesh-cell estimate is ≥ the real spacing, ≤ 2× it, and
+continuous; capsule contact, still-limb-in-rising-water (no velocity, no spray), wading 2 vs
+0.5 m/s, swing velocity, ripple-free footprint.
+
+**Browser check (after the regen)**, on `island-sholes-swim.html` (wind −0.5):
+- `ARestlessOcean.poke()`, or wade Liam: rings should visibly LIFT the surface near the camera
+  (silhouette and reflections, not just the shading), die within a few seconds, and leave no
+  crack or step at 16 m / 32 m from the camera (ring edges).
+- The wake behind a wading Liam should fade over a few metres. Too short or too long:
+  `ARestlessOcean.DynamicWaves.DAMPING` / `.VISCOSITY` live.
+- Swim in waist-deep swell: shins and thighs should spray while cutting the waterline.
+- **Liam's ripple strength** (Dante, 2026-09-27: "Liam is too powerful", which was hidden while
+  ripples were normals only): new interactor knob `rippleScale` (multiplies the footprint
+  depth and the entry crater; spray stays `sprayScale`'s). The swim pages set every contact to
+  `LIAM_RIPPLE = 0.5`, which Dante SET BY EYE in the browser (2026-09-27, "about perfect"; the
+  first guess was 0.25). `setLiamRipples(k)` still retunes it live.
+- Liam should float steady in his own rings (selfRippleK 1); try 0 to see the loop it prevents.
+- `setOceanShadowDebug(69)` still shows η.
+
+### Before the build (2026-09-27): branch state and the 8e plan as written
 
 The Liam pass is done and lives in peaceful-island (branch `liam-swim`). Its a-water commits
 are on `phase-8-water-state`, and `development` has been fast-forwarded to it:
@@ -25,7 +120,7 @@ Branch state: a-water `development` = `phase-8-water-state` (it contains
 `phase-9-terrain-feedback`). a-land `main` = `phase-8-body-id`. Nothing is pushed.
 A-Starry-Sky's `camera-anchored-sun-light` IS merged into its development.
 
-### Phase 8e — dynamic waves you can see (NEXT)
+#### Phase 8e — dynamic waves you can see
 
 Dante, browser, 2026-09-27, with Liam (peaceful-island `island-sholes-swim.html`; wind is
 set to -1 there for calm testing): a little splash and a little ring, but nothing on the

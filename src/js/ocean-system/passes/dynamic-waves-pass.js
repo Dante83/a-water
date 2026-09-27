@@ -9,7 +9,7 @@
 //WHAT IT IS. An iWave-class (Tessendorf 2004) height field, world-snapped, 512²
 //at DX = 0.125 m (a ±32 m window), stepped once per frame:
 //
-//    η⁺ = [ η(2 − a·dt) − η⁻ − (g dt² / dx)·(K_h ∗ η) + ν dt ∇²(η − η⁻) ] / (1 + a·dt)
+//    η⁺ = [ 2η − η⁻(1 − a·dt) − (g dt² / dx)·(K_h ∗ η) + ν dt ∇²(η − η⁻) ] / (1 + a·dt)
 //
 //  * K_h ∗ η is the vertical-derivative operator: in Fourier space it multiplies a
 //    wave of grid wavenumber k by k·tanh(k·h), so ω² = g k tanh(k h), the full
@@ -37,9 +37,12 @@
 //    η − η⁻ is a velocity times the LAST step's dt, and reusing it under a
 //    different dt pumps energy in.
 //  * Dry cells (WaterField dryMask or depth 0) hold η = 0: banks reflect.
-//  * a is a light global damping plus a sponge on the rim; ν is a small viscosity
-//    on the velocity, which damps the grid-scale modes the kernel cannot carry
-//    well long before it touches a visible ripple.
+//  * a damps the VELOCITY (the centred (η⁺ − η⁻)/2dt), plus a sponge on the rim;
+//    ν is a viscosity on the velocity, strongest on short waves (see DAMPING).
+//    ⚠ Not iWave's η(2 − a·dt)/(1 + a·dt): that form damps the HEIGHT, which is a
+//    spring as much as a damper: it adds 2a/dt to every ω² (12 rad²/s² at 8b's
+//    a = 0.1, a 20% frequency error on a 1 m ripple) and would detune the whole
+//    band at the damping 8e needed (8b ran on it).
 //  * Advection. Before each step the field is carried by the current (WaterField
 //    RT1 flow, baked into the medium), Catmull-Rom so a ripple is not smeared by
 //    a fraction-of-a-cell move every frame. A ring dropped in a creek drifts
@@ -53,11 +56,15 @@
 //ARestlessOcean.DynamicWaves.addEmitter() is the API (8c will grow it); poke()
 //is a dropped stone: a depression left behind, with no body to lift back out.
 //
-//CONSUMERS. Normals only: ripples are centimetres against a 1-2 m water mesh, so
-//like FlowSurfacePass's ripples they live in the lighting, not the geometry, and
-//the CSM caster, the height bake and the CPU twin are untouched. The fragment of
-//both water variants (sea and flowing) splices `$dynamic_waves_functions` and
-//adds dynamicWavesSlopeAt() to its micro slope; debug mode 69 shows η.
+//CONSUMERS. The fragment of both water variants (sea and flowing) splices
+//`$dynamic_waves_functions` and adds dynamicWavesSlopeAt() to its micro slope;
+//debug mode 69 shows η. Phase 8e: the VERTEX of both variants splices it too and
+//adds dynamicWavesVertexHeightAt(), filtered to what each mesh can carry (see
+//"Geometry" below): near the camera the clipmap is 0.25 m a vertex, fine enough
+//for a ring to lift the surface. The surface probes (HeightReadbackPass) add the
+//same filtered height, so a body riding the drawn water bobs on rings and wakes.
+//The ocean CSM (caster and receiver depth) and the CPU height bake leave it
+//out: centimetres against metre-scale shadows and a 2 m field.
 //
 //⚠ Float precision: the same self-test as ShoreReflectionPass (NEARSHORE-WAVES.md
 //§ 5.8) disables the layer on drivers that sample RGBA32F at half precision.
@@ -70,11 +77,28 @@ ARestlessOcean.DynamicWaves.RESOLUTION = 512;
 ARestlessOcean.DynamicWaves.DX = 0.125;             //m per cell -> ±32 m window
 ARestlessOcean.DynamicWaves.KERNEL_RADIUS = 8;      //cells
 ARestlessOcean.DynamicWaves.KERNEL_DEPTHS = [0.5, 1.0, 2.0, 4.0];   //cells
-//Global damping (1/s): a ring fades over ~10 s on still water.
-ARestlessOcean.DynamicWaves.DAMPING = 0.1;
-//Velocity viscosity in cells²/s: the Nyquist mode (∇² eigenvalue −8) loses
-//half its energy in ~0.2 s; a 1 m ripple (8 cells) in ~20 s.
-ARestlessOcean.DynamicWaves.VISCOSITY = 0.25;
+//── Damping (Phase 8e). Real short ripples die within a second or two and a wake
+//fades over a few metres, the shorter the faster. Two terms, both read every
+//step (live console knobs):
+//  DAMPING    amplitude decay rate for EVERY wavelength (1/s): e^(−DAMPING·t).
+//  VISCOSITY  ν on the water's vertical velocity (m²/s): amplitude decay ν·k²/2,
+//             so it hits short waves hardest, like viscosity and a surface film.
+//Together (k = 2π/λ):  λ 0.25 m → 0.3 s e-fold,  0.5 m → 0.9 s,  1 m → 2 s,
+//2 m → 2.9 s. At group speed that is ~1.3 m per e-fold for a 1 m ripple, so a
+//wake is gone (5%) within about 4 m.
+//⚠ FUDGE, flagged: clean water's ν is 1e-6 m²/s, and on it a 1 m ripple would
+//ring for hours. What actually kills ripples outdoors is surface films and
+//turbulence, which no one term models; 0.01 is an effective value chosen by
+//the target above, not measured. 8b's values (0.1 through the iWave damping
+//form, and 0.25 cells²/s = 0.004 m²/s) left a ring alive ~10 s.
+ARestlessOcean.DynamicWaves.DAMPING = 0.3;
+ARestlessOcean.DynamicWaves.VISCOSITY = 0.01;
+//── Foam (Phase 8e). Whitewater a body churns up where it cuts the waterline or plunges
+//in: the third channel of the state, added by emitters (`foam`, per second, and a one-off
+//`foamBurst`), carried by the current with the ripples (not by the ripples: foam drifts,
+//it does not ride the wave's orbit), and fading with FOAM_LIFE (s, e-fold; live).
+//The water fragment takes max(its foam, dynamicWavesFoamAt()).
+ARestlessOcean.DynamicWaves.FOAM_LIFE = 3.0;
 ARestlessOcean.DynamicWaves.SPONGE_CELLS = 32.0;
 ARestlessOcean.DynamicWaves.SPONGE_RATE = 6.0;
 ARestlessOcean.DynamicWaves.EDGE_FADE_START = 1.0 - 2.0 * 32.0 / 512.0;
@@ -204,6 +228,10 @@ ARestlessOcean.DynamicWaves.addEmitter = function(opts){
     radius: opts.radius || 0.5,
     depth: opts.depth || 0.0,
     active: true,
+    //Foam (see FOAM_LIFE): coverage added per second at the footprint's centre while it
+    //moves, and a one-off amount consumed the next time it is injected.
+    foam: opts.foam || 0.0,
+    foamBurst: opts.foamBurst || 0.0,
     //false: deactivating drops it without lifting it back out (poke's stone).
     release: opts.release !== false,
     //What the field last received (null: never injected).
@@ -218,9 +246,10 @@ ARestlessOcean.DynamicWaves.addEmitter = function(opts){
 //Console: ARestlessOcean.poke(x, z, strength = 0.05 m, radius = 0.4 m). A stone
 //dropped in: the water is pressed down once and left to spring back on its own.
 //With no args, 3 m in front of the camera.
-ARestlessOcean.DynamicWaves.poke = function(x, z, strength, radius){
+ARestlessOcean.DynamicWaves.poke = function(x, z, strength, radius, foam){
   const e = ARestlessOcean.DynamicWaves.addEmitter({
-    x: x, z: z, radius: radius || 0.4, depth: (strength === undefined) ? 0.05 : strength, release: false
+    x: x, z: z, radius: radius || 0.4, depth: (strength === undefined) ? 0.05 : strength, release: false,
+    foamBurst: foam || 0.0
   });
   e._lifeFrames = 1;
   return e;
@@ -249,8 +278,34 @@ ARestlessOcean.DynamicWaves.STUB_GLSL = [
   'uniform vec2 dynamicWavesCenter;',
   'uniform float dynamicWavesHalfWidth;',
   'float dynamicWavesHeightAt(vec2 xz){ return 0.0; }',
-  'vec2 dynamicWavesSlopeAt(vec2 xz){ return vec2(0.0); }'
+  'vec2 dynamicWavesSlopeAt(vec2 xz){ return vec2(0.0); }',
+  'float dynamicWavesMeshCellAt(vec2 xz, vec2 camXZ){ return 0.0; }',
+  'float dynamicWavesVertexHeightAt(vec2 xz, float cell){ return 0.0; }',
+  'float dynamicWavesFoamAt(vec2 xz){ return 0.0; }'
 ].join('\n');
+
+//── Geometry (Phase 8e) ────────────────────────────────────────────────────
+//The ripple height also moves the water's vertices, where the mesh is fine
+//enough to carry it. A vertex grid of spacing s can show wavelengths down to 2s;
+//anything shorter sampled at the vertices comes back as a false, crawling long
+//wave (aliasing). So the vertex takes the field BOX-FILTERED over its own
+//spacing (4×4 bilinear taps; the box has zeros at λ = s, s/2, … and passes 64%
+//at λ = 2s), and the fragment keeps adding the full-resolution slope on top.
+//
+//Each water mesh says how fine it is: dynamicWavesMeshCell, its finest vertex
+//spacing (m; 0 = no geometric ripples, e.g. the horizon skirt), and
+//dynamicWavesMeshRing, the half-width of the finest clipmap ring (m; 0 = the
+//spacing is uniform, as on the flowing surface's rings). The clipmap doubles its
+//spacing ring by ring around the camera, and every ring snaps at ring 0's cell,
+//so ring k covers Chebyshev distance d ≤ R·2^k from the camera. The estimate
+//    cell(d) = meshCell · max(1, 2d / R)
+//is ≥ the real spacing everywhere and at most 2× it, and it is CONTINUOUS: a
+//vertex shared by two rings along a stitched edge gets the same height from both
+//sides, so the rings cannot crack apart. The weight fades out between
+//VERTEX_CELL_FULL and VERTEX_CELL_ZERO, where 4 taps across the box would start
+//to alias themselves.
+ARestlessOcean.DynamicWaves.VERTEX_CELL_FULL = 1.0;   //m
+ARestlessOcean.DynamicWaves.VERTEX_CELL_ZERO = 2.0;   //m
 
 ARestlessOcean.DynamicWaves.GLSL = (function(){
   const DW = ARestlessOcean.DynamicWaves;
@@ -262,6 +317,8 @@ ARestlessOcean.DynamicWaves.GLSL = (function(){
     'uniform float dynamicWavesHalfWidth;',
     'uniform float dynamicWavesCell;',
     'uniform float dynamicWavesScale;',
+    'uniform float dynamicWavesMeshCell;',
+    'uniform float dynamicWavesMeshRing;',
     'float dynamicWavesHeightAt(vec2 xz){',
     '  if(dynamicWavesEnabled < 0.5) return 0.0;',
     '  vec2 d = (xz - dynamicWavesCenter) / dynamicWavesHalfWidth;',
@@ -277,6 +334,37 @@ ARestlessOcean.DynamicWaves.GLSL = (function(){
     '  vec2 ez = vec2(0.0, dynamicWavesCell);',
     '  return vec2(dynamicWavesHeightAt(xz + ex) - dynamicWavesHeightAt(xz - ex),',
     '              dynamicWavesHeightAt(xz + ez) - dynamicWavesHeightAt(xz - ez)) / (2.0 * dynamicWavesCell);',
+    '}',
+    //Geometry: see "Geometry (Phase 8e)" above. camXZ is the MAIN camera's (the
+    //clipmap is centred on it); the mirror camera shares its XZ.
+    'float dynamicWavesMeshCellAt(vec2 xz, vec2 camXZ){',
+    '  if(dynamicWavesMeshRing <= 0.0) return dynamicWavesMeshCell;',
+    '  vec2 d = abs(xz - camXZ);',
+    '  return dynamicWavesMeshCell * max(1.0, 2.0 * max(d.x, d.y) / dynamicWavesMeshRing);',
+    '}',
+    'float dynamicWavesVertexHeightAt(vec2 xz, float cell){',
+    '  if(dynamicWavesEnabled < 0.5 || cell <= 0.0) return 0.0;',
+    '  float w = 1.0 - smoothstep(' + DW.VERTEX_CELL_FULL.toFixed(6) + ', ' + DW.VERTEX_CELL_ZERO.toFixed(6) + ', cell);',
+    '  if(w <= 0.0) return 0.0;',
+    '  float box = max(cell, dynamicWavesCell);',
+    '  vec2 d = abs(xz - dynamicWavesCenter);',
+    '  if(max(d.x, d.y) >= dynamicWavesHalfWidth + box) return 0.0;',
+    '  float sum = 0.0;',
+    '  for(int j = 0; j < 4; ++j){',
+    '    for(int i = 0; i < 4; ++i){',
+    '      sum += dynamicWavesHeightAt(xz + (vec2(float(i), float(j)) - 1.5) * (0.25 * box));',
+    '    }',
+    '  }',
+    '  return w * sum * (1.0 / 16.0);',
+    '}',
+    //Foam coverage 0..1 (the state's third channel), faded at the window's rim.
+    'float dynamicWavesFoamAt(vec2 xz){',
+    '  if(dynamicWavesEnabled < 0.5) return 0.0;',
+    '  vec2 d = (xz - dynamicWavesCenter) / dynamicWavesHalfWidth;',
+    '  float m = max(abs(d.x), abs(d.y));',
+    '  if(m >= 1.0) return 0.0;',
+    '  float edge = 1.0 - smoothstep(' + DW.EDGE_FADE_START.toFixed(6) + ', 1.0, m);',
+    '  return edge * clamp(texture2D(dynamicWavesMap, d * 0.5 + 0.5).b, 0.0, 1.0);',
     '}'
   ].join('\n');
 })();
@@ -293,8 +381,17 @@ ARestlessOcean.DynamicWaves.createUniforms = function(){
     dynamicWavesCenter:     {value: new THREE.Vector2()},
     dynamicWavesHalfWidth:  {value: 1.0},
     dynamicWavesCell:       {value: 1.0},
-    dynamicWavesScale:      {value: 1.0}
+    dynamicWavesScale:      {value: 1.0},
+    //Per MESH, set once where the mesh is built; writeUniforms never touches them.
+    dynamicWavesMeshCell:   {value: 0.0},
+    dynamicWavesMeshRing:   {value: 0.0}
   };
+};
+
+//Host-side twin of dynamicWavesMeshCellAt, for tests and the console.
+ARestlessOcean.DynamicWaves.meshCellAt = function(meshCell, meshRing, x, z, camX, camZ){
+  if(!(meshRing > 0.0)) return meshCell;
+  return meshCell * Math.max(1.0, 2.0 * Math.max(Math.abs(x - camX), Math.abs(z - camZ)) / meshRing);
 };
 
 //s = DynamicWavesPass.prototype.consumerState()
@@ -362,6 +459,7 @@ ARestlessOcean.Passes.DynamicWavesPass.prototype.init = function(){
 
   this._emitNow = [];
   this._emitPrev = [];
+  this._emitFoam = new Array(DW.MAX_EMITTERS).fill(0.0);
   for(let i = 0; i < DW.MAX_EMITTERS; ++i){
     this._emitNow.push(new THREE.Vector4());
     this._emitPrev.push(new THREE.Vector4());
@@ -436,7 +534,7 @@ ARestlessOcean.Passes.DynamicWavesPass.prototype._buildMaterials = function(){
     'uniform sampler2D dwMedium;',
     'uniform vec2 dwShift;',
     'uniform float dwDt;',
-    'vec2 dwFetch(ivec2 q){ return dwInWindow(q) ? texelFetch(dwState, q, 0).rg : vec2(0.0); }',
+    'vec3 dwFetch(ivec2 q){ return dwInWindow(q) ? texelFetch(dwState, q, 0).rgb : vec3(0.0); }',
     'vec4 dwCR(float t){',
     '  float t2 = t * t, t3 = t2 * t;',
     '  return vec4(-0.5 * t3 + t2 - 0.5 * t, 1.5 * t3 - 2.5 * t2 + 1.0, -1.5 * t3 + 2.0 * t2 + 0.5 * t, 0.5 * t3 - 0.5 * t2);',
@@ -447,7 +545,7 @@ ARestlessOcean.Passes.DynamicWavesPass.prototype._buildMaterials = function(){
     '  if(med.g < 0.5){ gl_FragColor = vec4(0.0); return; }',
     '  vec2 src = vec2(p) + dwShift - med.ba * dwDt;',
     '  if(dot(med.ba, med.ba) * dwDt * dwDt < 1.0e-8){',
-    '    gl_FragColor = vec4(dwFetch(ivec2(floor(src + 0.5))), 0.0, 0.0);',
+    '    gl_FragColor = vec4(dwFetch(ivec2(floor(src + 0.5))), 0.0);',
     '    return;',
     '  }',
     '  vec2 b = floor(src);',
@@ -455,13 +553,13 @@ ARestlessOcean.Passes.DynamicWavesPass.prototype._buildMaterials = function(){
     '  vec4 wx = dwCR(t.x);',
     '  vec4 wy = dwCR(t.y);',
     '  ivec2 o = ivec2(b);',
-    '  vec2 acc = vec2(0.0);',
-    '  vec2 lo = vec2(1.0e9);',
-    '  vec2 hi = vec2(-1.0e9);',
+    '  vec3 acc = vec3(0.0);',
+    '  vec3 lo = vec3(1.0e9);',
+    '  vec3 hi = vec3(-1.0e9);',
     '  for(int j = 0; j < 4; ++j){',
-    '    vec2 row = vec2(0.0);',
+    '    vec3 row = vec3(0.0);',
     '    for(int i = 0; i < 4; ++i){',
-    '      vec2 v = dwFetch(o + ivec2(i - 1, j - 1));',
+    '      vec3 v = dwFetch(o + ivec2(i - 1, j - 1));',
     '      row += wx[i] * v;',
     '      if(i == 1 || i == 2){ if(j == 1 || j == 2){ lo = min(lo, v); hi = max(hi, v); } }',
     '    }',
@@ -469,7 +567,7 @@ ARestlessOcean.Passes.DynamicWavesPass.prototype._buildMaterials = function(){
     '  }',
     //Clamp to the four nearest: Catmull-Rom overshoots, and an overshoot fed back
     //every frame grows.
-    '  gl_FragColor = vec4(clamp(acc, lo, hi), 0.0, 0.0);',
+    '  gl_FragColor = vec4(clamp(acc, lo, hi), 0.0);',
     '}'
   ].join('\n');
   this._advectMaterial = new THREE.ShaderMaterial({
@@ -499,10 +597,14 @@ ARestlessOcean.Passes.DynamicWavesPass.prototype._buildMaterials = function(){
     'uniform sampler2D dwState;',       //advected (η, η⁻)
     'uniform sampler2D dwMedium;',
     'uniform float dwDt;',
+    'uniform float dwDamping;',         //1/s, amplitude
+    'uniform float dwViscosity;',       //cells²/s (VISCOSITY / DX²)
     'uniform float dwBank[' + (nD * K.classes) + '];',
     'uniform vec4 dwEmitNow[' + DW.MAX_EMITTERS + '];',
     'uniform vec4 dwEmitPrev[' + DW.MAX_EMITTERS + '];',
+    'uniform float dwEmitFoam[' + DW.MAX_EMITTERS + '];',   //foam added at each centre this frame
     'uniform int dwEmitCount;',
+    'uniform float dwFoamKeep;',        //exp(−DT / FOAM_LIFE)
     'const int DW_CLASSES = ' + K.classes + ';',
     //Kernel weight of radial class c at depth h (cells). Shallower than the first
     //fitted depth it scales down: in the shallow limit k·tanh(k·h) → h·k², linear in h.
@@ -538,7 +640,7 @@ ARestlessOcean.Passes.DynamicWavesPass.prototype._buildMaterials = function(){
     '  vec4 med = texelFetch(dwMedium, p, 0);',
     '  if(med.g < 0.5){ gl_FragColor = vec4(0.0); return; }',
     '  float hc = med.r;',
-    '  vec2 s = texelFetch(dwState, p, 0).rg;',
+    '  vec3 s = texelFetch(dwState, p, 0).rgb;',
     '  float eC = s.r;',
     '  float conv = 0.0;',
     conv,
@@ -549,22 +651,26 @@ ARestlessOcean.Passes.DynamicWavesPass.prototype._buildMaterials = function(){
     '    vec2 sq = texelFetch(dwState, clamp(p + nb[k], ivec2(0), ivec2(DW_RES - 1)), 0).rg;',
     '    lapV += sq.r - sq.g;',
     '  }',
-    '  float damp = ' + f(DW.DAMPING) + ' + dwSponge(p);',
-    '  float next = (s.r * (2.0 - damp * dwDt) - s.g',
+    //Velocity damping (see the header): no spring term, so no detuning.
+    '  float damp = dwDamping + dwSponge(p);',
+    '  float next = (2.0 * s.r - s.g * (1.0 - damp * dwDt)',
     '             - ' + f(DW.G) + ' * dwDt * dwDt * conv / dwDx',
-    '             + ' + f(DW.VISCOSITY) + ' * dwDt * lapV) / (1.0 + damp * dwDt);',
+    '             + dwViscosity * dwDt * lapV) / (1.0 + damp * dwDt);',
     //Sources: the change of every footprint since the last frame, pushed down.
     '  vec2 xz = dwCellXZ(p);',
     '  float src = 0.0;',
+    '  float foam = s.b * dwFoamKeep;',
     '  for(int i = 0; i < ' + DW.MAX_EMITTERS + '; ++i){',
     '    if(i >= dwEmitCount) break;',
     '    src += dwFootprint(dwEmitNow[i], xz) - dwFootprint(dwEmitPrev[i], xz);',
+    '    vec2 fd = xz - dwEmitNow[i].xy;',
+    '    foam += dwEmitFoam[i] * exp(-dot(fd, fd) / max(dwEmitNow[i].z * dwEmitNow[i].z, 1.0e-6));',
     '  }',
     //A DISPLACEMENT, so it moves η and the carried η⁻ alike. Subtracting it from
     //η⁺ alone makes η⁺ − η, the velocity, jump by src/dt: every bob of a floating
     //box became a kick, overdriving its rings by ~1/(ω·dt) ≈ 10× (a 0.4 m box
     //grew 4.7 m rings, headless 2026-09-26).
-    '  gl_FragColor = vec4(next - src, s.r - src, 0.0, 0.0);',
+    '  gl_FragColor = vec4(next - src, s.r - src, min(foam, 1.5), 0.0);',
     '}'
   ].join('\n');
   const bankArr = Array.from(K.bank);
@@ -576,10 +682,14 @@ ARestlessOcean.Passes.DynamicWavesPass.prototype._buildMaterials = function(){
       dwState: {value: null},
       dwMedium: {value: null},
       dwDt: {value: 1.0 / 60.0},
+      dwDamping: {value: DW.DAMPING},
+      dwViscosity: {value: DW.VISCOSITY / (this.dx * this.dx)},
       dwBank: {value: bankArr},
       dwEmitNow: {value: this._emitNow},
       dwEmitPrev: {value: this._emitPrev},
-      dwEmitCount: {value: 0}
+      dwEmitFoam: {value: this._emitFoam},
+      dwEmitCount: {value: 0},
+      dwFoamKeep: {value: 1.0}
     },
     vertexShader: vert, fragmentShader: stepFrag, depthTest: false, depthWrite: false
   });
@@ -601,7 +711,8 @@ ARestlessOcean.Passes.DynamicWavesPass.prototype._draw = function(material, targ
 
 //Fill the emitter uniforms with (now, prev) pairs and retire what is done. An
 //emitter whose last injection was at depth 0 and is inactive is dropped.
-ARestlessOcean.Passes.DynamicWavesPass.prototype._collectEmitters = function(){
+//frameDt (s): the time this frame's steps cover, for the foam rate.
+ARestlessOcean.Passes.DynamicWavesPass.prototype._collectEmitters = function(frameDt){
   const DW = ARestlessOcean.DynamicWaves;
   const list = DW.emitters;
   let n = 0;
@@ -627,6 +738,10 @@ ARestlessOcean.Passes.DynamicWavesPass.prototype._collectEmitters = function(){
       this._emitNow[n].set(now.x, now.z, now.r, now.d);
       if(prev) this._emitPrev[n].set(prev.x, prev.z, prev.r, prev.d);
       else this._emitPrev[n].set(now.x, now.z, now.r, 0.0);
+      if(this._emitFoam){
+        this._emitFoam[n] = (e.active ? (e.foam || 0.0) * (frameDt || 0.0) : 0.0) + (e.foamBurst || 0.0);
+        e.foamBurst = 0.0;
+      }
       n++;
     }
     e._prev = now;
@@ -695,7 +810,7 @@ ARestlessOcean.Passes.DynamicWavesPass.prototype.tick = function(ctx){
   //A window shift must be applied this frame even if no step is due.
   if(steps === 0 && (shiftX !== 0 || shiftZ !== 0)) steps = 1;
   //Sources wait for a frame that steps: collecting advances each emitter's baseline.
-  const emitCount = steps > 0 ? this._collectEmitters() : 0;
+  const emitCount = steps > 0 ? this._collectEmitters(steps * DW.DT) : 0;
 
   const au = this._advectMaterial.uniforms;
   const su = this._stepMaterial.uniforms;
@@ -706,6 +821,13 @@ ARestlessOcean.Passes.DynamicWavesPass.prototype.tick = function(ctx){
   su.dwState.value = this._advected.texture;
   su.dwMedium.value = this._medium.texture;
   su.dwDt.value = DW.DT;
+  //Live knobs. Explicit viscosity on the velocity is stable while the grid corner's
+  //factor |1 − 8·ν·dt| stays under 1 with the leapfrog on top: measured unstable
+  //from ~15 cells²/s (tests/dynamic-waves), so the clamp is 8 (0.125 m²/s at
+  //DX 0.125, 12× the default).
+  su.dwDamping.value = Math.max(0.0, DW.DAMPING);
+  su.dwViscosity.value = Math.min(8.0, Math.max(0.0, DW.VISCOSITY / (dx * dx)));
+  su.dwFoamKeep.value = DW.FOAM_LIFE > 0.0 ? Math.exp(-DW.DT / DW.FOAM_LIFE) : 0.0;
   for(let i = 0; i < steps; ++i){
     //The shift and the frame's sources go in with the first step only.
     au.dwState.value = this._state[this._read].texture;

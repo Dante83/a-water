@@ -1035,7 +1035,9 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       //Phase 4: the still/flowing hand-off (ocean-wave-field.js).
       .replace('$flow_handoff_functions', function(){ return ARestlessOcean.FlowHandoff.GLSL; })
       //Phase 3b: the shore-reflection sampler (shore-reflection-pass.js).
-      .replace('$shore_reflection_functions', shoreReflectionGLSL);
+      .replace('$shore_reflection_functions', shoreReflectionGLSL)
+      //Phase 8e: the dynamic-waves height, for geometry (dynamic-waves-pass.js).
+      .replace('$dynamic_waves_functions', dynamicWavesGLSL);
   }
   //A stub when shore-reflection-pass.js is not loaded, so the token never
   //reaches the compiler.
@@ -1062,13 +1064,16 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       .replace('$shore_breaker_functions', function(){ return ARestlessOcean.ShoreBreaker.GLSL; })
       .replace('$flow_handoff_functions', function(){ return ARestlessOcean.FlowHandoff.GLSL; })
       .replace('$shore_reflection_functions', shoreReflectionGLSL)
-      //Phase 8b: the dynamic-waves sampler (dynamic-waves-pass.js). Fragment only.
+      //Phase 8b: the dynamic-waves sampler (dynamic-waves-pass.js). Phase 8e: the
+      //vertex splices it too.
       .replace('$dynamic_waves_functions', dynamicWavesGLSL);
   }
   function dynamicWavesGLSL(){
     return ARestlessOcean.DynamicWaves ? ARestlessOcean.DynamicWaves.consumerGLSL()
       : 'uniform float dynamicWavesEnabled;\nuniform vec2 dynamicWavesCenter;\nuniform float dynamicWavesHalfWidth;\n'
-        + 'float dynamicWavesHeightAt(vec2 xz){ return 0.0; }\nvec2 dynamicWavesSlopeAt(vec2 xz){ return vec2(0.0); }';
+        + 'float dynamicWavesHeightAt(vec2 xz){ return 0.0; }\nvec2 dynamicWavesSlopeAt(vec2 xz){ return vec2(0.0); }\n'
+        + 'float dynamicWavesMeshCellAt(vec2 xz, vec2 camXZ){ return 0.0; }\nfloat dynamicWavesVertexHeightAt(vec2 xz, float cell){ return 0.0; }\n'
+        + 'float dynamicWavesFoamAt(vec2 xz){ return 0.0; }';
   }
   const vertexShaderSource = buildVertexShader(atmosphereReady, false);
   this.oceanMaterial = new THREE.ShaderMaterial({
@@ -1266,6 +1271,11 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     }
   }
 
+  //Phase 8e: the clipmap's finest vertex spacing (m) and ring 0's half-width (m,
+  //tiles gx -2..1 of patchSize), read by the dynamic-waves vertex height
+  //(dynamic-waves-pass.js "Geometry") and the surface probes.
+  this.dynamicWavesMesh = {cell: this.patchSize / numCells, ring: 2.0 * this.patchSize};
+
   //Count instances per key
   let instanceCount = {};
   enumerateClipmapTiles(function(k, gx, gy, tileSize, top, right, bottom, left){
@@ -1320,6 +1330,13 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       const uniformsRef = mesh.material.uniforms;
       applyStaticWaterUniforms(uniformsRef);
       uniformsRef.ringIndex.value = k;
+      //Phase 8e: how fine this mesh is, for the dynamic-waves vertex height. Every
+      //ring gets ring 0's numbers: the shader derives the local spacing from the
+      //camera distance, continuously, so stitched ring edges agree.
+      if(uniformsRef.dynamicWavesMeshCell){
+        uniformsRef.dynamicWavesMeshCell.value = self.dynamicWavesMesh.cell;
+        uniformsRef.dynamicWavesMeshRing.value = self.dynamicWavesMesh.ring;
+      }
       //sizeOfOceanPatch stays as base patchSize for consistent world-space normal-map UV scaling
     }
     //Tile geometry spans [0, tileSize]; placing at gx*tileSize centers the 4×4 ring on the camera.

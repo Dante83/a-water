@@ -205,6 +205,26 @@ ARestlessOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
   this.fallSplashOpacity = 0.9;     //the clumps' own opacity.  Live knob.
   this.fallStreakTime = 0.08;       //s: a clump streaks over the path it covers in this time.
   this.fallSplashWaterKill = true;  //die on a-land's inland water (known-dry aware), not just the sea.
+  //BODY splash (Phase 8e): a hand, a foot, a floating body going into or sweeping through
+  //the water (WaterInteraction). emitImpact is sized for waves slamming rock: its 7 m/s launch
+  //FLOOR threw a child's 1 m/s splash 3 m up, and most of it was faint mist, so it read as a
+  //thin line going a mile high (Dante 2026-09-27). This uses the waterfall's type-3 clumps
+  //instead (opaque, streaked, dying on the water they fall back into), thrown at the body's
+  //own speed from a crown ring around the contact.
+  this.bodySplashEnabled = true;
+  this.bodySplashPerSpeed = 10.0;   //FUDGE: clumps per (m/s) per 0.1 m of contact radius.
+  this.bodySplashMax = 40;          //clumps per burst, cap.
+  this.bodySplashSpeed = 1.5;       //launch speed as a fraction of the closing speed: a crown
+                                    //sheet leaves at about the entry speed and its Worthington
+                                    //jet up to ~2× it. 0.9 measured a 5 cm median rise for a
+                                    //2 m/s hand, invisible; 1.5 gives ~15 cm, max ~0.6 m.
+  this.bodySplashMinLaunch = 1.2;   //m/s FLOOR (FUDGE, ~7 cm): a slow wading foot still throws
+                                    //something you can see.
+  this.bodySplashMaxLaunch = 5.0;   //m/s cap (~1.3 m of rise).
+  this.bodySplashSize = 0.02;       //m base radius (× sizeScale across: ~0.2 m clumps).
+  this.bodySplashLife = 1.5;        //s cap; most land back in the water well before it.
+  this.bodySplashSpread = 0.5;      //cone half-spread around the launch axis.
+  this.bodySplashCrown = 0.6;       //outward lean from the contact ring (0 = straight up the axis).
   this.impactBurstPerSpeed = 6.0;//particles per m/s of impact speed (FUDGE).
   this.impactMinBurst = 4;
   this.impactMaxBurst = 60;
@@ -694,6 +714,42 @@ ARestlessOcean.OceanSplash.prototype.emitImpact = function(px, py, pz, nx, ny, n
       this.impactLifetime * (0.7 + Math.random() * 0.6),
       1.0, cr
     );
+  }
+};
+
+//Phase 8e: a BODY splash (see bodySplash* in the constructor). (px, py, pz) is the contact on
+//the surface, (nx, ny, nz) the throw direction (up for an entry, forward-up for wading), speed
+//the closing speed (m/s), radius the contact's (m), countScale thins it. Clumps are born on
+//a ring of the contact radius and lean outward from it, so an entry throws a crown.
+ARestlessOcean.OceanSplash.prototype.emitBodySplash = function(px, py, pz, nx, ny, nz, speed, radius, countScale){
+  if(!this.enabled || !this.bodySplashEnabled || !(speed > 0.0)) return;
+  const r = Math.max(0.03, radius || 0.1);
+  const want = Math.min(this.bodySplashMax,
+    this.bodySplashPerSpeed * speed * (r / 0.1) * (countScale === undefined ? 1.0 : countScale));
+  let count = Math.floor(want);
+  if(Math.random() < want - count) ++count;
+  if(count <= 0) return;
+  const nl = Math.max(1e-4, Math.sqrt(nx * nx + ny * ny + nz * nz));
+  nx /= nl; ny /= nl; nz /= nl;
+  let launch = Math.max(this.bodySplashMinLaunch, speed * this.bodySplashSpeed);
+  if(launch > this.bodySplashMaxLaunch) launch = this.bodySplashMaxLaunch;
+  const spread = this.bodySplashSpread, crown = this.bodySplashCrown;
+  for(let c = 0; c < count; ++c){
+    const th = Math.random() * 2.0 * Math.PI;
+    const ox = Math.cos(th), oz = Math.sin(th);
+    let dx = nx + ox * crown + (Math.random() * 2.0 - 1.0) * spread;
+    let dy = ny + (Math.random() * 2.0 - 1.0) * spread;
+    let dz = nz + oz * crown + (Math.random() * 2.0 - 1.0) * spread;
+    if(dy < 0.3) dy = 0.3;
+    const dl = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    const sp = launch * (0.35 + 0.8 * Math.random());
+    const coarse = 0.85 + 0.15 * Math.random();
+    //spawn() stretches life by (1 + dropLifeBoost·coarse); undo it (as _emitFallSplash does).
+    const life = this.bodySplashLife * (0.7 + 0.6 * Math.random()) / (1.0 + this.dropLifeBoost * coarse);
+    this.spawn(px + ox * r, py + 0.03, pz + oz * r,
+      (dx / dl) * sp, (dy / dl) * sp, (dz / dl) * sp,
+      this.bodySplashSize * (0.6 + 0.8 * Math.random()),
+      life, 3.0, coarse);
   }
 };
 

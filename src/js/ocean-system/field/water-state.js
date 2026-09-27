@@ -41,6 +41,11 @@
 //                                               rivers and creeks (a-land gives them no body)
 //                                               and for tiles baked before Phase 8 (class.B 0)
 //   source                                      'probe' | 'fft' | 'analytic' | null — who answered surfaceY
+//   ripple                                      the part of surfaceY that is DynamicWaves rings and
+//                                               wakes (m); only a probe carries it, 0 otherwise.
+//                                               A body that is itself a ripple emitter should
+//                                               size its footprint on surfaceY − ripple, or it
+//                                               feels its own depression and chases it (8e)
 //
 // opts (optional):
 //   source    'auto' (default: FFT snapshot, else twin) | 'fft' (snapshot only;
@@ -79,7 +84,8 @@ ARestlessOcean.WaterState.createState = function(){
     flowX: 0.0, flowZ: 0.0, energy: 0.0, flowWeight: 0.0,
     orbitalX: 0.0, orbitalY: 0.0, orbitalZ: 0.0,
     type: 0, waterType: null, bodyId: null, waterBody: null,
-    source: null
+    source: null,
+    ripple: 0.0
   };
 };
 
@@ -175,6 +181,7 @@ ARestlessOcean.getWaterStateAt = function(x, z, out, opts){
     return out;
   }
   WS._fillField(grid, x, z, out);
+  out.ripple = 0.0;
 
   const field = ARestlessOcean.waveField;
   const t = field ? field.currentTimeSeconds : 0.0;
@@ -189,6 +196,7 @@ ARestlessOcean.getWaterStateAt = function(x, z, out, opts){
     if(r && age < 0.5){
       //Carried forward from when the probe was drawn, on the water's own rise.
       out.surfaceY = r.y + r.vy * Math.min(0.3, age);
+      out.ripple = r.ripple || 0.0;
       out.orbitalX = r.vx; out.orbitalY = r.vy; out.orbitalZ = r.vz;
       out.source = 'probe';
       return out;
