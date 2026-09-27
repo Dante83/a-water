@@ -519,6 +519,11 @@ contract amendment.
 > real remaining lie was that a-land's `getWaterAt` answers null for dry, loading AND outside
 > the world alike, and every caller read all three as open sea. 8a adds `status`
 > (wet/dry/loading/open-ocean) for that, orbital velocity, and body ids (a-land class.B).
+>
+> **8b built 2026-09-26** (`passes/dynamic-waves-pass.js`): an iWave-class dispersive sim,
+> 512² at 0.125 m, with a kernel bank fitted to k·tanh(k·h), the pair-depth symmetric form,
+> advection by the current, and emitters (buoyant bodies ring and wake). Normals only, on the
+> sea and the flowing surface.
 
 One sanctioned entry point returning `{level, depth, flow, orbitalVelocity, bodyId, type,
 energy}`, consolidating the analytic Gerstner twin (`ocean-wave-field.js`), the

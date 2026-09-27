@@ -155,7 +155,10 @@ AFRAME.registerComponent('buoyant', {
     //Plane-follow response time constant (seconds).
     'damping': {type: 'number', default: 0.25},
     //Entry-phase bob period (seconds) of the spring that lifts a submerged body.
-    'bobPeriod': {type: 'number', default: 1.6}
+    'bobPeriod': {type: 'number', default: 1.6},
+
+    //Phase 8b: ring and wake the water (ARestlessOcean.DynamicWaves emitter).
+    'ripples': {type: 'boolean', default: true}
   },
   init: function(){
     //Reusable scratch so tick allocates nothing.
@@ -223,7 +226,7 @@ AFRAME.registerComponent('buoyant', {
     return null;
   },
   tick: function(time, timeDelta){
-    if(!this.data.enabled) return;
+    if(!this.data.enabled){ this._releaseRipples(); return; }
     const field = ARestlessOcean.waveField;
     if(!field) return; //ocean not up yet.
 
@@ -234,11 +237,43 @@ AFRAME.registerComponent('buoyant', {
     const obj = this.el.object3D;
     obj.updateMatrixWorld();
 
+    this._submH = null;
     if(this.data.solver === 'kinematic'){
       this._solveKinematic(local, field, obj, time, timeDelta);
     } else {
       this._solveRigid(local, field, obj, time, timeDelta);
     }
+    this._updateRipples(local.length);
+  },
+  remove: function(){
+    this._releaseRipples();
+  },
+
+  //===========================================================================
+  // RIPPLES — this body as a DynamicWaves emitter (Phase 8b).
+  //===========================================================================
+  //A Gaussian of radius √(footprint / π) pressed down by the mean submerged
+  //height: its volume is the displaced volume. The pass injects only the CHANGE,
+  //so riding the swell is quiet, bobbing rings and moving leaves a wake. The
+  //kinematic solver has no submersion of its own; it presses its half-height.
+  _updateRipples: function(nProbes){
+    const DW = ARestlessOcean.DynamicWaves;
+    if(!this.data.ripples || !DW){ this._releaseRipples(); return; }
+    const body = this._ensureBody(nProbes);
+    if(!body) return;
+    const e = this._ripple || (this._ripple = DW.addEmitter());
+    if(e._removed){ this._ripple = null; return; }
+    const pos = this.el.object3D.position;
+    e.x = pos.x; e.z = pos.z;
+    e.radius = Math.sqrt(body.colArea * Math.max(1, nProbes) / Math.PI);
+    //A rigid step that returned early (dt 0) keeps its last depth: jumping to the
+    //kinematic fallback would inject a ring that never happened.
+    if(this._submH !== null) e.depth = this._submH;
+    else if(this.data.solver === 'kinematic') e.depth = body.halfH;
+    e.active = true;
+  },
+  _releaseRipples: function(){
+    if(this._ripple){ this._ripple.remove(); this._ripple = null; }
   },
 
   //===========================================================================
@@ -318,6 +353,7 @@ AFRAME.registerComponent('buoyant', {
     //fraction (0 airborne → 1 fully under), so it's true free-fall above the
     //surface and full damping once it's in.
     const dragGate = submHSum / (local.length * 2.0 * body.halfH);
+    this._submH = submHSum / local.length;
     const Ek = 0.5 * body.mass * this._vy * this._vy
              + 0.5 * (body.Ix * this._wx * this._wx + body.Iz * this._wz * this._wz);
     const gov = 1.0 + this.data.energyDamping * (Ek / body.eRef);
@@ -553,3 +589,31 @@ AFRAME.registerComponent('buoyant', {
     return this._autoLocal;
   }
 });
+
+//Console: ARestlessOcean.dropBox({size = 1, height = 1.5, density = 0.45, ahead = 4})
+//drops a buoyant box `ahead` metres in front of the camera, `height` metres above
+//the water there. Returns the entity; .remove() it when done.
+//$DEBUG_START$
+ARestlessOcean.dropBox = function(o){
+  o = o || {};
+  const scene = AFRAME.scenes[0];
+  const cam = scene.camera;
+  const p = cam.getWorldPosition(new THREE.Vector3());
+  const d = cam.getWorldDirection(new THREE.Vector3());
+  const l = Math.hypot(d.x, d.z) || 1.0;
+  const ahead = (o.ahead === undefined) ? 4.0 : o.ahead;
+  const x = p.x + ahead * d.x / l, z = p.z + ahead * d.z / l;
+  const s = ARestlessOcean.getWaterStateAt ? ARestlessOcean.getWaterStateAt(x, z) : null;
+  const y = (s && s.surfaceY !== null ? s.surfaceY : p.y) + ((o.height === undefined) ? 1.5 : o.height);
+  const size = o.size || 1.0;
+  const box = document.createElement('a-box');
+  box.setAttribute('width', size);
+  box.setAttribute('height', size * 0.5);
+  box.setAttribute('depth', size);
+  box.setAttribute('color', o.color || '#c8843c');
+  box.setAttribute('position', x + ' ' + y + ' ' + z);
+  box.setAttribute('buoyant', 'solver: rigid; density: ' + ((o.density === undefined) ? 0.45 : o.density));
+  scene.appendChild(box);
+  return box;
+};
+//$DEBUG_END$

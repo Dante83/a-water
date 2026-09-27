@@ -8,12 +8,71 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
-## Phase 8 — `getWaterStateAt` — **8a built + Node-verified, awaiting browser** (2026-09-26)
+## Phase 8 — `getWaterStateAt` + dynamic waves — **8a DONE (browser-approved), 8b built + headless-verified** (2026-09-26)
 
 Branches: a-water `phase-8-water-state` (off development 917055d), a-land `phase-8-body-id`
-(off main, in the MAIN checkout).
+(off main, in the MAIN checkout). 8a committed (a-water 97e9a22, a-land 722fd03). Dante
+rebaked island-sholes; body ids are live (around spawn: wet/ocean, wet/lake, and rivers
+with none). His "rivers 100% better" came from that rebake picking up the recent solver
+work, **not** from 8a: the GPU decode reads class R/G only.
 
-### ▶ RESUME HERE — 8a built (2026-09-26)
+### ▶ RESUME HERE — 8b built (2026-09-26)
+
+**Needs Dante: run `create-shader.py`** (water-shader.glsl → water-shader.js). Before the
+regen the pass runs but nothing draws it: the old water-shader.js has no
+`$dynamic_waves_functions` token, so the splice is a no-op. That makes it safe to load
+either way. Then on island-sholes-ocean:
+- `ARestlessOcean.poke()` (a stone 3 m ahead) and `setOceanShadowDebug(69)`.
+- Drop an `<a-box buoyant>` into a creek or a calm lake. Rings are faint under an 8 m/s sea,
+  which is correct: 2 m chop swamps centimetre ripples.
+
+**What 8b is.** `ARestlessOcean.Passes.DynamicWavesPass`
+(`src/js/ocean-system/passes/dynamic-waves-pass.js`; its header has the full model). An
+iWave-class height field: 512² at 0.125 m (±32 m), camera-centred and world-snapped,
+recentred by whole-cell shifts, fixed 1/60 s steps. It is spliced into the fragment of BOTH
+water variants as micro slope only, not the macro normal. Cm ripples on a 1–2 m mesh are a
+lighting feature, so there is no vertex, CSM, height-bake or CPU consumer. Debug mode 69 shows it.
+- **Dispersion from a fitted kernel bank.** Radius 8 (197 taps, 30 radial classes),
+  least-squares fitted at load to k·tanh(k·h) for h = 0.5/1/2/4 cells, over the whole
+  Brillouin zone, with zero DC and a positivity re-weighting pass. The error is 3.5–7.7% in
+  band. Deeper than 4 cells, waves longer than ~2 m run as over 0.5 m of water (a compact
+  kernel's limit).
+- **Variable depth, symmetric.** Σ_j K_{h_ij}(η_j − η_i) with the PAIR depth ½(h_i + h_j),
+  from the WaterField. Dry cells are η = 0 walls, so banks reflect.
+- **Advection** by WaterField RT1 flow, Catmull-Rom with a neighbour clamp. Rings ride the
+  creek downstream.
+- **Sources** are emitters: a Gaussian footprint pressed `depth` m down. The CHANGE since
+  last frame is injected as a displacement (into η and η⁻ together). `buoyant` bodies are
+  emitters by default (`ripples: true`): radius √(footprint/π) and depth = mean submerged
+  height, so the Gaussian volume equals the displaced volume. `poke()` is a stone
+  (`release: false`).
+
+**Three bugs found and fixed headless, all worth remembering:**
+1. **Tessendorf's closed-form kernel** truncated to 13×13 is off by up to 2× across the band
+   and has non-zero DC. That is why the kernel is fitted instead.
+2. **A kernel fitted only for |k| ≤ π along a few angles** left the Brillouin-zone corners
+   free: R(π, π) = −55, an exponentially growing checkerboard (NaN in seconds). It is now
+   fitted over the whole zone. The kernel of a cell's OWN depth was also non-symmetric,
+   and the pair-depth form fixed that. A CPU replica stays bounded undamped over flat,
+   0.4 and 0.08 beaches.
+3. **Sources subtracted from η⁺ only** turned each displacement into a velocity kick
+   (Δ/dt), overdriving a bobbing box's rings ~10× (a 0.4 m box made 4.7 m rings).
+   Subtracting from η⁻ as well fixed it: the same box now peaks at its own plunge depth
+   under itself.
+
+**Verified headless (4090, scratch regen served via CDP Fetch, island-sholes):** no shader
+or program errors; self-test 10.10004; **0.02 ms/step**; 60 fps.
+- 5 cm stone at sea: the ring front runs ~1.1 m/s and decays 1.3 cm → 0.3 mm over 20 s.
+- Creek at 2.6 m/s: the ring is carried ~10 m downstream in 3 s.
+- Calm sea: a dropped 1 m box rings, then decays to 2 cm; a box dragged at 1 m/s leaves a
+  5 cm wake.
+- Rough sea: a box tossed ±1.6 m stays ≤ 0.56 m under itself.
+
+**Next.** 8c: the interaction-emitter API (generalise `buoyancy-splash` with emitters), and
+Liam as an emitter. 8d: rain.
+
+### (earlier) RESUME HERE — 8a built (2026-09-26)
+
 
 **No create-shader.py run is needed.** No shader changed. **For body ids, run Solve Water +
 Bake & Export** on a world (island-sholes has the ocean plus lakes). Until then `bodyId` is

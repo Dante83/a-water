@@ -117,6 +117,9 @@ $shore_breaker_functions
 //Phase 3b ShoreReflection (shoreReflectionHeightAt, shoreReflectionSlopeAt):
 //spliced from ARestlessOcean.ShoreReflection.GLSL in shore-reflection-pass.js.
 $shore_reflection_functions
+//Phase 8b DynamicWaves (dynamicWavesHeightAt, dynamicWavesSlopeAt): spliced
+//from ARestlessOcean.DynamicWaves.GLSL in dynamic-waves-pass.js.
+$dynamic_waves_functions
 
 //uniform vec3 cameraDirection;
 uniform float sizeOfOceanPatch;
@@ -2207,6 +2210,13 @@ void main(){
   breakerSlope += reflectionSlope;
   rawDdx.y += breakerSlope.x;
   rawDdz.y += breakerSlope.y;
+  //── Phase 8b: dynamic waves (DynamicWavesPass) ───────────────────────────
+  //Rings and wakes objects put into the water, on the sea and on the flowing
+  //surface alike. Centimetre ripples: micro slope only, so NOT added to the
+  //macro normal (cascade0HeightSlope) the specular orientation follows.
+  vec2 dynamicWaveSlope = dynamicWavesSlopeAt(vWorldXZ);
+  rawDdx.y += dynamicWaveSlope.x;
+  rawDdz.y += dynamicWaveSlope.y;
   //macroSlope below re-applies waveHeightMultiplier to cascade 0's slope; the
   //breaker slope is already in metres per metre, so divide it back out. The
   //breaker is the swell near a shore, which is exactly what the macro normal
@@ -3751,6 +3761,16 @@ void main(){
     float dbgIn = (shoreReflectionEnabled > 0.5 && max(dbgD.x, dbgD.y) < 1.0) ? 1.0 : 0.0;
     vec3 dbgCol = vec3(clamp(0.5 + dbgEta, 0.0, 1.0));
     gl_FragColor = vec4(mix(dbgCol * 0.6, dbgCol * vec3(0.8, 0.9, 1.1), dbgIn), 1.0);
+  }
+  //Phase 8b DynamicWaves debug view.
+  //Mode 69: dynamic-wave height alone, grey = 0, white = +2 cm, black = -2 cm,
+  //         tinted blue inside the simulation window so its extent shows.
+  else if(oceanShadowDebugMode == 69){
+    float dbgDw = dynamicWavesHeightAt(vWorldXZ);
+    vec2 dbgDwD = abs(vWorldXZ - dynamicWavesCenter) / max(dynamicWavesHalfWidth, 0.001);
+    float dbgDwIn = (dynamicWavesEnabled > 0.5 && max(dbgDwD.x, dbgDwD.y) < 1.0) ? 1.0 : 0.0;
+    vec3 dbgDwCol = vec3(clamp(0.5 + 25.0 * dbgDw, 0.0, 1.0));
+    gl_FragColor = vec4(mix(dbgDwCol * 0.6, dbgDwCol * vec3(0.8, 0.9, 1.1), dbgDwIn), 1.0);
   }
   #if($flowing_water)
   //Mode 63 (flowing surface only): FlowFoamPass coverage, grayscale; blue tint

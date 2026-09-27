@@ -1061,7 +1061,14 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         ? ARestlessOcean.Passes.FlowSurfacePass.WAVE_PERIOD : 8.0).toFixed(1))
       .replace('$shore_breaker_functions', function(){ return ARestlessOcean.ShoreBreaker.GLSL; })
       .replace('$flow_handoff_functions', function(){ return ARestlessOcean.FlowHandoff.GLSL; })
-      .replace('$shore_reflection_functions', shoreReflectionGLSL);
+      .replace('$shore_reflection_functions', shoreReflectionGLSL)
+      //Phase 8b: the dynamic-waves sampler (dynamic-waves-pass.js). Fragment only.
+      .replace('$dynamic_waves_functions', dynamicWavesGLSL);
+  }
+  function dynamicWavesGLSL(){
+    return ARestlessOcean.DynamicWaves ? ARestlessOcean.DynamicWaves.consumerGLSL()
+      : 'uniform float dynamicWavesEnabled;\nuniform vec2 dynamicWavesCenter;\nuniform float dynamicWavesHalfWidth;\n'
+        + 'float dynamicWavesHeightAt(vec2 xz){ return 0.0; }\nvec2 dynamicWavesSlopeAt(vec2 xz){ return vec2(0.0); }';
   }
   const vertexShaderSource = buildVertexShader(atmosphereReady, false);
   this.oceanMaterial = new THREE.ShaderMaterial({
@@ -1097,6 +1104,10 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //Phase 3b shore reflection uniforms (shore-reflection-pass.js).
   if(ARestlessOcean.ShoreReflection){
     Object.assign(this.oceanMaterial.uniforms, ARestlessOcean.ShoreReflection.createUniforms());
+  }
+  //Phase 8b dynamic waves uniforms (dynamic-waves-pass.js).
+  if(ARestlessOcean.DynamicWaves){
+    Object.assign(this.oceanMaterial.uniforms, ARestlessOcean.DynamicWaves.createUniforms());
   }
   this.oceanMaterial.uniforms.sizeOfOceanPatch.value = this.patchSize;
 
@@ -1369,6 +1380,15 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     this.shoreReflectionPass.init();
   } else {
     this.shoreReflectionPass = null;
+  }
+  //Phase 8b: dynamic waves, the rings and wakes objects put into the water
+  //(ARestlessOcean.Passes.DynamicWavesPass; read its header).
+  this.dynamicWavesEnabled = true;
+  if(ARestlessOcean.Passes && ARestlessOcean.Passes.DynamicWavesPass && ARestlessOcean.DynamicWaves.ENABLED){
+    this.dynamicWavesPass = new ARestlessOcean.Passes.DynamicWavesPass(this);
+    this.dynamicWavesPass.init();
+  } else {
+    this.dynamicWavesPass = null;
   }
 
   //Build the horizon-skirt mesh and register it as another instance key so the
@@ -1893,6 +1913,16 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         depthCap: self._waterFieldDepthCap()
       });
     }
+    //Phase 8b: step the dynamic waves. After the water field (its medium).
+    if(self.dynamicWavesPass){
+      self.dynamicWavesPass.tick({
+        timeMs: time,
+        cameraX: self.globalCameraPosition.x,
+        cameraZ: self.globalCameraPosition.z,
+        enabled: self.dynamicWavesEnabled,
+        depthCap: self._waterFieldDepthCap()
+      });
+    }
 
     //Refresh the local CPU height field for scalable exact buoyancy queries
     //(tiny GPU pass + async read; no-ops unless something asked for it).
@@ -2409,6 +2439,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     self._shoreBreakerTime = time * 0.001;
     const shoreBreakerParams = self.shoreBreakerParams();
     const shoreReflectionState = self.shoreReflectionPass ? self.shoreReflectionPass.consumerState() : null;
+    const dynamicWavesState = self.dynamicWavesPass ? self.dynamicWavesPass.consumerState() : null;
     //Phase 4: the square the flowing surface covers this frame, or null.
     const flowHandoffState = self._flowHandoffState = self.flowHandoffState();
 
@@ -2417,6 +2448,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       ARestlessOcean.WaveMask.writeUniforms(uniformsRef, waveMaskParams);
       if(shoreBreakerParams) ARestlessOcean.ShoreBreaker.writeUniforms(uniformsRef, shoreBreakerParams);
       if(shoreReflectionState) ARestlessOcean.ShoreReflection.writeUniforms(uniformsRef, shoreReflectionState);
+      //Both the sea and the flowing surface carry the dynamic waves.
+      if(dynamicWavesState) ARestlessOcean.DynamicWaves.writeUniforms(uniformsRef, dynamicWavesState);
       ARestlessOcean.FlowHandoff.writeUniforms(uniformsRef, flowHandoffState);
       //The flowing surface carries no breakers or shore reflection of its own.
       if(oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].userData.flowingWater){
