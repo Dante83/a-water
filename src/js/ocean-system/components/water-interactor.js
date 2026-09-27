@@ -44,6 +44,16 @@ ARestlessOcean.WaterInteraction.impact = function(x, y, z, speed, nx, ny, nz, co
   return true;
 };
 
+//A crater where something went in fast: a one-shot depression (DynamicWaves.poke)
+//that springs back and rings, sized by the body and the closing speed. Never
+//narrower than two ripple cells, or it is all grid-scale noise the solver damps.
+ARestlessOcean.WaterInteraction.crater = function(x, z, r, speed, k){
+  const DW = ARestlessOcean.DynamicWaves;
+  if(!DW || !DW.poke || !(k > 0.0) || !(speed > 0.0)) return;
+  const R = Math.max(2.0 * r, 2.0 * (DW.DX || 0.125));
+  DW.poke(x, z, Math.min(0.25, k * r * speed), R);
+};
+
 //Volume fraction of a sphere under a plane cutting it at normalised height t
 //(0 = touching from above, 1 = just covered): t²(3 − 2t).
 ARestlessOcean.WaterInteraction.sphereFraction = function(t){
@@ -62,6 +72,18 @@ ARestlessOcean.WaterInteraction.Interactor = function(opts){
   //Wading spray: moving through the waterline at least this fast relative to the water.
   this.wadeMinSpeed = (opts.wadeMinSpeed === undefined) ? 1.2 : opts.wadeMinSpeed;
   this.splashCooldown = (opts.splashCooldown === undefined) ? 0.15 : opts.splashCooldown;
+  //Entry crater: going in at speed throws the water out of the way, a hole far bigger
+  //than the body's own volume, and that hole is what rings. Depth = craterK · radius ·
+  //closing speed (m), capped; 0 turns it off. A foot at 3 m/s: ~10 cm.
+  this.craterK = (opts.craterK === undefined) ? 0.5 : opts.craterK;
+  //Ask a-water for an exact surface probe at this point (getWaterStateAt opts.probe), so
+  //the waterline is the DRAWN one — the one a body riding the waves is floating on. Against
+  //the coarse snapshot a chest riding the swell flickered in and out of the water with the
+  //wave phase and rang the water for nothing. Falls back to the snapshot when the probe
+  //slots (16) are taken.
+  this.probe = opts.probe !== false;
+  this._probeKey = 'wi-' + (ARestlessOcean.WaterInteraction._n = (ARestlessOcean.WaterInteraction._n || 0) + 1);
+  this._wsOpts = {velocity: true, probe: this.probe ? this._probeKey : undefined};
   //Below this submerged fraction the point counts as out of the water.
   this.contactFraction = 0.02;
   //What the owner reads.
@@ -106,7 +128,7 @@ ARestlessOcean.WaterInteraction.Interactor.prototype.update = function(x, y, z, 
   this._cool = Math.max(0.0, this._cool - dt);
 
   const s = ARestlessOcean.getWaterStateAt
-    ? (this._ws = ARestlessOcean.getWaterStateAt(x, z, this._ws, {velocity: true})) : null;
+    ? (this._ws = ARestlessOcean.getWaterStateAt(x, z, this._ws, this._wsOpts)) : null;
   const wet = !!(s && s.status !== 'dry' && s.surfaceY !== null);
   st.status = s ? s.status : null;
   st.surfaceY = wet ? s.surfaceY : null;
@@ -128,6 +150,7 @@ ARestlessOcean.WaterInteraction.Interactor.prototype.update = function(x, y, z, 
     const closing = st.waterVY - st.vy;
     if(frac < 0.98 && closing > this.splashMinSpeed){
       WI.impact(x, s.surfaceY, z, closing);
+      WI.crater(x, z, r, closing, this.craterK);
       this._cool = this.splashCooldown;
     } else if(frac < 0.9){
       //Wading: through the waterline sideways, relative to the CURRENT. Not to the
@@ -165,7 +188,12 @@ ARestlessOcean.WaterInteraction.Interactor.prototype._setSubmerged = function(fr
   //Waterline radius where the surface cuts the sphere; a fully covered sphere
   //still bulges the surface over itself, less the deeper it goes.
   const a = Math.sqrt(Math.max(0.0, r * r - depth * depth));
-  const R = Math.max(a, 0.5 * r);
+  //Never under two ripple cells (DX 0.125 m). A hand's waterline is ~6 cm, and a
+  //footprint that small only excites grid-scale modes, which the solver's viscosity
+  //kills in ~0.2 s: the water took the energy and showed nothing (a submerged chest
+  //pressed 0.7 m into an 8 cm spot, headless 2026-09-27). Same displaced volume,
+  //spread over an area the grid can ring.
+  const R = Math.max(a, 0.5 * r, 2.0 * (DW.DX || 0.125));
   const vol = frac * (4.0 / 3.0) * Math.PI * r * r * r;
   const deep = depth > r ? Math.exp(-(depth - r) / r) : 1.0;
   e.x = x; e.z = z;
@@ -192,6 +220,8 @@ if(typeof AFRAME !== 'undefined' && !AFRAME.components['water-interactor']){
       splash: {type: 'boolean', default: true},
       splashMinSpeed: {type: 'number', default: 0.8},
       wadeMinSpeed: {type: 'number', default: 1.2},
+      craterK: {type: 'number', default: 0.5},
+      probe: {type: 'boolean', default: true},
       enabled: {type: 'boolean', default: true}
     },
     init: function(){
@@ -212,6 +242,9 @@ if(typeof AFRAME !== 'undefined' && !AFRAME.components['water-interactor']){
       i.splash = d.splash;
       i.splashMinSpeed = d.splashMinSpeed;
       i.wadeMinSpeed = d.wadeMinSpeed;
+      i.craterK = d.craterK;
+      i.probe = d.probe;
+      i._wsOpts.probe = d.probe ? i._probeKey : undefined;
       this._target = null;   //re-resolve (the model may have changed)
       if(!d.enabled) i.dispose();
     },
