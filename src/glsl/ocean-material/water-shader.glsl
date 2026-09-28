@@ -1597,6 +1597,22 @@ SOFTWARE.
   }
 
 void main(){
+  //Phase 8e: which side of the surface THIS fragment is seen from: 1 from below (the
+  //ceiling), 0 from above. It used to be the uniform underwaterFactor, one answer for
+  //the whole frame from a height check at the camera; near the surface that check ran
+  //a frame late and missed four cascades, and the side it chose was culled or shaded
+  //as the wrong one. ocean-grid.js draws the mesh single-sided (FrontSide above,
+  //BackSide below), so this equals its state; reading it from the face keeps any
+  //material that is drawn from the other side honest. (DoubleSide near the surface was
+  //tried and dropped: folded chop crests drew their far side through.)
+  //⚠ three draws BackSide by flipping the FRONT-FACE WINDING (gl.frontFace CW) and culling
+  //back faces as usual, so the faces a BackSide mesh draws report gl_FrontFacing = true.
+  //three's own chunks undo it with FLIP_SIDED; so must this, or a submerged camera saw
+  //the whole underside shaded as the top: no Snell's window, no fog (Dante 2026-09-27).
+  float uwSide = gl_FrontFacing ? 0.0 : 1.0;
+  #ifdef FLIP_SIDED
+    uwSide = 1.0 - uwSide;
+  #endif
   //Shadow factor — once per fragment. 1.0 = fully lit, 0.0 = fully shadowed.
   //sunShadowFactor is computed LATER, after macroNormal is available — the
   //ocean CSM uses a normal-based slope bias to avoid the per-triangle
@@ -1628,8 +1644,8 @@ void main(){
   //water surface doesn't poke through a boat's interior. Only fires above
   //water: when the camera is submerged the same discard would kill the
   //ceiling fragments above the camera (no boat present to hide), so we
-  //gate it on `underwaterFactor < 0.5`.
-  if(underwaterFactor < 0.5 &&
+  //gate it on `uwSide < 0.5`.
+  if(uwSide < 0.5 &&
      exclusionPosition.x < 1.0 && exclusionPosition.x > 0.0 &&
      exclusionPosition.y < 1.0 && exclusionPosition.y > 0.0){
     vec2 discardHeightData = texture2D(exclusionMap, exclusionPosition).ga;
@@ -1647,7 +1663,7 @@ void main(){
   //under every dock. The test is ALL TAPS KNOWN DRY (flowHandoffDryAt, decoded per
   //texel): the cut sits a texel inland of the shoreline, under the terrain, rather
   //than half a texel seaward of it where it would show seabed. Not gated on
-  //underwaterFactor: the ceiling has no water over dry land either.
+  //uwSide: the ceiling has no water over dry land either.
   //(It used to read the FILTERED dryMask > 0.999, which meant all-dry only while dry
   //was stored as 1. Since Phase 4 a known-dry texel holds 1 + w, so one dry tap of 2
   //beside a creek at half weight already passed, and the cut moved seaward.)
@@ -1751,7 +1767,7 @@ void main(){
     const float FLOW_GUARD_FULL_M = 0.03;
     float flowSheetThickness = 1000.0;
     float flowThicknessAlpha = smoothstep(FLOW_FADE_MIN_M, FLOW_FADE_FULL_M, dryTestField.g);
-    if(underwaterFactor < 0.5){
+    if(uwSide < 0.5){
       vec2 flowGroundUV = gl_FragCoord.xy / screenResolution;
       float flowGroundRaw = texture2D(refractionDepthTexture, flowGroundUV).r;
       //1.0 is the clear: no ground under this pixel, so the column is deep.
@@ -1833,7 +1849,7 @@ void main(){
     //Since 2026-09-22 the flowing surface judges "how much water" by the baked depth; this
     //keeps in step: under the middle of that ramp it is not a surface, whatever the view.
     if(flowHandoffW > 0.002 && dryTestField.g < 0.06) discard;
-    if(flowHandoffW > 0.002 && underwaterFactor < 0.5){
+    if(flowHandoffW > 0.002 && uwSide < 0.5){
       vec2 stillGroundUV = gl_FragCoord.xy / screenResolution;
       float stillGroundRaw = texture2D(refractionDepthTexture, stillGroundUV).r;
       if(stillGroundRaw < 1.0){
@@ -2338,12 +2354,12 @@ void main(){
 
   #if($foam_enabled)
     //Foam is a top-surface effect, so the WHOLE foam system is gated off when the
-    //camera is submerged. This is a uniform branch on underwaterFactor (same value
-    //for every fragment), so the foam-map fetch + shore boost here AND the foam
+    //fragment is seen from below. uwSide is constant across a triangle's side
+    //(Phase 8e; it was a uniform), so the foam-map fetch + shore boost here AND the foam
     //texture sampling + Lambert lighting further down drop out wholesale for the
     //underwater pass — freeing budget for spray/mist. Above water: unchanged.
     float foamAmount = 0.0;
-    if(underwaterFactor < 0.5){
+    if(uwSide < 0.5){
     //fftFoamAmount is now the broadband foam RT sample — it already includes
     //Crest-style accumulation + wind advection + dt-scaled decay, so no live
     //turbulence boost is needed. The shore branch still adds its turbulence-
@@ -2389,7 +2405,7 @@ void main(){
     //Phase 8e: whitewater bodies churn up (DynamicWavesPass foam channel), on the sea and
     //on the flowing surface alike. It rides the current with the ripples and fades.
     foamAmount = max(foamAmount, dynamicWavesFoamAt(vWorldXZ));
-    } //end if(underwaterFactor < 0.5) — foam system off below the surface
+    } //end if(uwSide < 0.5) — foam system off below the surface
   #else
     float foamAmount = 0.0;
   #endif
@@ -2437,9 +2453,9 @@ void main(){
   //SEE while the ceiling model was gated off behind atmospheric perspective:
   //the above-water Fresnel pins at its horizon ceiling below the surface (see
   //cosTheta), which made totalLight almost purely this term — a screen-space
-  //mirror of the seabed, marched from under it. `underwaterFactor` is a uniform,
-  //so this branch is fully coherent across the draw.
-  vec3 reflectedLight   = (underwaterFactor >= 0.5)
+  //mirror of the seabed, marched from under it. `uwSide` is per fragment
+  //(Phase 8e), but constant across a triangle's side, so the branch stays coherent.
+  vec3 reflectedLight   = (uwSide >= 0.5)
                         ? vec3(0.0)
                         : screenSpaceReflection(worldPosition.xyz, ssrReflectDir, ssrSkyDir);
 
@@ -2488,7 +2504,7 @@ void main(){
   //round 4). Along the refracted ray rather than straight down, which is close
   //enough on a sheet this thin.
   #if($foam_enabled)
-    if(underwaterFactor < 0.5 && shoreBreakerEnabled > 0.5 && swashReach > 0.0 && refractionDepthLinear < cameraNearFar.y * 0.99){
+    if(uwSide < 0.5 && shoreBreakerEnabled > 0.5 && swashReach > 0.0 && refractionDepthLinear < cameraNearFar.y * 0.99){
       float sheetThickness = worldPosition.y - pointXYZ.y;
       foamAmount = max(foamAmount, 0.8 * shoreBreakerFoamGain * (1.0 - smoothstep(0.0, 0.25, sheetThickness)));
     }
@@ -3110,7 +3126,7 @@ void main(){
     float dbgFoamMask   = 0.0;
     float dbgFoamBlend  = 0.0;
     float dbgFoamAmount = foamAmount;
-    if(underwaterFactor < 0.5){
+    if(uwSide < 0.5){
     //Two-layer foam sampling: average a 90°-rotated, differently-scaled second sample
     //with the first to break up the repeating brick pattern (same trick as the large normal map).
     //foamLayerMix is 0.5 on the ocean (the plain average) and the two-phase
@@ -3169,7 +3185,7 @@ void main(){
     dbgFoamMask   = foamMask;
     dbgFoamBlend  = foamBlend;
     totalLight = mix(totalLight, foamDiffuse + foamAmbient, foamBlend);
-    } //end if(underwaterFactor < 0.5) — foam off below the surface
+    } //end if(uwSide < 0.5) — foam off below the surface
   #else
     vec3 dbgFoamColor = vec3(0.0);
     float dbgFoamMask = 0.0;
@@ -3191,9 +3207,9 @@ void main(){
   //Camera is below the surface: this fragment is the underside of the water (the
   //"ceiling"). Replace the above-water lighting wholesale with the water→air
   //ceiling model — screen-space refraction (rippled transmission) + Fresnel/TIR
-  //planar reflection + foam, fogged by the water column. ocean-grid.js flips the
-  //mesh to BackSide on the same gate, so only ceiling fragments land here.
-  if(runPostLighting && underwaterFactor >= 0.5){
+  //planar reflection + foam, fogged by the water column. ocean-grid.js draws the
+  //mesh BackSide below, and uwSide is gl_FrontFacing.
+  if(runPostLighting && uwSide >= 0.5){
     totalLight = computeUnderwaterCeiling(worldPosition.xyz, displacedNormal,
                                           dbgFoamColor, dbgFoamBlend,
                                           screenUV,
@@ -3206,7 +3222,7 @@ void main(){
     //Atmospheric perspective is the most expensive post-lighting step (multiple
     //3D LUT samples), so it stays on mode 0 alone — the 50-55 taps are ceiling
     //taps and never reach here.
-    if(oceanShadowDebugMode == 0 && underwaterFactor < 0.5){
+    if(oceanShadowDebugMode == 0 && uwSide < 0.5){
       totalLight = applyAtmosphericPerspective(totalLight, worldPosition.xyz);
     }
   #endif
@@ -3458,12 +3474,11 @@ void main(){
     gl_FragColor = vec4(0.6, 0.0, 0.6, 1.0);
   #endif
   }
-  //Mode 27: underwaterFactor as a continuous ramp — the value ITSELF, not the
-  //binary every other mode thresholds it into. Black = 0 (fully in air), white =
-  //1 (fully submerged), mid-grey = mid-crossfade. Read it when the surface model
-  //looks wrong at the waterline: the shader picks the ceiling at >= 0.5 and the
-  //CPU flips the mesh to BackSide on the same test, so a camera parked in the
-  //grey band is the one place those two can disagree. Tinted teal so a grey
+  //Mode 27: the uniform underwaterFactor as a continuous ramp. Black = 0 (fully in
+  //air), white = 1 (fully submerged), mid-grey = mid-crossfade. Since Phase 8e the
+  //surface model reads gl_FrontFacing instead (uwSide); this still drives the
+  //frame-wide swap (fog, sky, curtain), which now happens once the whole near plane is
+  //under. Tinted teal so a grey
   //ocean does not read as a mid value.
   else if(oceanShadowDebugMode == 27){
     gl_FragColor = vec4(vec3(0.1, 1.0, 0.9) * underwaterFactor, 1.0);
@@ -3618,7 +3633,7 @@ void main(){
   //a glance whether the camera is detected as submerged and which part of the
   //ceiling you are looking at — recomputes the same terms computeUnderwaterCeiling
   //uses, so it tracks the real path exactly.
-  //  DARK BLUE    = underwaterFactor < 0.5 — camera NOT detected as submerged,
+  //  DARK BLUE    = uwSide < 0.5 — camera NOT detected as submerged,
   //                 so the ceiling model never runs (a detection issue, not optics).
   //  RED          = total internal reflection — the TIR mirror, OUTSIDE the
   //                 window (looking too grazing; tilt back toward straight up).
@@ -3627,7 +3642,7 @@ void main(){
   //If the whole ceiling is one flat colour, you are seeing only that zone —
   //sweep the camera from straight-up to grazing and it should run green→red.
   else if(oceanShadowDebugMode == 35){
-    if(underwaterFactor < 0.5){
+    if(uwSide < 0.5){
       gl_FragColor = vec4(0.0, 0.0, 0.35, 1.0);
     } else {
       vec3 ceilN = -normalize(displacedNormal);
@@ -3720,7 +3735,7 @@ void main(){
   //the HDR tonemap-domain split is confirmed (the RT is NoToneMapping/linear,
   //so its geometry is un-compressed HDR, unlike the post-tonemap direct seabed).
   else if(oceanShadowDebugMode == 42){
-    if(underwaterFactor < 0.5){
+    if(uwSide < 0.5){
       gl_FragColor = vec4(0.0, 0.0, 0.35, 1.0);
     } else {
       vec3 dbgCeilN = -normalize(displacedNormal);
@@ -3862,7 +3877,7 @@ void main(){
   #if(!$atmospheric_perspective_enabled)
     //Not under the water: the ceiling has already had its underwater fog (applyUnderwaterFog,
     //the light volume included), and the chunk would add it a second time.
-    if(underwaterFactor < 0.5){
+    if(uwSide < 0.5){
       #include <fog_fragment>
     }
   #endif

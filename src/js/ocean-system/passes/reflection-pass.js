@@ -387,6 +387,10 @@ ARestlessOcean.Passes.ReflectionPass.prototype.renderAboveWaterTransmission = fu
   const skyMesh = atmRenderer && atmRenderer.skyMesh;
   const skyWasVisible = skyMesh ? skyMesh.visible : false;
   if(skyMesh){ skyMesh.visible = true; }
+  //Underwater OceanGrid keeps the dome off layer 0 rather than invisible (so a-land's sky-layer
+  //environment capture still sees it); this pass needs it drawn, so put it back for the render.
+  const skyLayerMask = skyMesh ? skyMesh.layers.mask : 0;
+  if(skyMesh){ skyMesh.layers.enable(0); }
 
   //Sun/moon disk planes are hidden underwater for the main render (sky-dome
   //swap), but the Snell window should still show them refracted through the
@@ -454,7 +458,7 @@ ARestlessOcean.Passes.ReflectionPass.prototype.renderAboveWaterTransmission = fu
   this.renderer.setClearColor(s.clearColor, prevClearAlpha);
   this.renderer.toneMapping = prevToneMapping;
   this.renderer.setRenderTarget(prevRT);
-  if(skyMesh){ skyMesh.visible = skyWasVisible; }
+  if(skyMesh){ skyMesh.visible = skyWasVisible; skyMesh.layers.mask = skyLayerMask; }
   if(sunMesh){ sunMesh.visible = sunWasVisible; }
   if(moonMesh){ moonMesh.visible = moonWasVisible; }
   if(curtain){ curtain.visible = curtainWasVisible; }

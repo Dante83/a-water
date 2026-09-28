@@ -81,6 +81,177 @@ differs from the committed js by exactly the 8e lines, and it compiles clean on 
    - ⚠ The same run's wake peaked at 55 mm even at rippleScale 0.25. The drag head dominates
      (v²/2g: 8.6 cm at 1.3 m/s). If Liam is still loud, lower `dragK` next.
 
+6. **Streams react, lakes meet them (after the 8e commit 1ff37fa; needs another regen).**
+   - FlowSurfacePass gains a **0.25 m inner ring** (±16 m, 16.6k vertices; the 1 m ring gets a
+     15 m hole, same overlap rule). At 1 m a vertex a creek could only SHADE Liam's rings; now
+     they lift it. Its ripple spacing estimate grows to exactly 1 m at its edge
+     (`rippleRing: 8`), so it agrees with the 1 m ring across the overlap.
+   - **The bank sink is shared.** The flowing surface's edge taper moved to
+     `FlowHandoff.GLSL` `flowBankSink(field)` (BANK_TAPER_M 1.5, BANK_TAPER_MAX_M 2). Both
+     surfaces lower by `w × sink`: the creek as before (w = 1 inside it and on its banks, where
+     the band keeps the raw weight), and the lake across the hand-off band. At a mouth the lake
+     used to keep its level while the creek sank toward its bed, so the lake floated over it.
+     Now both sit at one height and the lake bends down into the creek. The surface probe and
+     the CPU height bake apply it too. The ocean CSM receiver leaves it out, like the ripple.
+   - Not done: the lake doesn't take on the creek's ripple-profile NORMALS in the band. That
+     needs the flow samplers in the still material. The alpha cross-fade still blends the
+     shading. The full one-surface merge (the clipmap draws creeks) is designed but not built:
+     sampler budget, dithered see-through edges, far-creek resolution.
+
+7. **The waterline (Dante: "the world above turning white or dark" near the surface).**
+   Headless repro at fixed heights over the drawn water: +0.02 m read "underwater" and the
+   surface was culled over bare, unfogged seabed. At −0.02 m the near plane poked through
+   the surface: a murk wall under clear sky, no waterline. Causes: one frame-wide switch; a
+   camera probe that summed 2 of 6 cascades and ran a frame or two late; a near plane that
+   can straddle the water.
+   - **Exact state.** `HeightReadbackPass.exactCameraSurfaceY()`: a point probe at the camera
+     (every cascade, chop, breakers, ripples, bank sink), carried forward on its rise (at most
+     0.1 s and 3 m/s; reads older than `CAMERA_PROBE_MAX_AGE` 0.3 s fall back to the old probe).
+   - **The frame goes underwater only when the whole near plane is under**
+     (`_nearPlaneExtentY`, 2 cm margin, ±1 cm hysteresis). A/B:
+     `ARestlessOcean.WATERLINE_NEAR_PLANE = false` brings back the eye rule.
+   - **WaterlinePass** (new `passes/waterline-pass.js`, registered in all 13 script lists and
+     make-combined.py): while the near plane can reach the water, a near-plane quad evaluates
+     the drawn surface per pixel (`HeightReadbackPass.surfaceGLSL()`, refactored out of the
+     probe and shared). Pixels whose ray starts under water get Beer-Lambert murk over the
+     refraction G-buffer depth. Where the ray would meet the ceiling (culled, since the frame is
+     still above-water), they get the mirror's murk colour, opaque under TIR and clear inside
+     Snell's window. Plus a ~2 px meniscus. The murk is kept computed within 30 cm of the near
+     plane so it is ready.
+   - `water-shader.glsl` reads top/ceiling from `gl_FrontFacing` (`uwSide`) instead of the
+     whole-frame uniform. With the mesh single-sided that equals the state.
+   - ⚠ **Round 1 failed in Dante's browser** (black lines, lighting changes, no fog held below,
+     Liam white). It drew the water DoubleSide within 30 cm of the surface and shaded the
+     ceiling while the frame was still above-water. Headless with the FFT AND the breaker clock
+     frozen (without that, probes at 1 fps are meaningless) showed two faults:
+     - folded chop crests drew their far side through (bright blobs from below, specks from
+       above);
+     - the mirror target is black while the frame is above-water (it needs the curtain and
+       a-land's ocean fog).
+     A velocity × age carry-forward also threw the switch around (13 m in one headless read).
+     Round 2 dropped DoubleSide and the above-water mirror, capped the carry, added hysteresis,
+     and made the overlay cover the ceiling itself.
+   - ⚠ **Round 2 broke underwater in Dante's browser** (no fog from below, no Snell's window,
+     odd surface transition). `uwSide = gl_FrontFacing ? 0 : 1`, but three draws BackSide by
+     flipping gl.frontFace, so the faces it draws report gl_FrontFacing TRUE and the whole
+     ceiling was shaded as the top. Fixed with `#ifdef FLIP_SIDED` (as three's own chunks do).
+     Found by A/B: the headless driver served the last commit's versions of every changed file
+     (Fetch interception) and the frames diverged exactly there. Round 1 hid it: DoubleSide
+     does not flip. Needs create-shader.py.
+   - **Round 4 (Dante's screenshots: washed-out sky and land, a weak murk strip): BOTH SIDES
+     RENDERED FOR REAL.** Every stand-in painted from a render target came out in the wrong
+     units: the transmission render's contents are graded per library (self-graded sky, a-land
+     tone-mapping its terrain in RTs, Liam not). So while the lens straddles the surface,
+     `OceanGrid.tock()` (the ocean-state system's tock, after A-Frame's frame) draws the other
+     medium's view straight onto the CANVAS, which gives the same tone mapping and output as any
+     frame:
+     - clear depth;
+     - `WaterlinePass.renderMask()` writes near-depth over the side the frame already owns;
+     - render the scene once more in the other state: `_renderWaterlineAirView` (FrontSide
+       water, sky fog, dome/sun/moon, no curtain, a-land ocean fog off) or
+       `_renderWaterlineWaterView` (BackSide water, ocean fog, a-land `setOceanFog` with
+       params kept current in the band, curtain, no sky or spray);
+     - the overlay (meniscus only when its side's pass ran) draws last.
+     Materials with depthTest off (a-starry-sky's dome, sun, moon) are forced on for the pass.
+     The overlay and mask live in their own scenes, so no offscreen pass sees them.
+     ⚠ GL trap: with depthTest disabled GL does not write depth either. The first mask used
+     `depthTest:false` and protected nothing. It is depthTest on + `depthFunc: AlwaysDepth`.
+     Knobs: `oceanGrid.waterlineAirPass` / `.waterlineWaterPass = false` fall back to the
+     stand-ins. Cost: one extra scene render, only while straddling. Skipped in WebXR.
+     Headless, swim page and ocean page: eye under shows the true blue sky above the line and
+     native underwater below; eye above shows the true underwater (teal fogged seabed) below the
+     line.
+   - **Open after round 4 (Dante, 15:35):** "right near the surface the lighting can get super
+     bright" (pale seabed and Liam). Exposure is NOT it (a-land sets it from sun altitude only).
+     A still headless camera at ±2 cm / −30 cm on the same spot gives matching teal, so it is
+     likely transient. Catch it with `ARestlessOcean.debugWaterline()`, and isolate with
+     `oceanGrid.waterlineWaterPass = false` / `.waterlineAirPass = false`. Suspects: the eye-above
+     water pass runs without the light volume and with stale mirror/transmission targets (both
+     only render with the eye under), and a-land's caustic mode follows the frame's state, not
+     the pass's.
+   - **Round 5 (from Dante's `debugWaterline()` dumps at the surface):**
+     - (a) `exactProbe: null` in one: the exact read ran late (Firefox's async readback), and the
+       frame fell back to the coarse probe (2 of 6 cascades), cm off. Now it keeps the last
+       exact−coarse offset for up to 2 s instead.
+     - (b) At the cusp the eye flips between states, so the SAME underwater pixels alternate
+       between the native frame and the eye-above water pass. The pass lacked what the native
+       frame has, so it read lighter and greyer: the flare. Fixed:
+       - the light volume now ticks in the waterline band too (the pass and a-land get it);
+       - the pass puts the fog surface just above the eye (both fogs measure from the eye);
+       - the pass re-sends a-land's caustics with `viewerUnderwater: true` (it kept the
+         frame's above-water mode).
+       Headless comparison numbers were unreliable (the orbit camera frames different seabed
+       at different heights). By eye the pass now matches the native look (teal, fogged,
+       underwater caustic web). Browser check pending.
+   - **Round 6 (Dante: Liam flashes black / white at the cusp, the world a little too):**
+     - Idle rings: `water-interactor` `idleRipple`/`idleRate` (a footprint that breathes while
+       straddling). Liam's pages: chest 12 mm @1.1 Hz, hands 6 mm @1.6 Hz (×LIAM_RIPPLE).
+     - New instrument: `oceanGrid.waterlineDebugForce = 'water' | 'air'` redraws the WHOLE frame
+       through that pass, for A/B against the native frame from the same pose. It found the
+       passes restoring the water to a fixed side instead of the frame's own. That matters
+       because three rebuilds a program when the FOG object changes but NOT when `side` does.
+       Now they restore `_wasUnderwater`. With that, both passes match the native frame on their
+       side (eye −0.3 m: underwater pass == native; eye +0.3 m: air pass == native).
+     - NOT reproduced headless: Liam black (eye under, native) vs white (eye above, underwater
+       pass). Next isolation in the browser: `oceanGrid.waterlineWaterPass = false` (does white
+       go?), and whether Liam's own caustic/sun term reacts to a-land's `viewerUnderwater`,
+       which the water pass flips on for its render.
+   - **Round 7 — the flash found (Dante): it happened with the water pass off, in both forced
+     modes, and with Liam a metre down while the lens straddled.** So it was the frame's STATE
+     flipping, not any renderer: the exact camera probe included the dynamic ripples (Liam's idle
+     rings right beside the lens), hysteresis was ±1 cm, and every flip swaps global state (fog,
+     a-land ocean fog + caustic mode, which Liam's sun shares, the sky dome) at 3-5 Hz. Now:
+     - the state decision uses the surface WITHOUT ripples;
+     - hysteresis is ±5 cm while the lens straddles (the passes draw both sides per pixel, so a
+       sticky state costs nothing);
+     - the passes reuse the frame's shadow maps (`shadowMap.autoUpdate` off during tock). That
+       also saves a second shadow render, and Liam's shadow had been missing in the pass.
+     Headless: 0 flips in 40 s at the surface with idle rings running (only 42 frames: weak).
+     The "white squares popping along the horizon" in `waterlineDebugForce = 'air'` are that
+     debug mode drawing the WATER side of the lens as air: the water, culled from below, lets
+     the dry seabed through, and far crest faces tilted at the eye pop in and out. Not a real
+     path.
+   - **Round 8 — THE FLASH, root cause (Dante: "it screws with the mountains … ambient light /
+     light probes?"). Yes.** a-land re-captures a-starry-sky's dome through a SKY_LAYER cube
+     camera ~4 Hz for `scene.environment`. a-water hid the dome with `visible = false` whenever
+     the frame was underwater, so captures taken then were an empty sky, a black environment:
+     Liam, terrain and mountains dark until the next capture. Headless: 17 of 38 captures with
+     the dome hidden at 8 cm under. Now the underwater hide is `layers.disable(0)` (the main
+     camera only), and the transmission pass and waterline air pass re-enable layer 0 for their
+     renders. After: 0 of 39 hidden, no dome leak underwater, Liam normally lit underwater.
+     (Also explains Liam's "dark silhouette underwater" all along.) Rounds 5-7's fixes stay:
+     each was real, none was this.
+   - **Confirmed by Dante in the browser (2026-09-27): "Perfect! Got it!"** The waterline works.
+     Later idea (his): a surface-tension water LIP on the lens (a meniscus bead and drips as
+     the camera leaves the water). It fits WaterlinePass's overlay: it already knows the
+     per-pixel distance to the line.
+   - **WebXR:** `OceanGrid.tock` skips while presenting, so in a headset the straddle falls back
+     to the plain eye flip. To support it: the mask and overlay must derive the near-plane point
+     from the built-in per-eye matrices (`inverse(projectionMatrix)`, `inverse(viewMatrix)`)
+     instead of the mono `wlInvViewProj`. `renderer.render` in XR already draws both eyes.
+   - **Round 3 (Dante: "a no-man's-land where the camera has yet to declare I'm underwater").**
+     With the frame flipping only once the whole near plane was under, for ~10 cm the eye
+     was under while the world rendered above-water, and the overlay's rough murk stood in
+     for most of the view. Now the frame flips at the EYE (exact probe, ±1 cm hysteresis).
+     WaterlinePass covers only the sliver on the other side of the line: murk below it with
+     the eye above; with the eye under, the air view above it (the transmission render for
+     rays going up, a Fresnel water top for rays going down). A/B:
+     `ARestlessOcean.WATERLINE_NEAR_PLANE = true` brings back the round-2 rule.
+     Two unit traps, both black on metered pages:
+     - The murk is a display-space colour (fog is applied after three's tone mapping), so the
+       overlay must not tone map it.
+     - The transmission sample goes through the WATER SHADER's own curve
+       (`aroAESFilmicToneMapping`, no exposure), not three's toneMapping() with the ~1.7e-5
+       metering exposure.
+     Headless on the swim page: −0.06 m = native underwater with a sky sliver and meniscus
+     above the line; +0.03 m = above water with a murk strip below. The sliver's sky reads
+     paler than the real one (tone curve), cosmetic.
+   - Round 2 headless (frozen rough sea, and the swim page with Liam): straddle = sky / flat
+     ceiling murk / fogged seabed, no black, no specks; fully under = native; above = native.
+     The straddle ceiling is flat compared with the textured native one: a visible, clean step
+     over those ~10 cm. The dark specks in the ceiling above Liam are there fully underwater
+     too (not this change). NOT verified: live motion at 60 fps. That is Dante's browser check.
+
 **Tests.** `node tests/dynamic-waves/dynamic-waves-test.mjs` (28 checks): the per-mode decay
 rate matches DAMPING + ν·L/2 within 3%; damping doesn't detune; the old form would have; the grid
 corner stays stable at the viscosity clamp (8 cells²/s; it goes unstable from ~15, and the first

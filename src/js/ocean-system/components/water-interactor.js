@@ -115,6 +115,15 @@ ARestlessOcean.WaterInteraction.Interactor = function(opts){
   //Not scaled by rippleScale: how white the water goes is the churn, not the wave height.
   this.foamK = (opts.foamK === undefined) ? 1.0 : opts.foamK;
   this.foamMinSpeed = (opts.foamMinSpeed === undefined) ? 0.3 : opts.foamMinSpeed;
+  //Idle rings (Phase 8e): something alive in the water is never still. A kid treading
+  //water sculls with his hands and kicks, and games show it with a steady ring off the
+  //body even at rest. While the point straddles the surface its footprint breathes by
+  //±idleRipple metres at idleRate Hz (a random phase per point, so a body's points do not
+  //pulse in lockstep); the change is what the water rings with. 0 = off (floats, debris).
+  this.idleRipple = (opts.idleRipple === undefined) ? 0.0 : opts.idleRipple;
+  this.idleRate = (opts.idleRate === undefined) ? 1.2 : opts.idleRate;
+  this._idlePhase = Math.random() * Math.PI * 2.0;
+  this._idleT = 0.0;
   //Spray amount: multiplies the particles every entry and wade burst throws.
   this.sprayScale = (opts.sprayScale === undefined) ? 1.0 : opts.sprayScale;
   //Ask a-water for an exact surface probe at this point (getWaterStateAt opts.probe), so
@@ -220,6 +229,7 @@ ARestlessOcean.WaterInteraction.Interactor.prototype._step = function(s, x, y, z
   const st = this.state;
   const r = this.radius;
   this._cool = Math.max(0.0, this._cool - dt);
+  this._idleT += dt;
   const wet = !!(s && s.status !== 'dry' && s.surfaceY !== null);
   st.status = s ? s.status : null;
   st.surfaceY = wet ? s.surfaceY : null;
@@ -306,7 +316,12 @@ ARestlessOcean.WaterInteraction.Interactor.prototype._setSubmerged = function(fr
   e.radius = R;
   const head = (calmFrac > this.contactFraction && this.dragK > 0.0)
     ? Math.min(0.3, this.dragK * (this._rel2 || 0.0) / (2.0 * 9.81)) : 0.0;
-  e.depth = this.rippleScale * deep * (vol / (Math.PI * R * R) + head);
+  //Idle breathing while straddling the surface (see idleRipple).
+  let idle = 0.0;
+  if(this.idleRipple > 0.0 && calmFrac > this.contactFraction && calmFrac < 0.95){
+    idle = this.idleRipple * Math.sin(this._idleT * 2.0 * Math.PI * this.idleRate + this._idlePhase);
+  }
+  e.depth = this.rippleScale * (deep * (vol / (Math.PI * R * R) + head) + idle);
   //Foam while straddling the surface and moving through the water.
   const straddle = calmFrac > this.contactFraction && calmFrac < 0.95;
   const rel = Math.sqrt(this._rel2 || 0.0);
@@ -340,6 +355,8 @@ if(typeof AFRAME !== 'undefined' && !AFRAME.components['water-interactor']){
       craterK: {type: 'number', default: 0.5},
       rippleScale: {type: 'number', default: 1.0},
       foamK: {type: 'number', default: 1.0},
+      idleRipple: {type: 'number', default: 0.0},
+      idleRate: {type: 'number', default: 1.2},
       foamMinSpeed: {type: 'number', default: 0.3},
       dragK: {type: 'number', default: 1.0},
       sprayScale: {type: 'number', default: 1.0},
@@ -369,6 +386,8 @@ if(typeof AFRAME !== 'undefined' && !AFRAME.components['water-interactor']){
       i.craterK = d.craterK;
       i.rippleScale = Math.max(0.0, d.rippleScale);
       i.foamK = Math.max(0.0, d.foamK);
+      i.idleRipple = Math.max(0.0, d.idleRipple);
+      i.idleRate = Math.max(0.0, d.idleRate);
       i.foamMinSpeed = d.foamMinSpeed;
       i.dragK = d.dragK;
       i.sprayScale = d.sprayScale;

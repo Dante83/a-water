@@ -27,6 +27,16 @@ AFRAME.registerSystem('ocean-state', {
         component.oceanGrid.tick(time);
       }
     }
+  },
+  //After A-Frame has drawn the frame: the waterline's air view and overlay (Phase 8e,
+  //OceanGrid.tock).
+  tock: function(){
+    for(let i = 0; i < this.oceans.length; ++i){
+      const component = this.oceans[i];
+      if(component.oceanGrid && component.el.isPlaying && component.oceanGrid.tock){
+        component.oceanGrid.tock();
+      }
+    }
   }
 });
 

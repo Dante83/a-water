@@ -58,6 +58,7 @@ JS_FILE_NAMES = [
     'ocean-system/passes/water-tile-decode-pass.js',
     'ocean-system/passes/water-field-pass.js',
     'ocean-system/passes/height-readback-pass.js',
+    'ocean-system/passes/waterline-pass.js',
     'ocean-system/passes/shore-reflection-pass.js',
     'ocean-system/passes/dynamic-waves-pass.js',
     'ocean-system/passes/flow-foam-pass.js',

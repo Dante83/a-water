@@ -34,7 +34,9 @@
 //into two sampler2DArrays; the still-water ocean program measures 22 of 32 now.
 //
 //GEOMETRY AND LOD (declared here, per the cross-cutting rules)
-//  near  1 m cells  over ±128 m
+//  inner 0.25 m cells over ±16 m (Phase 8e: rings and wakes lift the creek near the
+//        camera, like the clipmap's own 0.25 m ring)
+//  near  1 m cells  over ±128 m, with a hole under the inner ring (same overlap rule)
 //  mid   2 m cells  over ±240 m, with a hole under the near grid that stops one
 //        mid cell short of it so the two overlap (hides the T-junction cracks);
 //        its fragments discard under all but the last half metre of that overlap
@@ -84,8 +86,14 @@ ARestlessOcean.Passes.FlowSurfacePass = function(oceanGrid){
 //cell: metres per grid cell; halfWidth: metres; hole: half-width of the square
 //left out for the finer ring (0 = none). Every ring's vertices sit on WaterField
 //cascade 0's (1 m) texel centres; the 2 m ring matches no cascade of its own.
+//Phase 8e: the 0.25 m inner ring. At 1 m a vertex, rings and wakes shorter than 2 m (all
+//of a wading child's) could only shade the creek, never lift it; this matches the
+//clipmap's own near ring. rippleRing: the dynamic-waves spacing estimate (see
+//dynamic-waves-pass.js "Geometry") grows its cell with distance so that at its edge it
+//filters exactly like the 1 m ring outside it (0.25 · 2·16/8 = 1 m) and the overlap agrees.
 ARestlessOcean.Passes.FlowSurfacePass.RINGS = [
-  {cell: 1.0, halfWidth: 128.0, hole: 0.0},
+  {cell: 0.25, halfWidth: 16.0, hole: 0.0, rippleRing: 8.0},
+  {cell: 1.0, halfWidth: 128.0, hole: 15.0},
   {cell: 2.0, halfWidth: 240.0, hole: 124.0}
 ];
 //Hand-off window half-width (m): inside cascade 0's 90% (230 m) edge crossfade.
@@ -207,12 +215,12 @@ ARestlessOcean.Passes.FlowSurfacePass.prototype.init = function(scene){
     material.polygonOffset = true;
     material.polygonOffsetFactor = -1;
     material.polygonOffsetUnits = -2;
-    //Phase 8e: this ring's uniform vertex spacing, for the dynamic-waves vertex
-    //height (dynamic-waves-pass.js "Geometry"): the 1 m ring carries wakes longer
-    //than ~2 m, the 2 m ring none (it starts past the ripple window anyway).
+    //Phase 8e: this ring's vertex spacing, for the dynamic-waves vertex height
+    //(dynamic-waves-pass.js "Geometry"): the 0.25 m ring carries rings and wakes, the
+    //1 m ring wakes longer than ~2 m, the 2 m ring none (past the ripple window anyway).
     if(material.uniforms.dynamicWavesMeshCell){
       material.uniforms.dynamicWavesMeshCell.value = spec.cell;
-      material.uniforms.dynamicWavesMeshRing.value = 0.0;
+      material.uniforms.dynamicWavesMeshRing.value = spec.rippleRing || 0.0;
     }
     //InstancedMesh with one identity instance: the water vertex shader
     //multiplies by instanceMatrix. The mesh itself carries the snapped centre.

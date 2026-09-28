@@ -676,6 +676,10 @@ ARestlessOcean.FlowHandoff.ENERGY_LO = 0.002;
 //water dither across roughly half of it on the still side instead of meeting at a texel.
 ARestlessOcean.FlowHandoff.BAND_M = 8.0;
 ARestlessOcean.FlowHandoff.ENERGY_HI = 0.02;
+//Bank sink (flowBankSink in the GLSL below): taper width (m of shore distance) and the most
+//the surface is lowered (m).
+ARestlessOcean.FlowHandoff.BANK_TAPER_M = 1.5;
+ARestlessOcean.FlowHandoff.BANK_TAPER_MAX_M = 2.0;
 
 ARestlessOcean.FlowHandoff.createUniforms = function(){
   return {
@@ -804,6 +808,20 @@ ARestlessOcean.FlowHandoff.GLSL = [
   '  float rim = 1.0 - smoothstep(hw * ' + (1.0 - ARestlessOcean.FlowHandoff.RIM_FRACTION).toFixed(4) + ', hw, max(dw.x, dw.y));',
   '  if(rim <= 0.0) return 0.0;',
   '  return rim * flowHandoffFieldWeightAt(worldXZ);',
+  '}',
+  //THE BANK SINK (moved here from water-vertex.glsl's flowing branch, Phase 8e). a-land
+  //stamps a creek only as wide as its hydraulic width, so the ground just outside often
+  //lies BELOW the stamped level, and a surface held at the level ended in a lip standing
+  //over the hillside. Real shallow water goes to zero depth at its waterline, so over the
+  //last BANK_TAPER metres of shore distance the surface slides down to the bed (at most
+  //BANK_TAPER_MAX). field = waterFieldAt (level, depth, shoreSDF, dry).
+  //EVERY surface applies it scaled by the hand-off weight w (flowHandoffWeightAt): the
+  //flowing surface at w = 1 inside a creek (as before), the still surface where a creek
+  //runs into a lake, so across the band both sit at the SAME height and the lake bends
+  //down to the creek. It used to be flowing-only: at a mouth the creek sank toward its
+  //bed while the lake beside it kept its level and floated over it (Dante, 2026-09-27).
+  'float flowBankSink(vec4 field){',
+  '  return (1.0 - clamp(field.b / ' + ARestlessOcean.FlowHandoff.BANK_TAPER_M.toFixed(4) + ', 0.0, 1.0)) * min(field.g, ' + ARestlessOcean.FlowHandoff.BANK_TAPER_MAX_M.toFixed(4) + ');',
   '}'
 ].join('\n');
 

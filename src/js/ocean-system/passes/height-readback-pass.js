@@ -131,7 +131,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
     fieldReady ? ARestlessOcean.WaveMask.GLSL : '',
     //Phase 4: flowing water is not the FFT surface (see FlowHandoff). Before
     //ShoreBreaker, whose swash reads it.
-    fieldReady ? ARestlessOcean.FlowHandoff.GLSL : 'float flowHandoffWeightAt(vec2 xz){ return 0.0; }',
+    fieldReady ? ARestlessOcean.FlowHandoff.GLSL : 'float flowHandoffWeightAt(vec2 xz){ return 0.0; }\nfloat flowBankSink(vec4 f){ return 0.0; }',
     fieldReady ? ARestlessOcean.ShoreBreaker.GLSL : '',
     //Phase 3b: the shore reflection rides in the same sum.
     reflectionReady ? ARestlessOcean.ShoreReflection.GLSL : 'float shoreReflectionHeightAt(vec2 xz){ return 0.0; }',
@@ -158,6 +158,8 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
       '    waveMaskCascades(field, hfMaskA, hfMaskB);',
       //Phase 4, in lockstep with water-vertex.glsl.
       '    stillKeep = 1.0 - flowHandoffWeightAt(worldXZ);',
+      //Phase 8e: the bank sink both water surfaces apply (flowBankSink).
+      '    level -= (1.0 - stillKeep) * flowBankSink(field);',
       '    hfMaskA *= stillKeep;',
       '    hfMaskB *= stillKeep;',
       '    bool breakerOn = shoreBreakerActive(field);',
@@ -576,6 +578,32 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.probeWaterSurfaceY = function
   return waterSurfaceY;
 };
 
+//── The exact surface at the camera (Phase 8e, the waterline) ──────────────
+//A point probe under the camera (the drawn surface to the millimetre, see the probes
+//below), carried forward on its own rise over the read's age, so the air/water
+//decision is made against the water on screen and not a frame or two behind it. null
+//until it has resolved, or once it is older than CAMERA_PROBE_MAX_AGE (the caller keeps
+//probeWaterSurfaceY's answer then).
+//Oldest camera probe read still trusted (s). Headless runs at ~1 fps; raise it there.
+ARestlessOcean.Passes.HeightReadbackPass.CAMERA_PROBE_MAX_AGE = 0.3;
+ARestlessOcean.Passes.HeightReadbackPass.prototype.exactCameraSurfaceY = function(){
+  const c = this.oceanGrid.globalCameraPosition;
+  if(!c) return null;
+  const r = this.probeSurface('__aro_camera__', c.x, c.z);
+  if(!r) return null;
+  const now = (typeof performance !== 'undefined') ? performance.now() : Date.now();
+  const age = (now - r.time) / 1000.0;
+  if(!(age >= 0.0) || age > ARestlessOcean.Passes.HeightReadbackPass.CAMERA_PROBE_MAX_AGE) return null;
+  //Carried at most 0.1 s at most 3 m/s: vy is a finite difference between reads, and
+  //carried over a long age it threw the decision tens of centimetres off (headless: 13 m).
+  const vy = Math.max(-3.0, Math.min(3.0, r.vy));
+  //Without the dynamic ripples (rings, wakes, a swimmer's idle rings right beside the lens):
+  //they are the water's texture, not which medium the camera is in, and at 3-5 Hz they
+  //flipped the whole frame back and forth at the cusp (Dante 2026-09-27: Liam and the world
+  //flashing white/dark while the lens straddled the surface).
+  return r.y - (r.ripple || 0.0) + vy * Math.min(age, 0.1);
+};
+
 //── Surface point probes (Phase 8, for bodies IN the water) ──────────────────
 //The local height field is 2 m a texel, bakes each texel's height at its REST
 //position, and refreshes at ~15 Hz. That is right for spray and many floats,
@@ -601,9 +629,16 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.probeWaterSurfaceY = function
 ARestlessOcean.Passes.HeightReadbackPass.PROBE_MAX = 16;
 ARestlessOcean.Passes.HeightReadbackPass.PROBE_EXPIRE_MS = 1000;
 
-ARestlessOcean.Passes.HeightReadbackPass.prototype._initSurfaceProbe = function(){
+//── The drawn surface as GLSL (shared) ─────────────────────────────────────
+//surfaceAt(xz) exactly as water-vertex.glsl builds the surface, for the point
+//probes below and for anything else that must agree with the drawn water to the
+//millimetre (Phase 8e: the waterline overlay, WaterlinePass). surfaceGLSL() returns
+//the declarations + surfaceAt; createSurfaceUniforms() a fresh uniform set for a
+//material that splices it; bindSurfaceUniforms(u, x, z) fills one each frame (x, z:
+//where spHeightOffset, the standalone level, is taken).
+ARestlessOcean.Passes.HeightReadbackPass.prototype._surfaceSetup = function(){
+  if(this._surfSetup) return this._surfSetup;
   const HF_N = this._hfN;
-  const MAX = ARestlessOcean.Passes.HeightReadbackPass.PROBE_MAX;
   const fieldReady = this._hfFieldReady;
   const reflectionReady = !!(ARestlessOcean.ShoreReflection && ARestlessOcean.ShoreReflection.ENABLED);
   const breakerReady = fieldReady && !!ARestlessOcean.ShoreBreaker;
@@ -621,7 +656,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._initSurfaceProbe = function(
     //to nothing. The water vertex samples level 0 (vertex shaders have no LOD).
     sum += '  d += ' + m + f + 'textureLod(spCascadeArray, vec3((xz + spCascadeOffset[' + c + ']) / spCascadePatch[' + c + '], ' + c + '.0), 0.0).xyz;\n';
   }
-  const frag = [
+  const glsl = [
     'precision highp float;',
     'precision highp sampler2DArray;',
     'uniform sampler2DArray spCascadeArray;',
@@ -632,10 +667,9 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._initSurfaceProbe = function(
     'uniform float spHeightOffset;',
     'uniform float spUseField;',
     'uniform vec3 spCamPos;',
-    'uniform vec4 spProbe[' + MAX + '];',   //xy query point, zw last read's rest point
     fieldReady ? ARestlessOcean.Passes.WaterFieldPass.SAMPLE_GLSL : '',
     fieldReady ? ARestlessOcean.WaveMask.GLSL : '',
-    fieldReady ? ARestlessOcean.FlowHandoff.GLSL : 'float flowHandoffWeightAt(vec2 xz){ return 0.0; }',
+    fieldReady ? ARestlessOcean.FlowHandoff.GLSL : 'float flowHandoffWeightAt(vec2 xz){ return 0.0; }\nfloat flowBankSink(vec4 f){ return 0.0; }',
     breakerReady ? ARestlessOcean.ShoreBreaker.GLSL : '',
     reflectionReady ? ARestlessOcean.ShoreReflection.GLSL : 'float shoreReflectionHeightAt(vec2 xz){ return 0.0; }',
     rippleReady ? DW.GLSL : DW ? DW.STUB_GLSL : 'float dynamicWavesVertexHeightAt(vec2 xz, float cell){ return 0.0; }\nfloat dynamicWavesMeshCellAt(vec2 xz, vec2 c){ return 0.0; }',
@@ -656,6 +690,9 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._initSurfaceProbe = function(
       '    mA *= keep; mB *= keep;',
       breakerReady ? '    extra = keep * (shoreBreakerHeightAt(xz, field, 1.0) + shoreReflectionHeightAt(xz));'
                    : '    extra = keep * shoreReflectionHeightAt(xz);',
+      //Phase 8e: the bank sink both surfaces apply (flowBankSink), so a body at a creek
+      //mouth or bank wades on the surface that is drawn there.
+      '    extra -= (1.0 - keep) * flowBankSink(field);',
       '  }'
     ].join('\n') : '',
     '  float dist = distance(spCamPos, vec3(xz.x, level, xz.y));',
@@ -667,22 +704,21 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._initSurfaceProbe = function(
     '  float ripple = dynamicWavesVertexHeightAt(xz, dynamicWavesMeshCellAt(xz, spCamPos.xz));',
     '  return vec4(d.x, level + d.y + extra + ripple, d.z, ripple);',
     '}',
-    'void main(){',
-    '  int i = int(gl_FragCoord.x);',
-    '  vec4 p = spProbe[i];',
-    '  if(gl_FragCoord.y < 1.0){',
-    '    vec2 p0 = p.xy;',
-    '    for(int k = 0; k < 4; k++){ p0 = p.xy - surfaceAt(p0).xz; }',
-    '    vec4 s0 = surfaceAt(p0);',
-    '    gl_FragColor = vec4(s0.y, p0, s0.w);',
-    '  } else {',
-    '    vec4 s = surfaceAt(p.zw);',
-    '    gl_FragColor = vec4(s.y - s.w, p.zw + s.xz, 1.0);',
-    '  }',
-    '}'
   ].join('\n');
-  const probes = [];
-  for(let i = 0; i < MAX; i++) probes.push(new THREE.Vector4());
+  this._surfSetup = {glsl: glsl, fieldReady: fieldReady, breakerReady: breakerReady,
+                     reflectionReady: reflectionReady, rippleReady: rippleReady};
+  return this._surfSetup;
+};
+
+ARestlessOcean.Passes.HeightReadbackPass.prototype.surfaceGLSL = function(){
+  return this._surfaceSetup().glsl;
+};
+
+ARestlessOcean.Passes.HeightReadbackPass.prototype.createSurfaceUniforms = function(){
+  const st = this._surfaceSetup();
+  const HF_N = this._hfN;
+  const DW = ARestlessOcean.DynamicWaves;
+  const fieldReady = st.fieldReady, breakerReady = st.breakerReady, reflectionReady = st.reflectionReady, rippleReady = st.rippleReady;
   const uniforms = {
     spCascadeArray: {value: null},
     spCascadeOffset: {value: (function(){ const a = []; for(let i = 0; i < HF_N; i++) a.push(new THREE.Vector2()); return a; })()},
@@ -691,8 +727,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._initSurfaceProbe = function(
     spChop: {value: 1.0},
     spHeightOffset: {value: 0.0},
     spUseField: {value: 0.0},
-    spCamPos: {value: new THREE.Vector3()},
-    spProbe: {value: probes}
+    spCamPos: {value: new THREE.Vector3()}
   };
   if(fieldReady){
     Object.assign(uniforms, ARestlessOcean.Passes.WaterFieldPass.createSampleUniforms());
@@ -708,7 +743,70 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._initSurfaceProbe = function(
   } else if(DW){
     Object.assign(uniforms, {dynamicWavesEnabled: {value: 0.0}, dynamicWavesCenter: {value: new THREE.Vector2()}, dynamicWavesHalfWidth: {value: 1.0}});
   }
-  this._spRippleReady = rippleReady;
+  return uniforms;
+};
+
+//Fill the shared surface uniforms for this frame. False when the FFT is not up yet.
+ARestlessOcean.Passes.HeightReadbackPass.prototype.bindSurfaceUniforms = function(u, refX, refZ){
+  const grid = this.oceanGrid;
+  const composer = grid.oceanHeightComposer;
+  if(!composer || !composer.cascadeDisplacementTexture) return false;
+  const offsets = grid.oceanMaterial.uniforms.cascadeSpatialOffsets.value;
+  u.spCascadeArray.value = composer.cascadeDisplacementTexture;
+  for(let c = 0; c < this._hfN; c++){
+    u.spCascadePatch.value[c] = composer._cascadePatchSizes[c];
+    u.spCascadeOffset.value[c].copy(offsets[c]);
+  }
+  u.spWhm.value = composer.waveHeightMultiplier;
+  //The grid's own chop (ocean-grid.js writes data.chop into each water mesh), not
+  //the shared template's default.
+  u.spChop.value = (grid.data && grid.data.chop !== undefined) ? grid.data.chop
+    : (grid.oceanMaterial.uniforms.chop ? grid.oceanMaterial.uniforms.chop.value : 1.0);
+  u.spCamPos.value.copy(grid.globalCameraPosition);
+  u.spHeightOffset.value = grid.waterLevelAt(refX, refZ);
+  u.spUseField.value = 0.0;
+  if(this._hfFieldReady && grid.waterFieldPass && grid.waterFieldPass.bindUniforms(u)){
+    const wp = grid.waveMaskParams ? grid.waveMaskParams() : null;
+    if(wp){
+      ARestlessOcean.WaveMask.writeUniforms(u, wp);
+      const sbp = grid._shoreBreakerParams;
+      if(sbp && ARestlessOcean.ShoreBreaker && u.shoreBreakerEnabled !== undefined) ARestlessOcean.ShoreBreaker.writeUniforms(u, sbp);
+      ARestlessOcean.FlowHandoff.writeUniforms(u, grid._flowHandoffState);
+      u.spUseField.value = 1.0;
+    }
+  }
+  if(ARestlessOcean.ShoreReflection && ARestlessOcean.ShoreReflection.ENABLED && u.shoreReflectionEnabled){
+    ARestlessOcean.ShoreReflection.writeUniforms(u, grid.shoreReflectionPass ? grid.shoreReflectionPass.consumerState() : null);
+  }
+  if(this._surfaceSetup().rippleReady && u.dynamicWavesMeshCell){
+    ARestlessOcean.DynamicWaves.writeUniforms(u, grid.dynamicWavesPass.consumerState());
+  }
+  return true;
+};
+
+ARestlessOcean.Passes.HeightReadbackPass.prototype._initSurfaceProbe = function(){
+  const MAX = ARestlessOcean.Passes.HeightReadbackPass.PROBE_MAX;
+  const frag = [
+    this.surfaceGLSL(),
+    'uniform vec4 spProbe[' + MAX + '];',   //xy query point, zw last read's rest point
+    'void main(){',
+    '  int i = int(gl_FragCoord.x);',
+    '  vec4 p = spProbe[i];',
+    '  if(gl_FragCoord.y < 1.0){',
+    '    vec2 p0 = p.xy;',
+    '    for(int k = 0; k < 4; k++){ p0 = p.xy - surfaceAt(p0).xz; }',
+    '    vec4 s0 = surfaceAt(p0);',
+    '    gl_FragColor = vec4(s0.y, p0, s0.w);',
+    '  } else {',
+    '    vec4 s = surfaceAt(p.zw);',
+    '    gl_FragColor = vec4(s.y - s.w, p.zw + s.xz, 1.0);',
+    '  }',
+    '}'
+  ].join('\n');
+  const uniforms = this.createSurfaceUniforms();
+  const probes = [];
+  for(let i = 0; i < MAX; i++) probes.push(new THREE.Vector4());
+  uniforms.spProbe = {value: probes};
   this._spMaterial = new THREE.ShaderMaterial({
     uniforms: uniforms,
     vertexShader: 'void main(){ gl_Position = vec4(position, 1.0); }',
@@ -761,18 +859,6 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._renderSurfaceProbe = functio
   if(this._spProbes.size === 0) return false;
 
   const u = this._spMaterial.uniforms;
-  const offsets = grid.oceanMaterial.uniforms.cascadeSpatialOffsets.value;
-  u.spCascadeArray.value = composer.cascadeDisplacementTexture;
-  for(let c = 0; c < this._hfN; c++){
-    u.spCascadePatch.value[c] = composer._cascadePatchSizes[c];
-    u.spCascadeOffset.value[c].copy(offsets[c]);
-  }
-  u.spWhm.value = composer.waveHeightMultiplier;
-  //The grid's own chop (ocean-grid.js writes data.chop into each water mesh), not
-  //the shared template's default.
-  u.spChop.value = (grid.data && grid.data.chop !== undefined) ? grid.data.chop
-    : (grid.oceanMaterial.uniforms.chop ? grid.oceanMaterial.uniforms.chop.value : 1.0);
-  u.spCamPos.value.copy(grid.globalCameraPosition);
   const issued = [];
   let i = 0;
   for(const p of this._spProbes.values()){
@@ -781,24 +867,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._renderSurfaceProbe = functio
     issued.push({probe: p, x: p.x, z: p.z, hadP0: p.has0});
     i++;
   }
-  u.spHeightOffset.value = grid.waterLevelAt(issued[0].x, issued[0].z);
-  u.spUseField.value = 0.0;
-  if(this._hfFieldReady && grid.waterFieldPass && grid.waterFieldPass.bindUniforms(u)){
-    const wp = grid.waveMaskParams ? grid.waveMaskParams() : null;
-    if(wp){
-      ARestlessOcean.WaveMask.writeUniforms(u, wp);
-      const sbp = grid._shoreBreakerParams;
-      if(sbp && ARestlessOcean.ShoreBreaker && u.shoreBreakerEnabled !== undefined) ARestlessOcean.ShoreBreaker.writeUniforms(u, sbp);
-      ARestlessOcean.FlowHandoff.writeUniforms(u, grid._flowHandoffState);
-      u.spUseField.value = 1.0;
-    }
-  }
-  if(ARestlessOcean.ShoreReflection && ARestlessOcean.ShoreReflection.ENABLED){
-    ARestlessOcean.ShoreReflection.writeUniforms(u, grid.shoreReflectionPass ? grid.shoreReflectionPass.consumerState() : null);
-  }
-  if(this._spRippleReady){
-    ARestlessOcean.DynamicWaves.writeUniforms(u, grid.dynamicWavesPass.consumerState());
-  }
+  this.bindSurfaceUniforms(u, issued[0].x, issued[0].z);
   const prevRT = this.renderer.getRenderTarget();
   this.renderer.setRenderTarget(this._spRT);
   this.renderer.render(this._spScene, this._heightFieldCamera);

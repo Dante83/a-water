@@ -180,24 +180,22 @@ void main() {
   //apart so the ocean CSM receiver can leave it out, as the caster does.
   //Undisplaced worldXZ, like everything else that is a property of the place.
   float dynamicRipple = dynamicWavesVertexHeightAt(worldXZ, dynamicWavesMeshCellAt(worldXZ, cameraPosition.xz));
+  //Phase 8e: how far this vertex is lowered toward the bed at a creek's banks (both
+  //variants, see flowBankSink). Kept apart, like the ripple, for the CSM receiver.
+  float bankSink = 0.0;
   #if($flowing_water)
   //Phase 4 flowing surface (FlowSurfacePass): the field level and nothing else
   //yet. No FFT (its samplers are compiled out of this variant), no breakers.
   waveMaskA = vec3(0.0);
   waveMaskB = vec3(0.0);
   offsetPosition.y += (field.r - baseHeightOffset);
-  //THE EDGE THINS TO NOTHING. a-land stamps a creek only as wide as its hydraulic
-  //width, so the ground a metre outside often lies BELOW the stamped surface (19% of
-  //the bank texels on island-sholes, 1.3 m at p90) and the sheet ended in a vertical
-  //lip standing over the hillside — the river floating in the air of browser rounds
-  //7 and 7b. Real shallow water goes to zero depth at its waterline, so over the last
-  //BANK_TAPER metres of shore distance the surface slides down to the bed. It cannot
-  //hide a bank that is metres low (that is a-land's carve, carveMaxBankFillM), but it
-  //ends the sheet on the ground instead of in the air, and it is what the depth
-  //shading wants anyway.
-  const float BANK_TAPER = 1.5;
-  const float BANK_TAPER_MAX = 2.0;
-  offsetPosition.y -= (1.0 - clamp(field.b / BANK_TAPER, 0.0, 1.0)) * min(field.g, BANK_TAPER_MAX);
+  //THE EDGE THINS TO NOTHING (flowBankSink, ocean-wave-field.js): the river floating in
+  //the air of browser rounds 7 and 7b. It cannot hide a bank that is metres low (that is
+  //a-land's carve, carveMaxBankFillM), but it ends the sheet on the ground instead of in
+  //the air. Scaled by the hand-off weight, exactly as the still surface applies it, so
+  //where a creek runs into a lake the two meet at one height (Phase 8e).
+  bankSink = flowHandoffWeightAt(worldXZ) * flowBankSink(field);
+  offsetPosition.y -= bankSink;
   //Rings and wakes on the flowing surface too: with the 1 m near ring, the part of
   //a wake longer than ~2 m. Full strength, like the still surface below, so the two
   //agree across the dithered hand-off band.
@@ -271,6 +269,12 @@ void main() {
   //the wave-displaced position would make the shoreline crawl as waves move
   //(see WATER-TYPES.md's FFT-displacement gotcha).
   offsetPosition.y += (field.r - baseHeightOffset);
+
+  //Phase 8e: where a creek runs into this still water, bend down to the flowing surface:
+  //the same bank sink, by the same weight, so across the hand-off band the lake and the
+  //creek sit at one height instead of the lake floating over the creek's sunk edge.
+  bankSink = (1.0 - stillKeep) * flowBankSink(field);
+  offsetPosition.y -= bankSink;
   #endif
 
   //Set up our varyings
@@ -313,9 +317,10 @@ void main() {
   float dHdZ = waveMaskA.x * (hT - hB) / (2.0 * ndStep) * waveHeightMultiplier;
   vec3 normalOffsetN = normalize(vec3(-dHdX, 1.0, -dHdZ));
   #endif
-  //Less the dynamic ripple: the CSM caster (ocean-shadow-vertex.glsl) does not draw
-  //it, and a receiver 5 cm down in a ring's trough would read as under its own caster.
-  vec4 shadowSamplePos = vec4(worldDisplacedPosition.xyz - vec3(0.0, dynamicRipple, 0.0) + normalOffsetN * oceanShadowNormalBias, 1.0);
+  //Less the dynamic ripple and the bank sink: the CSM caster (ocean-shadow-vertex.glsl)
+  //draws neither, and a receiver 5 cm down in a ring's trough (or a metre down a creek's
+  //bank) would read as under its own caster.
+  vec4 shadowSamplePos = vec4(worldDisplacedPosition.xyz + vec3(0.0, bankSink - dynamicRipple, 0.0) + normalOffsetN * oceanShadowNormalBias, 1.0);
 
   vOceanShadowCoord0 = oceanShadowMatrix0 * shadowSamplePos;
   vOceanShadowCoord1 = oceanShadowMatrix1 * shadowSamplePos;

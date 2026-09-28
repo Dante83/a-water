@@ -188,6 +188,18 @@ function fitMode(r){
   for(let i = 0; i < 10; ++i){ const x = 1.3 * i / 60; fu.update(x, -1.0, 0, 1 / 60); }
   check('no foam standing still, none fully under', fs._emitter.foam === 0 && fu._emitter.foam === 0);
 
+  //Idle rings: a still point straddling the surface breathes (its footprint depth changes
+  //every frame), and with idleRipple 0 it stays constant.
+  const idle = new WI.Interactor({radius: 0.1, idleRipple: 0.01, idleRate: 1.2});
+  const quiet = new WI.Interactor({radius: 0.1});
+  const dI = [], dQ = [];
+  for(let i = 0; i < 60; ++i){ idle.update(0, 0, 0, 1 / 60); quiet.update(0, 0, 0, 1 / 60); dI.push(idle._emitter.depth); dQ.push(quiet._emitter.depth); }
+  const span = a => Math.max(...a) - Math.min(...a);
+  check('idle rings: a still straddling point breathes ±idleRipple, a quiet one does not', span(dI) > 0.015 && span(dQ) < 1e-12, 'span ' + f3(span(dI)) + ' vs ' + span(dQ));
+  const idleDeep = new WI.Interactor({radius: 0.1, idleRipple: 0.01});
+  const dD = []; for(let i = 0; i < 60; ++i){ idleDeep.update(0, -1.0, 0, 1 / 60); dD.push(idleDeep._emitter.depth); }
+  check('idle rings: not when fully under', span(dD) < 1e-12);
+
   //The plain sphere path is unchanged: enter once, entry spray at the closing speed.
   sprays.length = 0;
   const hand = new WI.Interactor({radius: 0.08});

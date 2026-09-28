@@ -1370,6 +1370,12 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     this.heightReadbackPass = new ARestlessOcean.Passes.HeightReadbackPass(this);
     this.heightReadbackPass.init();
     this.heightReadbackPass.installGlobalAPI();
+    //Phase 8e: the waterline overlay, from the near plane (WaterlinePass; read its header).
+    this.waterlinePass = null;
+    if(ARestlessOcean.Passes.WaterlinePass){
+      this.waterlinePass = new ARestlessOcean.Passes.WaterlinePass(this);
+      this.waterlinePass.init(scene);
+    }
     //Back-compat aliases — both were OceanGrid methods in 0.2.0 and are called
     //by buoyant.js / the debug console through the grid.
     this.sampleFFTHeightAt = function(x, z){ return self.heightReadbackPass.sampleFFTHeightAt(x, z); };
@@ -1586,6 +1592,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //Tracks whether the camera was submerged last frame so the ocean side-flip
   //only fires on the actual transition.
   this._wasUnderwater = false;
+  this._wasWaterlineBand = false;   //Phase 8e: near plane within the waterline band
 
   //Flip the ocean + horizon skirt to render their underside (the "ceiling")
   //when the camera is below the surface. water-shader.glsl switches to its
@@ -1596,17 +1603,228 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //now live in tick(): a scene.fog mode-swap into A-Starry-Sky's reserved
   //underwater-fog branch, plus the sky-dome hide + murk background. This
   //function only owns the discrete per-transition material.side flip.
+  //BackSide submerged, FrontSide above (the cheap default). The water shader picks top or
+  //ceiling from gl_FrontFacing (Phase 8e), which equals this.
+  //⚠ NOT DoubleSide near the surface. Phase 8e tried it for a 30 cm band so a straddling or
+  //lagging frame could never cull the side in view, and it made things worse (Dante's browser
+  //check + headless, 2026-09-27): the far side of every folded chop crest drew through as the
+  //wrong side (bright blobs from below, dark specks and lines from above), and a ceiling shown
+  //while the frame was still above-water sampled a black mirror (the mirror pass needs the
+  //curtain and a-land's ocean fog, both underwater-only). The straddle is WaterlinePass's job.
   this._applyUnderwaterSceneState = function(under){
+    const side = under ? THREE.BackSide : THREE.FrontSide;
     for(let i = 0, n = oceanGridInstanceKeys.length; i < n; ++i){
       const oceanMesh = oceanPatchGeometryInstances[oceanGridInstanceKeys[i]];
       if(oceanMesh && oceanMesh.material){
-        //DoubleSide while submerged so the ceiling renders regardless of the
-        //tile geometry's winding direction (PlaneGeometry's rotateX flips the
-        //winding; the previous BackSide guess turned the ceiling invisible
-        //from below). FrontSide above water keeps the cheap default.
-        oceanMesh.material.side = under ? THREE.BackSide : THREE.FrontSide;
+        oceanMesh.material.side = side;
       }
     }
+  };
+
+  //── Phase 8e: after the frame (the ocean-state system's tock) ─────────────
+  //While the lens straddles the surface with the eye UNDER, the sliver of view above
+  //the waterline starts in air. Draw it for real, onto the canvas, over A-Frame's frame:
+  //clear depth, let WaterlinePass write depth 0 over the water side, and render the scene
+  //once more in the above-water state, so the depth test keeps it to the air side. Then
+  //the waterline overlay (meniscus; murk when the eye is above). The canvas gives it the
+  //same tone mapping and output as any above-water frame. Off: waterlineAirPass = false
+  //(the overlay's transmission stand-in then covers the sliver).
+  this.waterlineAirPass = true;
+  //Debug A/B: 'water' or 'air' redraws the WHOLE frame through that pass (no mask), so it
+  //can be compared against the native frame from the same pose. null = normal.
+  this.waterlineDebugForce = null;
+  this.tock = function(){
+    const wp = self.waterlinePass;
+    if(self.waterlineDebugForce && self.renderer && self.scene && self.camera){
+      const r0 = self.renderer, a0 = r0.autoClear, t0 = r0.getRenderTarget();
+      r0.autoClear = false; r0.setRenderTarget(null);
+      try {
+        r0.clearDepth();
+        if(self.waterlineDebugForce === 'water') self._renderWaterlineWaterView();
+        else self._renderWaterlineAirView();
+      } finally { r0.autoClear = a0; r0.setRenderTarget(t0); }
+      return;
+    }
+    if(!wp || !wp.active || !self.renderer || !self.scene || !self.camera) return;
+    const r = self.renderer;
+    if(r.xr && r.xr.isPresenting) return;
+    const prevAuto = r.autoClear;
+    const prevRT = r.getRenderTarget();
+    //Reuse the frame's shadow maps: re-rendering them for the pass cost a second shadow
+    //render and lost Liam's shadow on the ground in it.
+    const prevShadowAuto = r.shadowMap ? r.shadowMap.autoUpdate : true;
+    if(r.shadowMap) r.shadowMap.autoUpdate = false;
+    r.autoClear = false;
+    r.setRenderTarget(null);
+    try {
+      if(wp.airPassActive || wp.waterPassActive){
+        r.clearDepth();
+        wp.renderMask(r, self.camera);
+        if(wp.airPassActive) self._renderWaterlineAirView();
+        else self._renderWaterlineWaterView();
+      }
+      wp.renderOverlay(r, self.camera);
+    } finally {
+      r.autoClear = prevAuto;
+      if(r.shadowMap) r.shadowMap.autoUpdate = prevShadowAuto;
+      r.setRenderTarget(prevRT);
+    }
+  };
+
+  //The scene in the ABOVE-water state (what ReflectionPass.renderAboveWaterTransmission
+  //swaps, plus the ocean itself, FrontSide), onto whatever is bound, then everything back.
+  //⚠ Materials drawn with depthTest off (a-starry-sky's dome, sun, moon) would paint over
+  //the water side, so depth testing is forced on for the pass.
+  this._renderWaterlineAirView = function(){
+    const scene = self.scene;
+    const rends = self.skyDirector && self.skyDirector.renderers;
+    const skyMesh = rends && rends.atmosphereRenderer && rends.atmosphereRenderer.skyMesh;
+    const sunMesh = rends && rends.sunRenderer && rends.sunRenderer.sunMesh;
+    const moonMesh = rends && rends.moonRenderer && rends.moonRenderer.moonMesh;
+    const vis = [skyMesh, sunMesh, moonMesh].map(function(m){ return m ? m.visible : false; });
+    [skyMesh, sunMesh, moonMesh].forEach(function(m){ if(m) m.visible = true; });
+    //The dome is kept off the main camera's layer 0 underwater (see the dome block in tick).
+    const skyLayerMask = skyMesh ? skyMesh.layers.mask : 0;
+    if(skyMesh) skyMesh.layers.enable(0);
+    const curtain = self.underwaterCurtainMesh;
+    const curtainVis = curtain ? curtain.visible : false;
+    if(curtain) curtain.visible = false;
+    const prevFog = scene.fog;
+    if(self._capturedSkyFog !== undefined) scene.fog = self._capturedSkyFog;
+    const landMat = (typeof ALand !== 'undefined' && ALand.runtime && ALand.runtime.TerrainMaterial)
+      ? ALand.runtime.TerrainMaterial : null;
+    let prevLandOceanFog = false;
+    if(landMat && landMat.setOceanFogEnabled) prevLandOceanFog = landMat.setOceanFogEnabled(false);
+    const prevBackground = scene.background;
+    scene.background = null;              //no clear, no background quad over the water side
+    self._applyUnderwaterSceneState(false);
+    const forced = self._wlForcedDepth || (self._wlForcedDepth = []);
+    forced.length = 0;
+    scene.traverseVisible(function(o){
+      const m = o.material;
+      if(!m) return;
+      const list = Array.isArray(m) ? m : [m];
+      for(let i = 0; i < list.length; ++i){
+        if(list[i] && list[i].depthTest === false){ list[i].depthTest = true; forced.push(list[i]); }
+      }
+    });
+    try {
+      self.renderer.render(scene, self.camera);
+    } finally {
+      for(let i = 0; i < forced.length; ++i) forced[i].depthTest = false;
+      self._applyUnderwaterSceneState(self._wasUnderwater);
+      scene.background = prevBackground;
+      if(landMat && landMat.setOceanFogEnabled) landMat.setOceanFogEnabled(prevLandOceanFog);
+      scene.fog = prevFog;
+      if(curtain) curtain.visible = curtainVis;
+      [skyMesh, sunMesh, moonMesh].forEach(function(m, i){ if(m) m.visible = vis[i]; });
+      if(skyMesh) skyMesh.layers.mask = skyLayerMask;
+    }
+  };
+
+  //The scene in the UNDERWATER state, for the eye-ABOVE side of the waterline: the ocean
+  //fog (its values are kept current in the waterline band), a-land's ocean fog, the curtain,
+  //the water drawn from below; sky dome, sun, moon and spray hidden. Everything back after.
+  this.waterlineWaterPass = true;
+  this._renderWaterlineWaterView = function(){
+    const scene = self.scene;
+    const rends = self.skyDirector && self.skyDirector.renderers;
+    const skyMesh = rends && rends.atmosphereRenderer && rends.atmosphereRenderer.skyMesh;
+    const sunMesh = rends && rends.sunRenderer && rends.sunRenderer.sunMesh;
+    const moonMesh = rends && rends.moonRenderer && rends.moonRenderer.moonMesh;
+    const splashMesh = self.oceanSplash ? self.oceanSplash.mesh : null;
+    const hide = [skyMesh, sunMesh, moonMesh, splashMesh];
+    const vis = hide.map(function(m){ return m ? m.visible : false; });
+    hide.forEach(function(m){ if(m) m.visible = false; });
+    const curtain = self.underwaterCurtainMesh;
+    const curtainVis = curtain ? curtain.visible : false;
+    if(curtain){
+      curtain.visible = true;
+      curtain.position.copy(self.globalCameraPosition);
+      if(self._uwMurkCamDepthScratch){
+        const cdm = self._uwMurkCamDepthScratch;
+        curtain.material.color.setRGB(cdm.x, cdm.y, cdm.z);
+      }
+    }
+    const prevFog = scene.fog;
+    scene.fog = self._oceanFog;
+    //These pixels' rays start in the water, but the eye is above it, and both fogs measure
+    //from the eye: part of every ray read as air (lighter, greyer than the native frame the
+    //moment the eye dips). For this pass, the fog surface sits just above the eye.
+    const yBias = ARestlessOcean.Passes.UnderwaterFogChunk.SURFACE_Y_BIAS;
+    const prevFogNear = self._oceanFog.near;
+    const fogY = Math.max(-prevFogNear - yBias, self.globalCameraPosition.y + 0.02);
+    self._oceanFog.near = -Math.max(fogY + yBias, 0.001);
+    const landMat = (typeof ALand !== 'undefined' && ALand.runtime && ALand.runtime.TerrainMaterial)
+      ? ALand.runtime.TerrainMaterial : null;
+    let landOn = false;
+    let prevLandY = null;
+    if(landMat && landMat.setOceanFog && self._uwLandFogParams){
+      prevLandY = self._uwLandFogParams.surfaceY;
+      self._uwLandFogParams.surfaceY = Math.max(prevLandY, fogY);
+      landOn = landMat.setOceanFog(self._uwLandFogParams);
+    }
+    const prevBackground = scene.background;
+    scene.background = null;
+    self._applyUnderwaterSceneState(true);
+    //a-land's caustics follow the viewer's medium: under here, as in the native frame.
+    const landCaustics = (landMat && landMat.setCaustics && self._landCausticParams
+      && self._landCausticParams.viewerUnderwater === false) ? self._landCausticParams : null;
+    if(landCaustics){ landCaustics.viewerUnderwater = true; landMat.setCaustics(landCaustics); }
+    try {
+      self.renderer.render(scene, self.camera);
+    } finally {
+      if(landCaustics){ landCaustics.viewerUnderwater = false; landMat.setCaustics(landCaustics); }
+      //Back to the FRAME's side, not "above": restoring FrontSide unconditionally left an
+      //eye-under frame drawing the wrong faces next frame (three rebuilds the program only
+      //when the fog object changes, not when side does).
+      self._applyUnderwaterSceneState(self._wasUnderwater);
+      scene.background = prevBackground;
+      if(landOn && !self._wasUnderwater) landMat.setOceanFog(null);
+      if(prevLandY !== null) self._uwLandFogParams.surfaceY = prevLandY;
+      self._oceanFog.near = prevFogNear;
+      scene.fog = prevFog;
+      if(curtain) curtain.visible = curtainVis;
+      hide.forEach(function(m, i){ if(m) m.visible = vis[i]; });
+    }
+  };
+
+  //Console: ARestlessOcean.debugWaterline() — the waterline's state this frame, for
+  //catching a glitch in the act (which medium the frame is in, which pass drew the other
+  //side, the surface the decision used, the exposure and fog the frame was lit with).
+  ARestlessOcean.debugWaterline = function(){
+    const wl = self._waterline || {}, wp = self.waterlinePass, r = self.renderer;
+    return {
+      eyeUnder: self._wasUnderwater, straddle: !!wl.straddle, band: !!wl.band,
+      eyeSubmersion: wl.eyeSubmersion, surfaceY: wl.surfaceY,
+      exactProbe: self.heightReadbackPass ? self.heightReadbackPass.exactCameraSurfaceY() : null,
+      airPass: !!(wp && wp.airPassActive), waterPass: !!(wp && wp.waterPassActive),
+      overlay: !!(wp && wp.active),
+      fog: self.scene.fog === self._oceanFog ? 'ocean' : 'sky',
+      exposure: r ? r.toneMappingExposure : null,
+      lightVolume: self.underwaterVolumePass ? self.underwaterVolumePass.uniforms.uwVolOn.value : null
+    };
+  };
+
+  //Phase 8e: the lowest and highest point of the camera's near plane, relative to the eye
+  //(m, world Y), from its four corners. The waterline block decides the frame's medium on it.
+  this._nearPlaneExtentY = function(camera){
+    const out = self._nearExtent || (self._nearExtent = {top: 0.0, bottom: 0.0});
+    const v = self._nearExtentV || (self._nearExtentV = new THREE.Vector3());
+    out.top = 0.0; out.bottom = 0.0;
+    if(!camera || !camera.projectionMatrixInverse) return out;
+    camera.updateMatrixWorld();
+    const eyeY = self.globalCameraPosition.y;
+    let top = -Infinity, bottom = Infinity;
+    for(let k = 0; k < 4; ++k){
+      v.set((k & 1) ? 1.0 : -1.0, (k & 2) ? 1.0 : -1.0, -1.0)
+        .applyMatrix4(camera.projectionMatrixInverse).applyMatrix4(camera.matrixWorld);
+      const dy = v.y - eyeY;
+      if(dy > top) top = dy;
+      if(dy < bottom) bottom = dy;
+    }
+    if(isFinite(top)){ out.top = top; out.bottom = bottom; }
+    return out;
   };
 
 
@@ -1709,6 +1927,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //G-buffer, reflection, foam/exclusion orthos, CSM, caustics). They are
     //re-shown at the very end of tick so they appear only in the main render.
     if(self.oceanSplash) self.oceanSplash.mesh.visible = false;
+    //The waterline overlay too (Phase 8e): main render only.
+    if(self.waterlinePass) self.waterlinePass.setVisible(false);
 
     //Update directional lights list (collect all in scene)
     if(self.directionalLights.length === 0){
@@ -1954,6 +2174,26 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     let waterSurfaceY = self.heightReadbackPass
       ? self.heightReadbackPass.probeWaterSurfaceY()
       : self.waterLevelAt(self.globalCameraPosition.x, self.globalCameraPosition.z);
+    //Phase 8e: the EXACT drawn surface at the camera once it has resolved. The probe above
+    //sums cascades 0-1 and the breakers only, so near the surface it disagreed with the water
+    //on screen by centimetres, and the whole frame flipped on the wrong side of it: the
+    //surface culled as a ceiling over unfogged seabed while the camera sat 4 mm above the
+    //water (headless 2026-09-27). The point probe evaluates every cascade, chop, breakers,
+    //ripples and the bank sink, carried forward on its own rise.
+    if(self.heightReadbackPass && self.heightReadbackPass.exactCameraSurfaceY){
+      const exactY = self.heightReadbackPass.exactCameraSurfaceY();
+      if(exactY !== null){
+        //Remember how far the coarse probe was from the exact one...
+        self._exactProbeOffset = exactY - waterSurfaceY;
+        self._exactProbeOffsetTime = time;
+        waterSurfaceY = exactY;
+      } else if(self._exactProbeOffset !== undefined && time - self._exactProbeOffsetTime < 2000.0){
+        //...and when the exact read is late (Firefox's async readback lags; Dante's console
+        //caught exactProbe null at the surface), keep that offset rather than dropping to the
+        //coarse probe, which misses the short cascades by centimetres and flipped the frame.
+        waterSurfaceY += self._exactProbeOffset;
+      }
+    }
 
     //Stash this frame's displaced surface height for next frame's reflection
     //mirror plane (the RT renders BEFORE this probe runs, so there's a
@@ -1968,17 +2208,55 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //Finite, not Infinity: cameraSubmersion is also uploaded as a uniform, and an
     //infinite float in the shader turns into NaN the moment it meets a zero.
     const cameraSubmersion = cameraOverDry ? 1.0e6 : self.globalCameraPosition.y - waterSurfaceY;
+    //── Phase 8e: the waterline ──────────────────────────────────────────────
+    //The frame flips at the EYE, against the exact drawn surface (above), so the native path
+    //(murk, fog, Snell's window, a-land's underwater light) always owns the medium the eye is
+    //in. While the surface crosses the near plane, WaterlinePass covers the sliver of the view
+    //on the other side of the line: murk below it with the eye above, the air view above it
+    //with the eye below. Within WATERLINE_BAND of the near plane the murk is kept computed, so
+    //the overlay has it the moment the near plane touches the water. ±WATERLINE_HYSTERESIS so
+    //a surface hovering at the eye does not flip every frame.
+    //(Round 2 flipped only once the WHOLE near plane was under: for ~10 cm the eye was under
+    //and the world still above-water, the overlay's rough murk standing in for most of the
+    //view. ARestlessOcean.WATERLINE_NEAR_PLANE = true brings that rule back for A/B.)
+    const nearExtent = self._nearPlaneExtentY(sceneCamera);
+    const WATERLINE_MARGIN = 0.02;
+    const WATERLINE_BAND = 0.3;
+    const WATERLINE_HYSTERESIS = 0.01;
+    const WATERLINE_STRADDLE_HYSTERESIS = 0.05;
+    const stateSubmersion = cameraOverDry ? 1.0e6
+      : (ARestlessOcean.WATERLINE_NEAR_PLANE === true ? cameraSubmersion + nearExtent.top + WATERLINE_MARGIN : cameraSubmersion);
+    const waterlineBand = !cameraOverDry
+      && waterSurfaceY > self.globalCameraPosition.y + nearExtent.bottom - WATERLINE_BAND
+      && waterSurfaceY < self.globalCameraPosition.y + nearExtent.top + WATERLINE_BAND;
     //Smooth 0→1 underwater blend over a 1 m band centred on the surface so
     //bobbing through the waterline crossfades the fog instead of snapping.
     const uwHalfBand = 0.5;
-    let uwT = (uwHalfBand - cameraSubmersion) / (2.0 * uwHalfBand);
+    let uwT = (uwHalfBand - stateSubmersion) / (2.0 * uwHalfBand);
     uwT = uwT < 0.0 ? 0.0 : (uwT > 1.0 ? 1.0 : uwT);
     const underwaterFactor = uwT * uwT * (3.0 - 2.0 * uwT);
-    const isUnderwater = underwaterFactor >= 0.5;
+    //Sticky while the lens straddles the surface: WaterlinePass draws both sides per pixel
+    //there, so nothing needs the flip, and every flip swaps global state (fog, a-land's ocean
+    //fog and caustic mode, which Liam's sun shares, the sky dome): with ±1 cm the short waves
+    //flipped it several times a second and Liam and the world flashed white/dark.
+    const hyst = (self._waterline && self._waterline.straddle) ? WATERLINE_STRADDLE_HYSTERESIS : WATERLINE_HYSTERESIS;
+    const isUnderwater = stateSubmersion < (self._wasUnderwater ? hyst : -hyst);
+    self._wasWaterlineBand = waterlineBand;
     if(isUnderwater !== self._wasUnderwater){
       self._wasUnderwater = isUnderwater;
       self._applyUnderwaterSceneState(isUnderwater);
     }
+    self._waterline = self._waterline || {};
+    self._waterline.band = waterlineBand;
+    //The near plane can actually reach the water (with a 5 cm reach for the waves across it):
+    //only then does WaterlinePass evaluate the surface per pixel.
+    self._waterline.straddle = waterlineBand
+      && waterSurfaceY > self.globalCameraPosition.y + nearExtent.bottom - 0.05
+      && waterSurfaceY < self.globalCameraPosition.y + nearExtent.top + 0.05;
+    self._waterline.eyeSubmersion = cameraSubmersion;
+    self._waterline.nearTop = nearExtent.top;
+    self._waterline.nearBottom = nearExtent.bottom;
+    self._waterline.surfaceY = waterSurfaceY;
 
     //Underwater caustic projector — caustics on the directly-viewed seabed.
     if(self.causticProjectionPass){
@@ -2037,7 +2315,10 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //hitch off the dip in the common case.
     if(self.reflectionPass) self.reflectionPass.tickWarm(self._fogChunkInjected);
     if(self.scene){
-      if(isUnderwater && self._fogChunkInjected){
+      //Phase 8e: the murk is also COMPUTED in the waterline band (WaterlinePass reads it
+      //while the frame is still above-water); only the swap of scene.fog, the light volume
+      //and the sibling's fog wait for isUnderwater.
+      if((isUnderwater || waterlineBand) && self._fogChunkInjected){
         //Murk colour derived from the SAME stack the water shader uses for its
         //own ceiling fog (water-shader.glsl :1344) so the seabed and the
         //ceiling read as the same medium:
@@ -2242,7 +2523,11 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         //The underwater light volume: the same sun, sky and water, but evaluated at every
         //point along every camera ray instead of once at the camera (UnderwaterVolumePass).
         //The murk above stays as every consumer's fallback.
-        if(self.underwaterVolumePass){
+        //Phase 8e: in the waterline band too, so the eye-above water pass lights the water
+        //below the line with the same volume as the native underwater frame. Without it the
+        //pass fell back to the analytic murk, ~15% brighter and greyer, and every flip of the
+        //eye across the surface swapped the two looks (Dante's "super bright" at the cusp).
+        if((isUnderwater || waterlineBand) && self.underwaterVolumePass){
           if(!self._uwVolSunWater){
             self._uwVolSunWater = new THREE.Vector3();
             self._uwVolSunColor = new THREE.Vector3();
@@ -2294,7 +2579,10 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
             self._uwMurkScratch.y * (angFactor + msRatioY) * dDarkenY,
             self._uwMurkScratch.z * (angFactor + msRatioZ) * dDarkenZ
           );
-          ALand.runtime.TerrainMaterial.setOceanFog({
+          //Phase 8e: kept for the waterline's underwater pass, which applies it only while it
+          //draws; the main render gets it only when the eye is under.
+          self._uwLandFogParams = self._uwLandFogParams || {extinction: {x: 0, y: 0, z: 0}};
+          Object.assign(self._uwLandFogParams, {
             surfaceY: stillY,
             extinction: {x: extX, y: extY, z: extZ},
             murk: self._uwLandMurk,
@@ -2302,11 +2590,18 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
             //The light volume (an a-land that predates it ignores this and keeps `murk`).
             volume: self.underwaterVolumePass ? self.underwaterVolumePass.handover() : null
           });
+          if(isUnderwater) ALand.runtime.TerrainMaterial.setOceanFog(self._uwLandFogParams);
         }
         const yBias = ARestlessOcean.Passes.UnderwaterFogChunk.SURFACE_Y_BIAS;
         self._oceanFog.near = -Math.max(stillY + yBias, 0.001);
         self._oceanFog.far = sunFrac;                            //> 0: sRGB-encoded output + |fogFar| = sunFrac
-        self.scene.fog = self._oceanFog;
+        if(isUnderwater) self.scene.fog = self._oceanFog;
+        //For WaterlinePass: the extinction the murk above was built from.
+        self._uwExtinction = self._uwExtinction || new THREE.Vector3();
+        self._uwExtinction.set(extX, extY, extZ);
+      }
+      if(isUnderwater && self._fogChunkInjected){
+        //(scene.fog was mounted above.)
       } else if(self.scene.fog === self._oceanFog){
         //Surfaced (or chunk not injected): hand scene.fog back to A-Starry-Sky.
         self.scene.fog = (self._capturedSkyFog !== undefined) ? self._capturedSkyFog : null;
@@ -2359,7 +2654,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
           for(let i = 0; i < rms.length; i++) slopeVariance += rms[i];
           slopeVariance *= hm * hm;
         }
-        ALand.runtime.TerrainMaterial.setCaustics({
+        //(Kept: the waterline's water pass re-sends it with viewerUnderwater on.)
+        ALand.runtime.TerrainMaterial.setCaustics(self._landCausticParams = {
           map: self.causticMap,
           slopeVariance: slopeVariance,
           time: time * 0.001,
@@ -2395,7 +2691,13 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         if(self._aboveWaterBackground === undefined){
           self._aboveWaterBackground = self.scene.background;
         }
-        domeMesh.visible = !isUnderwater;
+        //⚠ Off layer 0 (the main camera's), NOT visible = false. a-land captures this same
+        //dome through its own SKY_LAYER cube camera ~4 Hz for scene.environment; hidden
+        //outright it captured an empty sky, a BLACK environment, and every capture flipped
+        //Liam and the whole world between dark and bright as the frame crossed the surface
+        //(Dante 2026-09-27; headless: 17 of 38 captures with the dome hidden).
+        domeMesh.visible = true;
+        if(isUnderwater) domeMesh.layers.disable(0); else domeMesh.layers.enable(0);
         if(isUnderwater){
           //Camera-depth-darkened murk so the bg matches what the eye would
           //see at infinity in this water column. Mostly hidden behind the
@@ -2873,6 +3175,27 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       //main pass and do not depth-interact with the from-below surface). _wasUnderwater is the same
       //committed submersion state that drives the underwater fog/ceiling swap.
       sp.mesh.visible = sp.enabled && !self._wasUnderwater;
+    }
+    //Phase 8e: the waterline overlay, for the main render only (hidden for every offscreen
+    //pass at the top of tick).
+    if(self.waterlinePass){
+      const wl = self._waterline;
+      const gb = self.refractionGBufferTarget;
+      self.waterlinePass.prepare({
+        band: !!(wl && wl.straddle) && !!self._uwMurkCamDepthScratch,
+        waterPass: self.waterlineWaterPass !== false && self._fogChunkInjected === true,
+        under: self._wasUnderwater,
+        airTexture: (self._wasUnderwater && self._aboveWaterTransmissionTarget) ? self._aboveWaterTransmissionTarget.texture : null,
+        airPass: self.waterlineAirPass !== false,
+        camera: self.camera,
+        murk: self._uwMurkCamDepthScratch,
+        ceiling: self._uwReflCamDepthMurk || self._uwMurkCamDepthScratch,
+        extinction: self._uwExtinction,
+        depthTexture: gb && gb.textures ? gb.textures[2] : null,
+        width: gb ? gb.width : 1,
+        height: gb ? gb.height : 1
+      });
+      self.waterlinePass.setVisible(true);
     }
 
     //Sampler budget, once, a few frames in. Each offscreen pass links its own
