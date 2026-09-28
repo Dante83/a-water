@@ -8,6 +8,38 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
+## Waterline meniscus (2026-09-27, branch `waterline-meniscus`): v2 built, awaiting browser
+
+**v1 (lens model) REVERSED** after Dante's browser check: it refracted/TIR'd rays through a
+Laplace-profile lip and looked them up in a frame copy, which bent the sky DOWN into a thick
+smeared water band. Crest does not bend anything (UnderwaterMeniscus.shader,
+UnderwaterEffectShared.hlsl ComputeMeniscusWeight: a thin multiply strip / 3 px darkening).
+
+**v2 (Crest-style):** a strip across the line, ±`meniscusWidthPx` (6 px at 1080 lines):
+a 13-tap Gaussian blur of the finished frame ALONG the line's screen normal (so each side fades
+into the other), times Crest's bluish multiply 1.3·(0.37, 0.4, 0.5) at `meniscusTintStrength` 0.5.
+Frame copy: `WaterlinePass.captureCanvas`, in `OceanGrid.tock` after the other-medium pass.
+JS only, **no regen**. Knobs live on `oceanGrid.waterlinePass`: `meniscus` (false = old line),
+`meniscusWidthPx`, `meniscusTint`, `meniscusTintStrength`.
+
+**Unlit seabed band under the line (Dante, 2026-09-27), FIXED.** Eye just above: a pale band of
+bare, unfogged seabed between the waterline and the water view, with a hard lower edge. The
+waterline test used the SMOOTH field (surfaceAt), but the mesh is flat triangles (a 25 cm cell
+fans 8 from its centre, vertices every 12.5 cm) and strays ~1 cm on short waves (~40 px of near
+plane). Where the mesh was higher, the near plane clipped the top surface away while the test
+still said "air", so the native above-water seabed showed through. Now `wlDrawnHeight` finds the
+fan triangle, displaces its corners exactly as the vertex shader does, and interpolates (mask
+AND overlay). Headless A/B, 4 moments each: smooth = the band every time, drawn = none. A/B
+switch: `oceanGrid.waterlineDrawnMesh = false`.
+
+**The "big blue bar" (Dante's other report) is NOT the meniscus: it is the underwater LIGHT
+VOLUME.** Headless on island-sholes-swim, eye ~3 cm under, looking level: with
+`underwaterVolumePass.enabled = false` the ceiling between the line and the horizon is a
+textured TIR mirror of the seabed and meets the direct view seamlessly; with it on, a flat,
+darker slab sits over that band with a hard step at the horizon. Debug 55 shows that ceiling is
+all within a few metres (stage-2 fog does little); 53 (pre-fog ceiling) is already the darker
+tone. NEXT: how the volume's in-scatter lands on grazing ceiling fragments vs the direct column.
+
 ## ▶▶ RESUME HERE (2026-09-27, later): Phase 8e BUILT, awaiting regen + browser; then Phase 9
 
 ### 8e built (uncommitted on `phase-8-water-state`; Liam pages edited in peaceful-island-swim)

@@ -1663,6 +1663,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         if(wp.airPassActive) self._renderWaterlineAirView();
         else self._renderWaterlineWaterView();
       }
+      //Both views are on the canvas now: the meniscus bends them from a copy.
+      wp.captureCanvas(r);
       wp.renderOverlay(r, self.camera);
     } finally {
       r.autoClear = prevAuto;
