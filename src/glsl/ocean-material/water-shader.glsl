@@ -2592,7 +2592,13 @@ void main(){
   #if($foam_enabled)
     if(uwSide < 0.5 && shoreBreakerEnabled > 0.5 && swashReach > 0.0 && refractionDepthLinear < cameraNearFar.y * 0.99){
       float sheetThickness = worldPosition.y - pointXYZ.y;
-      float thinSheetFoam = 0.8 * shoreBreakerFoamGain * (1.0 - smoothstep(0.0, 0.25, sheetThickness));
+      //Shore pass: the band PEAKS just inside the edge (4-6 cm of water) and goes to 0
+      //at the waterline. It used to be brightest at zero thickness, which is exactly the
+      //line where the terrain's depth test cuts the water off, so the foam ended in a hard
+      //white edge sliced along the mesh facets. Now the front line sits in the water and
+      //feathers out with it.
+      float thinSheetFoam = 0.8 * shoreBreakerFoamGain * smoothstep(0.0, 0.04, sheetThickness)
+                          * (1.0 - smoothstep(0.06, 0.25, sheetThickness));
       foamAmount = max(foamAmount, thinSheetFoam);
       shoreFoamAmount = max(shoreFoamAmount, thinSheetFoam);
     }
@@ -3197,7 +3203,17 @@ void main(){
   //At specFresnelGate = 0.0 this is byte-identical to the old additive glint.
   vec3 specularUngated = specular * (1.0 - specFresnelGate);
   vec3 reflectionPlusGlint = (attenuatedReflection + specular * specFresnelGate) * fresnelFactor;
-  vec3 totalLight = specularUngated + (2.0 / 255.0) * directionalSurfaceLighting + (253.0 / 255.0) * (refractedLight * (1.0 - fresnelFactor) + reflectionPlusGlint);
+  //Shore pass: the soft waterline. Where the water over the ground (the refraction
+  //G-buffer's point, per pixel) thins to nothing, the surface's own reflection and glint
+  //fade out, so the water meets the terrain as a wet film rather than a hard line cut by
+  //the depth test along 2-16 m mesh facets. Top side only, and only where there is
+  //ground behind it.
+  float waterEdgeK = 1.0;
+  if(uwSide < 0.5 && refractionDepthLinear < cameraNearFar.y * 0.99){
+    waterEdgeK = smoothstep(0.0, 0.05, worldPosition.y - pointXYZ.y);
+  }
+  specularUngated *= waterEdgeK;
+  vec3 totalLight = specularUngated + (2.0 / 255.0) * directionalSurfaceLighting + (253.0 / 255.0) * (refractedLight * (1.0 - fresnelFactor * waterEdgeK) + reflectionPlusGlint * waterEdgeK);
   //2026-05-14 unit reconciliation, Step 2 finalizer: removed the additive
   //"hemisphere sky fill" term that used to live here. skyAmbientColor is
   //already consumed inside inscatterEquilibrium (= waterAlbedo * (direct +
@@ -3321,6 +3337,8 @@ void main(){
         foamBlend = max(foamBlend, laceBlend);
       }
     #endif
+    //Foam thins out over the last ~2 cm of water with the soft waterline above.
+    foamBlend *= smoothstep(0.0, 0.4, waterEdgeK);
     dbgFoamColor  = foamDiffuse + foamAmbient;
     dbgFoamMask   = foamMask;
     dbgFoamBlend  = foamBlend;

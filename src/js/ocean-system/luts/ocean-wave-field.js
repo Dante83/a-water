@@ -931,8 +931,24 @@ ARestlessOcean.ShoreBreaker.SWASH_TAPER_GATE_FRACTION = 0.8;
 //which is 3b's reflection layer and spray (or a particle/SPH layer later), and a
 //flat sheet several metres tall around a rock ends in walls wherever its inputs
 //change (browser round 3). Faded out between these foreshore slopes.
-ARestlessOcean.ShoreBreaker.SWASH_SLOPE_FADE_LO = 0.15;
-ARestlessOcean.ShoreBreaker.SWASH_SLOPE_FADE_HI = 0.35;
+//Shore pass (2026-09-30): widened from 0.15/0.35. On island-sholes' 0.24-0.42 shores that
+//band switched the swash off almost everywhere. The bed clamp on the breaker and the soft
+//thin-water edge in the fragment now keep a steep sheet from reading as a wall; if walls
+//round the rocks come back (tuning pass 2), narrow this first.
+ARestlessOcean.ShoreBreaker.SWASH_SLOPE_FADE_LO = 0.22;
+ARestlessOcean.ShoreBreaker.SWASH_SLOPE_FADE_HI = 0.45;
+//Shore pass: breaker troughs never go below the bed. The skewed waveform runs to -H/2 under
+//the rest level, and in the inner surf that is under the sand, so the terrain drew in front
+//of the foam. The trough keeps at least this much water (m) wherever the texel is wet.
+ARestlessOcean.ShoreBreaker.BED_FILM = 0.03;
+//Shore pass: how much of the breaker foam a reflective (steep, high-xi) shore takes away.
+//1 - Kr^2 at full weight left steep shores almost foamless: a surging wave still churns a
+//white collar at the waterline.
+ARestlessOcean.ShoreBreaker.SURGE_FOAM_CUT = 0.6;
+//Shore pass: foam left on the draining sheet. It was bore foam on the uprush only, so the
+//backwash was bare water. Now a thinning residue rides back down (the lace grain follows
+//the run-up in the fragment): BACKWASH_FOAM at the turn, fading as the sheet drains.
+ARestlessOcean.ShoreBreaker.BACKWASH_FOAM = 0.4;
 //The shore normal is taken from CENTRAL differences on cascade 1 (4 m texels),
 //± this many metres. A one-sided 1 m difference of the jump-flooded distance
 //flips direction texel to texel around small rocks and along medial axes, and
@@ -1123,14 +1139,14 @@ ARestlessOcean.ShoreBreaker.evaluate = function(x, z, field, gradX, gradZ, p, ou
   const ph = -psi - 0.5 * Math.PI;
   const f = Math.sqrt(1.0 - r * r);
   const wv = f * (Math.sin(theta) + r * Math.sin(ph) / (1.0 + f)) / (1.0 - r * Math.cos(theta + ph));
-  out.eta = 0.5 * H * wv * W * p.heightScale;
+  out.eta = Math.max(0.5 * H * wv * W * p.heightScale, -Math.max(h - SB.BED_FILM, 0.0));
   const L0 = 2.0 * Math.PI * g / (w * w);
   const xi = (h / s) / Math.sqrt(Math.max(p.Hs, 1e-4) / L0);
   const Kr = Math.min(1.0, 0.1 * xi * xi);
   out.xi = xi; out.Kr = Kr;
   const dFront = _sbFract((theta + ph) / (2.0 * Math.PI));
   const foamPhase = (Math.exp(-SB.FOAM_TRAIL * dFront) + SB.FOAM_RESIDUAL * (1.0 - dFront)) * _sbSmooth(0.0, 0.02, dFront);
-  out.foam = Math.min(1.0, out.breaking * (1.0 - Kr * Kr) * foamPhase * Math.min(1.0, 2.0 * W) * p.foamGain);
+  out.foam = Math.min(1.0, out.breaking * (1.0 - SB.SURGE_FOAM_CUT * Kr * Kr) * foamPhase * Math.min(1.0, 2.0 * W) * p.foamGain);
   return out;
 };
 
@@ -1212,7 +1228,9 @@ ARestlessOcean.ShoreBreaker.evaluateSwash = function(x, z, field, gradX, gradZ, 
   const beachOnly = 1.0 - _sbSmooth(SB.SWASH_SLOPE_FADE_LO, SB.SWASH_SLOPE_FADE_HI, slope);
   const k = (1.0 - inland) * taper * reachFade * confidence * beachOnly;
   out.eta = (zMin + (zMax - zMin) * c) * k * p.heightScale;
-  out.foam = Math.min(1.0, (d < up ? 1.0 - d / up : 0.0) * k * p.foamGain);
+  //Bore foam on the uprush thins to BACKWASH_FOAM at the turn (continuous), then the residue
+  //drains with the sheet.
+  out.foam = Math.min(1.0, (d < up ? 1.0 - (1.0 - SB.BACKWASH_FOAM) * d / up : SB.BACKWASH_FOAM * Math.pow(1.0 - (d - up) / (1.0 - up), 1.5)) * k * p.foamGain);
   return out;
 };
 
@@ -1349,8 +1367,9 @@ ARestlessOcean.ShoreBreaker.GLSL = (function(){
     '  float Kr = min(1.0, 0.1 * xi * xi);',
     '  float dFront = fract((theta + ph) / 6.2831853);',
     '  float foamPhase = (exp(-' + f(SB.FOAM_TRAIL) + ' * dFront) + ' + f(SB.FOAM_RESIDUAL) + ' * (1.0 - dFront)) * smoothstep(0.0, 0.02, dFront);',
-    '  foam = min(1.0, breaking * (1.0 - Kr * Kr) * foamPhase * min(1.0, 2.0 * W) * shoreBreakerFoamGain);',
-    '  return 0.5 * H * wv * W * shoreBreakerHeightScale;',
+    '  foam = min(1.0, breaking * (1.0 - ' + f(SB.SURGE_FOAM_CUT) + ' * Kr * Kr) * foamPhase * min(1.0, 2.0 * W) * shoreBreakerFoamGain);',
+    '  //Troughs keep BED_FILM of water over the bed (shore pass).',
+    '  return max(0.5 * H * wv * W * shoreBreakerHeightScale, -max(h - ' + f(SB.BED_FILM) + ', 0.0));',
     '}',
     '//── Swash (see evaluateSwash in ocean-wave-field.js for the model) ──',
     'float shoreBreakerDirectionFactor(vec2 shoreGrad, out vec2 n){',
@@ -1416,7 +1435,7 @@ ARestlessOcean.ShoreBreaker.GLSL = (function(){
     '  float confidence = smoothstep(' + f(SB.NORMAL_CONFIDENCE_LO) + ', ' + f(SB.NORMAL_CONFIDENCE_HI) + ', length(shoreGrad));',
     '  float beachOnly = 1.0 - smoothstep(' + f(SB.SWASH_SLOPE_FADE_LO) + ', ' + f(SB.SWASH_SLOPE_FADE_HI) + ', slope);',
     '  float k = (1.0 - inland) * taper * reachFade * confidence * beachOnly;',
-    '  swashFoam = min(1.0, (d < up ? 1.0 - d / up : 0.0) * k * shoreBreakerFoamGain);',
+    '  swashFoam = min(1.0, (d < up ? 1.0 - ' + f(1.0 - SB.BACKWASH_FOAM) + ' * d / up : ' + f(SB.BACKWASH_FOAM) + ' * pow(max(1.0 - x, 0.0), 1.5)) * k * shoreBreakerFoamGain);',
     '  return mix(zMin, zMax, c) * k * shoreBreakerHeightScale;',
     '}',
     '//True where the swash sheet may cover a DRY field texel: the dry discard asks this.',

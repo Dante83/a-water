@@ -106,6 +106,43 @@ Plan: A foam look → B hero shadow → C surf meets the land → D river mouths
   - Also not verified: Liam himself (peaceful-island isn't in this session). Check that
     his meshes have castShadow on; if not, set `userData.heroShadow = true` on them.
 
+### Step C — surf that meets the land (written, unit-tested, headless-compiled)
+
+- **Troughs above the bed.** The skewed breaker waveform runs to −H/2 below the rest level,
+  and in the inner surf that is under the sand, so the terrain drew in front of the foam. Now
+  `shoreBreakerEval` (and the JS mirror) returns `max(η, −max(h − BED_FILM, 0))`
+  (BED_FILM 3 cm). All four GPU consumers get it through the splice: vertex, fragment, CSM
+  caster, CPU bake.
+- **The soft waterline.** `waterEdgeK = smoothstep(0, 5 cm, surface − G-buffer ground)`,
+  top side only, with ground behind. It fades the surface's reflection, glint and
+  Fresnel, so the water meets the terrain as a wet film, not a hard line cut by the depth
+  test along the 2–16 m mesh facets. Foam thins over the last ~2 cm with it.
+- **Thin-sheet foam no longer peaks AT the cut line.** It was brightest at zero thickness,
+  which is exactly where the terrain slices the water, so it ended in a hard white edge.
+  Now it rises over 0–4 cm and falls over 6–25 cm: a front line inside the water that
+  moves with the swash (it is per pixel off the G-buffer).
+- **Backwash foam.** Swash foam was uprush-only, so the backwash was bare water (an open
+  item since tuning pass 3). Now the bore foam thins to BACKWASH_FOAM (0.4) at the turn,
+  continuously, then drains as (1 − x)^1.5. Step A's lace grain follows the run-up, so the
+  residue slides back down the beach.
+- **Steep shores.**
+  - The swash slope fade is widened from 0.15/0.35 to 0.22/0.45 (island-sholes' shores are
+    0.24–0.42, so the swash was mostly off).
+  - The breaker foam cut is now `1 − 0.6·Kr²` instead of `1 − Kr²`, so a surging shore
+    keeps a white collar.
+  - ⚠ If the "walls of water round the rocks" (tuning pass 2) come back, narrow the slope
+    fade first.
+- **Cascade crossfade: not needed.** `waterFieldAt` already crossfades over the last 10%
+  of each cascade (the survey that flagged it was wrong).
+- **Tests.** `node tests/shore/shore-breaker-test.mjs` (10 checks):
+  - troughs never below bed + film over 3.5k samples, while 54% are still troughs;
+  - swash foam has no downward jump through the turn and jumps up only at bore arrivals;
+  - the backwash leaves a residue;
+  - a 1:2.5 shore still foams (peak 0.33);
+  - the GLSL carries the JS constants.
+- **Not verified** (needs an island page): the look. Debug 31–33 for foam; the soft edge
+  is best judged on a gentle beach at a low camera.
+
 ---
 
 ## Waterline meniscus (2026-09-27, branch `waterline-meniscus`): v2 built, awaiting browser
