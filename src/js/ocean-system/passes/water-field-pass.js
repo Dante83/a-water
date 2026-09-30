@@ -88,6 +88,17 @@ ARestlessOcean.Passes.WaterFieldPass = function(oceanGrid){
   this._blitMaterial = null;
   this._readTarget = null;   //single-attachment copy target for RT1 readback
   this.shoreFieldEnabled = true;
+  //Shore pass (2026-09-30), river MOUTHS (see _mouthField). A creek stands on its own
+  //Manning level right to the coast (wtr-6 met the sea with a 0.37 m step) and the hand-off
+  //blended only the weight, so the two surfaces never met. mouthRampM: over this many metres
+  //of water upstream of still sea-level water, a flowing texel's level eases down to the sea's
+  //(never under its bed + MOUTH_MIN_DEPTH). mouthBandM: the hand-off band's reach at a mouth
+  //(it is FlowHandoff.BAND_M elsewhere), so the sea's waves calm before they meet the river.
+  //0 turns either off. Both apply at the next refill (invalidate()).
+  this.mouthRampM = 25.0;
+  this.mouthBandM = 16.0;
+  this._seaLevel = 0.0;
+  this._mouthRead = 0;
   //Phase 4 still/flowing speed band, m/s (ARestlessOcean.FlowHandoff).
   this.flowLo = ARestlessOcean.FlowHandoff ? ARestlessOcean.FlowHandoff.FLOW_LO : 0.05;
   this.flowHi = ARestlessOcean.FlowHandoff ? ARestlessOcean.FlowHandoff.FLOW_HI : 0.25;
@@ -335,6 +346,8 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
   this._jfaTargets = [nearestFloat(1), nearestFloat(1)];
   //Phase 4 hand-off band: raw flow weight, blurred H then V (see _flowBand).
   this._bandTargets = [nearestFloat(1), nearestFloat(1)];
+  //Shore pass: distance through water to still sea-level water (see _mouthField).
+  this._mouthTargets = [nearestFloat(1), nearestFloat(1)];
   this._readTarget = nearestFloat(1);
 
   const vertexShader = this._fillMaterial.vertexShader;
@@ -414,20 +427,23 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
   //surfaces dither against each other.
   this._bandSeedMaterial = new THREE.ShaderMaterial({
     glslVersion: THREE.GLSL3,
-    uniforms: {uFieldA: {value: null}, uFieldB: {value: null}, uFlowLo: {value: 0.05}, uFlowHi: {value: 0.25}},
+    uniforms: {uFieldA: {value: null}, uFieldB: {value: null}, uFlowLo: {value: 0.05}, uFlowHi: {value: 0.25},
+      uMouth: {value: null}, uMouthRampM: {value: 0.0}},
     vertexShader: vertexShader,
     fragmentShader: [
       'precision highp float;',
       'layout(location = 0) out vec4 oBand;',
-      'uniform sampler2D uFieldA, uFieldB;',
-      'uniform float uFlowLo, uFlowHi;',
+      'uniform sampler2D uFieldA, uFieldB, uMouth;',
+      'uniform float uFlowLo, uFlowHi, uMouthRampM;',
       'void main(){',
       '  ivec2 p = ivec2(gl_FragCoord.xy);',
       '  vec4 a = texelFetch(uFieldA, p, 0);',
       '  vec4 b = texelFetch(uFieldB, p, 0);',
       '  float w = a.g > 0.0 ? max(smoothstep(uFlowLo, uFlowHi, length(b.xy)), smoothstep(' + (ARestlessOcean.FlowHandoff ? ARestlessOcean.FlowHandoff.ENERGY_LO : 0.002).toFixed(4) + ', ' + (ARestlessOcean.FlowHandoff ? ARestlessOcean.FlowHandoff.ENERGY_HI : 0.02).toFixed(4) + ', b.z)) : 0.0;',
-      //r: blurred by the next two draws, g: the raw weight carried through
-      '  oBand = vec4(w, w, 0.0, 1.0);',
+      //r: blurred by the next two draws, g: the raw weight carried through, b: the weight of
+      //flowing water near a sea mouth, blurred wider (shore pass).
+      '  float mouth = (uMouthRampM > 0.0 && texelFetch(uMouth, p, 0).r < uMouthRampM) ? 1.0 : 0.0;',
+      '  oBand = vec4(w, w, w * mouth, 1.0);',
       '}'
     ].join('\n'),
     depthTest: false,
@@ -435,7 +451,7 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
   });
   this._bandBlurMaterial = new THREE.ShaderMaterial({
     glslVersion: THREE.GLSL3,
-    uniforms: {uSrc: {value: null}, uStep: {value: new THREE.Vector2(1, 0)}, uRadius: {value: 8}},
+    uniforms: {uSrc: {value: null}, uStep: {value: new THREE.Vector2(1, 0)}, uRadius: {value: 8}, uRadiusB: {value: 8}},
     vertexShader: vertexShader,
     fragmentShader: [
       'precision highp float;',
@@ -443,20 +459,78 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
       'layout(location = 0) out vec4 oBand;',
       'uniform sampler2D uSrc;',
       'uniform vec2 uStep;',
-      'uniform int uRadius;',
+      'uniform int uRadius, uRadiusB;',
       'void main(){',
       '  ivec2 p = ivec2(gl_FragCoord.xy);',
       '  vec4 c = texelFetch(uSrc, p, 0);',
-      '  float sum = 0.0, wsum = 0.0;',
+      '  float sum = 0.0, wsum = 0.0, sumB = 0.0;',
       '  for(int k = -16; k <= 16; k++){',
-      '    if(k < -uRadius || k > uRadius) continue;',
       '    ivec2 q = clamp(p + ivec2(uStep) * k, ivec2(0), ivec2(RES - 1));',
-      //triangle kernel
-      '    float wt = float(uRadius + 1 - abs(k));',
-      '    sum += wt * texelFetch(uSrc, q, 0).r;',
-      '    wsum += wt;',
+      '    vec4 t = texelFetch(uSrc, q, 0);',
+      //r: triangle-kernel blur over uRadius. b (the mouth band): a MAX of a tent over uRadiusB,
+      //not a blur, so a creek of any width calms the sea round its mouth; a narrow creek is a
+      //sliver of any blur kernel (a 7 m creek reached ~4 m into the sea, headless 2026-09-30).
+      '    if(k >= -uRadius && k <= uRadius){ float wt = float(uRadius + 1 - abs(k)); sum += wt * t.r; wsum += wt; }',
+      '    if(k >= -uRadiusB && k <= uRadiusB) sumB = max(sumB, t.b * float(uRadiusB + 1 - abs(k)) / float(uRadiusB + 1));',
       '  }',
-      '  oBand = vec4(sum / wsum, c.g, 0.0, 1.0);',
+      '  oBand = vec4(sum / wsum, c.g, sumB, 1.0);',
+      '}'
+    ].join('\n'),
+    depthTest: false,
+    depthWrite: false
+  });
+
+  //Shore pass: THE MOUTH FIELD. r = metres through wet texels to the nearest still
+  //sea-level texel (0 on it), g = that texel's level, a = 1 wet / 0 dry. Seeded here, then
+  //relaxed one texel per draw over the 8-neighbourhood (a chamfer distance, so it bends
+  //round banks and never crosses land), as many draws as mouthRampM needs.
+  this._mouthSeedMaterial = new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    uniforms: {uFieldA: {value: null}, uFieldB: {value: null}, uFlowLo: {value: 0.05}, uFlowHi: {value: 0.25}, uSeaLevel: {value: 0.0}},
+    vertexShader: vertexShader,
+    fragmentShader: [
+      'precision highp float;',
+      'layout(location = 0) out vec4 oMouth;',
+      'uniform sampler2D uFieldA, uFieldB;',
+      'uniform float uFlowLo, uFlowHi, uSeaLevel;',
+      'void main(){',
+      '  ivec2 p = ivec2(gl_FragCoord.xy);',
+      '  vec4 a = texelFetch(uFieldA, p, 0);',
+      '  vec4 b = texelFetch(uFieldB, p, 0);',
+      '  float w = a.g > 0.0 ? max(smoothstep(uFlowLo, uFlowHi, length(b.xy)), smoothstep(' + (ARestlessOcean.FlowHandoff ? ARestlessOcean.FlowHandoff.ENERGY_LO : 0.002).toFixed(4) + ', ' + (ARestlessOcean.FlowHandoff ? ARestlessOcean.FlowHandoff.ENERGY_HI : 0.02).toFixed(4) + ', b.z)) : 0.0;',
+      '  bool sea = a.g > 0.0 && w < 0.02 && abs(a.r - uSeaLevel) < 0.5;',
+      '  oMouth = vec4(sea ? 0.0 : 1e6, sea ? a.r : 0.0, 0.0, a.g > 0.0 ? 1.0 : 0.0);',
+      '}'
+    ].join('\n'),
+    depthTest: false,
+    depthWrite: false
+  });
+  this._mouthRelaxMaterial = new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    uniforms: {uSrc: {value: null}, uTexel: {value: 1.0}},
+    vertexShader: vertexShader,
+    fragmentShader: [
+      'precision highp float;',
+      resDefine,
+      'layout(location = 0) out vec4 oMouth;',
+      'uniform sampler2D uSrc;',
+      'uniform float uTexel;',
+      'void main(){',
+      '  ivec2 p = ivec2(gl_FragCoord.xy);',
+      '  vec4 best = texelFetch(uSrc, p, 0);',
+      '  if(best.a < 0.5){ oMouth = best; return; }',
+      '  for(int dy = -1; dy <= 1; dy++){',
+      '    for(int dx = -1; dx <= 1; dx++){',
+      '      if(dx == 0 && dy == 0) continue;',
+      '      ivec2 q = p + ivec2(dx, dy);',
+      '      if(q.x < 0 || q.y < 0 || q.x >= RES || q.y >= RES) continue;',
+      '      vec4 n = texelFetch(uSrc, q, 0);',
+      '      if(n.a < 0.5) continue;',
+      '      float cand = n.r + uTexel * ((dx != 0 && dy != 0) ? 1.41421356 : 1.0);',
+      '      if(cand < best.r){ best.r = cand; best.g = n.g; }',
+      '    }',
+      '  }',
+      '  oMouth = best;',
       '}'
     ].join('\n'),
     depthTest: false,
@@ -473,7 +547,10 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
       uNoShore: {value: 1.0},
       uBand: {value: null},
       uFlowLo: {value: ARestlessOcean.FlowHandoff ? ARestlessOcean.FlowHandoff.FLOW_LO : 0.05},
-      uFlowHi: {value: ARestlessOcean.FlowHandoff ? ARestlessOcean.FlowHandoff.FLOW_HI : 0.25}
+      uFlowHi: {value: ARestlessOcean.FlowHandoff ? ARestlessOcean.FlowHandoff.FLOW_HI : 0.25},
+      uMouth: {value: null},
+      uMouthRampM: {value: 0.0},
+      uMouthMinDepth: {value: ARestlessOcean.Passes.WaterFieldPass.MOUTH_MIN_DEPTH}
     },
     vertexShader: vertexShader,
     //DRY TEXELS TAKE THE LEVEL OF THEIR NEAREST WATER. The base fill and the
@@ -498,10 +575,22 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
       resDefine,
       'layout(location = 0) out vec4 gSurface;',
       'layout(location = 1) out vec4 gMotion;',
-      'uniform sampler2D uFieldA, uFieldB, uSeedTex, uBand;',
-      'uniform float uTexel, uNoShore, uFlowLo, uFlowHi;',
-      //The banded weight at a texel (see _bandSeedMaterial): the raw weight, or the blend outside it.
-      'float bandWeight(ivec2 q){ vec4 bw = texelFetch(uBand, q, 0); return max(bw.g, smoothstep(0.0, 0.5, bw.r)); }',
+      'uniform sampler2D uFieldA, uFieldB, uSeedTex, uBand, uMouth;',
+      'uniform float uTexel, uNoShore, uFlowLo, uFlowHi, uMouthRampM, uMouthMinDepth;',
+      //The banded weight at a texel (see _bandSeedMaterial): the raw weight, or the blend outside it
+      //(the ordinary band, or the wider one at a sea mouth).
+      'float bandWeight(ivec2 q){ vec4 bw = texelFetch(uBand, q, 0); return max(bw.g, max(smoothstep(0.0, 0.5, bw.r), smoothstep(0.0, 1.0, bw.b))); }',
+      //Shore pass: (level, depth) with the mouth ramp. Water within uMouthRampM (through water)
+      //of still sea-level water eases down to that level, never under its bed + uMouthMinDepth,
+      //never raised. Sea texels are their own nearest (distance 0), so they are unchanged.
+      'vec2 mouthLevel(ivec2 q, vec4 aq){',
+      '  if(uMouthRampM <= 0.0 || !(aq.g > 0.0)) return aq.rg;',
+      '  vec4 m = texelFetch(uMouth, q, 0);',
+      '  if(m.r >= uMouthRampM || aq.r <= m.g) return aq.rg;',
+      '  float bed = aq.r - aq.g;',
+      '  float lv = min(aq.r, max(mix(m.g, aq.r, smoothstep(0.0, uMouthRampM, m.r)), bed + uMouthMinDepth));',
+      '  return vec2(lv, lv - bed);',
+      '}',
       'void main(){',
       '  ivec2 p = ivec2(gl_FragCoord.xy);',
       '  vec4 a = texelFetch(uFieldA, p, 0);',
@@ -509,7 +598,8 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
       '  vec4 s = texelFetch(uSeedTex, p, 0);',
       '  float side = a.g > 0.0 ? 1.0 : -1.0;',
       '  float dist = s.a > 0.5 ? distance(vec2(p), s.xy) * uTexel : uNoShore;',
-      '  float level = a.r;',
+      '  vec2 lvDepth = mouthLevel(p, a);',
+      '  float level = lvDepth.x;',
       '  float nearW = 0.0;',
       //The seed lies between a wet and a dry texel (or ON a one-texel strip), so
       //the wet texel nearest to it is always inside its 3x3.
@@ -523,12 +613,12 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
       '        if(!(w.g > 0.0)) continue;',
       '        vec2 d = vec2(q) - s.xy;',
       '        float dd = dot(d, d);',
-      '        if(dd < bestD){ bestD = dd; level = w.r; nearW = bandWeight(q); }',
+      '        if(dd < bestD){ bestD = dd; level = mouthLevel(q, w).x; nearW = bandWeight(q); }',
       '      }',
       '    }',
       '  }',
       '  float packed = a.g > 0.0 ? -bandWeight(p) : (a.a > 0.5 ? 1.0 + nearW : a.a);',
-      '  gSurface = vec4(level, a.g, side * dist, packed);',
+      '  gSurface = vec4(level, a.g > 0.0 ? lvDepth.y : a.g, side * dist, packed);',
       '  gMotion = b;',
       '}'
     ].join('\n'),
@@ -597,9 +687,12 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._composeShoreField = function(c){
     this.renderer.setClearColor(prevColor, prevAlpha);
   }
 
-  this._flowBand(c);
+  const mouthOn = this._mouthField(c);
+  this._flowBand(c, mouthOn);
 
   const cu = this._composeMaterial.uniforms;
+  cu.uMouth.value = this._mouthTargets[this._mouthRead].texture;
+  cu.uMouthRampM.value = mouthOn ? this.mouthRampM : 0.0;
   cu.uBand.value = this._bandTargets[0].texture;
   cu.uFieldA.value = this._scratch.textures[0];
   cu.uFieldB.value = this._scratch.textures[1];
@@ -617,19 +710,50 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.setFlowBand = function(lo, hi){
   this.invalidate();
 };
 
+//Shore pass: the mouth field into _mouthTargets[_mouthRead] (see _mouthSeedMaterial).
+//Returns false (and leaves the ramp off) when mouthRampM is 0.
+ARestlessOcean.Passes.WaterFieldPass.MOUTH_MIN_DEPTH = 0.03;
+ARestlessOcean.Passes.WaterFieldPass.prototype._mouthField = function(c){
+  this._mouthRead = 0;
+  if(!(this.mouthRampM > 0.0)) return false;
+  const mu = this._mouthSeedMaterial.uniforms;
+  mu.uFieldA.value = this._scratch.textures[0];
+  mu.uFieldB.value = this._scratch.textures[1];
+  mu.uFlowLo.value = this.flowLo;
+  mu.uFlowHi.value = this.flowHi;
+  mu.uSeaLevel.value = this._seaLevel;
+  this._drawQuad(this._mouthSeedMaterial, this._mouthTargets[0]);
+  //One texel of reach per draw; 32 caps it (cascade 0: 25 m at 1 m texels = 25 draws of
+  //512², only when the cascade refills).
+  const steps = Math.min(32, Math.ceil(this.mouthRampM / c.texel) + 1);
+  const ru = this._mouthRelaxMaterial.uniforms;
+  ru.uTexel.value = c.texel;
+  let read = 0;
+  for(let i = 0; i < steps; ++i){
+    ru.uSrc.value = this._mouthTargets[read].texture;
+    this._drawQuad(this._mouthRelaxMaterial, this._mouthTargets[1 - read]);
+    read = 1 - read;
+  }
+  this._mouthRead = read;
+  return true;
+};
+
 //Raw flow weight into _bandTargets, blurred horizontally then vertically back into
 //_bandTargets[0] over FlowHandoff.BAND_M metres at this cascade's texel size.
-ARestlessOcean.Passes.WaterFieldPass.prototype._flowBand = function(c){
+ARestlessOcean.Passes.WaterFieldPass.prototype._flowBand = function(c, mouthOn){
   const su = this._bandSeedMaterial.uniforms;
   su.uFieldA.value = this._scratch.textures[0];
   su.uFieldB.value = this._scratch.textures[1];
   su.uFlowLo.value = this.flowLo;
   su.uFlowHi.value = this.flowHi;
+  su.uMouth.value = this._mouthTargets[this._mouthRead].texture;
+  su.uMouthRampM.value = mouthOn && this.mouthBandM > 0.0 ? this.mouthRampM : 0.0;
   this._drawQuad(this._bandSeedMaterial, this._bandTargets[0]);
   const bandM = ARestlessOcean.FlowHandoff ? ARestlessOcean.FlowHandoff.BAND_M : 8.0;
   const radius = Math.max(1, Math.min(16, Math.round(bandM / c.texel)));
   const bu = this._bandBlurMaterial.uniforms;
   bu.uRadius.value = radius;
+  bu.uRadiusB.value = Math.max(radius, Math.min(16, Math.round(Math.max(this.mouthBandM, 0.0) / c.texel)));
   bu.uSrc.value = this._bandTargets[0].texture;
   bu.uStep.value.set(1, 0);
   this._drawQuad(this._bandBlurMaterial, this._bandTargets[1]);
@@ -677,6 +801,7 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.tick = function(ctx){
     u.uCascadeCenter.value.set(cx, cz);
     u.uCascadeHalfWidth.value = c.halfWidth;
     u.uSeaLevel.value = ctx.seaLevel;
+    this._seaLevel = ctx.seaLevel;
     u.uWaterType.value = ctx.waterType;
     u.uFoamMap.value = ctx.foamMap;
     u.uFoamCameraXZ.value.copy(ctx.foamCameraXZ);

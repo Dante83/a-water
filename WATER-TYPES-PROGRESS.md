@@ -143,6 +143,44 @@ Plan: A foam look → B hero shadow → C surf meets the land → D river mouths
 - **Not verified** (needs an island page): the look. Debug 31–33 for foam; the soft edge
   is best judged on a gentle beach at a low camera.
 
+### Step D1–D3 — river mouths join the sea (written, GPU-headless-verified on a synthetic creek)
+
+- **Why they never met.** a-land stands a creek on its Manning level right to the coast
+  (wtr-6 met the sea with a 0.37 m step). The hand-off blended only the WEIGHT over 8 m,
+  never the level. The sea kept full waves ~4 m from the flat creek end. At the mouth, a
+  6 cm still-side cut plus the flowing sheet's 3–10 cm fade drew neither surface.
+- **D1 level ramp (`WaterFieldPass._mouthField` + compose `mouthLevel`).**
+  - The mouth field: seeded on still (w < 0.02) sea-level (±0.5 m) wet texels, then relaxed
+    one texel per draw over the 8-neighbourhood through WET texels only. That is a chamfer
+    distance, so it bends round banks and never jumps land, carrying the seed's level.
+  - Water within `mouthRampM` (25 m) eases down to that level: `mix(seaLevel, level,
+    smoothstep(0, L, d))`, never below bed + 3 cm, never raised. Dry texels take their
+    nearest wet texel's RAMPED level.
+  - Everything downstream reads RT0, so the flowing surface, clipmap, probes, CPU bake and
+    a-land's clip all agree for free.
+  - Cost: ≤ 32 draws of 512², only when a cascade refills.
+  - Sea-level mouths only: a pool inside a creek would otherwise drag the reach above it
+    down to the pool.
+- **D2 mouth band.** The band seed's new b channel is the weight of flowing texels within
+  the ramp. It is spread by a MAX of a tent over `mouthBandM` (16 m), not a blur: a blur
+  of a 7 m creek reached ~4 m into the sea. The swash uprush is now damped by the weight
+  too, not only the drawdown (GLSL and JS mirror).
+- **D3.** At a sea mouth (level within 0.5 m of sea level) the still side's thin-water band
+  cut is 1.5 cm instead of 6 cm. The creek-fringe puddles that cut exists for are inland.
+- **GPU check (headless, real passes):** a synthetic 7-texel creek (0.37 m deep, bed rising
+  2 cm/m from −0.2 m) paints the scratch field into the sea, then the real compose runs.
+  - Creek level along its axis: 0.001 at the mouth (0.17 before), then 0.026, 0.098, 0.217,
+    0.372, 0.531 every 4 m, meeting its own level (0.65) at 24 m. Depth never under
+    3 cm.
+  - Hand-off weight in the sea at 4/8/12/16 m out: 0.86/0.54/0.21/0 (was ~0 past 4 m).
+  - With the bed ABOVE the sea (0.3 m at the mouth) the ramp is bed-limited, as designed:
+    a waterfall into the sea stays a fall. (Harness: scratchpad `mouth.mjs`.)
+- **Live knobs:** `oceanGrid.waterFieldPass.mouthRampM` (25) and `.mouthBandM` (16), 0 = off.
+  They apply at the next refill, `.invalidate()`.
+- **Not verified:** a real a-land mouth (wtr-6). Check that the seam closes at the coast,
+  that the river doesn't dry out in its last metres (it keeps ≥ 3 cm), and that no surf
+  breaks over the mouth.
+
 ---
 
 ## Waterline meniscus (2026-09-27, branch `waterline-meniscus`): v2 built, awaiting browser

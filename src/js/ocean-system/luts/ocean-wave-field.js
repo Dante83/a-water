@@ -1218,7 +1218,8 @@ ARestlessOcean.ShoreBreaker.evaluateSwash = function(x, z, field, gradX, gradZ, 
   const c = d < up ? Math.sin(0.5 * Math.PI * d / up) : 1.0 - Math.pow((d - up) / (1.0 - up), 2.0);
   //Phase 4: no drawdown under a river (see the GLSL). The CPU weight is a-land's raw one,
   //without the field's blurred band.
-  const zMin = (setup - 0.5 * S) * (1.0 - _sbSmooth(0.0, SB.SWASH_FLOW_DRAWDOWN_W, field.flowWeight || 0.0)), zMax = R2 * A;
+  const flowKeep = 1.0 - _sbSmooth(0.0, SB.SWASH_FLOW_DRAWDOWN_W, field.flowWeight || 0.0);
+  const zMin = (setup - 0.5 * S) * flowKeep, zMax = R2 * A * flowKeep;
   const gateDepth = Math.min(p.depthCap * 0.98, 3.0 * p.Hs + 1.0) * SB.SWASH_TAPER_GATE_FRACTION;
   const taper = 1.0 - _sbSmooth(0.0, Math.max(Math.min(SB.WAVE_FACTOR_MAX * R2, gateDepth), 0.05), h);
   //Inland, fade to nothing by the reach so the geometry agrees with the discard.
@@ -1428,7 +1429,9 @@ ARestlessOcean.ShoreBreaker.GLSL = (function(){
     '  //there opened sand inside the river and cut its mouth off from the sea. The band',
     '  //weight reaches about half its width into the sea, so the mouth stays wet.',
     '  zMin *= 1.0 - smoothstep(0.0, ' + f(SB.SWASH_FLOW_DRAWDOWN_W) + ', flowHandoffFieldWeightAt(xz));',
-    '  float zMax = R2 * A;',
+    '  //Shore pass: nor the uprush. With the mouth band (WaterFieldPass.mouthBandM) the weight',
+    '  //now reaches well into the sea at a river mouth, and the run-up there broke over the river.',
+    '  float zMax = R2 * A * (1.0 - smoothstep(0.0, ' + f(SB.SWASH_FLOW_DRAWDOWN_W) + ', flowHandoffFieldWeightAt(xz)));',
     '  float gateDepth = min(shoreBreakerDepthCap * 0.98, 3.0 * shoreBreakerHs + 1.0) * ' + f(SB.SWASH_TAPER_GATE_FRACTION) + ';',
     '  float taper = 1.0 - smoothstep(0.0, max(min(' + f(SB.WAVE_FACTOR_MAX) + ' * R2, gateDepth), 0.05), max(field.g, 0.0));',
     '  float reachFade = (1.0 - smoothstep(0.75 * reach, reach, -field.b)) * (1.0 - smoothstep(0.5 * reach, reach, field.b));',
