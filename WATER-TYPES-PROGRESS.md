@@ -237,6 +237,25 @@ The runtime versions above stay as the fallback. Better data from the bake:
    speed alone.
 Each needs a rebake of every world. That is why the runtime versions come first.
 
+### Closing the shore pass (2026-09-30)
+
+- `heroShadowPass.includeInstanced` now defaults to **true**. Dante confirmed it in the
+  browser with no visual bugs. Frame rate is unmeasured (no counter on his screen): turn
+  it off if frame time suffers.
+- **Open:** the two spots from round 5's screenshot didn't change:
+  - the waves still vanish near the plume instead of fading;
+  - the swash still stops abruptly on the sand.
+  Round 5's changes stay (they are correct continuity fixes, just not these). Next
+  suspects, to A/B in the browser:
+  - the dry-texel discard band (`shoreSwashCovers`, the reach cut);
+  - the plume's clarity and tint versus the FFT flattening (`stillKeep`) at the mouth:
+    `oceanGrid.mouthPlumePass.enabled = false`, then `waterFieldPass.mouthBandM = 0` +
+    `invalidate()`;
+  - WaveMask depth attenuation;
+  - foam debug modes 31–33 on the spot.
+- **Merge note:** a-land's `fix-shoreline-waves-and-add-connectors` (setSwashSurface, the
+  live-surf wet band) goes in alongside a-water's branch of the same name.
+
 ### Round 5 — surf fades into the plume; the swash tip thins out (2026-09-30)
 
 Round 4 confirmed by Dante: the dark edges are gone. Two follow-ups from his screenshot:

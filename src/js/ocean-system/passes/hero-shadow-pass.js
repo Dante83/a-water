@@ -43,7 +43,9 @@ ARestlessOcean.Passes.HeroShadowPass = function(oceanGrid){
   //through its own customDepthMaterial twin when it has one (conform + wind), so their
   //shadows sit where they stand. Off by default: it draws every instance each frame, and
   //the scatter's pebbles are not worth it. For trees and rocks at the shore.
-  this.includeInstanced = false;
+  //ON since 2026-09-30: browser-confirmed by Dante with no visual bugs (the round-2 blobs were
+  //the a-land layer collision, not these). Turn off if frame time suffers.
+  this.includeInstanced = true;
   this.size = HS.SIZE;
 
   this.target = null;
