@@ -908,6 +908,12 @@ ARestlessOcean.ShoreBreaker.SWASH_BAND_MAX = 60.0;
 ARestlessOcean.ShoreBreaker.SWASH_PROBE = 6.0;       //m offshore where the foreshore slope is read
 //Flow hand-off weight by which the swash drawdown has faded out (Phase 4, round 7).
 ARestlessOcean.ShoreBreaker.SWASH_FLOW_DRAWDOWN_W = 0.2;
+//Shore pass round 5 (Dante, 2026-09-30: at the river mouth the waves "completely vanish"
+//instead of fading into the plume). The mouth band now spreads the hand-off weight ~16 m
+//into the sea, but the breaker and the swash still switched OFF at weight 0.5 (the flowing
+//gates), and the swash foam never faded at all: the surf ended on the w = 0.5 contour. Surf
+//height AND foam now fade to nothing by this weight, so the gate finds nothing left to cut.
+ARestlessOcean.ShoreBreaker.SURF_FLOW_FADE_W = 0.5;
 ARestlessOcean.ShoreBreaker.SWASH_UPRUSH = 0.3;      //fraction of a wave period spent running up
 ARestlessOcean.ShoreBreaker.WAVE_FACTOR_MAX = 1.155; //largest waveFactor() can return
 //The discard band is this many times the run-up reach on the PROBED slope: the
@@ -1108,7 +1114,8 @@ ARestlessOcean.ShoreBreaker.evaluate = function(x, z, field, gradX, gradZ, p, ou
   const ratio = SB.phaseRatio(pfC.depth, pfC.shoreSDF, gradX, gradZ, hGradX || 0.0, hGradZ || 0.0, k0);
   out.phaseRatio = ratio;
   const W = Math.sqrt(Math.max(0.0, 1.0 - aP * aP)) * (1.0 - inland) * (1.0 - _sbSmooth(0.7 * p.depthCap, 0.98 * p.depthCap, h))
-    * (1.0 - _sbSmooth(SB.PHASE_RATIO_LO, SB.PHASE_RATIO_HI, ratio));
+    * (1.0 - _sbSmooth(SB.PHASE_RATIO_LO, SB.PHASE_RATIO_HI, ratio))
+    * (1.0 - _sbSmooth(0.0, SB.SURF_FLOW_FADE_W, field.flowWeight || 0.0));
   out.W = W;
   if(W < 0.01) return out;
   const kh = X / Math.sqrt(Math.tanh(X));
@@ -1226,7 +1233,7 @@ ARestlessOcean.ShoreBreaker.evaluateSwash = function(x, z, field, gradX, gradZ, 
   const c = d < up ? Math.sin(0.5 * Math.PI * d / up) : 1.0 - Math.pow((d - up) / (1.0 - up), 2.0);
   //Phase 4: no drawdown under a river (see the GLSL). The CPU weight is a-land's raw one,
   //without the field's blurred band.
-  const flowKeep = 1.0 - _sbSmooth(0.0, SB.SWASH_FLOW_DRAWDOWN_W, field.flowWeight || 0.0);
+  const flowKeep = 1.0 - _sbSmooth(0.0, SB.SURF_FLOW_FADE_W, field.flowWeight || 0.0);
   const zMin = (setup - 0.5 * S) * flowKeep, zMax = R2 * A * flowKeep;
   const gateDepth = Math.min(p.depthCap * 0.98, 3.0 * p.Hs + 1.0) * SB.SWASH_TAPER_GATE_FRACTION;
   const taper = 1.0 - _sbSmooth(0.0, Math.max(Math.min(SB.WAVE_FACTOR_MAX * R2, gateDepth), 0.05), h);
@@ -1235,7 +1242,7 @@ ARestlessOcean.ShoreBreaker.evaluateSwash = function(x, z, field, gradX, gradZ, 
   //Seaward, also by shore DISTANCE: a shallow bar far from any shore is not swash.
   const reachFade = (1.0 - _sbSmooth(0.75 * out.reach, out.reach, -s)) * (1.0 - _sbSmooth(0.5 * out.reach, out.reach, s));
   const beachOnly = 1.0 - _sbSmooth(SB.SWASH_SLOPE_FADE_LO, SB.SWASH_SLOPE_FADE_HI, slope);
-  const k = (1.0 - inland) * taper * reachFade * confidence * beachOnly;
+  const k = (1.0 - inland) * taper * reachFade * confidence * beachOnly * flowKeep;
   out.eta = (zMin + (zMax - zMin) * c) * k * p.heightScale;
   //Bore foam on the uprush thins to BACKWASH_FOAM at the turn (continuous), then the residue
   //drains with the sheet.
@@ -1335,7 +1342,8 @@ ARestlessOcean.ShoreBreaker.GLSL = (function(){
     '  float X = k0 * hh;',
     '  float aP = shoreBreakerDepthAmplitude(X);',
     '  float W = sqrt(max(0.0, 1.0 - aP * aP)) * (1.0 - inland) * (1.0 - smoothstep(0.7 * shoreBreakerDepthCap, 0.98 * shoreBreakerDepthCap, h))',
-    '          * (1.0 - smoothstep(' + f(SB.PHASE_RATIO_LO) + ', ' + f(SB.PHASE_RATIO_HI) + ', shoreBreakerPhaseRatio(phaseField, fieldGrad, k0)));',
+    '          * (1.0 - smoothstep(' + f(SB.PHASE_RATIO_LO) + ', ' + f(SB.PHASE_RATIO_HI) + ', shoreBreakerPhaseRatio(phaseField, fieldGrad, k0)))',
+    '          * (1.0 - smoothstep(0.0, ' + f(SB.SURF_FLOW_FADE_W) + ', max(-field.a, 0.0)));',
     '  if(W < 0.01) return 0.0;',
     '  float kh = X / sqrt(shoreBreakerTanh(X));',
     '  float k = kh / hh;',
@@ -1440,16 +1448,17 @@ ARestlessOcean.ShoreBreaker.GLSL = (function(){
     '  //flowing surface is only partly opaque, and a still surface draining below the sand',
     '  //there opened sand inside the river and cut its mouth off from the sea. The band',
     '  //weight reaches about half its width into the sea, so the mouth stays wet.',
-    '  zMin *= 1.0 - smoothstep(0.0, ' + f(SB.SWASH_FLOW_DRAWDOWN_W) + ', flowHandoffFieldWeightAt(xz));',
+    '  float flowKeep = 1.0 - smoothstep(0.0, ' + f(SB.SURF_FLOW_FADE_W) + ', flowHandoffFieldWeightAt(xz));',
+    '  zMin *= flowKeep;',
     '  //Shore pass: nor the uprush. With the mouth band (WaterFieldPass.mouthBandM) the weight',
     '  //now reaches well into the sea at a river mouth, and the run-up there broke over the river.',
-    '  float zMax = R2 * A * (1.0 - smoothstep(0.0, ' + f(SB.SWASH_FLOW_DRAWDOWN_W) + ', flowHandoffFieldWeightAt(xz)));',
+    '  float zMax = R2 * A * flowKeep;',
     '  float gateDepth = min(shoreBreakerDepthCap * 0.98, 3.0 * shoreBreakerHs + 1.0) * ' + f(SB.SWASH_TAPER_GATE_FRACTION) + ';',
     '  float taper = 1.0 - smoothstep(0.0, max(min(' + f(SB.WAVE_FACTOR_MAX) + ' * R2, gateDepth), 0.05), max(field.g, 0.0));',
     '  float reachFade = (1.0 - smoothstep(0.75 * reach, reach, -field.b)) * (1.0 - smoothstep(0.5 * reach, reach, field.b));',
     '  float confidence = smoothstep(' + f(SB.NORMAL_CONFIDENCE_LO) + ', ' + f(SB.NORMAL_CONFIDENCE_HI) + ', length(shoreGrad));',
     '  float beachOnly = 1.0 - smoothstep(' + f(SB.SWASH_SLOPE_FADE_LO) + ', ' + f(SB.SWASH_SLOPE_FADE_HI) + ', slope);',
-    '  float k = (1.0 - inland) * taper * reachFade * confidence * beachOnly;',
+    '  float k = (1.0 - inland) * taper * reachFade * confidence * beachOnly * flowKeep;',
     '  swashFoam = min(1.0, (d < up ? 1.0 - ' + f(1.0 - SB.BACKWASH_FOAM) + ' * d / up : ' + f(SB.BACKWASH_FOAM) + ' * pow(max(1.0 - x, 0.0), 1.5)) * k * shoreBreakerFoamGain);',
     '  return mix(zMin, zMax, c) * k * shoreBreakerHeightScale;',
     '}',

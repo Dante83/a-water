@@ -99,6 +99,23 @@ const params = t => ({enabled: true, time: t, Hs: 1.6, omega: 2 * Math.PI / 9, w
   check('swash still runs up the beach', maxReach > 2.0, 'reach ' + maxReach.toFixed(1) + ' m');
 }
 
+//── 3c. Surf fades into a river mouth instead of ending at the flowing gate (w = 0.5).
+{
+  let worstB = 0, worstS = 0;
+  for(let t = 0; t < 12; t += 0.9){
+    for(const w of [0.49]){
+      const field = {level: 0, depth: 0.8, shoreSDF: 16, dryMask: 0, flowWeight: w};
+      const b = SB.evaluate(3, -16, field, 0, 1, params(t), {}, field, 0, 0.05);
+      worstB = Math.max(worstB, Math.abs(b.eta), b.foam);
+      const sfield = {level: 0, depth: 0.1, shoreSDF: 1.0, dryMask: 0, flowWeight: w};
+      const sw = SB.evaluateSwash(10, 0, sfield, 0, 1, params(t), {}, sfield, {level: 0, depth: 0.3, shoreSDF: 6.0});
+      worstS = Math.max(worstS, Math.abs(sw.eta), sw.foam);
+    }
+  }
+  check('breaker height and foam ~0 just below the flowing gate', worstB < 0.01, 'max ' + worstB.toFixed(4));
+  check('swash height and foam ~0 just below the flowing gate', worstS < 0.01, 'max ' + worstS.toFixed(4));
+}
+
 //── 4. GLSL carries the JS constants (the four GPU consumers splice this string).
 {
   const g = SB.GLSL;

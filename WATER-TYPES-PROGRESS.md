@@ -237,6 +237,25 @@ The runtime versions above stay as the fallback. Better data from the bake:
    speed alone.
 Each needs a rebake of every world. That is why the runtime versions come first.
 
+### Round 5 — surf fades into the plume; the swash tip thins out (2026-09-30)
+
+Round 4 confirmed by Dante: the dark edges are gone. Two follow-ups from his screenshot:
+- **Waves vanish at the river mouth.** The mouth band spreads the hand-off weight ~16 m into
+  the sea, but the breaker and swash gates still switch off at w = 0.5 (drawdown and uprush
+  faded only up to 0.2), and the swash foam never faded, so the surf ended on the w = 0.5
+  contour. Breaker W, swash height AND swash foam now fade to 0 by `SURF_FLOW_FADE_W` 0.5,
+  in GLSL and the JS mirror. Test: ~0 at w = 0.49 (breaker 0.0000, swash 0.0011).
+- **The swash stops abruptly on the sand.** The lace ran at full cover to where the sheet
+  meets the terrain. Its cover now drops over the last 10 cm of water (G-buffer thickness),
+  so the tip breaks into flecks and clear film.
+- **Hero map and instanced meshes.** The round-2 blobs were probably this layer collision
+  all along, and instanced casters now render through their own depth twins, so the
+  exclusion is no longer needed for correctness. It stays off by default for cost (every
+  instance, each frame). Try `oceanGrid.heroShadowPass.includeInstanced = true` and watch
+  the frame rate.
+
+Verified headless: 31 programs compile, the shore tests pass (new flow-gate check).
+
 ### Round 4 — THE DARK SHORE EDGES: a layer collision with a-land (2026-09-30)
 
 Dante's bisect: surf off, shimmer off, landShadow off, hero off and water hidden changed

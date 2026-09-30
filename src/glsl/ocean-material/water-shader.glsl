@@ -3288,8 +3288,10 @@ void main(){
   //the depth test along 2-16 m mesh facets. Top side only, and only where there is
   //ground behind it.
   float waterEdgeK = 1.0;
+  float waterEdgeThickness = 1000.0;
   if(uwSide < 0.5 && refractionDepthLinear < cameraNearFar.y * 0.99){
-    waterEdgeK = smoothstep(0.0, 0.05, worldPosition.y - pointXYZ.y);
+    waterEdgeThickness = worldPosition.y - pointXYZ.y;
+    waterEdgeK = smoothstep(0.0, 0.05, waterEdgeThickness);
   }
   specularUngated *= waterEdgeK;
   vec3 totalLight = specularUngated + (2.0 / 255.0) * directionalSurfaceLighting + (253.0 / 255.0) * (refractedLight * (1.0 - fresnelFactor * waterEdgeK) + reflectionPlusGlint * waterEdgeK);
@@ -3411,7 +3413,11 @@ void main(){
         float laceMix = abs(1.0 - 2.0 * lacePhaseA);
         float laceMask = mix(texture2D(foamOpacityMap, laceUVA).r, texture2D(foamOpacityMap, laceUVB).r, laceMix);
         float laceRank = pow(clamp(laceMask / 0.55, 0.0, 1.0), 0.8);
-        float laceCover = clamp(shoreFoamAmount, 0.0, 1.0);
+        //Round 5 (Dante: the swash "stops abruptly into the shoreline"): the lace ran at full
+        //cover right to where the sheet meets the sand, so the sheet ended on a white line.
+        //A swash tongue thins to clear film at its tip: over the last 10 cm of water the
+        //COVER drops, so the lace breaks into flecks and holes instead of fading like a decal.
+        float laceCover = clamp(shoreFoamAmount, 0.0, 1.0) * smoothstep(0.0, 0.10, waterEdgeThickness);
         float laceBlend = smoothstep(1.0 - laceCover - LACE_FEATHER, 1.0 - laceCover + LACE_FEATHER, laceRank)
                         * smoothstep(0.0, 0.04, laceCover);
         foamBlend = max(foamBlend, laceBlend);
