@@ -8,6 +8,58 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
+## Shore pass (2026-09-30, branch `fix-shoreline-waves-and-add-connectors`)
+
+Dante's report: (1) dark rings round settling foam; (2) foam puts big splotchy shadows on
+the floor; (3) Liam casts no sharp shadow on the water; (4) shore foam is chunky, gets cut
+off and sits under the land; (5) rivers make no plume; (6) rivers and the sea don't join.
+Plan: A foam look → B hero shadow → C surf meets the land → D river mouths.
+
+### Step A — shore foam look (written, headless-compiled; regen committed)
+
+- **Dark rings: the foam colour map's gaps.** Foam002_1K_Color is near black in its gaps
+  by design. Measured: 29% of texels have opacity < 0.1, and their linear albedo is 0.03.
+  The composite gave those texels 0.5 · foamShape weight (`foamGrainFloor` 0.5) toward
+  albedo × light. So every fading fringe laid dark colour over the sand under thin water,
+  which read as a ring. The waterfall sheet found the same thing (PROGRESS "dark navy gaps").
+  - Now foam is `mix(foamWhite, texture, 0.35·mask)`: white where the texture is
+    transparent, with a hint of its tint on the bubbles.
+  - The grain floor is 0.15, and the mask is stretched `smoothstep(0.05, 0.45)` (median 0.24),
+    so bubbles read solid.
+  - ⚠ Net effect: foam is brighter (effective albedo ~0.3 → ~0.75). Tune `foamWhite` if it
+    blows out.
+- **Splotchy "shadows": the ocean CSM on foam alone.** Nothing darkens the floor by foam.
+  Foam diffuse took the whole `sunShadowFactor`, which includes the blurred EVSM wave
+  self-shadow (60 m/240 m cascades, "soft round blotches"). The water round the foam barely
+  uses that term, so the blotches showed only where foam lay, and over the swash they read
+  as shadows on the sand.
+  - Foam now takes `foamOceanShadowK` (0.25) of the ocean term on the open sea, and none
+    where the foam is surf foam.
+  - Terrain and object shadow (`sunShadowNoOcean`) stay whole.
+- **Lace, not slabs.** Surf foam (breaker, swash, thin sheet) and body foam
+  (`dynamicWavesFoamAt`) are tracked apart as `shoreFoamAmount` and drawn with a sliding
+  black point on a grain that is NOT world-locked:
+  - it is offset inland by the swash sheet's current run-up (η / bed slope, along the
+    smooth shore normal), so it runs up the beach and slides back down;
+  - it drifts shoreward at `shoreLaceDrift` m/s in two flow-map phases (2 s period), the
+    flowing variant's trick;
+  - the threshold is on the grain's rank, u ≈ (m/0.55)^0.8 (fits the opacity CDF within
+    ~2%), so coverage a covers a of the surface.
+  Open-sea FFT foam keeps the field-shaped blend (`seaFoamAmount`). The flowing variant is
+  unchanged apart from the albedo and grain-floor fix.
+- **Live knobs** (on `oceanGrid`): `foamWhite` 0.8, `foamGrainFloor` 0.15,
+  `foamOceanShadowK` 0.25, `shoreLaceDrift` 0.8.
+- **Verified:**
+  - A one-shot regen (create-shader.py's watcher body run once) is byte-identical on the
+    untouched tree.
+  - Headless Chromium/SwiftShader on a standalone page (aframe 1.7 + the 55 src files in
+    make-combined order + `<a-restless-ocean>`): all 26 programs compile, no shader errors.
+  - Not verified: the shore paths themselves. Standalone has no water field, so breakers and
+    swash are off. Debug 31/32/33 (mask, blend, colour) and 18 (ocean shadow) are the A/B
+    on an island page.
+
+---
+
 ## Waterline meniscus (2026-09-27, branch `waterline-meniscus`): v2 built, awaiting browser
 
 **v1 (lens model) REVERSED** after Dante's browser check: it refracted/TIR'd rays through a

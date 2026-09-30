@@ -45,6 +45,11 @@ ARestlessOcean.Materials.Ocean.waterMaterial = {
     //Wind-driven foam bias (Sea-of-Thieves "Jacobian dip"). 0 = calm (unchanged);
     //CPU ramps it up with wind speed so rough seas progressively whiten over.
     foamWindBias: {type: 'f', value: 0.0},
+    //Foam look (shore pass, 2026-09-30), uploaded from oceanGrid each frame.
+    foamWhite: {type: 'f', value: 0.8},
+    foamGrainFloor: {type: 'f', value: 0.15},
+    foamOceanShadowK: {type: 'f', value: 0.25},
+    shoreLaceDrift: {type: 'f', value: 0.8},
     //Refraction G-buffer (3-attachment MRT, allocated in ocean-grid.js):
     //  refractionColorTexture = attachment 0, LINEAR albedo (decoded per-mesh
     //    in the G-buffer override shader); .a = 1 where geometry exists.

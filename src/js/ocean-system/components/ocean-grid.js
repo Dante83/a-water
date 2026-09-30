@@ -74,6 +74,19 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //full reach. The SSR ray-march is the dominant per-pixel water cost; lower
   //trades reflection reach for fill rate, 0 = sky-only (bottleneck A/B test).
   this.ssrMaxSteps = 48;
+  //Foam look (shore pass, 2026-09-30), live:
+  //  foamWhite         albedo of foam where the bubble texture is transparent. The
+  //                    Foam002 colour map is near black (0.03) in its gaps by design,
+  //                    and blending that in drew dark rings round every fading patch.
+  //  foamGrainFloor    coverage a gap texel still gets inside field-shaped sea foam.
+  //  foamOceanShadowK  how much of the blurred ocean self-shadow (CSM) foam takes
+  //                    (0 in the surf zone). At 1 its 60 m blotches landed on foam
+  //                    alone, and over thin swash they read as shadows on the sand.
+  //  shoreLaceDrift    m/s the surf-zone foam grain drifts shoreward with the bores.
+  this.foamWhite = 0.8;
+  this.foamGrainFloor = 0.15;
+  this.foamOceanShadowK = 0.25;
+  this.shoreLaceDrift = 0.8;
   //How much ripple detail the SKY half of the SSR follows (live-tunable via
   //window.setSsrSkyNormalBlend). 0 reproduces the original macroNormal-only
   //behaviour — a reflection that tracks only the long swell and reads as a
@@ -2824,6 +2837,10 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       uniformsRef.reflectionScale.value = self.reflectionScale;
       uniformsRef.reflectionDistanceFalloff.value = self.reflectionDistanceFalloff;
       uniformsRef.ssrMaxSteps.value = self.ssrMaxSteps;
+      uniformsRef.foamWhite.value = self.foamWhite;
+      uniformsRef.foamGrainFloor.value = self.foamGrainFloor;
+      uniformsRef.foamOceanShadowK.value = self.foamOceanShadowK;
+      uniformsRef.shoreLaceDrift.value = self.shoreLaceDrift;
       uniformsRef.ssrSkyNormalBlend.value = self.ssrSkyNormalBlend;
       uniformsRef.ssrMarchNormalBlend.value = self.ssrMarchNormalBlend;
       uniformsRef.fresnelDistanceRoughness.value = self.fresnelDistanceRoughness;
