@@ -39,6 +39,11 @@ ARestlessOcean.Passes.HeroShadowPass = function(oceanGrid){
   this.halfWidth = HS.HALF_WIDTH;     //m, the box's half width around the camera
   this.depthRange = HS.DEPTH_RANGE;   //m, how far above the water a caster may stand
   this.softness = 1.0;                //× the sun's angular size for the penumbra
+  //Round 3: a-land's placed objects (InstancedMeshes: trees, rocks, scatter) too, each drawn
+  //through its own customDepthMaterial twin when it has one (conform + wind), so their
+  //shadows sit where they stand. Off by default: it draws every instance each frame, and
+  //the scatter's pebbles are not worth it. For trees and rocks at the shore.
+  this.includeInstanced = false;
   this.size = HS.SIZE;
 
   this.target = null;
@@ -135,7 +140,7 @@ ARestlessOcean.Passes.HeroShadowPass.prototype.tick = function(params){
       //blurry blobs on the seabed that popped as the scatter streamed (Dante, 2026-09-30).
       //Spray and other instanced effects the same.
       const wants = ud.heroShadow === true
-        || (obj.castShadow && ud.heroShadow !== false && !obj.isInstancedMesh);
+        || (obj.castShadow && ud.heroShadow !== false && (!obj.isInstancedMesh || self.includeInstanced));
       if(wants && !self._isOcean(obj)){
         const g = obj.geometry;
         if(!g.boundingSphere) g.computeBoundingSphere();
@@ -143,7 +148,10 @@ ARestlessOcean.Passes.HeroShadowPass.prototype.tick = function(params){
         //Skinned meshes' bind-pose sphere can sit far from the posed body: judge them by
         //their origin, with a generous radius.
         if(obj.isSkinnedMesh) tmpS.radius = Math.max(tmpS.radius, 2.0);
-        if(tmpS.radius <= HS.MAX_CASTER_RADIUS || ud.heroShadow === true){
+        //An instanced mesh's own sphere is one instance's, not where its instances are: take
+        //it whole (the ortho frustum clips the rest).
+        if(obj.isInstancedMesh){ casters.push(obj); picked = true; }
+        else if(tmpS.radius <= HS.MAX_CASTER_RADIUS || ud.heroShadow === true){
           const dx = tmpS.center.x - center.x, dz = tmpS.center.z - center.z;
           if(dx * dx + dz * dz <= reach2 + tmpS.radius * tmpS.radius){ casters.push(obj); picked = true; }
         }

@@ -237,6 +237,28 @@ The runtime versions above stay as the fallback. Better data from the bake:
    speed alone.
 Each needs a rebake of every world. That is why the runtime versions come first.
 
+### Round 3 — the patches were a-land's WaterLightField at full resolution (2026-09-30)
+
+Dante: the dark shoreline edges and the small dark patches that move with Liam and the
+camera are visible ONLY from above water, only where surf lands, and Liam used to have one
+under him. a-land bakes its WaterLightField only while the viewer is above water. It is
+1 m texels with a-land's object shadow map in it (Liam included), and a-water read it at
+mip 0 for the glint, foam, seabed and terrain seen through the water (round 2 moved only the
+body). Foam shows it most, hence the surf.
+
+- **R3a:** every read of the field now takes mip `oceanGrid.landShadowLod` (3 = 8 m; the
+  shore nudge stays). Island and cliff shadows keep; object-scale shadows on the water come
+  from the hero map. A/B: `oceanGrid.landShadowEnabled = false`.
+- **R3b:** `oceanGrid.heroShadowPass.includeInstanced` (off) puts a-land's placed objects
+  in the hero map, each through its own `customDepthMaterial` twin (conform, wind). Use it
+  for trees and rocks at the shore; off by default because it draws every instance each
+  frame.
+- **Still open, a-land side:** the edge that STAYS after the backwash is a-land's static
+  wet band plus damp tail at the MEAN sea level (9a). The round 1 swash runs well past it.
+  Check with `ALand.runtime.TerrainMaterial.wetness.enabled = false`. Fix: 9c, which makes
+  the band follow the live swash (next, cross-repo).
+- Verified headless: 31 programs compile, the knobs are live, the shore tests pass.
+
 ### Round 2 — Dante's browser check (2026-09-30, night)
 
 Reports, with screenshots on island-sholes:

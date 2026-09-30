@@ -115,6 +115,11 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //Share of the direct sun a shadowed water body keeps (terrain, objects, the hero map).
   //Its sky light stays whole, so 0 is still blue, not black.
   this.bodyShadowFloor = 0.25;
+  //a-land's WaterLightField (1 m, baked only while the viewer is above water, objects' shadows
+  //in it) is read at this mip everywhere on the water: 3 = 8 m, so island and cliff shadows
+  //stay and Liam's blob and the camera-following patches go. landShadowEnabled: A/B.
+  this.landShadowLod = 3.0;
+  this.landShadowEnabled = true;
   //How much ripple detail the SKY half of the SSR follows (live-tunable via
   //window.setSsrSkyNormalBlend). 0 reproduces the original macroNormal-only
   //behaviour — a reflection that tracks only the long swell and reads as a
@@ -2918,6 +2923,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       uniformsRef.foamOceanShadowK.value = self.foamOceanShadowK;
       uniformsRef.shoreLaceDrift.value = self.shoreLaceDrift;
       uniformsRef.bodyShadowFloor.value = self.bodyShadowFloor;
+      uniformsRef.landShadowLod.value = self.landShadowLod;
+      uniformsRef.landShadowEnabled.value = self.landShadowEnabled ? 1.0 : 0.0;
       uniformsRef.ssrSkyNormalBlend.value = self.ssrSkyNormalBlend;
       uniformsRef.ssrMarchNormalBlend.value = self.ssrMarchNormalBlend;
       uniformsRef.fresnelDistanceRoughness.value = self.fresnelDistanceRoughness;

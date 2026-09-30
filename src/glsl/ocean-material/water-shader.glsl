@@ -336,8 +336,17 @@ float landSunVisibilityRaw(vec2 xz, float lod){
 //that far out to sea along the smooth shore normal instead, where it is honestly water.
 //Cliff and island shadows are far larger than the nudge.
 const float LAND_VIS_SHORE_M = 2.5;
+//Round 3 (Dante: small dark patches that move with Liam and the camera, from above only).
+//a-land bakes this field only while the viewer is above water, at 1 m texels, with its
+//objects' shadow map in it, Liam included: a blob under him, and patches that re-bake as
+//a-land's cascades follow the camera. Read at mip landShadowLod (3 = 8 m) everywhere, it
+//keeps the island and cliff shadows it is for; object-scale shadows on the water come from
+//the hero map. landShadowEnabled 0 = off, for A/B.
+uniform float landShadowLod;
+uniform float landShadowEnabled;
 float landSunVisibilityLod(vec2 xz, float lod){
-  if(landWaterLightFrame.z <= 0.0) return 1.0;
+  if(landWaterLightFrame.z <= 0.0 || landShadowEnabled < 0.5) return 1.0;
+  lod = max(lod, landShadowLod);
   float sd = waterFieldAt(xz).b;
   if(sd < LAND_VIS_SHORE_M){
     const float E = 2.0;

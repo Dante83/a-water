@@ -58,6 +58,8 @@ ARestlessOcean.Materials.Ocean.waterMaterial = {
     mouthPlumeEnabled: {type: 'f', value: 0.0},
     mouthPlumeAlbedo: {value: new THREE.Vector3(0.20, 0.17, 0.09)},
     mouthPlumeStrength: {type: 'f', value: 0.7},
+    landShadowLod: {type: 'f', value: 3.0},
+    landShadowEnabled: {type: 'f', value: 1.0},
     foamWhite: {type: 'f', value: 0.8},
     foamGrainFloor: {type: 'f', value: 0.15},
     foamOceanShadowK: {type: 'f', value: 0.25},
