@@ -2133,6 +2133,20 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         enabled: self.flowSurfaceEnabled
       });
     }
+    //Shore pass: river plumes into the sea (MouthPlumePass; read its header). Only where
+    //there are rivers, i.e. with a-land's flowing water.
+    if(!self.mouthPlumePass && self.flowSurfacePass && ARestlessOcean.Passes.MouthPlumePass){
+      self.mouthPlumePass = new ARestlessOcean.Passes.MouthPlumePass(self);
+    }
+    if(self.mouthPlumePass && self.waterFieldPass && self.waterFieldPass.cascades.length === 3){
+      self.mouthPlumePass.tick({
+        timeMs: time,
+        cameraX: self.globalCameraPosition.x,
+        cameraZ: self.globalCameraPosition.z,
+        fieldCascade: self.waterFieldPass.cascades[0],
+        riverFoam: self.flowSurfacePass ? self.flowSurfacePass.foamPass : null
+      });
+    }
     //Phase 6: the waterfall sheets. They alias the flowing material's uniforms, so they
     //are built after it and ride its per-frame stream (WaterfallSheetPass header).
     if(!self.waterfallSheetPass && self.flowSurfacePass && ARestlessOcean.Passes.WaterfallSheetPass
@@ -2821,6 +2835,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       //Both the sea and the flowing surface carry the dynamic waves.
       if(dynamicWavesState) ARestlessOcean.DynamicWaves.writeUniforms(uniformsRef, dynamicWavesState);
       if(self.heroShadowPass) self.heroShadowPass.writeUniforms(uniformsRef);
+      if(self.mouthPlumePass) self.mouthPlumePass.writeUniforms(uniformsRef);
       ARestlessOcean.FlowHandoff.writeUniforms(uniformsRef, flowHandoffState);
       //The flowing surface carries no breakers or shore reflection of its own.
       if(oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].userData.flowingWater){

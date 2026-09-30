@@ -276,6 +276,17 @@ uniform float foamOceanShadowK;
 uniform float shoreLaceDrift;
 //Share of the direct sun a shadowed water body keeps (oceanGrid.bodyShadowFloor).
 uniform float bodyShadowFloor;
+//River plume (MouthPlumePass): r concentration, gb current (m/s), a front foam. Still variant
+//only (the flowing surface is the river itself).
+#if($flowing_water)
+#else
+uniform sampler2D mouthPlumeMap;
+#endif
+uniform vec2 mouthPlumeCenter;
+uniform float mouthPlumeHalfWidth;
+uniform float mouthPlumeEnabled;
+uniform vec3 mouthPlumeAlbedo;
+uniform float mouthPlumeStrength;
 
 uniform vec3 brightestDirectionalLight;
 uniform vec3 brightestDirectionalLightDirection;
@@ -2296,6 +2307,15 @@ void main(){
       breakerSlope = vec2(breakerEtaX - breakerEta, breakerEtaZ - breakerEta) / BREAKER_EPS;
     }
   }
+  //Shore pass: the river plume at this point (MouthPlumePass). Zero on flowing water.
+  vec4 plumeSample = vec4(0.0);
+  #if($flowing_water)
+  #else
+  if(mouthPlumeEnabled > 0.5){
+    vec2 plumeUV = (vWorldXZ - mouthPlumeCenter) / (2.0 * mouthPlumeHalfWidth) + 0.5;
+    if(all(greaterThan(plumeUV, vec2(0.0))) && all(lessThan(plumeUV, vec2(1.0)))) plumeSample = texture2D(mouthPlumeMap, plumeUV);
+  }
+  #endif
   //── Phase 3b: the shore's reflected wave (ShoreReflection) ───────────────
   //Its slope from the state texture one cell either side: there are no spare
   //varyings to carry it down from the vertex.
@@ -2460,6 +2480,9 @@ void main(){
     //fallback for standalone scenes, where breakers are off.
     foamAmount = max(foamAmount, max(breakerFoam, swashFoam));
     shoreFoamAmount = max(breakerFoam, swashFoam);
+    //The plume's front foam (and the river foam it carries out) is lace too.
+    foamAmount = max(foamAmount, plumeSample.a);
+    shoreFoamAmount = max(shoreFoamAmount, plumeSample.a);
     vec2 foamPosition = 0.5 * (((worldPosition.xz - foamCameraXZ) / vec2(FOAM_ORTHO_HALF_WIDTH)) + 1.0);
     foamPosition = vec2(foamPosition.x, 1.0 - foamPosition.y);
     if(shoreBreakerEnabled < 0.5 && foamPosition.x < 1.0 && foamPosition.x > 0.0 && foamPosition.y < 1.0 && foamPosition.y > 0.0){
@@ -3038,6 +3061,15 @@ void main(){
   //are what foam used to show).
   float bodyInscatterShadow = mix(bodyShadowFloor, 1.0, sunShadowNoOcean);
   vec3 bodyInscatter = underwaterInscatterShadowed(normalizedViewVector, bodyInscatterShadow);
+  //Shore pass: a river plume. Silty water scatters more and is less clear: the body leans to
+  //the silt's colour (lit like a diffuse suspension) by concentration, and the seabed fades.
+  float plumeC = plumeSample.r * mouthPlumeStrength;
+  if(plumeC > 0.001){
+    vec3 plumeBody = mouthPlumeAlbedo * 0.31830988618
+                   * (brightestDirectionalLight * max(-brightestDirectionalLightDirection.y, 0.0) * bodyInscatterShadow + skyAmbientColor);
+    bodyInscatter = mix(bodyInscatter, plumeBody, plumeC);
+    transmittance *= 1.0 - 0.8 * plumeC;
+  }
   vec3 dbgInscatterEquilibrium = bodyInscatter;
   refractedLight = refractedLight * transmittance + bodyInscatter * (vec3(1.0) - transmittance) + crestTranslucency;
   vec3 dbgBody = refractedLight;
@@ -3327,7 +3359,8 @@ void main(){
       if(shoreFoamAmount > 0.002){
         const float LACE_PERIOD = 2.0;
         const float LACE_FEATHER = 0.1;
-        vec2 laceFlow = -shoreLaceNormal * shoreLaceDrift;
+        //Shoreward with the bores, and out with a river plume's current.
+        vec2 laceFlow = -shoreLaceNormal * shoreLaceDrift + plumeSample.gb;
         vec2 laceBase = worldPosition.xz + shoreLaceNormal * shoreLaceRunup;
         float lacePhaseA = fract(t / LACE_PERIOD);
         float lacePhaseB = fract(lacePhaseA + 0.5);

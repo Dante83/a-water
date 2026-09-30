@@ -64,6 +64,7 @@ JS_FILE_NAMES = [
     'ocean-system/passes/dynamic-waves-pass.js',
     'ocean-system/passes/flow-foam-pass.js',
     'ocean-system/passes/flow-surface-pass.js',
+    'ocean-system/passes/mouth-plume-pass.js',
     'ocean-system/passes/waterfall-sheet-pass.js',
     'ocean-system/passes/reflection-pass.js',
     'ocean-system/passes/underwater-volume-pass.js',

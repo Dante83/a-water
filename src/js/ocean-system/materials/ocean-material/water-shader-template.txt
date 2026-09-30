@@ -51,6 +51,13 @@ ARestlessOcean.Materials.Ocean.waterMaterial = {
     heroShadowMatrix: {type: 'mat4', value: new THREE.Matrix4()},
     heroShadowParams: {value: new THREE.Vector4(0.01, 120.0, 1.0, 0.08)},
     heroShadowEnabled: {type: 'f', value: 0.0},
+    //River plume (MouthPlumePass): r concentration, gb current (m/s), a front foam.
+    mouthPlumeMap: {type: 't', value: null},
+    mouthPlumeCenter: {value: new THREE.Vector2()},
+    mouthPlumeHalfWidth: {value: 256.0},
+    mouthPlumeEnabled: {type: 'f', value: 0.0},
+    mouthPlumeAlbedo: {value: new THREE.Vector3(0.20, 0.17, 0.09)},
+    mouthPlumeStrength: {type: 'f', value: 0.7},
     foamWhite: {type: 'f', value: 0.8},
     foamGrainFloor: {type: 'f', value: 0.15},
     foamOceanShadowK: {type: 'f', value: 0.25},

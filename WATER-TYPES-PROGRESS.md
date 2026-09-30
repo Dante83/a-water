@@ -181,6 +181,62 @@ Plan: A foam look → B hero shadow → C surf meets the land → D river mouths
   that the river doesn't dry out in its last metres (it keeps ≥ 3 cm), and that no surf
   breaks over the mouth.
 
+### Step D4–D5 — river plumes (written, GPU-headless-verified on a synthetic creek)
+
+- **`passes/mouth-plume-pass.js` (new; in make-combined.py after flow-surface-pass.js; add
+  it to the page script lists).** A 512² float ping-pong at 1 m over ±256 m, camera-snapped.
+  - Channels: r concentration, gb current, a front foam.
+  - Built only when the flowing surface exists (a-land rivers).
+  - Flowing texels are the source: concentration 1, the field's current, and
+    FlowFoamPass's foam × `riverFoamHandoff`.
+  - Still wet texels, current: a screened diffusion over wet neighbours (dry ones left
+    out: the coast is a wall), k = 1/(1 + texel²/4L²), so a jet spreads and slows with
+    e-fold `jetLength` (40 m). No mouth list.
+  - Still wet texels, concentration: advected by that current, with diffusion
+    `plumeDiffusion` and decay `plumeLife` (90 s).
+  - Still wet texels, front foam: advected, lingers `foamLife` (20 s, salt water), seeded
+    where the jet converges past `convergenceOnset` (0.08/s) and where concentration drops
+    faster than `frontOnset` (0.1/m).
+  - ⚠ Tuned headless: with low onsets, the jet's own deceleration and gentle thinning laced
+    the whole plume (64–75% cover).
+- **Still water material** (one sampler, still variant only; the worst program now uses 25
+  of 32 units):
+  - the body leans to `albedo` (0.20, 0.17, 0.09, lit as a diffuse suspension) by
+    concentration × `strength` (0.7), and clarity drops ×(1 − 0.8·C);
+  - front foam goes in as lace;
+  - the lace grain drifts with the plume current.
+- **GPU check (headless, real passes):** the D1 synthetic creek (1.2 m/s), 1600 steps at
+  60 fps (~27 s):
+  - current along the axis at 1/4/6/11/16/26/46 m out: −1.07/−0.76/−0.62/−0.40/−0.28/
+    −0.13/−0.03 m/s, fanning sideways (−0.41 m/s 10 m off the axis, 4 m out);
+  - concentration 0.93/0.68/0.54/0.30/0.14/0.02;
+  - foam 4–8% along the axis, and a line on the jet's edge (43% at 4 m off the axis).
+  - A settled jet takes ~L² steps, about 25–30 s after a river comes into the window.
+    (Harness: scratchpad `plume.mjs`.)
+- **Live knobs:** `oceanGrid.mouthPlumePass.{enabled, jetLength, plumeLife, plumeDiffusion,
+  foamLife, convergenceGain, convergenceOnset, frontGain, frontOnset, riverFoamHandoff,
+  albedo, strength}`.
+- **Not verified:** a real mouth, the colour against a-land's sea, and whether the plume
+  should be browner or greener for island-sholes' creeks.
+
+### Step D6 — a-land follow-up (spec, for a session in a-faraway-land)
+
+The runtime versions above stay as the fallback. Better data from the bake:
+1. **Ramp the stage at the coast.** In the river stage solve, pin each reach that ends in
+   the sea (a still, sea-level neighbour) to `seaLevel` at its mouth cell and blend the
+   Manning stage up to its own value over ~25 m of channel. Then `mouthRampM` can drop to
+   0 for baked worlds.
+2. **Carry velocity into the sea.** Write a decaying jet (the mouth velocity ×
+   exp(−d/40 m) over sea texels within ~60 m of the mouth, direction continued) instead of
+   exactly zero. Keep the sea's body id; only flow changes. Note that the hand-off weight
+   reads |v|: a jet above FLOW_LO (0.05 m/s) turns sea texels "flowing". Either cap the
+   jet under 0.05 m/s at its edge, or write it to a separate channel (preferred: the
+   contract's spare RT1 bits or a new mouth layer).
+3. **Mouth nodes (Phase 7 hydrograph)**: position, width, outflow direction, discharge.
+   With those, a-water can size the plume by discharge rather than by the field's
+   speed alone.
+Each needs a rebake of every world. That is why the runtime versions come first.
+
 ---
 
 ## Waterline meniscus (2026-09-27, branch `waterline-meniscus`): v2 built, awaiting browser
