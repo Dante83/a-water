@@ -109,6 +109,16 @@ ARestlessOcean.OceanShadowCSM = function(oceanGrid, scene, configOverrides){
   //used to gate which meshes render into this cascade. maxRing is the
   //highest oceanGrid ring index that gets registered as a caster.
   //
+  //⚠ LAYERS 20-23, NOT 7-10 (2026-09-30). a-land's TerrainSunCSM draws EVERYTHING on its
+  //CASTER_LAYER 7 (terrain cascades) and HERO_LAYER 8 (Liam's self-shadow cascade) with a
+  //plain renderer.render of the scene, swapping caster materials in only for its own
+  //registered casters. Our ring 0-1 water tiles carried 7 and 8, so a-land drew them WITH THE
+  //WATER MATERIAL into its EVSM moments buffers: colour read as a depth distribution, i.e.
+  //false shadows round Liam and the camera, on sand and land alike, shaped by the water mesh
+  //(Dante, 2026-09-30: dark edges on the shore that came in with "hero self-shadow cascade
+  //registered with a-land", and stayed with the water hidden). Taken elsewhere: 7, 8
+  //(a-land), 27 (HeroShadowPass), 29 (OCEAN_LAYER), 30 (exclusion atlas).
+  //
   //cascadeDepth (the sun-direction depth slab) and lightDistance are
   //DERIVED from extent in render(), not stored on the config — at low
   //sun elevations a fragment at +halfExtent on the sea plane projects to
@@ -117,10 +127,10 @@ ARestlessOcean.OceanShadowCSM = function(oceanGrid, scene, configOverrides){
   const drawDistance = oceanGrid.drawDistance;
   const cfg = configOverrides || {};
   this.cascadeConfigs = cfg.cascades || [
-    {extent: 60.0,                 mapSize: 2048, layer: 7,  maxRing: 1},
-    {extent: 240.0,                mapSize: 2048, layer: 8,  maxRing: 1},
-    {extent: 0.4 * drawDistance,   mapSize: 2048, layer: 9,  maxRing: 99},
-    {extent: 2.0 * drawDistance,   mapSize: 2048, layer: 10, maxRing: 99}
+    {extent: 60.0,                 mapSize: 2048, layer: 20, maxRing: 1},
+    {extent: 240.0,                mapSize: 2048, layer: 21, maxRing: 1},
+    {extent: 0.4 * drawDistance,   mapSize: 2048, layer: 22, maxRing: 99},
+    {extent: 2.0 * drawDistance,   mapSize: 2048, layer: 23, maxRing: 99}
   ];
   this.numCascades = this.cascadeConfigs.length;
   this._waveMargin = 50.0;

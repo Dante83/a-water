@@ -73,8 +73,8 @@ ARestlessOcean.Passes.HeroShadowPass = function(oceanGrid){
 ARestlessOcean.Passes.HeroShadowPass.SIZE = 2048;
 ARestlessOcean.Passes.HeroShadowPass.HALF_WIDTH = 12.0;
 ARestlessOcean.Passes.HeroShadowPass.DEPTH_RANGE = 60.0;
-//Layer the casters sit on for their one render. Taken elsewhere: 7-10 (ocean CSM
-//cascades, a-land's CASTER_LAYER 7 and SKY_LAYER/HERO_LAYER 8) and 29 (OCEAN_LAYER,
+//Layer the casters sit on for their one render. Taken elsewhere: 20-23 (ocean CSM
+//cascades), a-land's CASTER_LAYER 7 and SKY_LAYER/HERO_LAYER 8 and 29 (OCEAN_LAYER,
 //which every water tile carries: on it, a flat undisplaced copy of the sea rendered
 //into this map and "shadowed" every trough). Anything else found on this layer is
 //taken off it for the render (see tick).

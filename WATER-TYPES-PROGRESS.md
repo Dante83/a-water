@@ -237,6 +237,28 @@ The runtime versions above stay as the fallback. Better data from the bake:
    speed alone.
 Each needs a rebake of every world. That is why the runtime versions come first.
 
+### Round 4 — THE DARK SHORE EDGES: a layer collision with a-land (2026-09-30)
+
+Dante's bisect: surf off, shimmer off, landShadow off, hero off and water hidden changed
+nothing. The artefact starts once peaceful-island logs "hero self-shadow cascade registered
+with a-land", and it shows on land too.
+
+**Cause.** a-land's TerrainSunCSM renders its terrain cascades with `layers.set(7)`
+(CASTER_LAYER) and Liam's hero cascade with `layers.set(8)` (HERO_LAYER). Each is a plain
+`renderer.render(scene, cam)` that swaps caster materials in only for a-land's registered
+casters. `OceanShadowCSM` put our ring 0-1 water tiles on layers **7 and 8** (with 9 and 10),
+so a-land drew them with the water material into its EVSM moments buffers. That is colour
+read as a depth distribution: false shadows round Liam and the camera, shaped by the water
+mesh (hence the shore edges). a-land's own comment names this trap. Hiding
+`<a-restless-ocean>`'s object3D didn't help, because the tiles are added to the scene directly.
+a-land's sky capture camera (SKY_LAYER 8) was seeing them too.
+
+**Fix.** The ocean CSM cascade layers are now **20-23**. Layer map, for next time:
+- a-land: 7 (casters), 8 (hero cascade, sky capture);
+- a-water: 20-23 (ocean CSM), 27 (HeroShadowPass), 29 (OCEAN_LAYER), 30 (exclusion atlas).
+
+Headless: no object carries layer 7 or 8; tile masks are 20-23 + 29; the shore tests pass.
+
 ### Round 3 — the patches were a-land's WaterLightField at full resolution (2026-09-30)
 
 Dante: the dark shoreline edges and the small dark patches that move with Liam and the
