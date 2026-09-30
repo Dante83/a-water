@@ -46,10 +46,16 @@ ARestlessOcean.Materials.Ocean.waterMaterial = {
     //CPU ramps it up with wind speed so rough seas progressively whiten over.
     foamWindBias: {type: 'f', value: 0.0},
     //Foam look (shore pass, 2026-09-30), uploaded from oceanGrid each frame.
+    //Hero shadow (HeroShadowPass): Liam and props near the camera, on the water.
+    heroShadowMap: {type: 't', value: null},
+    heroShadowMatrix: {type: 'mat4', value: new THREE.Matrix4()},
+    heroShadowParams: {value: new THREE.Vector4(0.01, 120.0, 1.0, 0.08)},
+    heroShadowEnabled: {type: 'f', value: 0.0},
     foamWhite: {type: 'f', value: 0.8},
     foamGrainFloor: {type: 'f', value: 0.15},
     foamOceanShadowK: {type: 'f', value: 0.25},
     shoreLaceDrift: {type: 'f', value: 0.8},
+    bodyShadowFloor: {type: 'f', value: 0.25},
     //Refraction G-buffer (3-attachment MRT, allocated in ocean-grid.js):
     //  refractionColorTexture = attachment 0, LINEAR albedo (decoded per-mesh
     //    in the G-buffer override shader); .a = 1 where geometry exists.

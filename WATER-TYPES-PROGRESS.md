@@ -58,6 +58,54 @@ Plan: A foam look → B hero shadow → C surf meets the land → D river mouths
     swash are off. Debug 31/32/33 (mask, blend, colour) and 18 (ocean shadow) are the A/B
     on an island page.
 
+### Step B — hero shadow: Liam on the water (written, headless-verified in debug 70)
+
+- **Why nobody cast a shadow on the water.** On a-land pages the shared sun has
+  castShadow off, so `getSunShadow` is 1. The only object shadow the water saw was
+  a-land's WaterLightField (1 m texels, still level), and a person is narrower than a
+  texel. Even a real shadow barely showed: the body colour (`underwaterInscatterSurface`)
+  was never shadowed, and the Crest-style `inscatterShadow` 0.65 floor fed dead code.
+- **`passes/hero-shadow-pass.js` (new; add it to every page's script list after
+  waterline-pass.js, and it's in make-combined.py).**
+  - One sun-aligned ortho depth map, 2048² over ±12 m around the camera (1.2 cm/texel),
+    snapped to texels, 60 m deep.
+  - Casters: visible meshes with castShadow on and a bounding radius under 15 m, near
+    the box. Skinned meshes are posed: three picks USE_SKINNING from the object, so one
+    override MeshDepthMaterial covers them. `userData.heroShadow = false/true` excludes or
+    forces a mesh. The ocean's own ShaderMaterials are skipped.
+  - Casters sit on layer 27 for the one render. ⚠ The first cut used 29, which is
+    `OCEAN_LAYER`: every water tile carries it, so a flat, undisplaced copy of the sea went
+    into the map and "shadowed" every trough (debug 70 caught it). Any non-caster found on
+    27 is taken off it for the render.
+  - No casters, or the sun below the horizon: no render, `heroShadowEnabled` = 0.
+  - OceanGrid's light list only takes direct scene children. The pass falls back to the
+    first DirectionalLight anywhere in the scene (an A-Frame light entity nests its light).
+- **Water shader:**
+  - `heroShadowAt(p)` is a PCSS-lite: 8 blocker taps, then a penumbra of sun angle
+    (0.0093 rad) × blocker height, then 12 Poisson taps, with a fade at the box edge.
+  - It multiplies into the surface shadow (`sunShadowNoOcean`, so foam, glint and body
+    too), the seabed seen through the water (at its sun-ray surface point) and terrain
+    seen through thin water.
+  - The body colour now takes the sun shadow: `underwaterInscatterShadowed(view,
+    mix(bodyShadowFloor, 1, sunShadowNoOcean))` scales the direct downwelling only, and
+    the sky light stays whole. The dead 0.65 copy is gone.
+- **Debug 70:** the hero shadow alone, tinted blue inside the box.
+- **Live knobs:**
+  - `oceanGrid.heroShadowPass.enabled`, `.halfWidth` (12), `.depthRange` (60), `.softness` (1);
+  - `oceanGrid.bodyShadowFloor` (0.25, share of the direct sun a shadowed body keeps).
+- **Verified headless** (standalone page, a box and a sphere with castShadow, calm sea):
+  - debug 70 shows both shadows, crisp, no acne, no false trough shadows after the layer
+    fix;
+  - all programs compile;
+  - dynamic-waves and nappe tests pass.
+  - ⚠ Not verified: how strongly the shadow reads in the NORMAL render. The standalone
+    water body is almost black (about 1/255 inscatter, unmetered sun), so an on/off A/B
+    moved only a handful of pixels. On a metered a-land page the body is teal and the
+    direct sun dominates, so the shadow should show. If it's too faint or too strong, the
+    knob is `bodyShadowFloor`.
+  - Also not verified: Liam himself (peaceful-island isn't in this session). Check that
+    his meshes have castShadow on; if not, set `userData.heroShadow = true` on them.
+
 ---
 
 ## Waterline meniscus (2026-09-27, branch `waterline-meniscus`): v2 built, awaiting browser

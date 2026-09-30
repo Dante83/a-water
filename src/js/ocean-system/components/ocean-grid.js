@@ -87,6 +87,9 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.foamGrainFloor = 0.15;
   this.foamOceanShadowK = 0.25;
   this.shoreLaceDrift = 0.8;
+  //Share of the direct sun a shadowed water body keeps (terrain, objects, the hero map).
+  //Its sky light stays whole, so 0 is still blue, not black.
+  this.bodyShadowFloor = 0.25;
   //How much ripple detail the SKY half of the SSR follows (live-tunable via
   //window.setSsrSkyNormalBlend). 0 reproduces the original macroNormal-only
   //behaviour — a reflection that tracks only the long swell and reads as a
@@ -1389,6 +1392,11 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       this.waterlinePass = new ARestlessOcean.Passes.WaterlinePass(this);
       this.waterlinePass.init(scene);
     }
+    //Shore pass: crisp shadows of Liam and props on the water (HeroShadowPass; read its header).
+    this.heroShadowPass = null;
+    if(ARestlessOcean.Passes.HeroShadowPass){
+      this.heroShadowPass = new ARestlessOcean.Passes.HeroShadowPass(this);
+    }
     //Back-compat aliases — both were OceanGrid methods in 0.2.0 and are called
     //by buoyant.js / the debug console through the grid.
     this.sampleFFTHeightAt = function(x, z){ return self.heightReadbackPass.sampleFFTHeightAt(x, z); };
@@ -2178,6 +2186,32 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       });
     }
 
+    //Shore pass: the hero shadow map, from the main sun, before anything draws the water.
+    //The light list above only takes DIRECT scene children; an A-Frame light entity nests its
+    //light one level down, so look deeper once (and again if that light leaves the scene).
+    if(self.heroShadowPass && self.directionalLights.length === 0
+       && (!self._heroSunLight || !self._heroSunLight.parent)){
+      self._heroSunLight = null;
+      self.scene.traverse(function(o){ if(!self._heroSunLight && o.isDirectionalLight) self._heroSunLight = o; });
+    }
+    const heroSun = self.directionalLights.length > 0 ? self.directionalLights[0] : self._heroSunLight;
+    if(self.heroShadowPass && heroSun){
+      const sun = heroSun;
+      sun.updateMatrixWorld();
+      sun.target.updateMatrixWorld();
+      const sunFrom = self._heroSunFrom || (self._heroSunFrom = new THREE.Vector3());
+      const sunTo = self._heroSunTo || (self._heroSunTo = new THREE.Vector3());
+      sun.getWorldPosition(sunFrom);
+      sun.target.getWorldPosition(sunTo);
+      const heroCam = self._heroCamPos || (self._heroCamPos = new THREE.Vector3());
+      sceneCamera.getWorldPosition(heroCam);
+      self.heroShadowPass.tick({
+        scene: scene,
+        cameraPosition: heroCam,
+        sunDirection: sunTo.sub(sunFrom)
+      });
+    }
+
     //Refresh the local CPU height field for scalable exact buoyancy queries
     //(tiny GPU pass + async read; no-ops unless something asked for it).
     if(self.heightReadbackPass) self.heightReadbackPass.tick();
@@ -2786,6 +2820,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       if(shoreReflectionState) ARestlessOcean.ShoreReflection.writeUniforms(uniformsRef, shoreReflectionState);
       //Both the sea and the flowing surface carry the dynamic waves.
       if(dynamicWavesState) ARestlessOcean.DynamicWaves.writeUniforms(uniformsRef, dynamicWavesState);
+      if(self.heroShadowPass) self.heroShadowPass.writeUniforms(uniformsRef);
       ARestlessOcean.FlowHandoff.writeUniforms(uniformsRef, flowHandoffState);
       //The flowing surface carries no breakers or shore reflection of its own.
       if(oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].userData.flowingWater){
@@ -2841,6 +2876,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       uniformsRef.foamGrainFloor.value = self.foamGrainFloor;
       uniformsRef.foamOceanShadowK.value = self.foamOceanShadowK;
       uniformsRef.shoreLaceDrift.value = self.shoreLaceDrift;
+      uniformsRef.bodyShadowFloor.value = self.bodyShadowFloor;
       uniformsRef.ssrSkyNormalBlend.value = self.ssrSkyNormalBlend;
       uniformsRef.ssrMarchNormalBlend.value = self.ssrMarchNormalBlend;
       uniformsRef.fresnelDistanceRoughness.value = self.fresnelDistanceRoughness;
