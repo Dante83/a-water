@@ -949,6 +949,12 @@ ARestlessOcean.ShoreBreaker.SURGE_FOAM_CUT = 0.6;
 //backwash was bare water. Now a thinning residue rides back down (the lace grain follows
 //the run-up in the fragment): BACKWASH_FOAM at the turn, fading as the sheet drains.
 ARestlessOcean.ShoreBreaker.BACKWASH_FOAM = 0.4;
+//Shore pass (Dante, 2026-09-30: the swash "makes a quantum jump" to its highest reach). The
+//sheet is one flat surface rising everywhere at once, so on a flat upper beach its waterline
+//raced tens of metres a second (dz/dt over a slope of 0.02). Now each dry point starts its
+//uprush when a front gets there, running at this × √(g·R), √2 being the ballistic speed
+//that climbs the run-up height R. Same reach and period, and the bore foam rides the front.
+ARestlessOcean.ShoreBreaker.SWASH_FRONT_K = 1.41;
 //The shore normal is taken from CENTRAL differences on cascade 1 (4 m texels),
 //± this many metres. A one-sided 1 m difference of the jump-flooded distance
 //flips direction texel to texel around small rocks and along medial axes, and
@@ -1209,6 +1215,8 @@ ARestlessOcean.ShoreBreaker.evaluateSwash = function(x, z, field, gradX, gradZ, 
   //sheet that crept shoreward at shallow-water speed; browser round 2.)
   let theta = w * p.time;
   theta += SB.PHASE_NOISE_AMP * (SB.noise(x / SB.PHASE_NOISE_SCALE + p.time * 0.004, z / SB.PHASE_NOISE_SCALE + p.time * 0.0028) - 0.5);
+  //Travelling front over the dry beach (see SWASH_FRONT_K): the whole phase is delayed.
+  theta -= Math.max(-s, 0.0) * w / (SB.SWASH_FRONT_K * Math.sqrt(g * Math.max(R2, 0.05)));
   const cyc = theta / (2.0 * Math.PI) + 0.25;
   const m = Math.floor(cyc);
   const fr = cyc - m;
@@ -1416,6 +1424,10 @@ ARestlessOcean.ShoreBreaker.GLSL = (function(){
     '  //Shoreline phase at every distance: the swash zone fills and drains as one sheet.',
     '  float theta = w * shoreBreakerTime;',
     '  theta += ' + f(SB.PHASE_NOISE_AMP) + ' * (shoreBreakerNoise(xz / ' + f(SB.PHASE_NOISE_SCALE) + ' + vec2(shoreBreakerTime * 0.004, shoreBreakerTime * 0.0028)) - 0.5);',
+    '  //Travelling front over the dry beach (see SWASH_FRONT_K): the WHOLE phase is delayed by',
+    '  //the travel time, the wave-to-wave height too, or a point behind the front switched to the',
+    '  //next wave mid-uprush and the waterline leapt.',
+    '  theta -= max(-field.b, 0.0) * w / (' + f(SB.SWASH_FRONT_K) + ' * sqrt(g * max(R2, 0.05)));',
     '  float cyc = theta / 6.2831853 + 0.25;',
     '  float m = floor(cyc);',
     '  float A = mix(shoreBreakerWaveFactor(m, xz), shoreBreakerWaveFactor(m + 1.0, xz), smoothstep(0.8, 1.0, cyc - m));',

@@ -237,6 +237,58 @@ The runtime versions above stay as the fallback. Better data from the bake:
    speed alone.
 Each needs a rebake of every world. That is why the runtime versions come first.
 
+### Round 2 — Dante's browser check (2026-09-30, night)
+
+Reports, with screenshots on island-sholes:
+- (1) the dark band along the shore is still there;
+- (2) dark blurry spots on the shallow seabed pop as the camera moves;
+- (3) the river never reaches the ocean (wet enough to splash in, nothing drawn) and no plume;
+- (4) the swash makes a "quantum jump" to its highest reach.
+
+Found and fixed (headless: shore tests, both material variants compile, plume/mouth GPU
+checks unchanged):
+
+- **(2) The hero map was full of a-land's scatter.** a-land's shells, pebbles and plants
+  are InstancedMeshes with castShadow on. One small bounding sphere stands for thousands
+  of instances, and under the depth override they drew WITHOUT their conform displacement,
+  so they cast blurry blobs on the seabed that popped as the scatter streamed.
+  - InstancedMeshes are now out unless `userData.heroShadow = true`.
+  - Casters are drawn by a per-mesh swap, using their own `customDepthMaterial` when they
+    have one (a-land's conformed and wind-swayed twins), not scene.overrideMaterial.
+  - Also: the body shadow read a-land's 1 m WaterLightField at mip 0, whose small-object
+    blobs re-bake as the camera moves. The body now reads mip 3 (8 m): island and cliff
+    shadows stay, pebble blobs go. The surface, foam and seabed keep mip 0.
+- **(1) The WaterLightField's slack ring.** The bake is taken at the still level with a
+  texel of slack round the water. The last texel or two of every shore are judged at a
+  point UNDER the beach, where the sand hides the sun: a dark ring hugging the waterline,
+  darker through the swash.
+  - `landSunVisibilityLod` now reads it `LAND_VIS_SHORE_M` (2.5 m) out to sea along the
+    smooth shore normal within that band, and across the dry band the swash covers.
+  - ⚠ Inferred from the bake's description (the a-land WaterLightField code isn't on the
+    pushed main). If the band persists, test with the seabed/terrain factor forced to 1.
+- **(3) The mouth ramp made creeks invisible.** Over a beach berm it thinned the last
+  metres to 3 cm, and the flowing surface draws nothing under 3 cm.
+  - The ramp now keeps `min(depth, 10 cm)`.
+  - Within 0.5 m of sea level the flowing sheet's thickness fade runs 0.5 → 3 cm instead
+    of 3 → 10, so the creek crosses the beach as a film.
+  - **The plume and hero passes also need their script tags**, which pages may not have.
+    OceanGrid now fetches a missing pass file from its own source tree
+    (`ARestlessOcean._ensurePass`, with a console note) and builds the pass once it lands.
+    Headless: a page without either tag loaded hero-shadow-pass.js itself, and the pass ran.
+- **(4) The swash is a flat sheet rising everywhere at once**, so on a flat upper beach
+  the waterline raced (dz/dt over a slope of 0.03: 17.8 m/s measured).
+  - Each dry point's WHOLE swash phase is now delayed by its travel time from the
+    shoreline at `SWASH_FRONT_K` (√2) × √(g·R2), the ballistic run-up speed. That includes
+    the wave-to-wave height: delaying only the local phase left the height switching on
+    the global clock, and the line still leapt (8.9 m/s).
+  - Measured: 4.4 m/s peak, reach 19 m (unchanged). New test in `shore-breaker-test.mjs`.
+- **Not a regression:** a GL "feedback loop" warning burst (19, once) on a synthetic
+  beach harness. It is identical on the pre-shore-pass commit ee9d255.
+
+**Headless harness** (scratchpad, not committed): `beach.html` plus `paintonce.js` paint
+a synthetic 1:12 beach field (land dry) into all three cascades, over a sand box.
+Standalone never marks land dry, so waves spill over it without the paint.
+
 ---
 
 ## Waterline meniscus (2026-09-27, branch `waterline-meniscus`): v2 built, awaiting browser

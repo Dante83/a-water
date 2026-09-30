@@ -588,7 +588,10 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
       '  vec4 m = texelFetch(uMouth, q, 0);',
       '  if(m.r >= uMouthRampM || aq.r <= m.g) return aq.rg;',
       '  float bed = aq.r - aq.g;',
-      '  float lv = min(aq.r, max(mix(m.g, aq.r, smoothstep(0.0, uMouthRampM, m.r)), bed + uMouthMinDepth));',
+      //Keep the creek's own depth up to uMouthMinDepth: the flowing surface does not draw water
+      //under 3 cm, and ramping a creek over a beach berm down to 3 cm made its last metres
+      //invisible (wet enough to splash in, nothing drawn: Dante, 2026-09-30).
+      '  float lv = min(aq.r, max(mix(m.g, aq.r, smoothstep(0.0, uMouthRampM, m.r)), bed + min(aq.g, uMouthMinDepth)));',
       '  return vec2(lv, lv - bed);',
       '}',
       'void main(){',
@@ -712,7 +715,8 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.setFlowBand = function(lo, hi){
 
 //Shore pass: the mouth field into _mouthTargets[_mouthRead] (see _mouthSeedMaterial).
 //Returns false (and leaves the ramp off) when mouthRampM is 0.
-ARestlessOcean.Passes.WaterFieldPass.MOUTH_MIN_DEPTH = 0.03;
+//Depth a ramped creek keeps (or all of it, if it is shallower): see mouthLevel.
+ARestlessOcean.Passes.WaterFieldPass.MOUTH_MIN_DEPTH = 0.10;
 ARestlessOcean.Passes.WaterFieldPass.prototype._mouthField = function(c){
   this._mouthRead = 0;
   if(!(this.mouthRampM > 0.0)) return false;

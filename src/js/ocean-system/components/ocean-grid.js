@@ -50,6 +50,31 @@ ARestlessOcean.JERLOV_PRESETS = [
 //adjacent makes the "ocean-system reserved layers" cluster obvious.
 ARestlessOcean.OCEAN_LAYER = 29;
 
+//Shore pass (2026-09-30): passes added after a page's <script> list was written. The
+//bundle carries them; loose-file pages (the dev demos) may not list them yet, and then the
+//feature silently never ran (Dante's first check of the plume). This file's own URL gives
+//the source tree, so a missing pass is fetched once and picked up the frame it lands.
+//Bundled builds have them defined already and never touch this.
+ARestlessOcean._sourceRoot = (function(){
+  const cs = (typeof document !== 'undefined') ? document.currentScript : null;
+  const src = cs && cs.src ? cs.src : '';
+  const at = src.indexOf('/ocean-system/components/ocean-grid.js');
+  return at >= 0 ? src.slice(0, at) + '/ocean-system/' : null;
+})();
+ARestlessOcean._ensurePass = function(name, file){
+  if(ARestlessOcean.Passes && ARestlessOcean.Passes[name]) return true;
+  const root = ARestlessOcean._sourceRoot;
+  ARestlessOcean._passLoads = ARestlessOcean._passLoads || {};
+  if(!root || ARestlessOcean._passLoads[name] || typeof document === 'undefined') return false;
+  ARestlessOcean._passLoads[name] = true;
+  const el = document.createElement('script');
+  el.src = root + 'passes/' + file;
+  el.onload = function(){ console.info('[a-restless-ocean] loaded ' + file + ' (add it to this page\'s script list)'); };
+  el.onerror = function(){ console.warn('[a-restless-ocean] ' + file + ' is missing: that feature stays off'); };
+  document.head.appendChild(el);
+  return false;
+};
+
 ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //Variable for holding all of our patches
   //For now, just create 1 plane
@@ -1393,10 +1418,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       this.waterlinePass.init(scene);
     }
     //Shore pass: crisp shadows of Liam and props on the water (HeroShadowPass; read its header).
+    //Built in tick, once its file is here (see ARestlessOcean._ensurePass).
     this.heroShadowPass = null;
-    if(ARestlessOcean.Passes.HeroShadowPass){
-      this.heroShadowPass = new ARestlessOcean.Passes.HeroShadowPass(this);
-    }
     //Back-compat aliases — both were OceanGrid methods in 0.2.0 and are called
     //by buoyant.js / the debug console through the grid.
     this.sampleFFTHeightAt = function(x, z){ return self.heightReadbackPass.sampleFFTHeightAt(x, z); };
@@ -2135,7 +2158,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     }
     //Shore pass: river plumes into the sea (MouthPlumePass; read its header). Only where
     //there are rivers, i.e. with a-land's flowing water.
-    if(!self.mouthPlumePass && self.flowSurfacePass && ARestlessOcean.Passes.MouthPlumePass){
+    if(!self.mouthPlumePass && self.flowSurfacePass && ARestlessOcean._ensurePass('MouthPlumePass', 'mouth-plume-pass.js')){
       self.mouthPlumePass = new ARestlessOcean.Passes.MouthPlumePass(self);
     }
     if(self.mouthPlumePass && self.waterFieldPass && self.waterFieldPass.cascades.length === 3){
@@ -2200,6 +2223,9 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       });
     }
 
+    if(!self.heroShadowPass && ARestlessOcean._ensurePass('HeroShadowPass', 'hero-shadow-pass.js')){
+      self.heroShadowPass = new ARestlessOcean.Passes.HeroShadowPass(self);
+    }
     //Shore pass: the hero shadow map, from the main sun, before anything draws the water.
     //The light list above only takes DIRECT scene children; an A-Frame light entity nests its
     //light one level down, so look deeper once (and again if that light leaves the scene).

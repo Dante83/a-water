@@ -73,6 +73,32 @@ const params = t => ({enabled: true, time: t, Hs: 1.6, omega: 2 * Math.PI / 9, w
   check('steep (1:2.5) shore still foams', foamSteep > 0.2, 'peak foam ' + foamSteep.toFixed(3));
 }
 
+//── 3b. The uprush waterline moves at a physical speed (no "quantum jump").
+{
+  const slope = 0.03;                    //a flat upper beach: the worst case for a flat sheet
+  const p0 = params(0);
+  const probe = {level: 0, depth: 6 * slope, shoreSDF: 6.0};
+  const T = 2 * Math.PI / p0.omega;
+  let prevX = null, maxSpeed = 0, maxReach = 0, R2 = 0;
+  const dt = T / 400;
+  for(let t = 0; t < 2 * T; t += dt){
+    let xw = 0;
+    for(let X = 0; X < 60; X += 0.1){
+      const field = {level: 0, depth: 0, shoreSDF: -X, dryMask: 1, flowWeight: 0};
+      const o = SB.evaluateSwash(10, 0, field, 0, 1, Object.assign({}, p0, {time: t}), {}, field, probe);
+      R2 = o.R2 || R2;
+      if(o.eta > X * slope) xw = X; else break;   //the connected waterline
+    }
+    if(prevX !== null && xw > prevX) maxSpeed = Math.max(maxSpeed, (xw - prevX) / dt);
+    maxReach = Math.max(maxReach, xw);
+    prevX = xw;
+  }
+  const vBallistic = Math.sqrt(2 * 9.81 * R2);
+  check('uprush waterline no faster than ~1.5x the ballistic speed', maxSpeed < 1.5 * vBallistic + 0.5,
+    'max ' + maxSpeed.toFixed(2) + ' m/s vs sqrt(2gR) ' + vBallistic.toFixed(2) + ', reach ' + maxReach.toFixed(1) + ' m');
+  check('swash still runs up the beach', maxReach > 2.0, 'reach ' + maxReach.toFixed(1) + ' m');
+}
+
 //── 4. GLSL carries the JS constants (the four GPU consumers splice this string).
 {
   const g = SB.GLSL;

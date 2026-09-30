@@ -17,7 +17,8 @@
 //the caster stands high above the water.
 //
 //HOW IT PICKS CASTERS. Each frame the scene is walked once. A mesh casts when it is
-//visible (with its parents), castShadow is on, userData.heroShadow !== false, its
+//visible (with its parents), castShadow is on, it is not an InstancedMesh (scatter,
+//spray: see tick), userData.heroShadow !== false, its
 //bounding sphere is under MAX_CASTER_RADIUS and it lies within reach of the box.
 //userData.heroShadow === true forces a mesh in whatever its castShadow. The picked
 //meshes are put on LAYER for one render and taken off again, so nothing else is
@@ -128,7 +129,13 @@ ARestlessOcean.Passes.HeroShadowPass.prototype.tick = function(params){
     let picked = false;
     if((obj.isMesh || obj.isSkinnedMesh) && obj.geometry){
       const ud = obj.userData;
-      const wants = ud.heroShadow === true || (obj.castShadow && ud.heroShadow !== false);
+      //Instanced meshes only when asked for. a-land's scattered shells, pebbles and plants are
+      //InstancedMeshes with castShadow on: one small bounding sphere stands for thousands of
+      //instances across the island, and drawn without their conform displacement they threw
+      //blurry blobs on the seabed that popped as the scatter streamed (Dante, 2026-09-30).
+      //Spray and other instanced effects the same.
+      const wants = ud.heroShadow === true
+        || (obj.castShadow && ud.heroShadow !== false && !obj.isInstancedMesh);
       if(wants && !self._isOcean(obj)){
         const g = obj.geometry;
         if(!g.boundingSphere) g.computeBoundingSphere();
@@ -171,15 +178,23 @@ ARestlessOcean.Passes.HeroShadowPass.prototype.tick = function(params){
   const r = this.renderer;
   const scene = params.scene;
   const prevRT = r.getRenderTarget();
-  const prevOverride = scene.overrideMaterial;
   const prevBackground = scene.background;
   const prevFog = scene.fog;
   const prevAutoClear = r.autoClear;
   const prevShadowAuto = r.shadowMap ? r.shadowMap.autoUpdate : false;
   for(let i = 0; i < strays.length; ++i) strays[i].layers.disable(HS.LAYER);
-  for(let i = 0; i < casters.length; ++i) casters[i].layers.enable(HS.LAYER);
+  //Per-mesh swap, not scene.overrideMaterial: a caster that brings its own depth twin
+  //(customDepthMaterial: a-land's conformed and wind-swayed objects) casts with it, so its
+  //shadow moves with it; an override replaces the vertex stage and loses that.
+  const swapped = this._swapped || (this._swapped = []);
+  swapped.length = 0;
+  for(let i = 0; i < casters.length; ++i){
+    const m = casters[i];
+    m.layers.enable(HS.LAYER);
+    swapped.push(m.material);
+    m.material = m.customDepthMaterial || this.depthMaterial;
+  }
   try {
-    scene.overrideMaterial = this.depthMaterial;
     scene.background = null;
     scene.fog = null;
     if(r.shadowMap) r.shadowMap.autoUpdate = false;
@@ -188,9 +203,12 @@ ARestlessOcean.Passes.HeroShadowPass.prototype.tick = function(params){
     r.clear(true, true, true);
     r.render(scene, cam);
   } finally {
-    for(let i = 0; i < casters.length; ++i) casters[i].layers.disable(HS.LAYER);
+    for(let i = 0; i < casters.length; ++i){
+      casters[i].layers.disable(HS.LAYER);
+      casters[i].material = swapped[i];
+    }
+    swapped.length = 0;
     for(let i = 0; i < strays.length; ++i) strays[i].layers.enable(HS.LAYER);
-    scene.overrideMaterial = prevOverride;
     scene.background = prevBackground;
     scene.fog = prevFog;
     r.autoClear = prevAutoClear;
