@@ -2175,6 +2175,20 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         riverFoam: self.flowSurfacePass ? self.flowSurfacePass.foamPass : null
       });
     }
+    //9c first cut: the live surf for a-land's wet ground (SwashSurfacePass; read its header).
+    //Only with an a-land that has the socket.
+    if(!self.swashSurfacePass && typeof ALand !== 'undefined' && ALand.runtime && ALand.runtime.TerrainMaterial
+       && ALand.runtime.TerrainMaterial.setSwashSurface
+       && ARestlessOcean._ensurePass('SwashSurfacePass', 'swash-surface-pass.js')){
+      self.swashSurfacePass = new ARestlessOcean.Passes.SwashSurfacePass(self);
+    }
+    if(self.swashSurfacePass){
+      self.swashSurfacePass.tick({
+        timeMs: time,
+        cameraX: self.globalCameraPosition.x,
+        cameraZ: self.globalCameraPosition.z
+      });
+    }
     //Phase 6: the waterfall sheets. They alias the flowing material's uniforms, so they
     //are built after it and ride its per-frame stream (WaterfallSheetPass header).
     if(!self.waterfallSheetPass && self.flowSurfacePass && ARestlessOcean.Passes.WaterfallSheetPass

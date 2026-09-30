@@ -258,6 +258,33 @@ body). Foam shows it most, hence the surf.
   Check with `ALand.runtime.TerrainMaterial.wetness.enabled = false`. Fix: 9c, which makes
   the band follow the live swash (next, cross-repo).
 - Verified headless: 31 programs compile, the knobs are live, the shore tests pass.
+- **R3c, 9c first cut: the wet sand follows the surf (a-water + a-land, both on branch
+  `fix-shoreline-waves-and-add-connectors`).**
+  - a-water: `passes/swash-surface-pass.js` (new; in make-combined.py; fetched by
+    `_ensurePass` if a page lacks it). A 256² ping-pong at 0.5 m over ±64 m:
+    - r = live level (field still level + `shoreBreakerHeightAt`, fade 1);
+    - g = recent high water, max(live, prev − `dryRate`·dt), dryRate 0.01 m/s;
+    - b = the surf part.
+    It is handed to a-land every frame through `ALand.runtime.TerrainMaterial.setSwashSurface`,
+    and built only when a-land has that socket.
+  - a-land (terrain.frag `alandWetState`, TerrainMaterial):
+    - where the map is bound, submersion and the lap band come from the LIVE level;
+    - ground under the recent high water reads wet (`swash.memoryWetness` 0.8) and a
+      little glossy (`memoryFilm` 0.5);
+    - it fades back to the still level over the window's outer tenth;
+    - lakes and rivers are unchanged (their r is the still level);
+    - knobs: `ALand.runtime.TerrainMaterial.swash.{enabled, memoryWetness, memoryFilm,
+      memoryFadeM}`.
+    - shaders.js regenerated (one-shot regen byte-identical on the untouched tree first).
+      `check-shader-compiles` passes, worst variant 21/32 samplers (the harness needed
+      three from npm; unpkg is blocked here).
+  - Headless (synthetic 1:12 beach, onshore wind, stub a-land socket):
+    - the live level swings −0.14…+0.33 m;
+    - the high water holds ~0.2–0.37 m and falls slowly;
+    - sand is wet to ~4 m above the mean line and dry beyond.
+    - Not seen rendered on a-land terrain.
+  - ⚠ The earlier harness runs used an OFFSHORE wind (no surf at all), so those surf
+    screenshots showed FFT drawdown only.
 
 ### Round 2 — Dante's browser check (2026-09-30, night)
 
