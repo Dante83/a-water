@@ -69,6 +69,8 @@ uniform float uErodeHaze;        //... and the haze
 uniform float uErodeSoft;        //width of the carve's edge (small: lumps with defined edges)
 uniform float uRadialPow;        //exponent of the radial profile (1: soft cone, higher: dense core, soft rim)
 uniform float uFadeIn;           //u over which the cone fades in below the lip
+uniform float uFadeOutStart;     //u where the mist starts to fade out toward the landing (smoothly: no chop where the cones end)
+uniform float uFadeOutEnd;       //u where it is gone (1: the landing; more only with the run-out on)
 uniform float uHazeStart;        //u where foam begins to give way to haze (it is all haze by the landing)
 uniform float uMinBody;          //least fraction of full density at low aeration
 uniform float uAerationLo;       //aeration where the body starts to rise above uMinBody
@@ -280,7 +282,7 @@ float mistDensity(vec3 p, int octaves){
   float radial = pow(1.0 - x * x, uRadialPow);
   float u = mistU(p, gT);
   float fadeIn = smoothstep(0.0, max(uFadeIn, 1e-3), u);
-  float fadeOut = 1.0 - smoothstep(1.25, 2.0, u);
+  float fadeOut = 1.0 - smoothstep(uFadeOutStart, max(uFadeOutEnd, uFadeOutStart + 0.01), u);
   float body = max(smoothstep(uAerationLo, uAerationHi, vMistB.x), uMinBody);
   float ground = smoothstep(0.0, max(uGroundFade, 1e-3), p.y - vEnd.y);
   float env = radial * fadeIn * fadeOut * body * ground;

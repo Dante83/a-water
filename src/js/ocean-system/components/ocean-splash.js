@@ -173,6 +173,7 @@ ARestlessOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
   this.fallSprayEnabled = true;
   this.fallMistVolumetric = true;   //the falls' mist is the volumetric WaterfallMistPass's while it is up (false: the old puffs, type 2)
   this.fallMistVolumetricActive = false;   //set by the grid each frame: that pass is drawing
+  this.fallSplashWithVolumetric = false;   //true: keep the old type-3 splash clumps (the white footballs) at the foot while the volumetric mist is drawing. They are due to be rebuilt, so off for now.
   this.fallSprayRate = 0.0;         //FUDGE: emitImpact countScale per (m³/s of discharge) per second.
                                     //0 since Phase 6 round 9: the impact burst throws the sea's foam
                                     //chunks and beads, and a waterfall's plunge reads as a MIST (Dante).
@@ -1175,7 +1176,7 @@ ARestlessOcean.OceanSplash.prototype._emitFalls = function(falls, dt, camX, camZ
             this.fallMistLife * (0.8 + 0.5 * Math.random()),
             2.0, 0.03 * Math.random());
         }
-        this._emitFallSplash(im, nap, speed, energy, dt, hx, hz);
+        if(!this.fallMistVolumetricActive || this.fallSplashWithVolumetric) this._emitFallSplash(im, nap, speed, energy, dt, hx, hz);
       }
     }
     return;

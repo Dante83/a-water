@@ -5240,6 +5240,12 @@ spray are unchanged; the next step is flow-aligned water chunks to replace them 
   `waterfallMistPass.material.uniforms.u*` (foam/haze density, scale, stretch, erode, haze start,
   steps, ...) and `hullOptions` + `rebuild()` are live; `uDebugMode` 1-7 shows opacity, u, chord, the
   cones, path length, the foam/haze/ground weights and the density at the wall (must be 0 everywhere).
+- **The foot (round 3).** The cones now END at the landing and the foam fades out smoothly toward it
+  (`uFadeOutStart` 0.75 .. `uFadeOutEnd` 1): the hard chop where the cones ended is gone. The haze that
+  rolled out over the pool (`WaterfallMistHull` option `runOut: 1`, with `uFadeOutEnd` ~1.8) is off by
+  default, and while the volumetric mist is drawing the old type-3 splash clumps (the white footballs)
+  are not emitted on the falls (`oceanSplash.fallSplashWithVolumetric = true` brings them back). Both
+  are placeholders until the impact particles (step 2) are rebuilt.
 - **Pages that load loose `src/` files** (the examples) need three more script tags: `materials/
   ocean-material/waterfall-mist.js`, `luts/waterfall-mist-hull.js`, `passes/waterfall-mist-pass.js`
   (the grid skips the pass silently if any is missing, and the old puffs keep drawing).

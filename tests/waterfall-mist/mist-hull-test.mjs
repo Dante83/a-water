@@ -17,7 +17,7 @@ let fails = 0;
 const check = (name, ok, info) => { console.log((ok?'PASS ':'FAIL ')+name+'  '+(info||'')); if(!ok) fails++; };
 const f2 = x => x.toFixed(2);
 
-function audit(label, hull){
+function audit(label, hull, uTop = 1.0){
   const idx = hull.index, P = hull.position, nV = hull.vertexCount;
   check(label+': hull exists', !!hull && hull.tubes > 0 && idx.length % 3 === 0 && idx.length > 0, 'tubes '+hull.tubes+' verts '+nV+' tris '+idx.length/3);
   let finite = true;
@@ -100,7 +100,7 @@ function audit(label, hull){
   //u runs 0 at the lip to 1 at the landing, then 1..2 along the run-out.
   let uMin = Infinity, uMax = 0;
   for(let v = 0; v < nV; v++){ uMin = Math.min(uMin, hull.mistA[v*4+1]); uMax = Math.max(uMax, hull.mistA[v*4+1]); }
-  check(label+': u spans 0 .. 2 (lip, landing, run-out)', uMin < 1e-6 && uMax > 1.9 && uMax <= 2.0 + 1e-6, 'u '+f2(uMin)+' .. '+f2(uMax));
+  check(label+': u spans 0 .. '+uTop+(uTop > 1.0 ? ' (lip, landing, run-out)' : ' (lip to landing; the cones end there)'), uMin < 1e-6 && uMax > uTop - 0.01 && uMax <= uTop + 1e-6, 'u '+f2(uMin)+' .. '+f2(uMax));
 }
 const ribbonOf = (fall, ground, water) => {
   const env = {groundAt: ground, waterAt: water || (() => null)};
@@ -113,6 +113,7 @@ const maxRadius = h => Math.max(...h.ranges.map(r => r.radiusEnd));
   const rib = ribbonOf({top:[0,10,-0.5], bottom:[0,0,0.5], width:6, discharge:5, drop:10}, (x,z) => z < 0 ? 10 : 0);
   const hull = H.build(rib);
   audit('straight', hull);
+  audit('straight+run-out', H.build(rib, {runOut: 1}), 2.0);   //the optional haze that rolls out over the pool
   check('straight: a cone for every other strand (and the last)', hull.tubes >= 4 && hull.tubes <= 12, 'tubes '+hull.tubes);
   globalThis.__r10 = maxRadius(hull);
 }

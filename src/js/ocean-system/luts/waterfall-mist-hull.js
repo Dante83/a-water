@@ -43,6 +43,7 @@ ARestlessOcean.WaterfallMistHull = ARestlessOcean.WaterfallMistHull || {};
     radiusMin: 0.6,         //...within these
     radiusMax: 9.0,
     radiusExponent: 0.85,   //radius(u) = top + (landing - top) * u^exponent
+    runOut: 0,              //1: run the cones on over the pool past the landing (the haze that rolls out); 0: they end at the landing
     footSpread: 2.0,        //run-out length past the landing, in landing radii
     footRings: 4,
     footGrow: 0.35,         //extra radius over the run-out, as a fraction
@@ -120,7 +121,7 @@ ARestlessOcean.WaterfallMistHull = ARestlessOcean.WaterfallMistHull || {};
       if(Math.hypot(h[0], h[2]) < 1e-3) h = [A[run.a * 3 + 2], 0, -A[run.a * 3]];   //straight down: out along the sheet's side
       h = norm3([h[0], 0, h[2]]);
       const footLen = opt(o, 'footSpread') * rEnd, step = footLen / footRings;
-      for(let m = 1; m <= footRings; ++m){
+      for(let m = 1; m <= (opt(o, 'runOut') ? footRings : 0); ++m){
         const f = m / footRings;
         const tm = norm3([tl[0] + (h[0] - tl[0]) * f, tl[1] + (h[1] - tl[1]) * f, tl[2] + (h[2] - tl[2]) * f]);
         const tp = tg[tg.length - 1];
