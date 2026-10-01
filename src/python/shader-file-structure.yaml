@@ -53,3 +53,8 @@ groups:
         vertex:   'waterfall-sheet-vertex.glsl'
         template: 'waterfall-sheet-template.txt'
         material: 'waterfall-sheet.js'
+      -
+        fragment: 'waterfall-mist.glsl'
+        vertex:   'waterfall-mist-vertex.glsl'
+        template: 'waterfall-mist-template.txt'
+        material: 'waterfall-mist.js'

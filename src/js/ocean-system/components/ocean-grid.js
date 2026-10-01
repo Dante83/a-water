@@ -1449,6 +1449,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.flowSurfaceEnabled = data.river_enabled !== false;
   this.flowSurfacePass = null;
   this.waterfallSheetPass = null;
+  //The volumetric mist of the falls, riding the sheet's cascades (WaterfallMistPass).
+  this.waterfallMistPass = null;
   if(ARestlessOcean.Passes && ARestlessOcean.Passes.ShoreReflectionPass && ARestlessOcean.ShoreReflection.ENABLED){
     this.shoreReflectionPass = new ARestlessOcean.Passes.ShoreReflectionPass(this);
     this.shoreReflectionPass.init();
@@ -1784,7 +1786,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     const sunMesh = rends && rends.sunRenderer && rends.sunRenderer.sunMesh;
     const moonMesh = rends && rends.moonRenderer && rends.moonRenderer.moonMesh;
     const splashMesh = self.oceanSplash ? self.oceanSplash.mesh : null;
-    const hide = [skyMesh, sunMesh, moonMesh, splashMesh];
+    const mistMesh = self.waterfallMistPass ? self.waterfallMistPass.mesh : null;
+    const hide = [skyMesh, sunMesh, moonMesh, splashMesh, mistMesh];
     const vis = hide.map(function(m){ return m ? m.visible : false; });
     hide.forEach(function(m){ if(m) m.visible = false; });
     const curtain = self.underwaterCurtainMesh;
@@ -1978,6 +1981,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //G-buffer, reflection, foam/exclusion orthos, CSM, caustics). They are
     //re-shown at the very end of tick so they appear only in the main render.
     if(self.oceanSplash) self.oceanSplash.mesh.visible = false;
+    //The waterfall mist likewise (shown again below, main render only).
+    if(self.waterfallMistPass && self.waterfallMistPass.mesh) self.waterfallMistPass.mesh.visible = false;
     //The waterline overlay too (Phase 8e): main render only.
     if(self.waterlinePass) self.waterlinePass.setVisible(false);
 
@@ -2201,6 +2206,15 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         timeMs: time,
         enabled: self.flowSurfaceEnabled && self.flowSurfacePass.enabled
       });
+      //The mist rides the sheet's cascades, so it follows the sheet's pass.
+      if(!self.waterfallMistPass && ARestlessOcean.Passes.WaterfallMistPass && ARestlessOcean.WaterfallMistHull
+         && ARestlessOcean.Materials.Ocean.waterfallMistMaterial){
+        self.waterfallMistPass = new ARestlessOcean.Passes.WaterfallMistPass(self, self.waterfallSheetPass);
+        self.waterfallMistPass.init(scene);
+      }
+      if(self.waterfallMistPass){
+        self.waterfallMistPass.tick({enabled: self.flowSurfaceEnabled && self.flowSurfacePass.enabled});
+      }
     }
 
     //Show all of our ocean grid elements again
@@ -3251,6 +3265,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         const _msr = self.skyDirector.renderers.meteringSurveyRenderer;
         _meterTex = _msr.meteringSurveyRenderer.getCurrentRenderTarget(_msr.meteringSurveyVar).texture;
       }
+      //The volumetric mist takes over the falls' mist puffs while it is up (type 3 clumps stay).
+      sp.fallMistVolumetricActive = !!(sp.fallMistVolumetric && self.waterfallMistPass && self.waterfallMistPass.wantVisible);
       sp.tick({
         time: time,
         camX: self.globalCameraPosition.x,
@@ -3292,6 +3308,10 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       //main pass and do not depth-interact with the from-below surface). _wasUnderwater is the same
       //committed submersion state that drives the underwater fog/ceiling swap.
       sp.mesh.visible = sp.enabled && !self._wasUnderwater;
+    }
+    //The waterfall mist too: above water only, main render only.
+    if(self.waterfallMistPass && self.waterfallMistPass.mesh){
+      self.waterfallMistPass.mesh.visible = self.waterfallMistPass.wantVisible && !self._wasUnderwater;
     }
     //Phase 8e: the waterline overlay, for the main render only (hidden for every offscreen
     //pass at the top of tick).

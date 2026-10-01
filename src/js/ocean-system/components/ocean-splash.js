@@ -171,6 +171,8 @@ ARestlessOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
   //Phase 4 waterfall spray (PLACEHOLDER until Phase 6 falls): a burst stream at every
   //simulation.waterfalls[].bottom that FlowFoamPass lists near the camera. See _emitFalls.
   this.fallSprayEnabled = true;
+  this.fallMistVolumetric = true;   //the falls' mist is the volumetric WaterfallMistPass's while it is up (false: the old puffs, type 2)
+  this.fallMistVolumetricActive = false;   //set by the grid each frame: that pass is drawing
   this.fallSprayRate = 0.0;         //FUDGE: emitImpact countScale per (m³/s of discharge) per second.
                                     //0 since Phase 6 round 9: the impact burst throws the sea's foam
                                     //chunks and beads, and a waterfall's plunge reads as a MIST (Dante).
@@ -1157,7 +1159,7 @@ ARestlessOcean.OceanSplash.prototype._emitFalls = function(falls, dt, camX, camZ
         }
         //The mist: spread across the fall's width at the impact, rolling out mostly
         //downstream and rising slowly; high drag and little gravity (coarse ≈ 0) let it hang.
-        const want = this.fallMistRate * imQ * energy * dt;
+        const want = this.fallMistVolumetricActive ? 0.0 : this.fallMistRate * imQ * energy * dt;
         let count = Math.floor(want);
         if(Math.random() < want - count) ++count;
         for(let c = 0; c < count; ++c){

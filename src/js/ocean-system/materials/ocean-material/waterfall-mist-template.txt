@@ -1,0 +1,94 @@
+//This helps
+//--------------------------v
+//https://github.com/mrdoob/three.js/wiki/Uniforms-types
+//
+//Waterfall mist (volumetric). The SHARED block is replaced at init by the flowing-water
+//material's own uniform objects (WaterfallMistPass.init aliases them, as the sheet does), so the
+//mist is lit by exactly the sun, sky, shadow and atmosphere the fall and the creek are. The
+//defaults here only matter if the mist is ever drawn without a flowing surface.
+ARestlessOcean.Materials.Ocean.waterfallMistMaterial = {
+  uniforms: {
+    //SHARED with the flowing-water material
+    brightestDirectionalLight: {value: new THREE.Vector3(1.0, 1.0, 1.0)},
+    brightestDirectionalLightDirection: {value: new THREE.Vector3(0.0, -1.0, 0.0)},
+    skyAmbientColor: {value: new THREE.Vector3(0.3, 0.4, 0.5)},
+    t: {value: 0.0},
+    sunShadowMap: {value: null},
+    sunShadowMatrix: {value: new THREE.Matrix4()},
+    sunShadowMapSize: {value: new THREE.Vector2(2048.0, 2048.0)},
+    sunShadowRadius: {value: 1.0},
+    sunShadowBias: {value: 0.0},
+    sunShadowEnabled: {value: 0},
+    refractionDepthTexture: {value: null},
+    inverseProjectionMatrix: {value: new THREE.Matrix4()},
+    screenResolution: {value: new THREE.Vector2(1920.0, 1080.0)},
+    underwaterFactor: {value: 0.0},
+    atmosphereTransmittance: {value: null},
+    atmosphereMieInscattering: {value: null},
+    atmosphereRayleighInscattering: {value: null},
+    atmSunPosition: {value: new THREE.Vector3(0.0, 1.0, 0.0)},
+    atmMoonPosition: {value: new THREE.Vector3(0.0, -1.0, 0.0)},
+    atmSunHorizonFade: {value: 1.0},
+    atmMoonHorizonFade: {value: 0.0},
+    atmScatteringSunIntensity: {value: 1.0},
+    atmScatteringMoonIntensity: {value: 0.0},
+    atmMoonLightColor: {value: new THREE.Vector3(1.0, 1.0, 1.0)},
+    atmCameraHeight: {value: 0.0},
+    atmDistanceScale: {value: 1.0},
+
+    //Scene fog (see waterfall-sheet-template.txt: the material is fog:true)
+    fogNear: {value: 1.0},
+    fogFar: {value: 1000.0},
+    fogDensity: {value: 0.00025},
+    fogColor: {value: new THREE.Color()},
+    uwSunDir: {value: new THREE.Vector3(0.0, -1.0, 0.0)},
+
+    //The mist's own. FUDGE: all look choices, none a plume model.
+    uMistDensity: {value: 1.1},
+    uMistScale: {value: 0.7},
+    uMistStretch: {value: 6.0},
+    uMistSpeed: {value: 7.0},
+    uMistLoop: {value: 3.0},
+    uErode: {value: 0.42},
+    uMistPlumeHeight: {value: 3.0},
+    uMistPlumeStretch: {value: 1.5},
+    uAerationLo: {value: 0.15},
+    uAerationHi: {value: 0.7},
+    uSteps: {value: 24.0},
+    uLightSteps: {value: 3.0},
+    uLightLength: {value: 1.5},
+    uAbsorption: {value: 1.0},
+    uPhaseG: {value: 0.7},
+    uAmbient: {value: 1.0},
+    uSunGain: {value: 1.0},
+    uAlbedo: {value: new THREE.Vector3(0.95, 0.97, 1.0)},
+    uMaxChord: {value: 8.0},
+    uSoftRange: {value: 0.6},
+    uSheetOcclusion: {value: 0.85},
+    uMistOpacity: {value: 1.0},
+    uDebugMode: {value: 0},
+  },
+
+  //Built like the sheet's (waterfall-sheet-template.txt): $atmospheric_perspective_enabled is
+  //substituted, and with it on the atmosphere functions replace the injection marker line.
+  //WaterfallMistPass rebuilds it when atmospheric perspective becomes ready.
+  fragmentShader: function(atmosphericPerspectiveEnabled, atmosphereFunctionsGLSL){
+    const originalGLSL = [
+      {fragment_glsl}
+    ];
+    const updatedLines = [];
+    for(let i = 0, numLines = originalGLSL.length; i < numLines; ++i){
+      let updatedCode = originalGLSL[i];
+      updatedCode = updatedCode.replace(/\$atmospheric_perspective_enabled/g, atmosphericPerspectiveEnabled ? '1' : '0');
+      if(atmosphericPerspectiveEnabled && atmosphereFunctionsGLSL && updatedCode.indexOf('//ATMOSPHERE_FUNCTIONS_INJECTION_POINT') !== -1){
+        updatedCode = atmosphereFunctionsGLSL;
+      }
+      updatedLines.push(updatedCode);
+    }
+    return updatedLines.join('\n');
+  },
+
+  vertexShader: [
+    {vertex_glsl}
+  ].join('\n'),
+};

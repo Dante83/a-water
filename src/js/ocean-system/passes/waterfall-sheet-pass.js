@@ -66,6 +66,8 @@ ARestlessOcean.Passes.WaterfallSheetPass = function(oceanGrid){
   this._lastInvalidateMs = -1e9;
   this._corridors = [];
   this._atmReady = false;
+  //Bumped whenever the merged geometry is rebuilt, for passes that ride the cascades (WaterfallMistPass).
+  this.geometryVersion = 0;
 };
 
 ARestlessOcean.Passes.WaterfallSheetPass.RENDER_ORDER = 5;
@@ -265,6 +267,7 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype.tick = function(ctx){
 //Merge every built ribbon into the one geometry (one draw call).
 ARestlessOcean.Passes.WaterfallSheetPass.prototype._rebuildGeometry = function(){
   this._dirtyGeometry = false;
+  ++this.geometryVersion;
   this.nappes = [];
   this._corridors = [];
   let nV = 0, nI = 0;

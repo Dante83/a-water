@@ -960,6 +960,9 @@ ARestlessOcean.installOceanDebugControls = function(grid){
         if(e) grid.oceanSplash.enabled = true;
       };
       window.oceanSplash = grid.oceanSplash;
+      //The waterfall's volumetric mist: tune live through its uniforms,
+      //e.g. waterfallMistPass.material.uniforms.uMistDensity.value = 2.0 (uDebugMode 1-5 shows its parts).
+      window.waterfallMistPass = grid.waterfallMistPass;
       //Reflection-vector shore launch: setSplashReflect(reflect, runUp) tunes how the
       //impact sheet leaves a cliff. reflect 0=cone up the surface normal (old look),
       //1=mirror the incoming water off the face; runUp adds upward climb on a head-on

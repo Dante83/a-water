@@ -5204,3 +5204,30 @@ No test suite exists, so verification was static and structural:
 4. **The fit-to-boat exclusion ortho** is now unblocked — B2 removed the reason
    it was deferred. A tighter extent buys sub-decimetre texels at the same
    16 MB and kills the residual keel-crease tris.
+
+## Waterfall impact particles, step 1: volumetric mist
+
+The falls' mist (OceanSplash type 2) is replaced by a raymarched volume, `WaterfallMistPass`
+(`passes/waterfall-mist-pass.js`, `waterfall-mist.glsl`). The type-3 splash clumps and all other
+spray are unchanged; the next step is flow-aligned water chunks to replace them on the falls.
+
+- **Volume.** `WaterfallMistHull` (`luts/waterfall-mist-hull.js`, pure math) thickens the sheet's
+  free-fall ribbon into a closed, outward-wound curved cone that widens with the distance fallen
+  and runs on past the landing. The pass rides the sheet pass's cascades (`geometryVersion`).
+- **Shader.** Each pixel is where its view ray leaves the cone; it marches back toward the camera.
+  Density = cone envelope x aeration x looping 3D value noise stretched along the flow and advected
+  down it (two cross-faded copies, no seam). Near the landing the noise turns round and billowy
+  (the plume). Lit by a short sun light-march (self-shadowing), dual-lobe Henyey-Greenstein
+  phase, the scene sun shadow map and the sky ambient; sun/sky/shadow/depth/atmosphere are the
+  creek's own uniform objects (`SHARED_UNIFORMS`).
+- **No depth test.** The hull straddles the curtain, whose depth would hide the near half of the
+  mist. Occlusion is analytic instead: the G-buffer clips the march (terrain), samples behind the
+  curtain are dropped inside its width (`uSheetOcclusion`), the hull is held above the pool.
+- **Knobs.** `oceanSplash.fallMistVolumetric = false` brings the old puffs back.
+  `waterfallMistPass.material.uniforms.u*` (density, scale, stretch, speed, erode, steps, ...) and
+  `hullOptions` + `rebuild()` are live; `uDebugMode` 1-7 shows opacity, aeration, chord, the hull,
+  path length, the envelope factors and the envelope at the hull wall (must be 0 everywhere).
+- **Checked.** `node tests/waterfall-mist/mist-hull-test.mjs` (closed, outward, widening, above the
+  floor). The shader was compiled and rendered in headless Chromium against a synthetic 10 m fall
+  with a stand-in sheet. NOT yet checked on a real a-land world, on a GPU, or at frame rate: the
+  step counts (24 view, 3 sun) are tunables for that.
