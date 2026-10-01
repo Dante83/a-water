@@ -5246,6 +5246,15 @@ spray are unchanged; the next step is flow-aligned water chunks to replace them 
   default, and while the volumetric mist is drawing the old type-3 splash clumps (the white footballs)
   are not emitted on the falls (`oceanSplash.fallSplashWithVolumetric = true` brings them back). Both
   are placeholders until the impact particles (step 2) are rebuilt.
+- **Scaling with the fall (round 4).** One cone per ~1 m of width (a cone for every other 0.5 m strand;
+  the stride grows so a very wide fall gets at most ~24 cones: `maxCones`). The count does not depend on
+  height or discharge. A cone's landing radius is 0.18 x the drop, but never less than 1.4 x the gap
+  between neighbouring cones (`radiusPerSpacing`), so cones always overlap into one body of foam; a short
+  fall's cones open fast (`radiusExponentShort` 0.55, blending to 0.85 as the landing radius goes from 1.5
+  to 4.5 m), since they were thin separate wisps that only merged where the foam was already fading. The
+  foam lump size follows the fall (`uScaleRef` 10 m, sqrt, 0.5 .. 1.6 x) and the density floor at low
+  aeration is higher (`uMinBody` 0.55, `uAerationHi` 0.55), as short falls aerate less (a 3 m fall peaks
+  near 0.43, a 10 m one near 0.85).
 - **Pages that load loose `src/` files** (the examples) need three more script tags: `materials/
   ocean-material/waterfall-mist.js`, `luts/waterfall-mist-hull.js`, `passes/waterfall-mist-pass.js`
   (the grid skips the pass silently if any is missing, and the old puffs keep drawing).

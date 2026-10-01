@@ -36,13 +36,16 @@
 ARestlessOcean.WaterfallMistHull = ARestlessOcean.WaterfallMistHull || {};
 (function(H){
   H.DEFAULTS = {
-    strandStride: 2,        //a cone for every this-many strands (and always the two edge strands)
+    strandStride: 2,        //a cone for every this-many strands (and always the last edge strand), at least
+    maxCones: 24,           //...and for a wider fall the stride grows so no more than about this many cones are built
     sides: 8,               //facets round each cone
     radiusTop: 0.3,         //m, at the lip
     radiusPerDrop: 0.18,    //m of landing radius per m of drop...
     radiusMin: 0.6,         //...within these
+    radiusPerSpacing: 1.4,  //the landing radius is also at least this many times the distance between neighbouring cones, so they overlap and merge into one body of foam whatever the fall's height or width (a short fall's cones used to stay separate streaks)
     radiusMax: 9.0,
-    radiusExponent: 0.85,   //radius(u) = top + (landing - top) * u^exponent
+    radiusExponent: 0.85,   //radius(u) = top + (landing - top) * u^exponent, for a tall fall...
+    radiusExponentShort: 0.55,   //...and for a short one (landing radius under ~1.5 m), which must open FAST: its cones are thin, separate wisps until they merge, and the foam is gone by the time a slowly opening cone gets there. Blended between the two as the landing radius goes from 1.5 to 4.5 m.
     runOut: 0,              //1: run the cones on over the pool past the landing (the haze that rolls out); 0: they end at the landing
     footSpread: 2.0,        //run-out length past the landing, in landing radii
     footRings: 4,
@@ -86,13 +89,19 @@ ARestlessOcean.WaterfallMistHull = ARestlessOcean.WaterfallMistHull || {};
     }
     closeRun(nV, strand);
     const nStrands = strand + 1;
+    //Cone spacing: strands are seeded evenly across the curtain (across = -1..1 over nStrands - 1 gaps).
+    const hw = nV ? fB[3] : 0.0;
+    const strandGap = (nStrands > 1 && hw > 1e-3) ? 2.0 * hw / (nStrands - 1) : 0.5;
+    const stride2 = Math.max(stride, Math.ceil(nStrands / Math.max(opt(o, 'maxCones') | 0, 1)));
+    const coneGap = stride2 * strandGap;
+    const rFloor = Math.max(opt(o, 'radiusMin'), opt(o, 'radiusPerSpacing') * coneGap);
 
     const pos = [], nor = [], acr = [], tan = [], cen = [], mA = [], mB = [], mC = [], idx = [];
     const ranges = [];
     let tubes = 0, vBase = 0;
     for(let r = 0; r < runs.length; ++r){
       const run = runs[r];
-      if(!(run.strand % stride === 0 || run.strand === nStrands - 1)) continue;
+      if(!(run.strand % stride2 === 0 || run.strand === nStrands - 1)) continue;
       const n = run.b - run.a;
       //Axis: the run's rows.
       const c = [], tg = [], s = [];
@@ -106,9 +115,10 @@ ARestlessOcean.WaterfallMistHull = ARestlessOcean.WaterfallMistHull || {};
       }
       const drop = c[0][1] - c[n - 1][1];
       if(drop < opt(o, 'minDrop') || !(s[n - 1] > 1e-3)) continue;
-      const rEnd = Math.min(Math.max(opt(o, 'radiusPerDrop') * drop, opt(o, 'radiusMin')), opt(o, 'radiusMax'));
+      const rEnd = Math.min(Math.max(opt(o, 'radiusPerDrop') * drop, rFloor), Math.max(opt(o, 'radiusMax'), rFloor));
       const rTop = Math.min(opt(o, 'radiusTop'), rEnd);
-      const expo = opt(o, 'radiusExponent');
+      const tallness = Math.min(Math.max((rEnd - 1.5) / 3.0, 0.0), 1.0);
+      const expo = opt(o, 'radiusExponentShort') + (opt(o, 'radiusExponent') - opt(o, 'radiusExponentShort')) * tallness;
       const radius = [], u = [], src = [], tauR = [], spdR = [];
       for(let i = 0; i < n; ++i){
         const uu = s[i] / s[n - 1];

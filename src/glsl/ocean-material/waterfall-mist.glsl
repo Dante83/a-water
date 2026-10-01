@@ -60,7 +60,8 @@ uniform float underwaterFactor;
 uniform float uMistDensity;      //global multiplier on the extinction below
 uniform float uFoamDensity;      //1/m extinction at the core of the foam
 uniform float uHazeDensity;      //... and of the haze
-uniform float uFoamScale;        //m per noise cell in the foam
+uniform float uScaleRef;         //m: the run length at which the lump sizes below apply; shorter falls get finer lumps, taller ones coarser (sqrt, within 0.5 .. 1.6)
+uniform float uFoamScale;        //m per noise cell in the foam (at uScaleRef)
 uniform float uHazeScale;        //... in the haze
 uniform float uFoamRate;         //foam noise cells per second of the water's flight along the flow (a cell is that long x the water's speed: streaks that stretch as it accelerates)
 uniform float uHazeRate;         //... in the haze (fewer, and the water is slower there: rounder puffs)
@@ -267,9 +268,11 @@ float mistNoise(vec3 p, float rate, float scale, int octaves){
 //changed along the fall would not do: its phase is (tau - t) * rate, and a rate that varies with
 //position shears the pattern in proportion to the elapsed time t, which smears and freezes it.)
 float mistFoamHaze(vec3 p, float haze, int octaves){
-  if(haze < 0.02) return mistNoise(p, uFoamRate, uFoamScale, octaves);
-  if(haze > 0.98) return mistNoise(p, uHazeRate, uHazeScale, octaves);
-  return mix(mistNoise(p, uFoamRate, uFoamScale, octaves), mistNoise(p, uHazeRate, uHazeScale, octaves), haze);
+  //Lump size follows the fall's size: a 3 m fall in 0.55 m lumps is ragged shreds, a 40 m one in 0.3 m lumps is fizz.
+  float k = clamp(sqrt(vMistB.y / max(uScaleRef, 1.0)), 0.5, 1.6);
+  if(haze < 0.02) return mistNoise(p, uFoamRate, uFoamScale * k, octaves);
+  if(haze > 0.98) return mistNoise(p, uHazeRate, uHazeScale * k, octaves);
+  return mix(mistNoise(p, uFoamRate, uFoamScale * k, octaves), mistNoise(p, uHazeRate, uHazeScale * k, octaves), haze);
 }
 
 //Density (1/m) at a world point for the cone this fragment belongs to.

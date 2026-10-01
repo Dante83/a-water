@@ -134,5 +134,23 @@ const maxRadius = h => Math.max(...h.ranges.map(r => r.radiusEnd));
   if(hull){ audit('stair', hull); check('stair: more than one run', new Set(Array.from(hull.ranges, r => r.drop.toFixed(2))).size >= 1, 'tubes '+hull.tubes); }
   else check('stair: hull built', false, 'no tubes');
 }
+{ //a SHORT fall (3 m): its cones must open fast enough to merge into one body, not stay as separate wisps
+  const rib = ribbonOf({top:[0,3,-0.5], bottom:[0,0,0.5], width:6, discharge:5, drop:3}, (x,z) => z < 0 ? 3 : 0);
+  const hull = H.build(rib);
+  audit('short', hull);
+  const gap = 2 * 0.5;   //a cone every other strand, strands every 0.5 m
+  let rMid = 0, bestD = 9;
+  for(let v = 0; v < hull.vertexCount; v++){ const d = Math.abs(hull.mistA[v*4+1] - 0.4); if(d < bestD && hull.mistA[v*4+1] <= 1.0){ bestD = d; rMid = hull.mistA[v*4+2]; } }
+  check('short: the landing radius is at least 1.4 x the gap between cones (they overlap)', maxRadius(hull) >= 1.4 * gap - 1e-6, 'radius '+f2(maxRadius(hull))+' gap '+f2(gap));
+  check('short: the cones are already wide at 40% of the way down (they merge early, where the foam is)', rMid >= 0.65 * gap, 'radius at u 0.4: '+f2(rMid)+' vs gap '+f2(gap));
+}
+{ //a very WIDE fall: the cone count is capped, and the cones still overlap (the radius floor follows the gap)
+  const rib = ribbonOf({top:[0,10,-0.5], bottom:[0,0,0.5], width:48, discharge:30, drop:10}, (x,z) => z < 0 ? 10 : 0);
+  const hull = H.build(rib);
+  audit('wide', hull);
+  const gap = Math.ceil(97 / 24) * 0.5;   //97 strands -> stride 5
+  check('wide: at most about 24 cones (+ the edge strand)', hull.tubes <= 25, 'tubes '+hull.tubes);
+  check('wide: the radius floor follows the gap between the cones', maxRadius(hull) >= 1.4 * gap - 1e-6, 'radius '+f2(maxRadius(hull))+' gap '+f2(gap));
+}
 check('null ribbon gives no hull', H.build(null) === null);
 process.exit(fails?1:0);
