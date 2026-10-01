@@ -1,18 +1,17 @@
 precision highp float;
 
-//Waterfall mist vertex stage. The mesh is the HULL ARestlessOcean.WaterfallMistHull builds
-//round the curtain: a closed, curved cone whose far side the fragment stage draws and marches
-//back from. Nothing is displaced here; the stage only hands the fragment stage the curtain's
-//own frame at this row, so every sample is measured in metres from the curtain however it
-//bends.
+//Waterfall mist vertex stage. The mesh is the set of CONES ARestlessOcean.WaterfallMistHull builds
+//along the water's paths: closed, round, wound outward. Nothing is displaced here; the stage hands
+//the fragment stage each cone's axis point and direction (the density is a function of the
+//distance to the axis, so it is zero on the wall by construction) and the curtain's own normal and
+//across direction (used only to tell which side of the sheet a sample is on).
 
-attribute vec3 aCenter;      //the curtain's centre point at this row
-attribute vec3 aFlowTangent; //down the flow (unit)
-attribute vec3 aFlowAcross;  //toward +across (unit)
-attribute vec4 aMistA;       //s (m of path), across (m from the middle), layer (+1 / -1), radius (m)
-attribute vec4 aMistB;       //aeration, foot fade length (m), free-fall flag, half-width (m)
-attribute vec3 aMistC;       //the strand's landing point
-attribute vec2 aMistD;       //the horizontal direction the water runs at the landing (unit)
+attribute vec3 aCenter;      //the cone's axis point at this ring
+attribute vec3 aFlowTangent; //the cone's axis direction (down the flow, unit)
+attribute vec3 aFlowAcross;  //the curtain's across direction (unit)
+attribute vec4 aMistA;       //across (m from the curtain's middle), u (0 lip, 1 landing, 1..2 run-out), radius (m), seed
+attribute vec4 aMistB;       //aeration, run length (m), 0, curtain half-width (m)
+attribute vec3 aMistC;       //the run's landing point
 
 varying vec3 vWorldPos;
 varying vec3 vCenter;
@@ -22,7 +21,6 @@ varying vec3 vA;
 varying vec4 vMistA;
 varying vec4 vMistB;
 varying vec3 vEnd;
-varying vec2 vEndDir;
 varying float vViewDepth;
 
 #include <fog_pars_vertex>
@@ -37,7 +35,6 @@ void main(){
   vMistA = aMistA;
   vMistB = aMistB;
   vEnd = (modelMatrix * vec4(aMistC, 1.0)).xyz;
-  vEndDir = aMistD;
   vec4 mvPosition = viewMatrix * worldPos;
   vViewDepth = -mvPosition.z;
   //The fog chunk reads `mvPosition` and `transformed` by those names (see waterfall-sheet-vertex.glsl).

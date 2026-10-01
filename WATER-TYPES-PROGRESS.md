@@ -5211,23 +5211,35 @@ The falls' mist (OceanSplash type 2) is replaced by a raymarched volume, `Waterf
 (`passes/waterfall-mist-pass.js`, `waterfall-mist.glsl`). The type-3 splash clumps and all other
 spray are unchanged; the next step is flow-aligned water chunks to replace them on the falls.
 
-- **Volume.** `WaterfallMistHull` (`luts/waterfall-mist-hull.js`, pure math) thickens the sheet's
-  free-fall ribbon into a closed, outward-wound curved cone that widens with the distance fallen
-  and runs on past the landing. The pass rides the sheet pass's cascades (`geometryVersion`).
-- **Shader.** Each pixel is where its view ray leaves the cone; it marches back toward the camera.
-  Density = cone envelope x aeration x looping 3D value noise stretched along the flow and advected
-  down it (two cross-faded copies, no seam). Near the landing the noise turns round and billowy
-  (the plume). Lit by a short sun light-march (self-shadowing), dual-lobe Henyey-Greenstein
-  phase, the scene sun shadow map and the sky ambient; sun/sky/shadow/depth/atmosphere are the
-  creek's own uniform objects (`SHARED_UNIFORMS`).
-- **No depth test.** The hull straddles the curtain, whose depth would hide the near half of the
+- **Volume (round 2).** `WaterfallMistHull` (`luts/waterfall-mist-hull.js`, pure math) builds a CONE
+  per few strands and per free-fall run: a closed round tube along the water's own path, narrow at
+  the lip, opening downward (landing radius ~0.18 x the drop, so a tall fall opens wider), running
+  on over the pool past the landing. Neighbouring cones overlap and merge. The pass rides the sheet
+  pass's cascades (`geometryVersion`). Round 1 thickened the ribbon along its own normal instead;
+  that frame twisted with the weave and the hull's walls (and a floor clamp) showed as flat sheets of
+  mist in the real scene. A tube's density is a function of the distance to its AXIS over its radius,
+  so it is zero on the wall by construction: the facets are tangent to the radius the shader uses
+  (circumscribed polygon), and `mist-hull-test.mjs` checks "no wall leak".
+- **Shader.** Each pixel is where its view ray leaves a cone; it marches back toward the camera over
+  the exact cylinder chord. `u` (0 lip, 1 landing, 1..2 run-out) is measured per sample: FOAM in the
+  middle of the fall (dense, bright, round lumps stretched along the flow, rushing down), HAZE toward
+  the landing and over the pool (thin, soft, big puffs), fading in below the lip and out over the
+  run-out. Noise is looping 3D value noise (two cross-faded copies, no seam). Lit by a short sun
+  light-march (self-shadowing), dual-lobe Henyey-Greenstein phase, the scene sun shadow map and the
+  sky ambient; sun/sky/shadow/depth/atmosphere are the creek's own uniform objects (`SHARED_UNIFORMS`).
+- **No depth test.** The cones straddle the curtain, whose depth would hide the near half of the
   mist. Occlusion is analytic instead: the G-buffer clips the march (terrain), samples behind the
-  curtain are dropped inside its width (`uSheetOcclusion`), the hull is held above the pool.
+  curtain are dimmed inside its width (`uSheetOcclusion`); nothing is drawn below the landing's
+  height (`uGroundFade`), so the cones may dip under the pool without a floor clamp.
 - **Knobs.** `oceanSplash.fallMistVolumetric = false` brings the old puffs back.
-  `waterfallMistPass.material.uniforms.u*` (density, scale, stretch, speed, erode, steps, ...) and
-  `hullOptions` + `rebuild()` are live; `uDebugMode` 1-7 shows opacity, aeration, chord, the hull,
-  path length, the envelope factors and the envelope at the hull wall (must be 0 everywhere).
-- **Checked.** `node tests/waterfall-mist/mist-hull-test.mjs` (closed, outward, widening, above the
-  floor). The shader was compiled and rendered in headless Chromium against a synthetic 10 m fall
+  `waterfallMistPass.material.uniforms.u*` (foam/haze density, scale, stretch, erode, haze start,
+  steps, ...) and `hullOptions` + `rebuild()` are live; `uDebugMode` 1-7 shows opacity, u, chord, the
+  cones, path length, the foam/haze/ground weights and the density at the wall (must be 0 everywhere).
+- **Pages that load loose `src/` files** (the examples) need three more script tags: `materials/
+  ocean-material/waterfall-mist.js`, `luts/waterfall-mist-hull.js`, `passes/waterfall-mist-pass.js`
+  (the grid skips the pass silently if any is missing, and the old puffs keep drawing).
+- **Checked.** `node tests/waterfall-mist/mist-hull-test.mjs` (closed, outward, no wall leak, opens
+  downward and wider for a taller fall, ledge stairs). The shader was compiled, with and without
+  atmospheric perspective, and rendered in headless Chromium against synthetic 10 m and 30 m falls
   with a stand-in sheet. NOT yet checked on a real a-land world, on a GPU, or at frame rate: the
   step counts (24 view, 3 sun) are tunables for that.
