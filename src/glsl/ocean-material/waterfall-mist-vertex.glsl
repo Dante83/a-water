@@ -10,8 +10,8 @@ attribute vec3 aCenter;      //the cone's axis point at this ring
 attribute vec3 aFlowTangent; //the cone's axis direction (down the flow, unit)
 attribute vec3 aFlowAcross;  //the curtain's across direction (unit)
 attribute vec4 aMistA;       //across (m from the curtain's middle), u (0 lip, 1 landing, 1..2 run-out), radius (m), seed
-attribute vec4 aMistB;       //aeration, run length (m), 0, curtain half-width (m)
-attribute vec3 aMistC;       //the run's landing point
+attribute vec4 aMistB;       //aeration, run length (m), the water's speed here (m/s), curtain half-width (m)
+attribute vec4 aMistC;       //the run's landing point (xyz) and the water's time of flight at this ring (s)
 
 varying vec3 vWorldPos;
 varying vec3 vCenter;
@@ -21,6 +21,7 @@ varying vec3 vA;
 varying vec4 vMistA;
 varying vec4 vMistB;
 varying vec3 vEnd;
+varying float vTau;
 varying float vViewDepth;
 
 #include <fog_pars_vertex>
@@ -34,7 +35,8 @@ void main(){
   vA = aFlowAcross;
   vMistA = aMistA;
   vMistB = aMistB;
-  vEnd = (modelMatrix * vec4(aMistC, 1.0)).xyz;
+  vEnd = (modelMatrix * vec4(aMistC.xyz, 1.0)).xyz;
+  vTau = aMistC.w;
   vec4 mvPosition = viewMatrix * worldPos;
   vViewDepth = -mvPosition.z;
   //The fog chunk reads `mvPosition` and `transformed` by those names (see waterfall-sheet-vertex.glsl).

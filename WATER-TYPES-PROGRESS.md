@@ -5224,7 +5224,12 @@ spray are unchanged; the next step is flow-aligned water chunks to replace them 
   the exact cylinder chord. `u` (0 lip, 1 landing, 1..2 run-out) is measured per sample: FOAM in the
   middle of the fall (dense, bright, round lumps stretched along the flow, rushing down), HAZE toward
   the landing and over the pool (thin, soft, big puffs), fading in below the lip and out over the
-  run-out. Noise is looping 3D value noise (two cross-faded copies, no seam). Lit by a short sun
+  run-out. The noise is laid out in the water's TIME OF FLIGHT along the flow (each cone ring carries
+  the traced row's tau and speed; the run-out slows) and in metres across it, periodic in time, so it
+  RIDES THE WATER at its real speed and its cells stretch as the jet accelerates, like the sheet's
+  grain. (Round 2 first advected it at a constant 6 m/s and cross-faded two copies half a period
+  apart: the foam ran slower than the sheet behind it, and visibly stalled and re-accelerated at
+  each swap.) `mist-hull-test.mjs` checks d(arc)/d(tau) = the water's speed. Lit by a short sun
   light-march (self-shadowing), dual-lobe Henyey-Greenstein phase, the scene sun shadow map and the
   sky ambient; sun/sky/shadow/depth/atmosphere are the creek's own uniform objects (`SHARED_UNIFORMS`).
 - **No depth test.** The cones straddle the curtain, whose depth would hide the near half of the

@@ -115,7 +115,7 @@ ARestlessOcean.Passes.WaterfallMistPass.prototype._rebuildGeometry = function(){
   const position = new Float32Array(nV * 3), normal = new Float32Array(nV * 3);
   const tangent = new Float32Array(nV * 3), across = new Float32Array(nV * 3), center = new Float32Array(nV * 3);
   const mistA = new Float32Array(nV * 4), mistB = new Float32Array(nV * 4);
-  const mistC = new Float32Array(nV * 3);
+  const mistC = new Float32Array(nV * 4);
   const index = new Uint32Array(nI);
   let v = 0, k = 0;
   for(let i = 0; i < hulls.length; ++i){
@@ -123,7 +123,7 @@ ARestlessOcean.Passes.WaterfallMistPass.prototype._rebuildGeometry = function(){
     position.set(h.position, v * 3); normal.set(h.normal, v * 3);
     tangent.set(h.tangent, v * 3); across.set(h.across, v * 3); center.set(h.center, v * 3);
     mistA.set(h.mistA, v * 4); mistB.set(h.mistB, v * 4);
-    mistC.set(h.mistC, v * 3);
+    mistC.set(h.mistC, v * 4);
     for(let j = 0; j < h.index.length; ++j) index[k + j] = h.index[j] + v;
     v += h.vertexCount; k += h.index.length;
   }
@@ -136,7 +136,7 @@ ARestlessOcean.Passes.WaterfallMistPass.prototype._rebuildGeometry = function(){
   geo.setAttribute('aCenter', new THREE.BufferAttribute(center, 3));
   geo.setAttribute('aMistA', new THREE.BufferAttribute(mistA, 4));
   geo.setAttribute('aMistB', new THREE.BufferAttribute(mistB, 4));
-  geo.setAttribute('aMistC', new THREE.BufferAttribute(mistC, 3));
+  geo.setAttribute('aMistC', new THREE.BufferAttribute(mistC, 4));
   geo.setIndex(new THREE.BufferAttribute(index, 1));
   if(nV) geo.computeBoundingSphere();
   this.mesh.geometry = geo;

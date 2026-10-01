@@ -25,8 +25,11 @@
 //  mistA = (acrossM, u, radius, seed)   acrossM: the strand's offset from the middle of the
 //            curtain (m); u: 0 at the lip, 1 at the landing, 1..2 along the run-out; radius: the
 //            tube's radius here (m); seed: per tube
-//  mistB = (aeration, length, 0, halfWidth)   length: the run's arc length (m), from lip to landing; halfWidth: the curtain's
-//  mistC = the run's landing point (axis point at its last row), world
+//  mistB = (aeration, length, speed, halfWidth)   length: the run's arc length (m), from lip to landing;
+//            speed: the water's speed at the ring (m/s, easing off over the run-out); halfWidth: the curtain's
+//  mistC = (landing point xyz, tau)   the run's landing (axis point at its last row), world; tau: the
+//            water's TIME OF FLIGHT at the ring (s), the coordinate the shader lays the noise out in, so the
+//            foam rides the water and stretches as it accelerates, exactly as the sheet's grain does
 //
 //FUDGE: every option below is a look choice (the cone's opening angle and where the foam gives
 //way to haze), not a plume model; all are options so a world can retune them.
@@ -44,6 +47,7 @@ ARestlessOcean.WaterfallMistHull = ARestlessOcean.WaterfallMistHull || {};
     footRings: 4,
     footGrow: 0.35,         //extra radius over the run-out, as a fraction
     footLift: 0.7,          //the run-out's axis stands this fraction of its radius above the landing
+    footSlow: 0.75,         //the water's speed has dropped by this fraction at the end of the run-out (it spreads over the pool)
     minDrop: 0.8,           //m: shorter runs (ledge hops) get no cone
     minRun: 3,              //rows
     minPresence: 0.01
@@ -104,10 +108,11 @@ ARestlessOcean.WaterfallMistHull = ARestlessOcean.WaterfallMistHull || {};
       const rEnd = Math.min(Math.max(opt(o, 'radiusPerDrop') * drop, opt(o, 'radiusMin')), opt(o, 'radiusMax'));
       const rTop = Math.min(opt(o, 'radiusTop'), rEnd);
       const expo = opt(o, 'radiusExponent');
-      const radius = [], u = [], src = [];
+      const radius = [], u = [], src = [], tauR = [], spdR = [];
       for(let i = 0; i < n; ++i){
         const uu = s[i] / s[n - 1];
         u.push(uu); radius.push(rTop + (rEnd - rTop) * Math.pow(uu, expo)); src.push(run.a + i);
+        tauR.push(fA[(run.a + i) * 4]); spdR.push(Math.max(fA[(run.a + i) * 4 + 3], 0.5));
       }
       //Run-out: bend the axis from the landing's heading round to horizontal, lifting it clear of the pool.
       const landing = c[n - 1], tl = tg[n - 1];
@@ -125,6 +130,10 @@ ARestlessOcean.WaterfallMistHull = ARestlessOcean.WaterfallMistHull || {};
         const nc = [prev[0] + dir[0] * step, prev[1] + dir[1] * step, prev[2] + dir[2] * step];
         nc[1] = Math.max(nc[1], landing[1] + opt(o, 'footLift') * rm);
         c.push(nc); tg.push(tm); radius.push(rm); u.push(1.0 + f); src.push(run.b - 1);
+        //Time of flight and speed along the run-out: the water slows as it spreads, and time keeps running.
+        const vNew = Math.max(spdR[n - 1] * (1.0 - opt(o, 'footSlow') * f), 0.5), vOld = spdR[spdR.length - 1];
+        tauR.push(tauR[tauR.length - 1] + Math.hypot(nc[0] - prev[0], nc[1] - prev[1], nc[2] - prev[2]) / Math.max(0.5 * (vOld + vNew), 0.5));
+        spdR.push(vNew);
       }
       const nR = c.length;
 
@@ -157,8 +166,8 @@ ARestlessOcean.WaterfallMistHull = ARestlessOcean.WaterfallMistHull || {};
         tan.push(tg[i][0], tg[i][1], tg[i][2]);
         cen.push(c[i][0], c[i][1], c[i][2]);
         mA.push(fA[v * 4 + 1] * fB[v * 4 + 3], u[i], radius[i], seed);
-        mB.push(fB[v * 4], s[n - 1], 0.0, fB[v * 4 + 3]);
-        mC.push(landing[0], landing[1], landing[2]);
+        mB.push(fB[v * 4], s[n - 1], spdR[i], fB[v * 4 + 3]);
+        mC.push(landing[0], landing[1], landing[2], tauR[i]);
         ++vBase;
       };
       for(let i = 0; i < nR; ++i){

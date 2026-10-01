@@ -16,14 +16,15 @@ precision highp float;
 //  along     u runs 0 at the lip, 1 at the landing, 1..2 over the run-out. It fades the cone in below
 //            the lip (uFadeIn) and out over the run-out, and sets WHAT the mist is:
 //              FOAM in the middle of the fall: dense, bright, round lumps with some stretch along the
-//                flow, so it reads as foam blasting down, rushing at uMistSpeed;
+//                flow, so it reads as foam blasting down, riding the water at its own speed;
 //              HAZE toward the landing (uHazeStart..1) and over the pool: thin, soft, large round
 //                puffs, bluer, drifting out.
 //            u is measured per SAMPLE (axial position / the run's length), so one tall cone changes
 //            from foam to haze along its own length, and a short fall is all foam with a short haze tail.
-//  noise     looping 3D value noise, advected down the axis (two copies half a period apart, cross-
-//            faded: no seam), compressed along the axis by the stretch so cells are streaks, shaped by
-//            smoothstep so the lumps have defined, billowy edges and the thin rim erodes into clumps.
+//  noise     3D value noise laid out in the water's TIME OF FLIGHT along the flow (so it rides the water at
+//            its real speed and its cells stretch as the jet accelerates, like the sheet's grain) and in
+//            metres across it, periodic in time (it loops, no seam), shaped by smoothstep so the lumps
+//            have defined, billowy edges and the thin rim erodes into clumps.
 //  ground    nothing below the landing's height: the cone is allowed to dip under the pool, it just
 //            has no density there (it is not clamped to the floor, which made flat walls).
 //
@@ -61,10 +62,8 @@ uniform float uFoamDensity;      //1/m extinction at the core of the foam
 uniform float uHazeDensity;      //... and of the haze
 uniform float uFoamScale;        //m per noise cell in the foam
 uniform float uHazeScale;        //... in the haze
-uniform float uFoamStretch;      //foam cells are this many times longer along the flow
-uniform float uHazeStretch;      //... haze cells (1: round puffs)
-uniform float uMistSpeed;        //m/s the lumps rush down the axis
-uniform float uMistLoop;         //s per cross-fade period of the loop
+uniform float uFoamRate;         //foam noise cells per second of the water's flight along the flow (a cell is that long x the water's speed: streaks that stretch as it accelerates)
+uniform float uHazeRate;         //... in the haze (fewer, and the water is slower there: rounder puffs)
 uniform float uErodeFoam;        //0..1: noise level below which the foam is carved away
 uniform float uErodeHaze;        //... and the haze
 uniform float uErodeSoft;        //width of the carve's edge (small: lumps with defined edges)
@@ -96,8 +95,9 @@ varying vec3 vN;       //the CURTAIN's normal here (for the occlusion only)
 varying vec3 vT;       //the cone's axis direction (down the flow)
 varying vec3 vA;       //the curtain's across direction (for the occlusion only)
 varying vec4 vMistA;   //across (m from the curtain's middle), u, radius, seed
-varying vec4 vMistB;   //aeration, run length (m), 0, curtain half-width
+varying vec4 vMistB;   //aeration, run length (m), the water's speed (m/s), curtain half-width
 varying vec3 vEnd;     //the run's landing point
+varying float vTau;    //the water's time of flight at this fragment (s)
 varying float vViewDepth;
 
 #if(!$atmospheric_perspective_enabled)
@@ -211,30 +211,65 @@ float fbmOct(vec3 p, int octaves){
 }
 
 
+//The cone's frame for the noise, set once per fragment in main(): the axis direction and two
+//directions across it. (Only the noise uses them; the density mask is the distance to the axis.)
+vec3 gT, gE1, gE2;
+
 //Where along the run a sample is: u at the fragment, moved by its axial offset over the run's length.
 float mistU(vec3 p, vec3 T){
   return clamp(vMistA.y + dot(p - vCenter, T) / max(vMistB.y, 1.0), 0.0, 2.0);
 }
 
-//One copy of the advected noise. The pattern moves down the axis at uMistSpeed; its cells are
-//compressed along the axis by `stretch` (streaks), measured from the landing so the numbers stay small.
-float mistNoise1(vec3 p, vec3 T, float stretch, float scale, float lag, int octaves){
-  vec3 pa = p - vEnd - T * (uMistSpeed * lag);
-  float al = dot(pa, T);
-  vec3 q = (pa - T * (al * (1.0 - 1.0 / stretch))) / scale + vec3(vMistA.w * 37.1, vMistA.w * 11.7, vMistA.w * 23.3);
-  return fbmOct(q, octaves);
+//Value noise PERIODIC along x with period `per` cells (a whole number): the time term is wrapped, and
+//noise that did not repeat at the wrap would jump every lump at once.
+float vnoise3p(vec3 x, float per){
+  vec3 i = floor(x);
+  vec3 f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  float x0 = mod(i.x, per), x1 = mod(i.x + 1.0, per);
+  return mix(mix(mix(hash3(vec3(x0, i.y, i.z)),             hash3(vec3(x1, i.y, i.z)),             f.x),
+                 mix(hash3(vec3(x0, i.y + 1.0, i.z)),       hash3(vec3(x1, i.y + 1.0, i.z)),       f.x), f.y),
+             mix(mix(hash3(vec3(x0, i.y, i.z + 1.0)),       hash3(vec3(x1, i.y, i.z + 1.0)),       f.x),
+                 mix(hash3(vec3(x0, i.y + 1.0, i.z + 1.0)), hash3(vec3(x1, i.y + 1.0, i.z + 1.0)), f.x), f.y), f.z);
+}
+float fbmPer(vec3 p, int octaves, float per){
+  float a = 0.5, s = 0.0, norm = 0.0;
+  for(int i = 0; i < 4; i++){
+    if(i >= octaves) break;
+    s += a * vnoise3p(p, per);
+    norm += a;
+    p = vec3(p.x * 2.0, p.y * 2.03 + 1.7, p.z * 2.03 + 3.1);   //x exactly x2 so the octave repeats too
+    per *= 2.0;
+    a *= 0.5;
+  }
+  return s / norm;
 }
 
-//Density (1/m) at a world point for the cone this fragment belongs to. `dual`: the looping cross-fade
-//of two noise copies (the view ray); false: one copy (the sun ray, which only needs the shape).
-float mistDensity(vec3 p, vec3 T, int octaves, bool dual){
+//The noise, laid out in the WATER'S OWN TIME OF FLIGHT along the flow and in metres across it. A
+//parcel that passed the lip at time t0 is at tau = t - t0, so (tau - t) is the same for it all its
+//life: the pattern RIDES THE WATER, at the water's real speed, and its cells stretch along the fall
+//as the jet accelerates (equal time steps cover more metres where the water is faster), exactly as
+//the sheet's grain does. No advection speed to pick, no cross-fade of two copies (which stalled and
+//ghosted the pattern at each swap). The along-flow coordinate is the TIME at this sample: the
+//fragment's tau, moved by its axial offset over the local speed.
+const float MIST_PERIOD = 32.0;   //cells; the time term repeats after this many
+float mistNoise(vec3 p, float rate, float scale, int octaves){
   vec3 q = p - vCenter;
-  vec3 perp = q - T * dot(q, T);
+  float tauP = vTau + dot(q, gT) / max(vMistB.z, 0.5);
+  float xa = mod(tauP * rate - mod(t * rate, MIST_PERIOD) + vMistA.w * MIST_PERIOD, MIST_PERIOD);
+  vec3 c = vec3(xa, dot(q, gE1) / scale + vMistA.w * 17.3, dot(q, gE2) / scale + vMistA.w * 9.1);
+  return fbmPer(c, octaves, MIST_PERIOD);
+}
+
+//Density (1/m) at a world point for the cone this fragment belongs to.
+float mistDensity(vec3 p, int octaves){
+  vec3 q = p - vCenter;
+  vec3 perp = q - gT * dot(q, gT);
   float R = max(vMistA.z, 1e-3);
   float x = length(perp) / R;
   if(x >= 1.0) return 0.0;
   float radial = pow(1.0 - x * x, uRadialPow);
-  float u = mistU(p, T);
+  float u = mistU(p, gT);
   float fadeIn = smoothstep(0.0, max(uFadeIn, 1e-3), u);
   float fadeOut = 1.0 - smoothstep(1.25, 2.0, u);
   float body = max(smoothstep(uAerationLo, uAerationHi, vMistB.x), uMinBody);
@@ -242,14 +277,7 @@ float mistDensity(vec3 p, vec3 T, int octaves, bool dual){
   float env = radial * fadeIn * fadeOut * body * ground;
   if(env <= 0.0) return 0.0;
   float haze = smoothstep(uHazeStart, 1.0, u);
-  float stretch = mix(uFoamStretch, uHazeStretch, haze);
-  float scale = mix(uFoamScale, uHazeScale, haze);
-  float ra = fract(t / uMistLoop) ;
-  float n = mistNoise1(p, T, stretch, scale, ra * uMistLoop, octaves);
-  if(dual){
-    float rb = fract(ra + 0.5);
-    n = mix(n, mistNoise1(p + vec3(5.7, 3.1, 8.3) * scale, T, stretch, scale, rb * uMistLoop, octaves), abs(1.0 - 2.0 * ra));
-  }
+  float n = mistNoise(p, mix(uFoamRate, uHazeRate, haze), mix(uFoamScale, uHazeScale, haze), octaves);
   float lo = mix(uErodeFoam, uErodeHaze, haze) + 0.3 * (1.0 - radial);
   float shape = smoothstep(lo, lo + max(uErodeSoft, 1e-3), n);
   return uMistDensity * mix(uFoamDensity, uHazeDensity, haze) * env * shape;
@@ -321,6 +349,12 @@ void main(){
   vec3 sunCol = INV_PI * brightestDirectionalLight * uSunGain;
   vec3 ambient = skyAmbientColor * uAmbient;
 
+  gT = T;
+  vec3 across = A - T * dot(A, T);
+  if(dot(across, across) < 1e-4) across = cross(T, abs(T.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0));
+  gE1 = normalize(across);
+  gE2 = cross(T, gE1);
+
   float camSide = sign(dot(cameraPosition - vCenter, N));
   if(camSide == 0.0) camSide = 1.0;
   float hw = max(vMistB.w, 0.1);
@@ -335,7 +369,7 @@ void main(){
     if(i >= nSteps) break;
     float back = L - dt * (float(i) + jitter);   //metres back from X
     vec3 p = start + rd * (dt * (float(i) + jitter));
-    float dens = mistDensity(p, T, 3, true);
+    float dens = mistDensity(p, 3);
     if(dens <= 0.002) continue;
 
     //Occlusion: the ground behind (view depth along the ray is linear in distance), then the curtain.
@@ -354,7 +388,7 @@ void main(){
     for(int k = 0; k < MAX_LIGHT_STEPS; k++){
       if(k >= nLight) break;
       vec3 q = p + Lsun * lightStep * (float(k) + 0.5 + 0.5 * jitter);
-      tauL += mistDensity(q, T, 2, false) * lightStep;
+      tauL += mistDensity(q, 2) * lightStep;
     }
     tauL *= uAbsorption;
     //Direct term plus a wider, weaker one standing in for the light that scatters round the clump
@@ -390,7 +424,7 @@ void main(){
     float hz = smoothstep(uHazeStart, 1.0, um);
     gl_FragColor = vec4(1.0 - hz, hz, smoothstep(0.0, max(uGroundFade, 1e-3), pm.y - vEnd.y), 1.0);
   }
-  else if(uDebugMode == 7) gl_FragColor = vec4(vec3(clamp(mistDensity(vWorldPos, T, 3, true) * 10.0, 0.0, 1.0)), 1.0);   //density AT the wall: must be 0 everywhere (bright = a leak)
+  else if(uDebugMode == 7) gl_FragColor = vec4(vec3(clamp(mistDensity(vWorldPos, 3) * 10.0, 0.0, 1.0)), 1.0);   //density AT the wall: must be 0 everywhere (bright = a leak)
   //$DEBUG_END$
 
   #if(!$atmospheric_perspective_enabled)

@@ -76,6 +76,27 @@ function audit(label, hull){
     for(let v = r.v0; v < r.v1 - 2; v++) if(Math.abs(hull.mistA[v*4+1] - 1.0) < 1e-6) rLand = Math.max(rLand, hull.mistA[v*4+2]);
     if(i === 0) check(label+': the cone opens downward (lip radius < landing radius)', rLand > rTop * 1.5 || rLand >= r.radiusEnd - 1e-6, 'lip '+f2(rTop)+' landing '+f2(rLand));
   });
+  //THE NOISE RIDES THE WATER. The shader lays the noise out in the water's time of flight (mistC.w),
+  //so its physical speed along the axis is d(arc length)/d(tau). That must equal the water's speed at
+  //the ring (mistB.z) everywhere, down the fall AND over the run-out (where the water slows), and
+  //time must only run forward: a constant advection speed, or a time that stalls, is what made the
+  //pattern stall and re-accelerate mid-fall.
+  let worstRel = 0.0, backwards = 0, slowest = Infinity, fastest = 0, segs = 0;
+  hull.ranges.forEach(r => {
+    for(let ring = 0; ring + 1 < r.rings; ring++){
+      const a = r.v0 + ring * r.sides, b = r.v0 + (ring + 1) * r.sides;
+      const ds = Math.hypot(hull.center[b*3] - hull.center[a*3], hull.center[b*3+1] - hull.center[a*3+1], hull.center[b*3+2] - hull.center[a*3+2]);
+      const dtau = hull.mistC[b*4+3] - hull.mistC[a*4+3];
+      if(dtau < -1e-6) backwards++;
+      if(dtau > 1e-4 && ds > 1e-3){
+        const v = ds / dtau, vw = 0.5 * (hull.mistB[a*4+2] + hull.mistB[b*4+2]);
+        worstRel = Math.max(worstRel, Math.abs(v - vw) / vw);
+        slowest = Math.min(slowest, v); fastest = Math.max(fastest, v); segs++;
+      }
+    }
+  });
+  check(label+': the noise rides the water (d arc / d tau = the water\'s speed, time never runs back)', backwards === 0 && segs > 0 && worstRel < 0.35,
+        'segments '+segs+', worst speed error '+(100*worstRel).toFixed(0)+'%, speeds '+f2(slowest)+' .. '+f2(fastest)+' m/s');
   //u runs 0 at the lip to 1 at the landing, then 1..2 along the run-out.
   let uMin = Infinity, uMax = 0;
   for(let v = 0; v < nV; v++){ uMin = Math.min(uMin, hull.mistA[v*4+1]); uMax = Math.max(uMax, hull.mistA[v*4+1]); }
