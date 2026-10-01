@@ -424,6 +424,11 @@ void main(){
     float hz = smoothstep(uHazeStart, 1.0, um);
     gl_FragColor = vec4(1.0 - hz, hz, smoothstep(0.0, max(uGroundFade, 1e-3), pm.y - vEnd.y), 1.0);
   }
+  else if(uDebugMode == 8){                                                                       //the raw noise at mid-chord, full contrast (to see / measure how the pattern moves)
+    vec3 pm = vWorldPos - rd * 0.5 * L;
+    float hz = smoothstep(uHazeStart, 1.0, mistU(pm, T));
+    gl_FragColor = vec4(vec3(mistNoise(pm, mix(uFoamRate, uHazeRate, hz), mix(uFoamScale, uHazeScale, hz), 3)), 1.0);
+  }
   else if(uDebugMode == 7) gl_FragColor = vec4(vec3(clamp(mistDensity(vWorldPos, 3) * 10.0, 0.0, 1.0)), 1.0);   //density AT the wall: must be 0 everywhere (bright = a leak)
   //$DEBUG_END$
 
