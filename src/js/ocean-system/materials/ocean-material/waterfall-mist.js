@@ -181,6 +181,53 @@ ARestlessOcean.Materials.Ocean.waterfallMistMaterial = {
       'uniform float atmDistanceScale;',
 
       '//ATMOSPHERE_FUNCTIONS_INJECTION_POINT',
+
+      '//Lifted verbatim from waterfall-sheet.glsl (keep in step). The injected functions are the LUT',
+      '//helpers only; the sheet and the creek each define their own applyAtmosphericPerspective on top.',
+      '//Atmospheric perspective for ground-level surfaces.',
+      '//Uses distance-based extinction with LUT-sampled multi-scattered inscattering.',
+      '//At the same height: S(A->B) = S(A->inf) * (1 - T(A->B))',
+      'vec3 applyAtmosphericPerspective(vec3 color, vec3 worldPos){',
+        'vec3 worldViewDir = normalize(worldPos - cameraPosition);',
+        "//Convert view direction from THREE.js world space to a-starry-sky's coordinate",
+        '//system. Sun world direction = (-sp.z, sp.y, -sp.x) from quadOffset, so the',
+        '//inverse transform from world to sky coords is: skyDir = (-world.z, world.y, -world.x)',
+        'vec3 viewDir = vec3(-worldViewDir.z, worldViewDir.y, -worldViewDir.x);',
+        'float dist = length(worldPos - cameraPosition) * METERS_TO_KM * atmDistanceScale;',
+
+        '//Distance-based extinction along the camera-to-surface path',
+        'vec3 extinction = exp(-(RAYLEIGH_BETA + EARTH_MIE_BETA_EXTINCTION) * dist);',
+
+        '//Attenuate surface color',
+        'color *= extinction;',
+
+        '//LUT coordinates for inscattering lookup',
+        'float viewCosZenith = max(viewDir.y, 0.0);',
+        'float xParam = parameterizationOfCosOfViewZenithToX(viewCosZenith);',
+        'float yHeight = parameterizationOfHeightToY(RADIUS_OF_EARTH + atmCameraHeight);',
+
+        '//Sun inscattering from 3D LUTs',
+        'float zSun = parameterizationOfCosOfSourceZenithToZ(max(atmSunPosition.y, 0.0));',
+        'vec3 uv3Sun = vec3(xParam, yHeight, zSun);',
+        'vec3 mieSun = texture(atmosphereMieInscattering, uv3Sun).rgb;',
+        'vec3 raySun = texture(atmosphereRayleighInscattering, uv3Sun).rgb;',
+        'float cosViewSun = dot(viewDir, atmSunPosition);',
+        'vec3 fogSun = pow(atmSunHorizonFade, 3.0) * atmScatteringSunIntensity',
+                    '* (miePhaseFunction(cosViewSun) * mieSun + rayleighPhaseFunction(cosViewSun) * raySun)',
+                    '* (1.0 - extinction);',
+
+        '//Moon inscattering from 3D LUTs',
+        'float zMoon = parameterizationOfCosOfSourceZenithToZ(max(atmMoonPosition.y, 0.0));',
+        'vec3 uv3Moon = vec3(xParam, yHeight, zMoon);',
+        'vec3 mieMoon = texture(atmosphereMieInscattering, uv3Moon).rgb;',
+        'vec3 rayMoon = texture(atmosphereRayleighInscattering, uv3Moon).rgb;',
+        'float cosViewMoon = dot(viewDir, atmMoonPosition);',
+        'vec3 fogMoon = pow(atmMoonHorizonFade, 3.0) * atmScatteringMoonIntensity * atmMoonLightColor',
+                     '* (miePhaseFunction(cosViewMoon) * mieMoon + rayleighPhaseFunction(cosViewMoon) * rayMoon)',
+                     '* (1.0 - extinction);',
+
+        'return color + fogSun + fogMoon;',
+      '}',
     '#endif',
 
     '//(No PI of our own: the injected atmosphere functions declare one; a second is a link error.)',
