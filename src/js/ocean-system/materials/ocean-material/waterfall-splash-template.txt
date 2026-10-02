@@ -1,0 +1,105 @@
+//This helps
+//--------------------------v
+//https://github.com/mrdoob/three.js/wiki/Uniforms-types
+//
+//Waterfall splash bursts (volumetric). The SHARED block is replaced at init by the flowing-water
+//material's own uniform objects (WaterfallSplashPass.init aliases them, as the mist does), so the
+//splash is lit by exactly the sun, sky, shadow and atmosphere the fall and the creek are. The
+//defaults here only matter if the splash is ever drawn without a flowing surface.
+ARestlessOcean.Materials.Ocean.waterfallSplashMaterial = {
+  uniforms: {
+    //SHARED with the flowing-water material
+    brightestDirectionalLight: {value: new THREE.Vector3(1.0, 1.0, 1.0)},
+    brightestDirectionalLightDirection: {value: new THREE.Vector3(0.0, -1.0, 0.0)},
+    skyAmbientColor: {value: new THREE.Vector3(0.3, 0.4, 0.5)},
+    t: {value: 0.0},
+    sunShadowMap: {value: null},
+    sunShadowMatrix: {value: new THREE.Matrix4()},
+    sunShadowMapSize: {value: new THREE.Vector2(2048.0, 2048.0)},
+    sunShadowRadius: {value: 1.0},
+    sunShadowBias: {value: 0.0},
+    sunShadowEnabled: {value: 0},
+    refractionDepthTexture: {value: null},
+    inverseProjectionMatrix: {value: new THREE.Matrix4()},
+    screenResolution: {value: new THREE.Vector2(1920.0, 1080.0)},
+    underwaterFactor: {value: 0.0},
+    atmosphereTransmittance: {value: null},
+    atmosphereMieInscattering: {value: null},
+    atmosphereRayleighInscattering: {value: null},
+    atmSunPosition: {value: new THREE.Vector3(0.0, 1.0, 0.0)},
+    atmMoonPosition: {value: new THREE.Vector3(0.0, -1.0, 0.0)},
+    atmSunHorizonFade: {value: 1.0},
+    atmMoonHorizonFade: {value: 0.0},
+    atmScatteringSunIntensity: {value: 1.0},
+    atmScatteringMoonIntensity: {value: 0.0},
+    atmMoonLightColor: {value: new THREE.Vector3(1.0, 1.0, 1.0)},
+    atmCameraHeight: {value: 0.0},
+    atmDistanceScale: {value: 1.0},
+
+    //Scene fog (see waterfall-sheet-template.txt: the material is fog:true)
+    fogNear: {value: 1.0},
+    fogFar: {value: 1000.0},
+    fogDensity: {value: 0.00025},
+    fogColor: {value: new THREE.Color()},
+    uwSunDir: {value: new THREE.Vector3(0.0, -1.0, 0.0)},
+
+    //The splash's own (lengths x6, density /6 and time rates /2 on 2026-10-02: the same look, six times the size, half the speed). FUDGE: look choices on top of the model in waterfall-splash-hull.js (the
+    //launch, flight and pulse are the hull's options; these shape and light what is drawn).
+    uSplashDensity: {value: 0.83},
+    uSplashScale: {value: 0.6},
+    uErode: {value: 0.28},
+    uErodeAge: {value: 0.22},
+    uErodeSoft: {value: 0.2},
+    uStretch: {value: 4.0},
+    uRiseRate: {value: 5.0},
+    uFill: {value: 0.7},
+    uTopSoft: {value: 0.6},
+    uPulseRate: {value: 2.5},
+    uPulseMin: {value: 0.45},
+    uPulseScatter: {value: 1.0},
+    uHeightNoise: {value: 0.55},
+    uHeightScale: {value: 0.8},
+    uHeightDrift: {value: 0.75},
+    uFallDensity: {value: 1.5},
+    uFallHeight: {value: 0.75},
+    uFallDelay: {value: 0.5},
+    uFallFloor: {value: 0.5},
+    uFallSpeed: {value: 1.5},
+    uFallErode: {value: 0.0},
+    uGroundFade: {value: 0.05},
+    uSteps: {value: 28.0},
+    uLightSteps: {value: 2.0},
+    uLightLength: {value: 3.6},
+    uAbsorption: {value: 1.0},
+    uPhaseG: {value: 0.7},
+    uAmbient: {value: 1.0},
+    uSunGain: {value: 1.0},
+    uAlbedo: {value: new THREE.Vector3(0.97, 0.98, 1.0)},
+    uSoftRange: {value: 0.3},
+    uSplashOpacity: {value: 1.0},
+    uDebugMode: {value: 0},
+  },
+
+  //Built like the sheet's (waterfall-sheet-template.txt): $atmospheric_perspective_enabled is
+  //substituted, and with it on the atmosphere functions replace the injection marker line.
+  //WaterfallSplashPass rebuilds it when atmospheric perspective becomes ready.
+  fragmentShader: function(atmosphericPerspectiveEnabled, atmosphereFunctionsGLSL){
+    const originalGLSL = [
+      {fragment_glsl}
+    ];
+    const updatedLines = [];
+    for(let i = 0, numLines = originalGLSL.length; i < numLines; ++i){
+      let updatedCode = originalGLSL[i];
+      updatedCode = updatedCode.replace(/\$atmospheric_perspective_enabled/g, atmosphericPerspectiveEnabled ? '1' : '0');
+      if(atmosphericPerspectiveEnabled && atmosphereFunctionsGLSL && updatedCode.indexOf('//ATMOSPHERE_FUNCTIONS_INJECTION_POINT') !== -1){
+        updatedCode = atmosphereFunctionsGLSL;
+      }
+      updatedLines.push(updatedCode);
+    }
+    return updatedLines.join('\n');
+  },
+
+  vertexShader: [
+    {vertex_glsl}
+  ].join('\n'),
+};
