@@ -58,3 +58,8 @@ groups:
         vertex:   'waterfall-mist-vertex.glsl'
         template: 'waterfall-mist-template.txt'
         material: 'waterfall-mist.js'
+      -
+        fragment: 'waterfall-splash.glsl'
+        vertex:   'waterfall-splash-vertex.glsl'
+        template: 'waterfall-splash-template.txt'
+        material: 'waterfall-splash.js'

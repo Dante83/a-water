@@ -5263,3 +5263,90 @@ spray are unchanged; the next step is flow-aligned water chunks to replace them 
   atmospheric perspective, and rendered in headless Chromium against synthetic 10 m and 30 m falls
   with a stand-in sheet. NOT yet checked on a real a-land world, on a GPU, or at frame rate: the
   step counts (24 view, 3 sun) are tunables for that.
+
+## Waterfall impact particles, step 2: splash bursts at the foot
+
+The first of the foot particles: `WaterfallSplashPass` (`passes/waterfall-splash-pass.js`,
+`waterfall-splash.glsl`), raymarched like the mist, renderOrder 9 (mist 8, spray 10). At every
+touchdown the trace recorded (each ledge and the plunge) a burst of spray is thrown up, rises against
+drag, falls back, and fires again. The old type-3 clumps stay off while the volume draws.
+
+- **The model** (`luts/waterfall-splash-hull.js`, its header has the maths). Not a Gaussian ball:
+  what a Gaussian IMPACT throws up. The water landing is `exp(-xi^2 / b^2)` across a blob's
+  footprint; launch speed goes as the square root of the impact pressure, so
+  `v0(xi) = v0c exp(-xi^2 / 2 b^2)`, `v0c = 0.35 x` the normal speed lost. The middle is the heaviest
+  and the fastest. Each drop then flies under gravity and quadratic drag (terminal speed 4 m/s, a
+  ~1 mm drop), which has a closed form for the rise, the apex `H = (vt^2 / 2g) ln(1 + v0^2 / vt^2)`
+  and the fall back. The top of a burst is that flight evaluated per launch ring: at the apex a
+  gentle splash is exactly the `exp(-xi^2 / b^2)` bell, a hard one the same bell flattened by drag;
+  the sides land first, so the burst shrinks to its middle. Drag is the cap (no launch clamp).
+- **The pulse.** The next burst fires when the last has landed: period = the middle's life x 1.15.
+  3 m fall: 0.33 m high, 0.52 s. 10 m: 0.76 m, 0.79 s. 30 m: 1.40 m, 1.08 s. Each burst's launch
+  speed (0.6..1 of the blob's) and middle are hashed from its index; neighbours are out of phase.
+- **The vanish.** Fall height (from the landing speed) against the trace's own breakup length per
+  strand (`Lb = 6 q^0.32`): full up to `mistLo` 3 lengths, gone by `mistHi` 8. FUDGE multiples of a
+  physical length. Test falls (q 0.83): 10 m full, 30 m at 0.53, a thin 90 m one builds nothing.
+- **Blobs.** One per touchdown on every other strand (stride grows past `maxBlobs` 24), `b` = 0.6 x
+  the gap between them (at least 0.3 m). The proxy is an icosahedron round a sphere; the shader
+  intersects the exact sphere, then clips the chord to the slab between the water and the burst's
+  current top, and the density has a window that is zero on the sphere.
+- **Shader.** Column under the top (`uFill` at the foot, 1 at the leading edge, soft `uTopSoft`
+  above), thinning as it stretches, eroded by noise laid out in the launch ring and the height as
+  a fraction of the top (it rides the drops; the carve rises with age: body, then flecks). Light,
+  occlusion, atmosphere and fog are copied from the mist (keep in step).
+- **Knobs.** `oceanGrid.waterfallSplashPass`: `material.uniforms.u*`; `hullOptions` + `rebuild()`
+  (`launchFraction`, `terminalVelocity`, `rest`, `fan`, `lean`, `widthPerGap`, `mistLo`, `mistHi`);
+  `uDebugMode` 1 opacity, 2 burst age, 3 strength, 4 the blobs, 5 launch speed profile.
+- **Pages that load loose `src/` files** need three more script tags (falls-lab-sky.html has them):
+  `materials/ocean-material/waterfall-splash.js`, `luts/waterfall-splash-hull.js`,
+  `passes/waterfall-splash-pass.js`. Needs create-shader.py for the material.
+- **Checked.** `node tests/waterfall-mist/splash-hull-test.mjs` (74 checks: the flight against the
+  drag equation integrated numerically, the bell, the vanish, proxies hold their spheres, spheres
+  hold their bursts, ledges, pools, wide falls). Both stages compiled, linked and rendered in headless
+  Chrome (raw WebGL2, a three-like prefix, atmospheric perspective OFF) against the hull's output
+  for 3 / 10 / 30 m landings. NOT checked: with atmospheric perspective on, through the real
+  ShaderMaterial, on a real world, or at frame rate.
+- **Round 2 (after Dante's first look): a standing column, not single bursts.** One ballistic burst
+  per blob fired about once a second and cleared in between; a real foot fires several times a second
+  and never clears, and it read as puffs lying on the surface. Now: the bursts overlap in the air, so
+  the shader draws the standing column of their apexes, whose LAUNCH SPEED pulses at `uPulseRate` 5 Hz
+  plus two harmonics that do not divide it (x1.618, x2.414), between `uPulseMin` 0.45 and 1, with the
+  phase scattered over the footprint by 2D noise (`uPulseScatter`) so neighbouring spurts peak at
+  different times. The top also carries its own drifting 2D height noise (`uHeightNoise` 0.55,
+  `uHeightScale` 0.22 m, `uHeightDrift`). The volume is filled from the water to the top (`uFill`
+  0.7) and its noise is in metres, stretched `uStretch` 4x along the axis and running up it at
+  `uRiseRate` (periodic, no seam): vertical streaks like the foam coming down. A blob per strand now
+  (`strandStride` 1, `maxBlobs` 48, b 0.3 m). The hull's flight / life / period are still tested but
+  the shader uses only the apex; debug 2 and 5 both show the column height. Recompiled and rendered
+  headless as before; needs create-shader.py again.
+- **Round 3: x4 the size** (Dante). Height: `terminalVelocity` 4 -> 8 and `launchFraction` 0.35 -> 0.7
+  (doubling both scales the apex by exactly 4: 3 m fall 1.31 m, 10 m 3.05 m, 30 m 5.60 m). Width:
+  `widthPerGap` 2.4, `widthMin` 1.2 m. The shader's lengths x4 (`uSplashScale` 0.4, `uHeightScale`
+  0.88, `uTopSoft` 0.4, `uLightLength` 2.4) and `uSplashDensity` /4 (1.25 per m), so the look is the
+  same, larger; `uSteps` 24. Blobs now overlap ~5 deep across a fall: the overdraw lever is
+  `hullOptions.strandStride` 2.
+- **Round 4: radial, x1.5, half speed** (Dante). RADIAL term: the drops fly out along rays from a focus
+  H / k under the origin (k = the hull's `fan`, now 0.6, passed as splashC.z), so the splash opens
+  1 + k wide by its top; the launch ring is the sample's position over (1 + k z / H), density is
+  divided by that squared (same drops, wider area), and the streaks run along the rays. x1.5: launch
+  fraction and terminal speed both x sqrt(1.5) (0.857, 9.8 m/s: apex x1.5 exactly; 3 m fall 1.97 m,
+  10 m 4.58 m, 30 m 8.40 m), widths 3.6 x gap / 1.8 m min, topSoft 0.6; shader lengths x1.5,
+  density /1.5 (0.83), 28 steps. Time rates halved: `uPulseRate` 2.5, `uRiseRate` 2.5,
+  `uHeightDrift` 0.75.
+- **Round 5: the fall (the bounce)** (Dante: it juts up and vanishes; some should come back down).
+  A falling SKIRT beside the column: the column's bell stretched `1 + fallReach` wide (hull option,
+  0.8, in splashC.w; the blob radius grows to hold it: ~12.6 m on the 10 m test fall) and
+  `uFallHeight` 0.75 as tall, drawn where the column is thin (x (1 - its mass)), its pulse LATE by
+  `uFallDelay` 0.5 x the middle's fall time from its apex, so a spurt goes up and a moment later rains
+  down round it. Its streaks run DOWN (`uFallSpeed` 1.5 x uRiseRate), density `uFallDensity` 1.5 of
+  the column's, thinning to `uFallFloor` 0.5 at the water. Debug 6: column red, skirt green.
+  `hullOptions.fallReach = 0` + rebuild() turns it off. Headless frames show a jet with a skirt of
+  outward-leaning streaks round its base; the wide blobs show faint step hatching at 28 steps.
+- **Round 6: the skirt killed the frame rate; overdraw fix.** The cost was overlap, not the skirt's
+  maths: a blob per 0.5 m strand, each 1.8 m wide and (with the skirt) 12.6 m across, so a pixel
+  near a fall marched ~13 overlapping blobs. Now a blob every 2 m (`strandStride` 4), its width no
+  longer tied to the spacing (`widthMin` 1.8 m is b; `widthPerGap` 0.9), each carrying the water of
+  its whole gap (`densityRefGap` 0.5: strength x gap / 0.5, so the look does not depend on the
+  stride; tested), skirt `fallReach` 0.8 -> 0.5. Headless benchmark (raw WebGL2, 1400x600, one 12 m
+  wide 10 m fall, ms per draw, two runs): round 4 (no skirt) 1.34 / 1.55, round 5 3.39 / 3.16, now
+  0.81 / 0.83. Looks as dense as round 5 side by side.

@@ -1451,6 +1451,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.waterfallSheetPass = null;
   //The volumetric mist of the falls, riding the sheet's cascades (WaterfallMistPass).
   this.waterfallMistPass = null;
+  //The splash bursts at the falls' landings, riding the same cascades (WaterfallSplashPass).
+  this.waterfallSplashPass = null;
   if(ARestlessOcean.Passes && ARestlessOcean.Passes.ShoreReflectionPass && ARestlessOcean.ShoreReflection.ENABLED){
     this.shoreReflectionPass = new ARestlessOcean.Passes.ShoreReflectionPass(this);
     this.shoreReflectionPass.init();
@@ -1787,7 +1789,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     const moonMesh = rends && rends.moonRenderer && rends.moonRenderer.moonMesh;
     const splashMesh = self.oceanSplash ? self.oceanSplash.mesh : null;
     const mistMesh = self.waterfallMistPass ? self.waterfallMistPass.mesh : null;
-    const hide = [skyMesh, sunMesh, moonMesh, splashMesh, mistMesh];
+    const fallSplashMesh = self.waterfallSplashPass ? self.waterfallSplashPass.mesh : null;
+    const hide = [skyMesh, sunMesh, moonMesh, splashMesh, mistMesh, fallSplashMesh];
     const vis = hide.map(function(m){ return m ? m.visible : false; });
     hide.forEach(function(m){ if(m) m.visible = false; });
     const curtain = self.underwaterCurtainMesh;
@@ -1983,6 +1986,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     if(self.oceanSplash) self.oceanSplash.mesh.visible = false;
     //The waterfall mist likewise (shown again below, main render only).
     if(self.waterfallMistPass && self.waterfallMistPass.mesh) self.waterfallMistPass.mesh.visible = false;
+    if(self.waterfallSplashPass && self.waterfallSplashPass.mesh) self.waterfallSplashPass.mesh.visible = false;
     //The waterline overlay too (Phase 8e): main render only.
     if(self.waterlinePass) self.waterlinePass.setVisible(false);
 
@@ -2214,6 +2218,15 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       }
       if(self.waterfallMistPass){
         self.waterfallMistPass.tick({enabled: self.flowSurfaceEnabled && self.flowSurfacePass.enabled});
+      }
+      //The splash bursts at the landings likewise (they share the mist's aliased uniforms).
+      if(!self.waterfallSplashPass && ARestlessOcean.Passes.WaterfallSplashPass && ARestlessOcean.Passes.WaterfallMistPass
+         && ARestlessOcean.WaterfallSplashHull && ARestlessOcean.Materials.Ocean.waterfallSplashMaterial){
+        self.waterfallSplashPass = new ARestlessOcean.Passes.WaterfallSplashPass(self, self.waterfallSheetPass);
+        self.waterfallSplashPass.init(scene);
+      }
+      if(self.waterfallSplashPass){
+        self.waterfallSplashPass.tick({enabled: self.flowSurfaceEnabled && self.flowSurfacePass.enabled});
       }
     }
 
@@ -3312,6 +3325,9 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //The waterfall mist too: above water only, main render only.
     if(self.waterfallMistPass && self.waterfallMistPass.mesh){
       self.waterfallMistPass.mesh.visible = self.waterfallMistPass.wantVisible && !self._wasUnderwater;
+    }
+    if(self.waterfallSplashPass && self.waterfallSplashPass.mesh){
+      self.waterfallSplashPass.mesh.visible = self.waterfallSplashPass.wantVisible && !self._wasUnderwater;
     }
     //Phase 8e: the waterline overlay, for the main render only (hidden for every offscreen
     //pass at the top of tick).
