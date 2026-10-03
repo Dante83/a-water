@@ -977,6 +977,11 @@ ARestlessOcean.installOceanDebugControls = function(grid){
       //fallRings: the live look knobs, e.g. fallRings.gain = 1.5, fallRings.wavelength = 5.
       window.fallRings = ARestlessOcean.DynamicWaves ? ARestlessOcean.DynamicWaves.FALL_RINGS : null;
       //cloudStats(): what the billowy clouds are doing (WaterfallCloudPass.stats).
+      //fallShadowStats(): the falls' shadow map (WaterfallShadowPass); waterfallShadowPass.enabled = false for A/B.
+      Object.defineProperty(window, 'waterfallShadowPass', {configurable: true, get: function(){ return grid.waterfallShadowPass; }});
+      window.fallShadowStats = function(){
+        return grid.waterfallShadowPass ? grid.waterfallShadowPass.stats() : 'no waterfall shadow pass yet (no fall traced)';
+      };
       window.cloudStats = function(){
         return grid.waterfallCloudPass ? grid.waterfallCloudPass.stats() : 'no waterfall cloud pass yet (no fall traced)';
       };

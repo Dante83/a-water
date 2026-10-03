@@ -150,6 +150,8 @@ uniform float uLightSteps;       //sun-ray steps
 uniform float uLightLength;      //m the sun ray reaches
 uniform float uAbsorption;       //sun-ray extinction as a multiple of the view's
 uniform float uPhaseG;           //forward lobe of the phase function
+uniform float uMultiScatter;     //1: Wrenninge octaves + diffusion floor (step 4b); 0: the old two-exponential stand-in
+uniform float uDiffusion;        //the multiple-scatter diffusion floor's weight (isotropic units)
 uniform float uAmbient;          //sky fill
 uniform float ambientPiFix;   //1: the sky irradiance gets the Lambert 1/PI a-land and three apply (physical); 0: the old, PI x too bright sky fill. A/B, 2026-10-02
 uniform float uSunElevation;     //sin of the TRUE solar elevation (the moon is the brightest light at night)
@@ -297,6 +299,33 @@ float hgIso(float cosT, float g){
 }
 float mistPhase(float cosT){
   return mix(hgIso(cosT, uPhaseG), hgIso(cosT, -0.25), 0.25);
+}
+
+//MULTIPLE SCATTERING (step 4b, 2026-10-03): Wrenninge's octaves (Oz, 2013; Frostbite, Nubis; the sky clouds'
+//cloud-march.glsl and waterfall-cloud.glsl), in place of the old two-exponential stand-in. Octave i carries
+//half the energy, sees half the optical depth to the sun and half the anisotropy of the one before, so light
+//soaks into the shaded side of a dense clump instead of it going grey-black; a diffusion floor
+//(uDiffusion / (1 + 0.11 tau)) catches the deep interior. NORMALISED PER ANGLE: the octaves' sum is divided by
+//its own value at tau 0 for this view angle and multiplied by the single phase, so a thin wisp is lit EXACTLY as
+//before from every side (a plain /1.875 moved ~30% of the backlit halo into the sides) and only depth changes:
+//where the old form went to ~0, the softened octaves keep carrying light. uMultiScatter 0 = the old form.
+//waterfall-mist.glsl and waterfall-splash.glsl carry the same copy (keep in step).
+const int MIST_MS_OCTAVES = 4;
+void mistPhaseOctaves(float cosT, out float ph[MIST_MS_OCTAVES]){
+  float att = 1.0;
+  for(int i = 0; i < MIST_MS_OCTAVES; ++i){
+    ph[i] = mix(hgIso(cosT, uPhaseG * att), hgIso(cosT, -0.25 * att), 0.25);
+    att *= 0.5;
+  }
+}
+//The sun's light scattered toward the eye at a sample whose optical depth to the sun is tau (replaces
+//phase x transmittance).
+float mistSunScatter(float tau, float phase0, float ph[MIST_MS_OCTAVES]){
+  float old = phase0 * (exp(-tau) + 0.4 * exp(-0.2 * tau)) / 1.4;
+  float ms = 0.0, ms0 = 0.0, a = 1.0, b = 1.0;
+  for(int i = 0; i < MIST_MS_OCTAVES; ++i){ ms += a * exp(-tau * b) * ph[i]; ms0 += a * ph[i]; a *= 0.5; b *= 0.5; }
+  ms = max(ms, uDiffusion / (1.0 + 0.11 * tau));
+  return mix(old, phase0 * ms / max(ms0, 1e-6), uMultiScatter);
 }
 
 //The scene's sun shadow at a world point: four taps, no derivatives (this runs in a loop).
@@ -591,7 +620,7 @@ void surfaceMistMain(){
   //UNITS: irradiance -> radiance, the 1/PI the sun term has (INV_PI) (ambientPiFix, 2026-10-02).
   vec3 ambient = skyAmbientColor * uAmbient * nightDim() * landSkyVisibilityOpen(vWorldPos.xz) * mix(1.0, INV_PI, ambientPiFix);
   //Thin: one light for the whole chord (the scene's shadow at its middle, no sun march of its own).
-  vec3 scatter = uAlbedo * (sunCol * phase * sunShadowAt(cameraPosition + rd * (t0 + 0.5 * L)) + ambient);
+  vec3 scatter = uAlbedo * (sunCol * phase * sunShadowAt(cameraPosition + rd * (t0 + 0.5 * L)) * fallShadowAt(cameraPosition + rd * (t0 + 0.5 * L)) + ambient);
   float Tr = 1.0;
   for(int i = 0; i < MAX_STEPS; i++){
     if(i >= nSteps) break;
@@ -684,6 +713,8 @@ void main(){
 
   vec3 Lsun = -normalize(brightestDirectionalLightDirection);   //toward the sun
   float phase = mistPhase(dot(rd, Lsun));
+  float phOct[MIST_MS_OCTAVES];
+  mistPhaseOctaves(dot(rd, Lsun), phOct);
   vec3 sunCol = INV_PI * brightestDirectionalLight * uSunGain * landLightVisibilityOpen(vWorldPos, Lsun);
   //UNITS: irradiance -> radiance, the 1/PI the sun term has (INV_PI) (ambientPiFix, 2026-10-02).
   vec3 ambient = skyAmbientColor * uAmbient * nightDim() * landSkyVisibilityOpen(vWorldPos.xz) * mix(1.0, INV_PI, ambientPiFix);
@@ -714,8 +745,8 @@ void main(){
       tauL += splashDensity(q, 2, topF) * lightStep;
     }
     tauL *= uAbsorption;
-    float sunT = (exp(-tauL) + 0.4 * exp(-0.2 * tauL)) / 1.4;
-    vec3 scatter = uAlbedo * (sunCol * phase * sunT * sunShadowAt(p) + ambient);
+    //The direct light and the light scattered round the burst (mistSunScatter: the octaves, step 4b).
+    vec3 scatter = uAlbedo * (sunCol * mistSunScatter(tauL, phase, phOct) * sunShadowAt(p) * fallShadowAt(p) + ambient);
 
     float stepT = exp(-sigma * dt);
     acc += Tr * (1.0 - stepT) * scatter;

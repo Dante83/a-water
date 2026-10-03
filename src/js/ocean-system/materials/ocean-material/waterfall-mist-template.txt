@@ -23,6 +23,10 @@ ARestlessOcean.Materials.Ocean.waterfallMistMaterial = {
     landLightOn: {value: new THREE.Vector2(0, 0)},
     //SHARED: 1 = the sky irradiance gets the Lambert 1/PI (physical); 0 = the old PI x fill (oceanGrid.ambientPiFix).
     ambientPiFix: {value: 1.0},
+    //The falls' shadow (passes/waterfall-shadow-pass.js writeUniforms): SHARED.
+    fallShadowMap: {value: null},
+    fallShadowMatrix: {value: new THREE.Matrix4()},
+    fallShadowParams: {value: new THREE.Vector2(0, 0.005)},
     sunShadowMap: {value: null},
     sunShadowMatrix: {value: new THREE.Matrix4()},
     sunShadowMapSize: {value: new THREE.Vector2(2048.0, 2048.0)},
@@ -80,6 +84,9 @@ ARestlessOcean.Materials.Ocean.waterfallMistMaterial = {
     uLightLength: {value: 2.0},
     uAbsorption: {value: 1.0},
     uPhaseG: {value: 0.7},
+    //Step 4b: Wrenninge multiple scattering (1) or the old stand-in (0); the diffusion floor's weight.
+    uMultiScatter: {value: 1.0},
+    uDiffusion: {value: 0.5},
     uAmbient: {value: 1.0},
     //The night gate (the sea spray's): the sky fill falls to uNightAmbient of itself as the sun sets, so white
     //water over a dark sea does not glow. uSunElevation (sin of the TRUE solar elevation) is set every frame.

@@ -28,6 +28,10 @@ ARestlessOcean.Materials.Ocean.waterfallSheetMaterial = {
     landLightOn: {value: new THREE.Vector2(0, 0)},
     //SHARED: 1 = the sky irradiance gets the Lambert 1/PI (physical); 0 = the old PI x fill (oceanGrid.ambientPiFix).
     ambientPiFix: {value: 1.0},
+    //The falls' shadow (passes/waterfall-shadow-pass.js writeUniforms): SHARED.
+    fallShadowMap: {value: null},
+    fallShadowMatrix: {value: new THREE.Matrix4()},
+    fallShadowParams: {value: new THREE.Vector2(0, 0.005)},
     sunShadowMap: {value: null},
     sunShadowMatrix: {value: new THREE.Matrix4()},
     sunShadowMapSize: {value: new THREE.Vector2(2048.0, 2048.0)},
@@ -882,6 +886,9 @@ ARestlessOcean.Materials.Ocean.waterfallSheetMaterial = {
       "//The scene's shadow map is off on a-land pages, so the land's own skyline is the cliff's shadow on the",
       '//curtain (and on its glint): the moon behind the gorge wall no longer lights the fall (2026-10-02).',
       '//(the OPEN variant: the curtain stands in the air, out from the cliff foot the ground fields describe)',
+      "//(NOT the falls' own shadow map: received by the sheet itself it acned in blotches, a texel of the map fitted",
+      '//round the whole sheet mesh being tens of cm against the 0.35 m bias. Dante read it as z-fighting, 2026-10-03.',
+      "//The pool and the foot's volumes take it; the curtain does not.)",
       'float sunShadow = getSunShadow(vSunShadowCoord) * landLightVisibilityOpen(vWorldPos, L);',
 
       '//TWO LAYERS, as Dante put it (round 12): WATER underneath, with its reflection, and FOAM on',

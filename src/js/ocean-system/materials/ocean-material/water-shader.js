@@ -62,6 +62,10 @@ ARestlessOcean.Materials.Ocean.waterMaterial = {
     landShadowEnabled: {type: 'f', value: 1.0},
     foamHueKeep: {type: 'f', value: 0.7},
     ambientPiFix: {type: 'f', value: 1.0},
+    //The falls' shadow (passes/waterfall-shadow-pass.js writeUniforms).
+    fallShadowMap: {value: null},
+    fallShadowMatrix: {value: new THREE.Matrix4()},
+    fallShadowParams: {value: new THREE.Vector2(0, 0.005)},
     //The land's skyline and sky visibility (field/land-light.js LandLight.update, every frame).
     landHorizonTex: {value: null},
     landHorizonAtlas: {value: new THREE.Vector4(1, 1, 1, 1)},
@@ -2759,7 +2763,8 @@ ARestlessOcean.Materials.Ocean.waterMaterial = {
       '//Terrain + object shadow alone (foam takes only part of the ocean term, see the foam composite).',
       'float sunShadowNoOceanScene = getSunShadow(vSunShadowCoord);',
       'float surfaceHeroShadow = heroShadowAt(vWorldPosition);',
-      'float sunShadowNoOcean = sunShadowNoOceanScene * landSunVisibilityAt(vWorldPosition.xz) * surfaceHeroShadow;',
+      "//...and the falls' shadow (WaterfallShadowPass: the curtain's bubbles take part of the sun off the pool).",
+      'float sunShadowNoOcean = sunShadowNoOceanScene * landSunVisibilityAt(vWorldPosition.xz) * surfaceHeroShadow * fallShadowAt(vWorldPosition);',
       'float sunShadowFactor = sunShadowNoOcean * oceanShadowBoosted;',
 
       '//Foam textures use a fixed meter-scale tile (~2 m / ~3 m perpendicular pair) so',
@@ -3179,6 +3184,7 @@ ARestlessOcean.Materials.Ocean.waterMaterial = {
         '}',
         'seabedShadowFactor *= landSunVisibilityAt(pSurfaceHit.xz);',
         'seabedShadowFactor *= heroShadowAt(pSurfaceHit);',
+        'seabedShadowFactor *= fallShadowAt(pSurfaceHit);',
 
         'vec3 causticMod = vec3(1.0);',
         '#if($caustics_enabled)',
@@ -3321,6 +3327,7 @@ ARestlessOcean.Materials.Ocean.waterMaterial = {
         '}',
         'terrainShadowFactor *= landSunVisibilityAt(pointXYZ.xz);',
         'terrainShadowFactor *= heroShadowAt(pointXYZ);',
+        'terrainShadowFactor *= fallShadowAt(pointXYZ);',
         '//Lambertian direct sun (/pi), same convention as the seabed branch above and',
         '//the foam plate: Phase 3a tuning pass 3.',
         'const float TERRAIN_INV_PI = 0.31830988618;',
@@ -3403,7 +3410,7 @@ ARestlessOcean.Materials.Ocean.waterMaterial = {
       '//The body reads the land field at mip 3 (8 m): the island and cliff shadows it is for,',
       "//without the small objects' 1 m blobs (pebbles, shells), which re-bake as the camera moves",
       '//and read as blurry dark spots popping on the water (Dante, 2026-09-30).',
-      'float bodySunVisible = sunShadowNoOceanScene * landSunVisibilityLod(vWorldPosition.xz, 3.0) * surfaceHeroShadow;',
+      'float bodySunVisible = sunShadowNoOceanScene * landSunVisibilityLod(vWorldPosition.xz, 3.0) * surfaceHeroShadow * fallShadowAt(vWorldPosition);',
       'float bodyInscatterShadow = mix(bodyShadowFloor, 1.0, bodySunVisible);',
       'vec3 bodyInscatter = underwaterInscatterShadowed(normalizedViewVector, bodyInscatterShadow);',
       '//Shore pass: a river plume. Silty water scatters more and is less clear: the body leans to',

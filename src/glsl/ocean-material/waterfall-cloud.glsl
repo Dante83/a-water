@@ -343,7 +343,7 @@ void main(){
   float att = 1.0;
   for(int i = 0; i < CLOUD_MS_OCTAVES; ++i){ phases[i] = cloudPhase(cosT, att); att *= 0.5; }
   vec3 mid = cameraPosition + rd * (t0 + 0.5 * L);
-  vec3 sunCol = INV_PI * brightestDirectionalLight * uSunGain * sunShadowAt(mid) * landLightVisibilityOpen(mid, Lsun);
+  vec3 sunCol = INV_PI * brightestDirectionalLight * uSunGain * sunShadowAt(mid) * landLightVisibilityOpen(mid, Lsun) * fallShadowAt(mid);
   //The sky fill: as the clouds' (uLobe 0), or the spray's (1): lifted and tinted the cool blue of translucent
   //water, plus the teal of the sunlit water bouncing up under it (half of its underside faces the water).
   //Both dim at night (nightDim); the bounce, as the spray's, also needs the sun well up (dayF: a high moon

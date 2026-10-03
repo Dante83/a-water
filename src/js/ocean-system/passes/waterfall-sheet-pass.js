@@ -98,7 +98,9 @@ ARestlessOcean.Passes.WaterfallSheetPass.SHARED_UNIFORMS = [
   'foamOpacityMap', 'foamNormalMap', 'flowWaveProfile', 'flowRippleScale',
   //The land's skyline and sky visibility (field/land-light.js): the cliff's shadow and the gorge's sky.
   'landHorizonTex', 'landHorizonAtlas', 'landHorizonFrame', 'landHorizonParams', 'landGroundTex', 'landGroundFrame', 'landLightOn',
-  'ambientPiFix'
+  'ambientPiFix',
+  //The falls' shadow (passes/waterfall-shadow-pass.js).
+  'fallShadowMap', 'fallShadowMatrix', 'fallShadowParams'
 ];
 
 ARestlessOcean.Passes.WaterfallSheetPass.prototype.init = function(scene){

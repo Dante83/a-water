@@ -23,6 +23,10 @@ ARestlessOcean.Materials.Ocean.waterfallCloudMaterial = {
     landLightOn: {value: new THREE.Vector2(0, 0)},
     //SHARED: 1 = the sky irradiance gets the Lambert 1/PI (physical); 0 = the old PI x fill (oceanGrid.ambientPiFix).
     ambientPiFix: {value: 1.0},
+    //The falls' shadow (passes/waterfall-shadow-pass.js writeUniforms): SHARED.
+    fallShadowMap: {value: null},
+    fallShadowMatrix: {value: new THREE.Matrix4()},
+    fallShadowParams: {value: new THREE.Vector2(0, 0.005)},
     sunShadowMap: {value: null},
     sunShadowMatrix: {value: new THREE.Matrix4()},
     sunShadowMapSize: {value: new THREE.Vector2(2048.0, 2048.0)},
@@ -453,7 +457,7 @@ ARestlessOcean.Materials.Ocean.waterfallCloudMaterial = {
       'float att = 1.0;',
       'for(int i = 0; i < CLOUD_MS_OCTAVES; ++i){ phases[i] = cloudPhase(cosT, att); att *= 0.5; }',
       'vec3 mid = cameraPosition + rd * (t0 + 0.5 * L);',
-      'vec3 sunCol = INV_PI * brightestDirectionalLight * uSunGain * sunShadowAt(mid) * landLightVisibilityOpen(mid, Lsun);',
+      'vec3 sunCol = INV_PI * brightestDirectionalLight * uSunGain * sunShadowAt(mid) * landLightVisibilityOpen(mid, Lsun) * fallShadowAt(mid);',
       "//The sky fill: as the clouds' (uLobe 0), or the spray's (1): lifted and tinted the cool blue of translucent",
       '//water, plus the teal of the sunlit water bouncing up under it (half of its underside faces the water).',
       "//Both dim at night (nightDim); the bounce, as the spray's, also needs the sun well up (dayF: a high moon",

@@ -23,6 +23,10 @@ ARestlessOcean.Materials.Ocean.waterfallCloudMaterial = {
     landLightOn: {value: new THREE.Vector2(0, 0)},
     //SHARED: 1 = the sky irradiance gets the Lambert 1/PI (physical); 0 = the old PI x fill (oceanGrid.ambientPiFix).
     ambientPiFix: {value: 1.0},
+    //The falls' shadow (passes/waterfall-shadow-pass.js writeUniforms): SHARED.
+    fallShadowMap: {value: null},
+    fallShadowMatrix: {value: new THREE.Matrix4()},
+    fallShadowParams: {value: new THREE.Vector2(0, 0.005)},
     sunShadowMap: {value: null},
     sunShadowMatrix: {value: new THREE.Matrix4()},
     sunShadowMapSize: {value: new THREE.Vector2(2048.0, 2048.0)},

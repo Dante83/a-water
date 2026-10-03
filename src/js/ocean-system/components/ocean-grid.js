@@ -1465,6 +1465,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.waterfallSplashPass = null;
   //The billowy clouds drifting off the falls' feet, from the splash's landing lines (WaterfallCloudPass).
   this.waterfallCloudPass = null;
+  //The falls' shadow: a sun-aligned opacity map of the sheets (WaterfallShadowPass).
+  this.waterfallShadowPass = null;
   if(ARestlessOcean.Passes && ARestlessOcean.Passes.ShoreReflectionPass && ARestlessOcean.ShoreReflection.ENABLED){
     this.shoreReflectionPass = new ARestlessOcean.Passes.ShoreReflectionPass(this);
     this.shoreReflectionPass.init();
@@ -2224,6 +2226,14 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         timeMs: time,
         enabled: self.flowSurfaceEnabled && self.flowSurfacePass.enabled
       });
+      //The falls' shadow map, from this frame's sheet (before anything samples it).
+      if(!self.waterfallShadowPass && ARestlessOcean.Passes.WaterfallShadowPass){
+        self.waterfallShadowPass = new ARestlessOcean.Passes.WaterfallShadowPass(self, self.waterfallSheetPass);
+      }
+      if(self.waterfallShadowPass){
+        const fm = self.flowSurfacePass && self.flowSurfacePass.material;
+        self.waterfallShadowPass.tick({lightDirection: fm && fm.uniforms.brightestDirectionalLightDirection ? fm.uniforms.brightestDirectionalLightDirection.value : null});
+      }
       //The mist rides the sheet's cascades, so it follows the sheet's pass.
       if(!self.waterfallMistPass && ARestlessOcean.Passes.WaterfallMistPass && ARestlessOcean.WaterfallMistHull
          && ARestlessOcean.Materials.Ocean.waterfallMistMaterial){
@@ -2930,6 +2940,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       //Both the sea and the flowing surface carry the dynamic waves.
       if(dynamicWavesState) ARestlessOcean.DynamicWaves.writeUniforms(uniformsRef, dynamicWavesState);
       if(self.heroShadowPass) self.heroShadowPass.writeUniforms(uniformsRef);
+      if(self.waterfallShadowPass) self.waterfallShadowPass.writeUniforms(uniformsRef);
       if(self.mouthPlumePass) self.mouthPlumePass.writeUniforms(uniformsRef);
       ARestlessOcean.FlowHandoff.writeUniforms(uniformsRef, flowHandoffState);
       //The flowing surface carries no breakers or shore reflection of its own.

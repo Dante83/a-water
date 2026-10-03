@@ -5808,3 +5808,65 @@ Dante (night, at the curtain): "the foam and sheet colors still aren't matching"
   technically air bubbles as is the water, so their colors ought to mix nicely". A future iteration:
   one bubble-albedo/lighting model shared by the curtain slab and the water foam, so the two blend
   instead of meeting as two looks.
+
+## Waterfall foot, step 4b + the falls' shadow (2026-10-03, branch `waterfall-billow-clouds`, uncommitted)
+
+### 4b: multiple scattering in the splash, foam fog and mist cones
+
+- Wrenninge's octaves (4) + diffusion floor (`uDiffusion` 0.5) replace the old two-exponential
+  stand-in `(e^-τ + 0.4e^-0.2τ)/1.4`. The copies in waterfall-mist.glsl and waterfall-splash.glsl are
+  kept in step. `uMultiScatter` 1 new / 0 old.
+- **NORMALISED PER ANGLE:** the octaves' sum is divided by its own τ = 0 value at this view angle and
+  multiplied by the single phase, so thin spray is lit EXACTLY as before from every side. A first cut
+  divided by a flat 1.875: side-lit thin mist came out 1.5× brighter and the backlit halo 30% dimmer.
+  Now:
+  - side- or front-lit dense clumps keep 1.1× (τ 0.5) to ~4× (τ 8) more light on their shaded side;
+  - backlit thick spray gets dimmer (0.5–0.9×): the glow no longer punches through a thick burst,
+    which the old 0.4·e^-0.2τ tail let it do.
+- The surface mist has no sun march, so it is unchanged.
+
+### The falls' shadow: WaterfallShadowPass (new, passes/waterfall-shadow-pass.js)
+
+- **Why:** sunlight went straight through every fall. On a-land pages the scene shadow map is off, and
+  a-land's shadows know only the land.
+- **The map:** one sun- (or moon-) aligned ortho map, 1024², fitted round the sheet mesh's bounds plus
+  4 m, texel-snapped (HeroShadowPass pattern). It renders ONLY the sheet, through the sheet's own
+  vertex stage with a caster fragment.
+- **What a sheet takes from the light:** the bubble slab's REFLECTANCE along the light (two-stream, as
+  the sheet draws itself): tauR = 0.15 · 1.5 voidFrac / r · path, R = tauR / (2 + tauR), × presence.
+  Bubbles scatter forward, so a glassy tongue casts nothing, a white curtain a soft partial shadow, and
+  dense white water nearly full.
+- **Encoding:** RGB transmittance multiplied across layers (blend dst × src), A the nearest sheet depth
+  (blend MIN).
+- **Receivers:** `fallShadowAt(p)`, spliced at the LAND_LIGHT marker by `spliceLandLight` (stub without
+  the file). Used on:
+  - the sheet itself (lip on face, cascade on cascade);
+  - the mist cones and splash per light step, the surface mist and clouds at mid-chord;
+  - the water's surface sun (sunShadowNoOcean), body inscatter, seabed and terrain-through-water.
+- Uniforms `fallShadowMap/Matrix/Params` live on the water material; the sheet and foot volumes alias
+  them (both SHARED lists). Written by `writeUniforms` in the grid's loop; ticked right after the sheet.
+- **Console:** `fallShadowStats()`, `waterfallShadowPass.enabled = false` (A/B), `.bias` (0.35 m),
+  `.size`, `.margin`.
+- **Checked** (standalone page, all 71 files):
+  - every shader compiles with and without land-light.js;
+  - a fake 10 m fully aerated sheet: map centre T 0.036 at depth 0.43, corners empty;
+  - fallShadowAt behind the sheet 0.036, beside 1.0, in front toward the light 1.0.
+- **Limits:**
+  - one depth layer;
+  - the foam grain at its mean;
+  - a-land's cliff does not receive it yet (needs an a-land hook).
+- NEEDS create-shader.py (water, sheet, mist, splash, cloud). The script is added to the demo pages
+  that load waterfall-sheet-pass.js.
+- **Dante's look (2026-10-03): "no real changes", and maybe z-fighting on the mesh behind.**
+  - Expected for most views: the curtain's shadow falls AWAY from the light, on the cliff (a-land's, not
+    a receiver) when the fall is front-lit. Only a BACKLIT fall shades the pool and foot volumes.
+  - The z-fighting was the sheet receiving its own shadow: the map is fitted round the whole sheet
+    mesh, lead-ins included, so a texel is tens of cm against a 0.35 m bias, and overlapping curtain
+    parts acned each other. The sheet no longer receives it; the pool, seabed and foot volumes still do.
+  - **Decision pending:** keep it for the backlit case, or revert the pass.
+- **Kept as groundwork (Dante, 2026-10-03: "that also gives us something to hit next time").**
+  NEXT: hand the falls' shadow map to a-faraway-land so its cliff and pool banks receive the curtain's
+  shadow (the front-lit case, the one people see). Ideally a sibling hook like `siblingLight()` but
+  the other way round (a-water → a-land), fitting the existing `setOceanFog` / `setWaterField` typed
+  setters on TerrainMaterial. Then revisit sheet self-shadow with a tighter map (fit the airborne part
+  only, not the lead-ins) so the texel beats the bias.

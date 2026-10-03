@@ -49,7 +49,10 @@ ARestlessOcean.spliceLandLight = function(src){
     'float landLightVisibilityOpen(vec3 p, vec3 L){ return 1.0; }',
     'float landSkyVisibilityOpen(vec2 xz){ return 1.0; }'
   ].join('\n');
-  return src.replace('//LAND_LIGHT_INJECTION_POINT', function(){ return glsl; });
+  //...and the falls' own shadow (passes/waterfall-shadow-pass.js), same marker, same stub rule.
+  const WS = ARestlessOcean.Passes && ARestlessOcean.Passes.WaterfallShadowPass;
+  const fall = WS && WS.GLSL ? WS.GLSL : 'float fallShadowAt(vec3 p){ return 1.0; }';
+  return src.replace('//LAND_LIGHT_INJECTION_POINT', function(){ return glsl + '\n' + fall; });
 };
 
 ARestlessOcean.cloneUniforms = function(src){
