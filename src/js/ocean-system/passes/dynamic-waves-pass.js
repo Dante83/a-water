@@ -274,6 +274,7 @@ ARestlessOcean.poke = function(x, z, strength, radius){
 //What consumers splice when the layer is off: the same functions and the scalar
 //uniforms debug 69 reads, and no sampler.
 ARestlessOcean.DynamicWaves.STUB_GLSL = [
+  'float dwSurfaceLevel = -1.0e9;',
   'uniform float dynamicWavesEnabled;',
   'uniform vec2 dynamicWavesCenter;',
   'uniform float dynamicWavesHalfWidth;',
@@ -307,10 +308,158 @@ ARestlessOcean.DynamicWaves.STUB_GLSL = [
 ARestlessOcean.DynamicWaves.VERTEX_CELL_FULL = 1.0;   //m
 ARestlessOcean.DynamicWaves.VERTEX_CELL_ZERO = 2.0;   //m
 
+//── Fall rings ──────────────────────────────────────────────────────────────
+//The waves a waterfall sends across its pool, DRAWN, not simulated. The field above is
+//right for centimetre rings from bodies, but its damping (DAMPING, VISCOSITY) eats a wave
+//within a few metres, which is the opposite of what a fall's foot does: it sends trains of
+//foot-high waves right across the pool. So each fall's landing line (WaterfallSplashHull.
+//ringLines; WaterfallSplashPass picks the FALL_RINGS_MAX segments nearest the camera every
+//frame and fills DynamicWaves.fallRings) goes to the water as uniforms, and the consumers add
+//  h = A · side · (1 − e^(−d/0.8)) · e^(−d/decay) · groups · sin(k·d′ − ω·t)
+//blended over the segments near the nearest (weights e^(−(d − d_min)/1.5 m): one line's segments
+//agree, two falls' trains cross-fade), d the distance to the segment, d′ = d + wobble · Perlin(xz ·
+//wobbleScale, t · drift)
+//(the fronts bend and wander instead of running ruler-straight), ω² = g·k (deep water: a 4 m
+//wave runs at 2.5 m/s), `groups` a slow beat travelling at the group speed (the waves come in
+//sets), and `side` fading by angle to zero behind the line (the creek above the lip is nearly
+//straight behind it); the trains wrap a little round the line's ends.
+//The first metre ramps in: the line itself is under the foam and the sheet.
+//SIZE: each line's decay is scaled by its fall's size (drop / 10 m, 0.2..1.5: fallRingExtra.y), so
+//a short step's waves die near its foot. LEVEL: each line carries its pool's water level
+//(fallRingExtra.x) and its waves draw only on water within ~1 m of it: the creek past the next
+//ledge, a few metres lower, is close in xz but is not this pool (they went over the cliff edge).
+//A consumer says what water it is drawing by setting dwSurfaceLevel before it calls in (the
+//vertex: the field's level; the fragment: the same; the probe: its level); left at its
+//initial -1e9, there is no gate.
+//They join the field's slope (fragment) and vertex height (geometry, filtered: gone where the
+//mesh is coarser than a quarter wavelength), so the probes and anything floating ride them too.
+//FUDGE: every FALL_RINGS value is a look choice; only the speed is physics.
+ARestlessOcean.DynamicWaves.FALL_RINGS_MAX = 16;
+ARestlessOcean.DynamicWaves.FALL_RINGS = {
+  wavelength: 4.0,     //m
+  decay: 6.0,          //m: e-fold of the height with distance from the line
+  wobble: 0.8,         //m: how far the Perlin noise moves a front
+  wobbleScale: 0.25,   //noise cells per metre
+  drift: 0.15,         //noise cells per second
+  groups: 0.45,        //0..1: how deep the sets are (0: an even train)
+  gain: 4.0            //x every fall's amplitude (live; 1 -> 4 by Dante on 2026-10-02 after the first look)
+};
+//What WaterfallSplashPass fills each frame: seg[i] = (ax, az, bx, bz), param[i] = (amplitude m,
+//downstream nx, nz, seed), extra[i] = (the pool's water level m, size scale), count, and the clock.
+ARestlessOcean.DynamicWaves.fallRings = (function(){
+  const N = ARestlessOcean.DynamicWaves.FALL_RINGS_MAX;
+  const seg = [], param = [];
+  //(Plain {x, y, z, w, set} outside three: the node tests load this file without it.)
+  const v4 = function(){
+    return typeof THREE !== 'undefined' ? new THREE.Vector4()
+      : {x: 0, y: 0, z: 0, w: 0, set: function(x, y, z, w){ this.x = x; this.y = y; this.z = z; this.w = w; return this; }};
+  };
+  const extra = [];
+  for(let i = 0; i < N; ++i){ seg.push(v4()); param.push(v4()); extra.push(v4()); }
+  return {seg: seg, param: param, extra: extra, count: 0, timeSec: 0.0};
+})();
+ARestlessOcean.DynamicWaves.FALL_RINGS_GLSL = (function(){
+  const N = ARestlessOcean.DynamicWaves.FALL_RINGS_MAX;
+  return [
+    '#define FALL_RINGS_N ' + N,
+    'uniform vec4 fallRingSeg[' + N + '];',     //a.xz, b.xz
+    'uniform vec4 fallRingParam[' + N + '];',   //amplitude (m), downstream normal xz ((0,0): all round), seed
+    'uniform vec4 fallRingExtra[' + N + '];',   //the pool level (m), size scale (decay x this)
+    'uniform float fallRingCount;',
+    'uniform vec4 fallRingWave;',               //k (rad/m), omega (rad/s), decay (m), wobble (m)
+    'uniform vec4 fallRingNoise;',              //wobble scale (1/m), noise time (cells), groups, wave time (s, wrapped)
+    'float frHash(vec3 p){',
+    '  p = fract(p * 0.3183099 + 0.1);',
+    '  p *= 17.0;',
+    '  return fract(p.x * p.y * p.z * (p.x + p.y + p.z));',
+    '}',
+    'vec3 frGrad(vec3 i){ return vec3(frHash(i), frHash(i + 19.19), frHash(i + 47.11)) * 2.0 - 1.0; }',
+    //Perlin gradient noise, about -1..1.
+    'float frPerlin(vec3 x){',
+    '  vec3 i = floor(x);',
+    '  vec3 f = fract(x);',
+    '  vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);',
+    '  float n000 = dot(frGrad(i), f);',
+    '  float n100 = dot(frGrad(i + vec3(1.0, 0.0, 0.0)), f - vec3(1.0, 0.0, 0.0));',
+    '  float n010 = dot(frGrad(i + vec3(0.0, 1.0, 0.0)), f - vec3(0.0, 1.0, 0.0));',
+    '  float n110 = dot(frGrad(i + vec3(1.0, 1.0, 0.0)), f - vec3(1.0, 1.0, 0.0));',
+    '  float n001 = dot(frGrad(i + vec3(0.0, 0.0, 1.0)), f - vec3(0.0, 0.0, 1.0));',
+    '  float n101 = dot(frGrad(i + vec3(1.0, 0.0, 1.0)), f - vec3(1.0, 0.0, 1.0));',
+    '  float n011 = dot(frGrad(i + vec3(0.0, 1.0, 1.0)), f - vec3(0.0, 1.0, 1.0));',
+    '  float n111 = dot(frGrad(i + vec3(1.0, 1.0, 1.0)), f - vec3(1.0, 1.0, 1.0));',
+    '  return mix(mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y), mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y), u.z);',
+    '}',
+    //Which water the caller is drawing (see the header): -1e9 = unknown, no level gate.
+    'float dwSurfaceLevel = -1.0e9;',
+    'float fallRingGate(vec4 ex){',
+    '  return dwSurfaceLevel < -1.0e8 ? 1.0 : 1.0 - smoothstep(0.6, 1.5, abs(dwSurfaceLevel - ex.x));',
+    '}',
+    'float fallRingsHeightAt(vec2 xz){',
+    '  if(fallRingCount < 0.5) return 0.0;',
+    '  float decay = max(fallRingWave.z, 0.1);',
+    //Nearest line on THIS water (other levels are not candidates).
+    '  float dmin = 1.0e6;',
+    '  for(int i = 0; i < ' + N + '; ++i){',
+    '    if(float(i) >= fallRingCount) break;',
+    '    if(fallRingGate(fallRingExtra[i]) <= 0.0) continue;',
+    '    vec4 s = fallRingSeg[i];',
+    '    vec2 ab = s.zw - s.xy;',
+    '    vec2 dv = xz - (s.xy + ab * clamp(dot(xz - s.xy, ab) / max(dot(ab, ab), 1.0e-6), 0.0, 1.0));',
+    '    dmin = min(dmin, length(dv));',
+    '  }',
+    '  if(dmin > 7.5 * decay) return 0.0;',
+    //One wobble for every line (so neighbouring segments agree), drifting.
+    '  float wob = fallRingWave.w * frPerlin(vec3(xz * fallRingNoise.x, fallRingNoise.y));',
+    '  float k = fallRingWave.x, w = fallRingWave.y, tw = fallRingNoise.w;',
+    '  float sum = 0.0, wsum = 0.0;',
+    //Every segment near the nearest one contributes, weighted by how much further it is: along a
+    //line the segments carry the same wave (no doubling at a joint), and where two falls' trains
+    //meet they cross-fade over a couple of metres instead of a seam.
+    '  for(int i = 0; i < ' + N + '; ++i){',
+    '    if(float(i) >= fallRingCount) break;',
+    '    vec4 s = fallRingSeg[i];',
+    '    vec2 ab = s.zw - s.xy;',
+    '    vec2 dv = xz - (s.xy + ab * clamp(dot(xz - s.xy, ab) / max(dot(ab, ab), 1.0e-6), 0.0, 1.0));',
+    '    float d = length(dv);',
+    '    vec4 ex = fallRingExtra[i];',
+    '    float wt = exp(-(d - dmin) / 1.5) * fallRingGate(ex);',
+    '    if(wt < 0.02) continue;',
+    '    vec4 p = fallRingParam[i];',
+    //Downstream: by ANGLE from the line (within half a metre, by distance), so the trains wrap a
+    //little round the ends of the line and fade out behind it, with no edge.
+    '    float side = dot(p.yz, p.yz) < 0.01 ? 1.0 : smoothstep(-0.35, 0.45, dot(dv, p.yz) / max(d, 0.5));',
+    '    float dd = d + wob;',
+    '    float ph = p.w * 6.2831853;',
+    //Sets: a beat 1/6 of the wavenumber, at 1/12 of the frequency (the group speed, half the phase speed).
+    '    float sets = 1.0 - fallRingNoise.z * 0.5 * (1.0 + sin(k / 6.0 * dd - w / 12.0 * tw + ph * 3.0));',
+    '    float env = (1.0 - exp(-d / 0.8)) * exp(-d / (decay * max(ex.y, 0.05)));',
+    '    sum += wt * p.x * side * env * sets * sin(k * dd - w * tw + ph);',
+    '    wsum += wt;',
+    '  }',
+    '  return wsum > 0.0 ? sum / wsum : 0.0;',
+    '}',
+    'vec2 fallRingsSlopeAt(vec2 xz){',
+    '  if(fallRingCount < 0.5) return vec2(0.0);',
+    '  const float e = 0.1;',
+    '  return vec2(fallRingsHeightAt(xz + vec2(e, 0.0)) - fallRingsHeightAt(xz - vec2(e, 0.0)),',
+    '              fallRingsHeightAt(xz + vec2(0.0, e)) - fallRingsHeightAt(xz - vec2(0.0, e))) / (2.0 * e);',
+    '}',
+    //Geometry: only where the mesh is fine enough to carry the wave (a quarter wavelength), and
+    //nowhere on a mesh that takes no ripples (cell 0: the horizon skirt).
+    'float fallRingsVertexHeightAt(vec2 xz, float cell){',
+    '  if(fallRingCount < 0.5 || cell <= 0.0) return 0.0;',
+    '  float lambda = 6.2831853 / max(fallRingWave.x, 1.0e-3);',
+    '  float w = 1.0 - smoothstep(0.125 * lambda, 0.25 * lambda, cell);',
+    '  return w > 0.0 ? w * fallRingsHeightAt(xz) : 0.0;',
+    '}'
+  ].join('\n');
+})();
+
 ARestlessOcean.DynamicWaves.GLSL = (function(){
   const DW = ARestlessOcean.DynamicWaves;
   return [
     '//── DynamicWaves (spliced from dynamic-waves-pass.js — edit it THERE) ──',
+    DW.FALL_RINGS_GLSL,
     'uniform float dynamicWavesEnabled;',
     'uniform sampler2D dynamicWavesMap;',
     'uniform vec2 dynamicWavesCenter;',
@@ -328,7 +477,7 @@ ARestlessOcean.DynamicWaves.GLSL = (function(){
     '  return edge * dynamicWavesScale * texture2D(dynamicWavesMap, d * 0.5 + 0.5).r;',
     '}',
     //Central differences one cell apart: the fragment has no varyings to spare.
-    'vec2 dynamicWavesSlopeAt(vec2 xz){',
+    'vec2 dwFieldSlopeAt(vec2 xz){',
     '  if(dynamicWavesEnabled < 0.5) return vec2(0.0);',
     '  vec2 ex = vec2(dynamicWavesCell, 0.0);',
     '  vec2 ez = vec2(0.0, dynamicWavesCell);',
@@ -342,7 +491,7 @@ ARestlessOcean.DynamicWaves.GLSL = (function(){
     '  vec2 d = abs(xz - camXZ);',
     '  return dynamicWavesMeshCell * max(1.0, 2.0 * max(d.x, d.y) / dynamicWavesMeshRing);',
     '}',
-    'float dynamicWavesVertexHeightAt(vec2 xz, float cell){',
+    'float dwFieldVertexHeightAt(vec2 xz, float cell){',
     '  if(dynamicWavesEnabled < 0.5 || cell <= 0.0) return 0.0;',
     '  float w = 1.0 - smoothstep(' + DW.VERTEX_CELL_FULL.toFixed(6) + ', ' + DW.VERTEX_CELL_ZERO.toFixed(6) + ', cell);',
     '  if(w <= 0.0) return 0.0;',
@@ -365,7 +514,10 @@ ARestlessOcean.DynamicWaves.GLSL = (function(){
     '  if(m >= 1.0) return 0.0;',
     '  float edge = 1.0 - smoothstep(' + DW.EDGE_FADE_START.toFixed(6) + ', 1.0, m);',
     '  return edge * clamp(texture2D(dynamicWavesMap, d * 0.5 + 0.5).b, 0.0, 1.0);',
-    '}'
+    '}',
+    //What the consumers call: the simulated field plus the waterfalls' rings.
+    'vec2 dynamicWavesSlopeAt(vec2 xz){ return dwFieldSlopeAt(xz) + fallRingsSlopeAt(xz); }',
+    'float dynamicWavesVertexHeightAt(vec2 xz, float cell){ return dwFieldVertexHeightAt(xz, cell) + fallRingsVertexHeightAt(xz, cell); }'
   ].join('\n');
 })();
 
@@ -384,8 +536,30 @@ ARestlessOcean.DynamicWaves.createUniforms = function(){
     dynamicWavesScale:      {value: 1.0},
     //Per MESH, set once where the mesh is built; writeUniforms never touches them.
     dynamicWavesMeshCell:   {value: 0.0},
-    dynamicWavesMeshRing:   {value: 0.0}
+    dynamicWavesMeshRing:   {value: 0.0},
+    //Fall rings: the arrays are the shared DynamicWaves.fallRings ones (filled once a frame).
+    fallRingSeg:            {value: ARestlessOcean.DynamicWaves.fallRings.seg},
+    fallRingParam:          {value: ARestlessOcean.DynamicWaves.fallRings.param},
+    fallRingExtra:          {value: ARestlessOcean.DynamicWaves.fallRings.extra},
+    fallRingCount:          {value: 0.0},
+    fallRingWave:           {value: new THREE.Vector4(1.0, 1.0, 6.0, 0.0)},
+    fallRingNoise:          {value: new THREE.Vector4(0.25, 0.0, 0.0, 0.0)}
   };
+};
+
+//The fall rings' scalars into a consumer's uniforms (the arrays are shared by reference).
+ARestlessOcean.DynamicWaves.writeFallRingUniforms = function(u){
+  if(!u.fallRingCount) return;
+  const DW = ARestlessOcean.DynamicWaves, R = DW.FALL_RINGS, st = DW.fallRings;
+  const k = 2.0 * Math.PI / Math.max(R.wavelength, 0.05), w = Math.sqrt(DW.G * k);
+  //The wave clock wraps at the sets' period (12 carrier periods), so both stay continuous.
+  const period = 24.0 * Math.PI / w;
+  u.fallRingSeg.value = st.seg;
+  u.fallRingParam.value = st.param;
+  if(u.fallRingExtra) u.fallRingExtra.value = st.extra;
+  u.fallRingCount.value = st.count;
+  u.fallRingWave.value.set(k, w, R.decay, R.wobble);
+  u.fallRingNoise.value.set(R.wobbleScale, st.timeSec * R.drift, Math.min(Math.max(R.groups, 0.0), 1.0), st.timeSec % period);
 };
 
 //Host-side twin of dynamicWavesMeshCellAt, for tests and the console.
@@ -396,6 +570,7 @@ ARestlessOcean.DynamicWaves.meshCellAt = function(meshCell, meshRing, x, z, camX
 
 //s = DynamicWavesPass.prototype.consumerState()
 ARestlessOcean.DynamicWaves.writeUniforms = function(u, s){
+  ARestlessOcean.DynamicWaves.writeFallRingUniforms(u);
   if(!u.dynamicWavesEnabled) return;
   const on = !!(s && s.enabled && s.texture);
   u.dynamicWavesEnabled.value = on ? 1.0 : 0.0;

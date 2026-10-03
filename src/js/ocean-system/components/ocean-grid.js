@@ -1116,7 +1116,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   }
   function dynamicWavesGLSL(){
     return ARestlessOcean.DynamicWaves ? ARestlessOcean.DynamicWaves.consumerGLSL()
-      : 'uniform float dynamicWavesEnabled;\nuniform vec2 dynamicWavesCenter;\nuniform float dynamicWavesHalfWidth;\n'
+      : 'float dwSurfaceLevel = -1.0e9;\nuniform float dynamicWavesEnabled;\nuniform vec2 dynamicWavesCenter;\nuniform float dynamicWavesHalfWidth;\n'
         + 'float dynamicWavesHeightAt(vec2 xz){ return 0.0; }\nvec2 dynamicWavesSlopeAt(vec2 xz){ return vec2(0.0); }\n'
         + 'float dynamicWavesMeshCellAt(vec2 xz, vec2 camXZ){ return 0.0; }\nfloat dynamicWavesVertexHeightAt(vec2 xz, float cell){ return 0.0; }\n'
         + 'float dynamicWavesFoamAt(vec2 xz){ return 0.0; }';
@@ -2226,7 +2226,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         self.waterfallSplashPass.init(scene);
       }
       if(self.waterfallSplashPass){
-        self.waterfallSplashPass.tick({enabled: self.flowSurfaceEnabled && self.flowSurfacePass.enabled});
+        self.waterfallSplashPass.tick({enabled: self.flowSurfaceEnabled && self.flowSurfacePass.enabled, timeMs: time});
       }
     }
 

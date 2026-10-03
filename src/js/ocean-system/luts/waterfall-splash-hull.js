@@ -97,6 +97,75 @@ ARestlessOcean.WaterfallSplashHull = ARestlessOcean.WaterfallSplashHull || {};
   })();
   H.PROXY_SCALE = Math.hypot(ICO.v[0][0], ICO.v[0][1], ICO.v[0][2]);
 
+  //── Rings: the waves a fall sends across its pool ─────────────────────────────
+  //A fall pounding into a pool sends trains of waves out across it. They are not simulated: each
+  //fall's LANDING LINE (its strands' plunge points, joined in strand order) is handed to the water
+  //shader, which draws a sine of the distance from that line running outward (DynamicWaves "Fall
+  //rings": a Perlin wobble on the distance so the fronts are not ruler-straight, wave groups so
+  //they come in sets, fading with distance, and only on the DOWNSTREAM side of the line, so the
+  //creek above the lip, nearly straight behind the landing line, stays calm).
+  //
+  //ringLines(ranges, o) -> [{ax, az, bx, bz, amp, nx, nz, seed, y, line}]: a segment between neighbouring
+  //plunge points (more than maxGap x their median spacing apart is a break; a lone point is a segment
+  //of zero length, ringing all round its front). (nx, nz) is the downstream normal, (0, 0) for no
+  //preferred side; line numbers the separate lines (0, 1, ...); size is the fall's drop over sizeRef
+  //(sizeMin..sizeMax), which scales how far its waves and its surface mist reach. amp (m) is `amplitude` for a 10 m fall's
+  //single strand (strength / share 1.7), as the square root of the impact (x0.3 .. x1.5).
+  //FUDGE: amplitude, wavelength, decay, wobble and groups are look choices (DynamicWaves.FALL_RINGS);
+  //the speed is deep water's, from the wavelength.
+  H.RING_DEFAULTS = {
+    amplitude: 0.18,      //m: the crest's height above the mean at the line, for a 10 m fall (crest to trough ~ 1 ft)
+    sizeRef: 10.0,        //m of fall that is SIZE 1: the line's size = its drop / this, clamped to...
+    sizeMin: 0.2,         //...at least this (a short step's waves and mist stay near its foot: they went over the next ledge)...
+    sizeMax: 1.5,         //...at most this
+    maxGap: 3.0           //neighbouring plunge points further apart than this times their median spacing are separate lines
+  };
+  const gopt = function(o, k){ return (o && o[k] !== undefined) ? o[k] : H.RING_DEFAULTS[k]; };
+  H.ringLines = function(ranges, o){
+    if(!ranges || !ranges.length) return [];
+    let pts = ranges.filter(function(r){ return r.plunge; });
+    if(!pts.length) pts = ranges.slice();
+    pts.sort(function(a, b){ return a.strand - b.strand; });
+    const ampOf = function(r){
+      const one = Math.max(r.strength / Math.max(r.share || 1.0, 1e-6), 0.0);
+      return gopt(o, 'amplitude') * Math.min(Math.max(Math.sqrt(one / 1.7), 0.3), 1.5);
+    };
+    //Median spacing, so one long jump does not set the break distance.
+    const steps = [];
+    for(let i = 1; i < pts.length; ++i) steps.push(Math.hypot(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z));
+    steps.sort(function(a, b){ return a - b; });
+    const brk = steps.length ? gopt(o, 'maxGap') * Math.max(steps[steps.length >> 1], 0.25) : 0.0;
+    //The mean downstream direction (horizontal arrival velocity).
+    let hx = 0.0, hz = 0.0;
+    for(let i = 0; i < pts.length; ++i){ hx += pts[i].hx || 0.0; hz += pts[i].hz || 0.0; }
+    const out = [];
+    //One phase per line: its segments must carry the same wave (the shader blends them).
+    let lineSeed = 0.0, line = -1;
+    const push = function(a, b){
+      let nx = 0.0, nz = 0.0;
+      const ex = b.x - a.x, ez = b.z - a.z, el = Math.hypot(ex, ez);
+      const hl = Math.hypot(hx, hz);
+      if(el > 1e-4){
+        nx = -ez / el; nz = ex / el;
+        if(nx * hx + nz * hz < 0.0){ nx = -nx; nz = -nz; }
+        if(hl < 1e-3){ nx = 0.0; nz = 0.0; }
+      }
+      else if(hl > 1e-3){ nx = hx / hl; nz = hz / hl; }
+      const drop = 0.5 * ((a.drop !== undefined ? a.drop : gopt(o, 'sizeRef')) + (b.drop !== undefined ? b.drop : gopt(o, 'sizeRef')));
+      const size = Math.min(Math.max(drop / Math.max(gopt(o, 'sizeRef'), 1e-3), gopt(o, 'sizeMin')), gopt(o, 'sizeMax'));
+      out.push({ax: a.x, az: a.z, bx: b.x, bz: b.z, amp: 0.5 * (ampOf(a) + ampOf(b)), nx: nx, nz: nz,
+                seed: lineSeed, y: 0.5 * (a.y + b.y), line: line, size: size});
+    };
+    let lone = true;
+    for(let i = 0; i < pts.length; ++i){
+      const next = pts[i + 1];
+      if(lone){ lineSeed = ((pts[i].seed || 0.0) + 0.37) % 1.0; ++line; }
+      if(next && Math.hypot(next.x - pts[i].x, next.z - pts[i].z) <= brk){ push(pts[i], next); lone = false; }
+      else { if(lone) push(pts[i], pts[i]); lone = true; }
+    }
+    return out;
+  };
+
   //env (optional): {waterAt(x, z) -> {depth, level} | null}, so a burst off a bed under running
   //water starts on the water's surface, not under it.
   H.build = function(nappe, o, env){
@@ -126,12 +195,17 @@ ARestlessOcean.WaterfallSplashHull = ARestlessOcean.WaterfallSplashHull || {};
         if(!(strength >= opt(o, 'minStrength'))) continue;
         const v0c = opt(o, 'launchFraction') * im.vn;
         const T = H.life(v0c, vt), P = T * (1.0 + opt(o, 'rest'));
-        //On the water's surface.
-        let y0 = im.y;
-        if(env && typeof env.waterAt === 'function'){
+        //On the water's surface. wet: there was water here when the blob was built (no env: assume
+        //so). Only a HINT: a-land's getWaterAt answers null while the tile is still loading, so the
+        //rings re-ask (WaterfallSplashPass._tickRings).
+        let y0 = im.y, wet = !env || typeof env.waterAt !== 'function';
+        if(!wet){
           const wa = env.waterAt(im.x, im.z);
-          if(wa && wa.depth > 0.02 && wa.level > y0) y0 = wa.level;
+          wet = !!(wa && wa.depth > 0.02);
+          if(wet && wa.level > y0) y0 = wa.level;
         }
+        //The arriving water's horizontal direction (downstream, for the rings).
+        const hv = Math.hypot(im.vx, im.vz);
         //Up axis: straight up, leaning along the horizontal part of the water's bounce off the surface.
         const vd = im.vx * im.nx + im.vy * im.ny + im.vz * im.nz;
         let rx = im.vx - 2.0 * vd * im.nx, rz = im.vz - 2.0 * vd * im.nz;
@@ -170,7 +244,9 @@ ARestlessOcean.WaterfallSplashHull = ARestlessOcean.WaterfallSplashHull || {};
           else idx.push(firstV + ICO.f[t], firstV + ICO.f[t + 2], firstV + ICO.f[t + 1]);
         }
         ranges.push({v0: firstV, v1: vBase, strand: j, x: im.x, y: y0, z: im.z, radius: R, width: b, launch: v0c, life: T, period: P,
-                     apex: H.apex(v0c, vt), strength: strength, coherent: coherent, vn: im.vn, plunge: im === st.plunge});
+                     apex: H.apex(v0c, vt), strength: strength, coherent: coherent, vn: im.vn, plunge: im === st.plunge,
+                     share: share, seed: seed, wet: wet, hx: hv > 1e-3 ? im.vx / hv : 0.0, hz: hv > 1e-3 ? im.vz / hv : 0.0,
+                     drop: speed * speed / (2.0 * G)});
         ++blobs;
       }
     }

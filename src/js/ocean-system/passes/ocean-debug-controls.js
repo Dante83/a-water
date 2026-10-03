@@ -962,9 +962,25 @@ ARestlessOcean.installOceanDebugControls = function(grid){
       window.oceanSplash = grid.oceanSplash;
       //The waterfall's volumetric mist: tune live through its uniforms,
       //e.g. waterfallMistPass.material.uniforms.uMistDensity.value = 2.0 (uDebugMode 1-5 shows its parts).
-      window.waterfallMistPass = grid.waterfallMistPass;
-      //...and the splash bursts at the landings (uniforms u*, hullOptions + rebuild(), uDebugMode 1-5).
-      window.waterfallSplashPass = grid.waterfallSplashPass;
+      //...and the splash bursts at the landings (uniforms u*, uFog* the foam fog, hullOptions + rebuild(),
+      //ringsEnabled / ringOptions + DynamicWaves.FALL_RINGS for the waves across the pool, uDebugMode 1-6).
+      //Getters: both passes are built lazily, after the first fall is traced (a plain copy here was null).
+      ['waterfallMistPass', 'waterfallSplashPass'].forEach(function(name){
+        Object.defineProperty(window, name, {configurable: true, get: function(){ return grid[name]; }});
+      });
+      //ringStats(): what the waves across the falls' pools are doing (WaterfallSplashPass.ringStats).
+      window.ringStats = function(){
+        return grid.waterfallSplashPass ? grid.waterfallSplashPass.ringStats() : 'no waterfall splash pass yet (no fall traced)';
+      };
+      //fallRings: the live look knobs, e.g. fallRings.gain = 1.5, fallRings.wavelength = 5.
+      window.fallRings = ARestlessOcean.DynamicWaves ? ARestlessOcean.DynamicWaves.FALL_RINGS : null;
+      //hideWaterfallSplash(true): draw no splash or foam fog (the rings keep running), to see the water under it.
+      window.hideWaterfallSplash = function(hide){
+        const p = grid.waterfallSplashPass;
+        if(!p || !p.material) return;
+        if(p._savedOpacity === undefined) p._savedOpacity = p.material.uniforms.uSplashOpacity.value;
+        p.material.uniforms.uSplashOpacity.value = hide ? 0.0 : p._savedOpacity;
+      };
       //Reflection-vector shore launch: setSplashReflect(reflect, runUp) tunes how the
       //impact sheet leaves a cliff. reflect 0=cone up the surface normal (old look),
       //1=mirror the incoming water off the face; runUp adds upward climb on a head-on

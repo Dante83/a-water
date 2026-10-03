@@ -66,6 +66,43 @@ ARestlessOcean.Materials.Ocean.waterfallSplashMaterial = {
     uFallFloor: {value: 0.5},
     uFallSpeed: {value: 1.5},
     uFallErode: {value: 0.0},
+    //The foam fog (see waterfall-splash.glsl "the fog"): low, wide and calm, driven by the same impact.
+    uFogDensity: {value: 0.3},
+    uFogHeight: {value: 0.85},
+    uFogWidth: {value: 1.1},
+    uFogSpread: {value: 0.8},
+    uFogFade: {value: 1.8},
+    uFogScale: {value: 1.2},
+    uFogErode: {value: 0.3},
+    uFogSoft: {value: 0.4},
+    uFogRise: {value: 0.5},
+    uFogPulse: {value: 0.4},
+    uFogLag: {value: 0.6},
+    uFogWander: {value: 0.5},
+    uFogDrift: {value: 0.15},
+    uFogPulseDepth: {value: 0.0},   //0.7 -> 0 on 2026-10-02: the pulses now live in the surface mist (uSM*), low on the water
+    uFogPulseSlow: {value: 0.8},
+    //Copied from DynamicWaves.FALL_RINGS every frame by WaterfallSplashPass (k for a 4 m wave, its deep-water omega).
+    uRingWave: {value: new THREE.Vector2(1.5708, 3.9244)},
+    //The surface mist (see waterfall-splash.glsl "THE SURFACE MIST"): the pass's second mesh sets uSurfaceMist 1.
+    uSurfaceMist: {value: 0.0},
+    //Density, height, decay and pulse speed set by Dante in the browser on 2026-10-02 (were 2.0, 0.12, 14, 0.8).
+    uSMDensity: {value: 10.0},
+    uSMHeight: {value: 0.5},
+    uSMDecay: {value: 1.0},     //2.5 -> 1 (Dante, 2026-10-02)
+    uSMReach: {value: 10.0},    //30 -> 10 (Dante, 2026-10-02)
+    uSMPulseDepth: {value: 0.85},
+    uSMPulseSlow: {value: 3.0},
+    uSMScale: {value: 1.5},
+    uSMDrift: {value: 0.2},
+    uSMErode: {value: 0.1},     //0.35 -> 0.1 (Dante, 2026-10-02: a high carve broke the mist at the same spots every time)
+    uSMWispSoft: {value: 0.3},
+    uSMWispStretch: {value: 3.0},
+    uSMWispSpeed: {value: 0.6},
+    uSMWarp: {value: 1.2},
+    uSMBase: {value: 0.4},      //0.15 -> 0.4 (Dante, 2026-10-02)
+    uSMBaseDecay: {value: 4.0},
+    uSMSteps: {value: 12.0},
     uGroundFade: {value: 0.05},
     uSteps: {value: 28.0},
     uLightSteps: {value: 2.0},

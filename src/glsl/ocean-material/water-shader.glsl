@@ -2363,6 +2363,7 @@ void main(){
   //Rings and wakes objects put into the water, on the sea and on the flowing
   //surface alike. Centimetre ripples: micro slope only, so NOT added to the
   //macro normal (cascade0HeightSlope) the specular orientation follows.
+  dwSurfaceLevel = dryTestField.r;   //the waterfalls' pool waves: this water's level (Fall rings)
   vec2 dynamicWaveSlope = dynamicWavesSlopeAt(vWorldXZ);
   rawDdx.y += dynamicWaveSlope.x;
   rawDdz.y += dynamicWaveSlope.y;

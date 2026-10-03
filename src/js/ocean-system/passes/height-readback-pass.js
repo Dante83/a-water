@@ -672,7 +672,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._surfaceSetup = function(){
     fieldReady ? ARestlessOcean.FlowHandoff.GLSL : 'float flowHandoffWeightAt(vec2 xz){ return 0.0; }\nfloat flowBankSink(vec4 f){ return 0.0; }',
     breakerReady ? ARestlessOcean.ShoreBreaker.GLSL : '',
     reflectionReady ? ARestlessOcean.ShoreReflection.GLSL : 'float shoreReflectionHeightAt(vec2 xz){ return 0.0; }',
-    rippleReady ? DW.GLSL : DW ? DW.STUB_GLSL : 'float dynamicWavesVertexHeightAt(vec2 xz, float cell){ return 0.0; }\nfloat dynamicWavesMeshCellAt(vec2 xz, vec2 c){ return 0.0; }',
+    rippleReady ? DW.GLSL : DW ? DW.STUB_GLSL : 'float dwSurfaceLevel = -1.0e9;\nfloat dynamicWavesVertexHeightAt(vec2 xz, float cell){ return 0.0; }\nfloat dynamicWavesMeshCellAt(vec2 xz, vec2 c){ return 0.0; }',
     //Displacement of the rest point xz (chop applied), and its height with
     //level + breaker + reflection + dynamic ripple, exactly as the water vertex
     //builds it; .w is the ripple alone.
@@ -701,6 +701,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._surfaceSetup = function(){
     '  d *= spWhm;',
     '  d.x *= -spChop;',
     '  d.z *= -spChop;',
+    '  dwSurfaceLevel = level;',   //the waterfalls' pool waves: this water's level (dynamic-waves-pass.js, Fall rings)
     '  float ripple = dynamicWavesVertexHeightAt(xz, dynamicWavesMeshCellAt(xz, spCamPos.xz));',
     '  return vec4(d.x, level + d.y + extra + ripple, d.z, ripple);',
     '}',

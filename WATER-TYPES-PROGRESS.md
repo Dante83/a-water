@@ -5350,3 +5350,116 @@ drag, falls back, and fires again. The old type-3 clumps stay off while the volu
   stride; tested), skirt `fallReach` 0.8 -> 0.5. Headless benchmark (raw WebGL2, 1400x600, one 12 m
   wide 10 m fall, ms per draw, two runs): round 4 (no skirt) 1.34 / 1.55, round 5 3.39 / 3.16, now
   0.81 / 0.83. Looks as dense as round 5 side by side.
+
+## Waterfall impact particles, step 3: rings across the pool and foam fog at the foot (2026-10-02)
+
+Branch `add-circular-ripples-under-waterfall`. Two more foot effects, both riding the splash blobs.
+
+- **Rings across the pool: DRAWN, not simulated** (Dante's steer after the first try). The first
+  version poked craters (+ an equal-volume crown) into the DynamicWaves field at Perlin-wandering spots:
+  the field showed them (debug 69) but its damping kills a wave within a few metres, so in the normal
+  render they died under the foam at the foot. The field is right for centimetre rings from bodies,
+  wrong for a fall, which sends foot-high trains right across its pool. Now:
+  - `WaterfallSplashHull.ringLines(ranges)`: each fall's LANDING LINE (the strands' plunge points in
+    strand order; a break past `maxGap` 3 x the median spacing; a lone point is a zero-length segment),
+    its downstream normal (from the arriving water's horizontal velocity, new `ranges[].hx/hz`), one
+    phase per line, amplitude `amplitude` 0.18 m for a 10 m fall's single strand (x sqrt of the
+    impact, 0.3..1.5).
+  - `WaterfallSplashPass._tickRings`: every frame the 16 (`DynamicWaves.FALL_RINGS_MAX`) wet segments
+    nearest the camera go into `DynamicWaves.fallRings` (wetness re-asked every second: a-land's
+    getWaterAt is null while a tile loads, which is why the first version found no sources).
+  - `dynamic-waves-pass.js` "Fall rings": the consumer chunk's `dynamicWavesSlopeAt` and
+    `dynamicWavesVertexHeightAt` now return the simulated field PLUS
+    `A · side · (1 − e^(−d/0.8)) · e^(−d/decay) · sets · sin(k·d′ − ω·t)`, d′ = d + `wobble` x Perlin
+    (xz x `wobbleScale`, t x `drift`), ω² = g k (λ 4 m: 2.5 m/s), `sets` a beat at the group speed,
+    `side` an angular fade to zero behind the line. Blended over the segments near the nearest
+    (e^(−Δd/1.5 m)): no doubling at joints, two falls' trains cross-fade. Vertex height only where the
+    mesh is finer than λ/4. So the sea, the flowing surface AND the probes (floating things bob) all
+    get it, and it is spliced at runtime: no create-shader.py.
+  - Knobs: `fallRings` (= `DynamicWaves.FALL_RINGS`: wavelength 4, decay 6, wobble 0.8, wobbleScale
+    0.25, drift 0.15, groups 0.45, gain 1); `waterfallSplashPass.ringsEnabled`, `ringOptions` +
+    `rebuild()`; console `ringStats()`, `hideWaterfallSplash(true)`.
+  - ⚠ Lesson kept from the crater version: anything that injects into the DynamicWaves field
+    continuously must be volume-neutral (the field has no DC restoring force; craters alone sank the
+    window ~0.7 mm/s, CPU twin).
+  - Checked: the chunk compiles + links in a vertex and a fragment stage (raw WebGL2, headless);
+    top-down height render of a 6 m line + a lone point: trains downstream, wobbled fronts, wrap round
+    the ends, calm behind, cross-fade between sources (the first render had a Voronoi seam and a hard
+    behind-edge; fixed by the blend and the angular side). NOT checked in the real water material or
+    in a world.
+- **Foam fog** (`waterfall-splash.glsl`, "the fog"). A third term of the splash density, in the SAME
+  blobs (no new overdraw): the finest spray hanging round the foot. Driven by the same impact: density
+  x the blob's strength, top = `uFogHeight` 0.85 x the column's apex, breathing with `uFogPulse` 0.4 of
+  the column's pulse `uFogLag` 0.6 s late (calmer than the splash). Wider (`uFogWidth` 1.1 b, opening
+  by `uFogSpread` 0.8 to its top), fading with height (`exp(-uFogFade 1.8 z / top)`), soft billows
+  (`uFogScale` 1.2 m cells, carve `uFogErode` 0.3 / `uFogSoft` 0.4) rising at `uFogRise` 0.5 m/s. Its
+  middle wanders round the landing by Perlin gradient noise (`uFogWander` 0.5 b, `uFogDrift` 0.15).
+  `uFogDensity` 0 turns it off. Debug 6 now shows the fog in blue.
+  - **Round 2 (Dante, after the rings):** the fog ROLLS OUT in pulses with the pool's waves: density x
+    mix(1, 1.6 x pulse^2, `uFogPulseDepth` 0.7), pulse = sin(k |lp| − ω x `uFogPulseSlow` 0.8 x t), k and
+    ω copied every frame from `DynamicWaves.FALL_RINGS` into `uRingWave` (so retuning the rings retunes
+    the fog). Bands at the rings' wavelength, a little slower than the waves. Bench unchanged (1.27 ms).
+    Rings `gain` 1 -> 4 (Dante; ~0.7 m crest for a 10 m fall, cap ~1.1 m); wobble kept as is.
+  - **Round 3: the pulsing mist moved onto the water** (Dante: the in-blob fog pulses died off too
+    fast and went too high; it should ride the surface, inches to a foot, and fade further out than
+    the waves). New SURFACE MIST: a second mesh in WaterfallSplashPass (`mistMesh`, a child of the
+    splash mesh so the grid's show/hide covers it) drawing the SAME material with `uSurfaceMist` 1,
+    every other uniform shared. One box per landing line (`_buildMistBoxes`: the line + `uSMReach` 30 m
+    downstream, padded; level −1.6 .. +2.4 m), marched through the layer between the lowest trough and
+    5 e-folds over the highest crest (`uSMAmpMax`, set per frame). Density = `uSMDensity` 2.0 x
+    strength x e^(−y/`uSMHeight` 0.12 m) above the MOVING surface (level + the nearest line's ring
+    wave) x e^(−d/`uSMDecay` 14 m) x bands at the rings' wavelength (`uSMPulseSlow` 0.8 of their speed,
+    `uSMPulseDepth` 0.85) x 2-octave wisps (`uSMScale` 1.5 m, `uSMDrift`, `uSMErode`), downstream only.
+    The fall-ring GLSL is spliced in at `//FALL_RINGS_INJECTION_POINT` (kept by make-combined's
+    MARKER_KEEP) and its uniforms join the splash material. The in-blob fog's pulses are off
+    (`uFogPulseDepth` 0.7 -> 0). Debug 4 shows the boxes orange, debug 1 its opacity.
+    - Cost (headless, camera inside the box = every pixel marches, 1400x600): 3.0 ms with the full
+      blended ring height + Perlin + per-sample shadow; 0.38 ms with the nearest line's wave inline and
+      one light per pixel (a layer this thin does not need either), 0.2-0.46 ms with 2-octave wisps.
+    - ⚠ Harness trap: my bench loop redrew the blended mist 30x into the same frame before the
+      screenshot: a white carpet that was NOT the shader. Screenshot single draws only.
+  - **Round 4 (Dante's browser tuning + floor + wisps):** defaults now Dante's: `uSMDensity` 10,
+    `uSMHeight` 0.5, `uSMDecay` 2.5, `uSMPulseSlow` 3. New `uSMBase` 0.15: the distance falloff and the
+    gaps between bands settle to it (a haze over the pool) until `uSMReach`. Wisps are STREAKS: 2D
+    value-noise fbm (3 octaves, each rotated so the stretch shows no grid) in the line's frame,
+    stretched `uSMWispStretch` 3 along the outward direction, streaming out at `uSMWispSpeed` 0.6 m/s,
+    bent across by a drifting warp (`uSMWarp` 1.2 m), carved `uSMErode` 0.35 / `uSMWispSoft` 0.3. The
+    boxes now rebuild themselves when `uSMReach` or `uSMHeight` changes (H 0.5 overran the old
+    fixed 2.4 m top). Cost at these settings, camera inside the box: 1.57 ms with 3D noise + warp,
+    0.65 ms with the 2D rotated fbm.
+  - **Round 5: off the waves** (Dante: a cloud rolling out over the pool does not bob with the swell).
+    The layer's height is now above the STILL level; `uSMAmpMax` and the per-sample wave are gone, the
+    boxes are level −0.5 .. +0.5 + 5.5 H. The landing lines, band wavelength and downstream side still
+    come from the fall rings. 0.31 ms at Dante's settings (was 0.65).
+  - **Round 6: two falloffs.** With the haze as a FLOOR (mix(base, 1, e^(−d/decay))) uSMDecay stopped
+    doing anything under ~2 m (the curve hit the floor inside the near-line ramp) and only uSMReach could
+    end the haze (Dante had pulled it to 10). Now core + haze: (1 − base) e^(−d/`uSMDecay`) + base
+    e^(−d/`uSMBaseDecay` 4 m); reach is only the soft cut-off. Defaults `uSMReach` 10, `uSMBase` 0.4
+    (Dante's).
+  - Defaults `uSMDecay` 2.5 -> 1, `uSMErode` 0.35 -> 0.1 (Dante: the carve broke the mist at the same
+    spots every time).
+- **Over-the-ledge bug (2026-10-02): rings and surface mist ran over the next cliff edge on short
+  falls.** Root cause: the rings were keyed by xz only, so any water downstream within reach got them,
+  including the creek a few metres lower past the next ledge. Two fixes:
+  - **Level gate** (structural). Each line carries its pool's level (`fallRingExtra[i].x`, re-read live
+    from a-land's getWaterAt with the wet check, since the build-time one can predate the tile). The
+    consumer chunk has a global `dwSurfaceLevel` (−1e9 = unknown, no gate) that each call site sets
+    before it asks: water-vertex.glsl `field.r`, water-shader.glsl `dryTestField.r`, the probe its
+    `level`. A line draws only on water within 0.6..1.5 m of its level (smoothstep), and the nearest-
+    line search skips lines at other levels. Needs create-shader.py (water-shader.js; ran already).
+  - **Size** (Dante's). Each line's size = its drop / `sizeRef` 10 m, clamped 0.2..1.5
+    (`RING_DEFAULTS`; ranges now carry `drop` = landing speed² / 2g). It scales the rings' decay and
+    the surface mist's decay, haze decay, reach and box (`fallRingExtra[i].y`, mist `aSplashB.z`); the
+    mist's line search is also level-gated (±1 m of its box's level).
+  - Checked: 89 hull checks (+3: size clamp, default, recorded drop); the chunk compiles in both
+    stages; a two-level render (a line at 0, a point at −3): no level → both, upper water → only the
+    line, lower → only the point; mist at size 1 vs 0.2 (the short step's mist stays by its foot).
+- **Perlin.** Hashed-gradient Perlin in both shaders: the fog's wander (twice per fragment) and the
+  rings' front wobble (once per height evaluation).
+- **Checked.** `node tests/waterfall-mist/splash-hull-test.mjs`: 86 checks (+11 on the ring lines:
+  segments per plunge pair, downstream unit normal, across the fall, amplitude and its scaling per
+  strand, lone point, one phase per line, gap breaks, fallbacks). The splash
+  shader compiled, linked and rendered in the raw-WebGL2 headless harness (AP off). Bench, one 12 m
+  wide 10 m fall, 1400x600: 0.99 ms/draw fog off, 1.32 ms fog on (+33%: the fog's noise runs over its
+  wide footprint). NOT checked: through the real ShaderMaterial, with AP on, or at frame rate. waterfall-splash.js was already regenerated (fog defaults
+  included) when the work finished.

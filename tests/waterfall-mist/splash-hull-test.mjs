@@ -166,4 +166,38 @@ let r3, r10, r30;
   check('wide: at most about 48 blobs (+ the edge strand)', hull.blobs <= 50, 'blobs '+hull.blobs);
 }
 check('null nappe gives no hull', H.build(null) === null);
+
+//── Rings: the landing lines handed to the water ──
+{
+  //A 6 m wide fall landing in a pool, flowing +z: one line across the plunge, its normal downstream.
+  const hull = H.build(nappeOf({top:[0,10,-0.5], bottom:[0,-2,0.5], width:6, discharge:5, drop:10}, (x,z) => z < 0 ? 10 : -2,
+                               (x,z) => z >= 0 ? {depth: 2, level: 0, speed: 0.1, energy: 0} : null), {}, {waterAt: (x,z) => z >= 0 ? {depth: 2, level: 0} : null});
+  const L = hull ? H.ringLines(hull.ranges) : [];
+  const plunges = hull ? hull.ranges.filter(r => r.plunge).length : 0;
+  check('rings: one segment between each pair of neighbouring plunge points', L.length === Math.max(plunges - 1, 1), L.length+' segments for '+plunges+' plunge points');
+  check('rings: the normal points downstream (+z), unit', L.length && L.every(g => g.nz > 0.9 && Math.abs(Math.hypot(g.nx, g.nz) - 1) < 1e-6), L.map(g => f2(g.nx)+','+f2(g.nz)).join(' '));
+  check('rings: the line runs across the fall (x), at the landing', L.length && L.every(g => Math.abs(g.az - g.bz) < 0.3) && Math.max(...L.map(g => Math.max(g.ax, g.bx))) - Math.min(...L.map(g => Math.min(g.ax, g.bx))) > 3.0);
+  check('rings: amplitude ~ RING_DEFAULTS.amplitude for a ~10 m fall', L.length && L.every(g => g.amp > 0.5 * H.RING_DEFAULTS.amplitude && g.amp < 1.5 * H.RING_DEFAULTS.amplitude), 'amp '+(L.length ? f2(L[0].amp) : '-')+' m');
+  //A harder landing throws bigger waves.
+  const R = (s, share) => ({x: 0, z: 0, y: 0, strand: 0, plunge: true, strength: s, share: share, hx: 0, hz: 1, seed: 0.1});
+  check('rings: amplitude grows with the impact, within x0.3 .. x1.5', H.ringLines([R(0.4, 1)])[0].amp < H.ringLines([R(4, 1)])[0].amp && H.ringLines([R(100, 1)])[0].amp <= 1.5 * H.RING_DEFAULTS.amplitude + 1e-9 && H.ringLines([R(1e-6, 1)])[0].amp >= 0.3 * H.RING_DEFAULTS.amplitude - 1e-9);
+  check('rings: amplitude follows ONE strand (strength / share)', Math.abs(H.ringLines([R(6.8, 4)])[0].amp - H.ringLines([R(1.7, 1)])[0].amp) < 1e-9);
+  //A lone point: a zero-length segment ringing downstream.
+  const lone = H.ringLines([R(2, 1)]);
+  check('rings: a lone plunge point is a zero-length segment facing downstream', lone.length === 1 && lone[0].ax === lone[0].bx && lone[0].az === lone[0].bz && lone[0].nz > 0.99);
+  //Two falls side by side, 20 m apart: separate lines, no segment bridging the gap.
+  const two = H.ringLines([0, 1, 2, 3].map(i => Object.assign(R(2, 1), {x: i * 2, strand: i, seed: 0.1 * i})).concat([0, 1, 2].map(i => Object.assign(R(2, 1), {x: 26 + i * 2, strand: 10 + i, seed: 0.5 + 0.1 * i}))));
+  check('rings: one phase (seed) per line, different lines differ', new Set(two.slice(0, 3).map(g => g.seed)).size === 1 && new Set(two.slice(3).map(g => g.seed)).size === 1 && two[0].seed !== two[3].seed);
+  check('rings: a gap breaks the line (no segment across it)', two.length === 5 && two.every(g => Math.abs(g.bx - g.ax) <= 2.0 + 1e-9), two.length+' segments');
+  //No plunge recorded: every landing counts.
+  check('rings: no plunge points falls back to every landing', H.ringLines([Object.assign(R(2, 1), {plunge: false})]).length === 1);
+  //Size: the fall's drop over sizeRef, clamped; a hull's ranges carry their drop.
+  const D = H.RING_DEFAULTS;
+  const sized = drop => H.ringLines([Object.assign(R(2, 1), {drop: drop})])[0].size;
+  check('rings: size = drop / sizeRef, clamped to sizeMin..sizeMax', Math.abs(sized(5) - 5 / D.sizeRef) < 1e-9 && sized(0.1) === D.sizeMin && sized(500) === D.sizeMax && Math.abs(sized(D.sizeRef) - 1) < 1e-9,
+        '2 m step '+f2(sized(2))+', 10 m '+f2(sized(10))+', 30 m '+f2(sized(30)));
+  check('rings: a line with no drop recorded is size 1', Math.abs(H.ringLines([R(2, 1)])[0].size - 1) < 1e-9);
+  check('rings: the hull records each landing\'s drop (~10 m for the 10 m test fall)', hull && hull.ranges.filter(r => r.plunge).every(r => r.drop > 7 && r.drop < 14), hull ? hull.ranges.filter(r => r.plunge).map(r => f2(r.drop)).join(' ') : '');
+  check('rings: nothing in, nothing out', H.ringLines([]).length === 0 && H.ringLines(null).length === 0);
+}
 process.exit(fails?1:0);

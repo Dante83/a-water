@@ -31,6 +31,18 @@ precision highp float;
 //              uFallDelay x the middle's fall time ago, so a spurt goes up and a moment later rains
 //              down round it), drawn where the column is thin, with streaks that run DOWN at
 //              uFallSpeed x uRiseRate and break into flecks sooner (uFallErode). The bounce.
+//  the fog     FOAM FOG round the foot: the finest of the spray, hanging. The same impact drives it:
+//              its density goes with the blob's strength and its top with the column's apex
+//              (uFogHeight of it), and it breathes with the same pulse, but only uFogPulse of it and
+//              uFogLag late, so it is the calm, lingering part of the splash. It is wider than the
+//              column (uFogWidth x b, opening by uFogSpread toward its top) and FADES OUT with height
+//              (exp(-uFogFade z / top)), rising slowly (uFogRise m/s) as soft, barely carved billows.
+//              Its middle is not the landing's: it wanders round it by Perlin noise (uFogWander x b,
+//              uFogDrift), so the fog drifts and leans like the real thing instead of sitting still.
+//              It rolls OUT in pulses with the waves the fall sends across the pool (DynamicWaves
+//              Fall rings): bands of thicker fog at the wavelength of the rings (uRingWave, set by the
+//              pass from DynamicWaves.FALL_RINGS) travelling outward from the middle at uFogPulseSlow
+//              of their speed, uFogPulseDepth deep (0: an even fog).
 //  the column  from the water to the top the volume is FILLED (uFill at the foot, 1 at the top),
 //              with a soft edge above (uTopSoft).
 //  noise       3D value noise in metres, its cells stretched uStretch times ALONG the axis and
@@ -39,6 +51,23 @@ precision highp float;
 //              The carve threshold rises toward the top, so the body breaks into streaks and flecks.
 //  bounds      nothing below the water's level, and a window that is zero on the sphere, so the
 //              density is zero on the blob's wall by construction.
+//
+//THE SURFACE MIST (uSurfaceMist = 1: the pass's second mesh, a box per landing line, sharing every
+//uniform). A thin layer of foam mist lying on the pool: its height is measured above the still
+//water level (it does NOT ride the waves: a cloud drifting out over the pool does not bob with the
+//swell under it; riding was tried first and read worse), and it thins with an e-fold of uSMHeight.
+//Across the pool it reaches further than the waves (uSMDecay against their decay) and rolls out in
+//bands at the wavelength of the waves (DynamicWaves "Fall rings", spliced in at the FALL_RINGS
+//injection point below, which also gives it the landing lines), uSMPulseSlow of their speed,
+//uSMPulseDepth deep. Two falloffs across the pool: a dense CORE dying at uSMDecay, and a lighter
+//HAZE (uSMBase of the density) dying at its own uSMBaseDecay, so the core can be short and the haze
+//linger without one fighting the other; the gaps between bands are no thinner than the haze;
+//uSMReach is only where it is cut off (softly, from 0.7 of it). All three distances are scaled by
+//the line's SIZE (its fall's drop over 10 m, 0.2..1.5): a short step's mist stays near its foot
+//instead of drifting out over the next ledge. WISPS: noise stretched
+//uSMWispStretch times along the outward direction and carried outward at uSMWispSpeed, its across
+//coordinate bent by a slow domain warp (uSMWarp), three octaves carved softly (uSMErode, uSMWispSoft):
+//streaks streaming off the foot, not round puffs. Downstream of the line only, as the waves.
 //
 //THE LIGHT, OCCLUSION, ATMOSPHERE AND FOG are the mist's (see waterfall-mist.glsl): a short sun march
 //for self-shadowing, a dual-lobe Henyey-Greenstein phase, the scene's sun shadow map, the sky's
@@ -82,6 +111,39 @@ uniform float uFallDelay;        //how late it is, as a fraction of the middle's
 uniform float uFallFloor;        //0..1: its density at the water, against 1 at its top (the rain thins as it falls)
 uniform float uFallSpeed;        //its streaks run down at this times uRiseRate
 uniform float uFallErode;        //how much more it is carved than the column (it is flecks and drops)
+uniform float uFogDensity;       //the foam fog's density at its middle, at the water, as a fraction of the column's
+uniform float uFogHeight;        //its top, as a fraction of the column's apex
+uniform float uFogWidth;         //its Gaussian width at the water, x b
+uniform float uFogSpread;        //how much wider it opens by its top (1 + this)
+uniform float uFogFade;          //how fast it thins with height: exp(-uFogFade z / top)
+uniform float uFogScale;         //m per noise cell of its billows
+uniform float uFogErode;         //0..1: noise level below which it is carved (low: it is fog, not flecks)
+uniform float uFogSoft;          //width of that carve's edge (wide: soft)
+uniform float uFogRise;          //m per second the billows rise
+uniform float uFogPulse;         //0..1: how much of the column's pulse moves its top
+uniform float uFogLag;           //s: how late it follows the pulse
+uniform float uFogWander;        //how far (x b) its middle wanders round the landing
+uniform float uFogDrift;         //Perlin noise units per second of that wander
+uniform float uFogPulseDepth;    //0..1: how much the outward pulses thin the fog between them
+uniform float uFogPulseSlow;     //their speed as a fraction of the pool waves' (1: with the waves)
+uniform vec2 uRingWave;          //the pool waves' wavenumber (rad/m) and frequency (rad/s): WaterfallSplashPass copies them
+uniform float uSurfaceMist;      //1: this mesh is the surface mist (see the header), 0: the splash bursts
+uniform float uSMDensity;        //1/m: the surface mist at the water, by the line, for a 10 m fall
+uniform float uSMHeight;         //m: its e-fold height above the moving surface
+uniform float uSMDecay;          //m: its e-fold distance from the line
+uniform float uSMReach;          //m: where it has faded to nothing (the boxes are built this far out)
+uniform float uSMPulseDepth;     //0..1: how much the bands thin it between them
+uniform float uSMPulseSlow;      //the bands' speed as a fraction of the pool waves'
+uniform float uSMScale;          //m per cell of its wisps
+uniform float uSMDrift;          //wisp cells per second
+uniform float uSMErode;          //0..1: noise level below which it is thinned to nothing
+uniform float uSMWispSoft;       //width of that carve (wide: soft wisps)
+uniform float uSMWispStretch;    //how many times longer than wide a wisp is, along the outward direction
+uniform float uSMWispSpeed;      //m/s the wisps stream outward
+uniform float uSMWarp;           //m the slow domain warp bends them across
+uniform float uSMBase;           //0..1: the haze's share of the density (and the floor of the gaps between bands)
+uniform float uSMBaseDecay;      //m: the haze's e-fold distance from the line (the core's is uSMDecay)
+uniform float uSMSteps;          //view-ray steps through the layer
 uniform float uGroundFade;       //m above the water's level over which the splash fades in
 uniform float uSteps;            //view-ray steps
 uniform float uLightSteps;       //sun-ray steps
@@ -212,6 +274,8 @@ float fbmOct(vec3 p, int octaves){
   return s / norm;
 }
 
+//FALL_RINGS_INJECTION_POINT
+
 //Dual-lobe Henyey-Greenstein, normalised so that isotropic scattering is 1 (a Lambert surface is
 //INV_PI * E, so a sample's in-scatter reads in the sheet's units).
 float hgIso(float cosT, float g){
@@ -274,11 +338,28 @@ float splashApex(float v0, float vt){
   return vt * vt / (2.0 * GRAV) * log(1.0 + v0 * v0 / (vt * vt));
 }
 
+//Perlin gradient noise (about -1..1), hashed gradients: for the fog's wander, once per fragment.
+vec3 perlinGrad(vec3 i){
+  return vec3(hash3(i), hash3(i + 19.19), hash3(i + 47.11)) * 2.0 - 1.0;
+}
+float perlin3(vec3 x){
+  vec3 i = floor(x);
+  vec3 f = fract(x);
+  vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  return mix(mix(mix(dot(perlinGrad(i + vec3(0.0, 0.0, 0.0)), f - vec3(0.0, 0.0, 0.0)), dot(perlinGrad(i + vec3(1.0, 0.0, 0.0)), f - vec3(1.0, 0.0, 0.0)), u.x),
+                 mix(dot(perlinGrad(i + vec3(0.0, 1.0, 0.0)), f - vec3(0.0, 1.0, 0.0)), dot(perlinGrad(i + vec3(1.0, 1.0, 0.0)), f - vec3(1.0, 1.0, 0.0)), u.x), u.y),
+             mix(mix(dot(perlinGrad(i + vec3(0.0, 0.0, 1.0)), f - vec3(0.0, 0.0, 1.0)), dot(perlinGrad(i + vec3(1.0, 0.0, 1.0)), f - vec3(1.0, 0.0, 1.0)), u.x),
+                 mix(dot(perlinGrad(i + vec3(0.0, 1.0, 1.0)), f - vec3(0.0, 1.0, 1.0)), dot(perlinGrad(i + vec3(1.0, 1.0, 1.0)), f - vec3(1.0, 1.0, 1.0)), u.x), u.y), u.z);
+}
+
 //This fragment's blob, set once in main(): its frame, and how late the falling water is (s).
 vec3 gAxis, gE1, gE2;
 float gFallLag;
-//The last splashDensity's share from the falling skirt (debug).
-float gFallShare;
+//...and the foam fog's: its top (m) and where its middle has wandered to (in the blob's frame, m).
+float gFogTop;
+vec2 gFogWander;
+//The last splashDensity's shares from the falling skirt and the fog (debug).
+float gFallShare, gFogShare;
 
 //The launch speed at a point of the footprint, as a fraction of the blob's peak at its middle: the
 //pulse (three sines, phase scattered by 2D noise) times the height noise. Between 0 and 1, never 0.
@@ -356,12 +437,177 @@ float splashDensity(vec3 p, int octaves, out float top){
       dFall = envF * smoothstep(lo, lo + max(uErodeSoft, 1e-3), n);
     }
   }
-  float d = dCol + dFall;
+  //The foam fog: low, wide, calm, thinning with height.
+  float dFog = 0.0;
+  if(uFogDensity > 0.0 && gFogTop > 1e-3){
+    vec2 lpG = vec2(dot(perp, gE1), dot(perp, gE2)) - gFogWander;
+    float hz = z / gFogTop;
+    float open = 1.0 + uFogSpread * min(hz, 1.5);
+    float wG = b * max(uFogWidth, 1e-3) * open;
+    float eG = exp(-dot(lpG, lpG) / (2.0 * wG * wG));
+    float overG = max(z - gFogTop, 0.0) / max(2.0 * uTopSoft, 1e-3);
+    float vert = exp(-uFogFade * min(hz, 1.0)) * exp(-overG * overG);
+    float envG = uFogDensity * eG * vert / (open * open) * window * ground;
+    //Pulses rolling out with the pool's waves (squared: puffs with thin gaps, not a ripple).
+    float pulse = 0.5 + 0.5 * sin(uRingWave.x * length(lpG) - uRingWave.y * uFogPulseSlow * t + vSplashA.w * TAU);
+    envG *= mix(1.0, pulse * pulse * 1.6, uFogPulseDepth);
+    if(envG > 1e-3){
+      float cellG = max(uFogScale, 1e-3);
+      float upG = mod(z / cellG - mod(t * uFogRise / cellG, SPLASH_PERIOD) + vSplashA.w * SPLASH_PERIOD, SPLASH_PERIOD);
+      float n = fbmPer(vec3(upG, lpG / cellG + vSplashA.w * vec2(5.3, 23.9)), max(octaves - 1, 1), SPLASH_PERIOD);
+      dFog = envG * smoothstep(uFogErode, uFogErode + max(uFogSoft, 1e-3), n);
+    }
+  }
+  float d = dCol + dFall + dFog;
   gFallShare = d > 0.0 ? dFall / d : 0.0;
+  gFogShare = d > 0.0 ? dFog / d : 0.0;
   return uSplashDensity * vSplashB.w * d;
 }
 
+//── The surface mist ────────────────────────────────────────────────────────
+//2D value noise and an fbm whose octaves are each ROTATED (so a stretched pattern shows no grid):
+//the layer is a few inches thick, it needs no third axis, and this is half the work of vnoise3.
+float hash2(vec2 p){
+  p = fract(p * vec2(0.3183099, 0.3678794) + 0.1);
+  p *= 17.0;
+  return fract(p.x * p.y * (p.x + p.y));
+}
+float vnoise2(vec2 x){
+  vec2 i = floor(x);
+  vec2 f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash2(i), hash2(i + vec2(1.0, 0.0)), f.x), mix(hash2(i + vec2(0.0, 1.0)), hash2(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+float fbm2Rot(vec2 p){
+  const mat2 ROT = mat2(0.8, 0.6, -0.6, 0.8);
+  float a = 0.5, s = 0.0, norm = 0.0;
+  for(int i = 0; i < 3; i++){
+    s += a * vnoise2(p);
+    norm += a;
+    p = ROT * p * 2.03 + vec2(1.7, 9.2);
+    a *= 0.5;
+  }
+  return s / norm;
+}
+
+//The nearest drawn landing segment ON THIS POOL (its level within a metre or so of `level`; the step
+//above or below is not this mist's): distance (m), the downstream weight, its parameters.
+float smLine(vec2 xz, float level, out float side, out vec4 prm){
+  float best = 1.0e12;
+  vec2 bdv = vec2(0.0);
+  prm = vec4(0.0);
+  for(int i = 0; i < FALL_RINGS_N; ++i){
+    if(float(i) >= fallRingCount) break;
+    if(abs(fallRingExtra[i].x - level) > 1.0) continue;
+    vec4 s = fallRingSeg[i];
+    vec2 ab = s.zw - s.xy;
+    vec2 dv = xz - (s.xy + ab * clamp(dot(xz - s.xy, ab) / max(dot(ab, ab), 1.0e-6), 0.0, 1.0));
+    float d2 = dot(dv, dv);
+    if(d2 < best){ best = d2; bdv = dv; prm = fallRingParam[i]; }
+  }
+  float d = sqrt(best);
+  side = dot(prm.yz, prm.yz) < 0.01 ? 1.0 : smoothstep(-0.35, 0.45, dot(bdv, prm.yz) / max(d, 0.5));
+  return d;
+}
+
+//Density (1/m) of the surface mist at p, over water at `level` (m), for a line of this strength and size.
+float surfaceMistDensity(vec3 p, float level, float strength, float size){
+  float side;
+  vec4 prm;
+  float d = smLine(p.xz, level, side, prm);
+  float sz = max(size, 0.05);
+  float R = max(uSMReach * sz, 0.1);
+  if(side <= 0.0 || d >= R || prm.x <= 0.0) return 0.0;
+  //Above the still level (not riding the waves, see the header).
+  float y = p.y - level;
+  if(y < -0.02) return 0.0;
+  float vert = exp(-max(y, 0.0) / max(uSMHeight, 0.01)) * smoothstep(-0.02, 0.04, y);
+  float base = clamp(uSMBase, 0.0, 1.0);
+  float falloff = (1.0 - base) * exp(-d / max(uSMDecay * sz, 0.05)) + base * exp(-d / max(uSMBaseDecay * sz, 0.05));
+  float horiz = side * (1.0 - exp(-d / 0.6)) * falloff * (1.0 - smoothstep(0.7 * R, R, d));
+  //Bands rolling out with the waves (squared: puffs with thin gaps), the gaps no thinner than the base.
+  float pulse = 0.5 + 0.5 * sin(fallRingWave.x * d - fallRingWave.y * uSMPulseSlow * t + prm.w * TAU);
+  float bands = max(mix(1.0, 1.6 * pulse * pulse, uSMPulseDepth), base);
+  //Wisps: in the line's frame (across, outward), stretched and streaming outward, warped across.
+  vec2 nrm = dot(prm.yz, prm.yz) > 0.01 ? prm.yz : vec2(0.0, 1.0);
+  float across = dot(p.xz, vec2(-nrm.y, nrm.x));
+  float outward = dot(p.xz, nrm);
+  float cell = max(uSMScale, 0.05);
+  //The warp drifts (its pattern slides along the line), so the streaks writhe as they stream out.
+  float warp = (vnoise2(p.xz / (4.0 * cell) + vec2(t * uSMDrift, 3.7 + prm.w * 11.0)) - 0.5) * 2.0 * uSMWarp;
+  vec2 q = vec2((across + warp) / cell, (outward - t * uSMWispSpeed) / (cell * max(uSMWispStretch, 1.0)) + prm.w * 11.0);
+  float n = fbm2Rot(q);
+  float wisp = smoothstep(uSMErode, uSMErode + max(uSMWispSoft, 0.01), n);
+  return uSMDensity * strength * vert * horiz * bands * wisp;
+}
+
+//The surface mist's fragment: march the view ray through the box's thin layer.
+//vCenter.xyz the box's middle; vSplashA.xyz its half extents, w a seed; vSplashB.x the water's level, .y the strength, .z the size.
+void surfaceMistMain(){
+  vec3 C = vCenter.xyz;
+  vec3 hE = vSplashA.xyz;
+  float level = vSplashB.x;
+  float strength = vSplashB.y;
+  vec3 camToX = vWorldPos - cameraPosition;
+  float distX = length(camToX);
+  vec3 rd = camToX / max(distX, 1e-4);
+  //The layer: the box across, from the level to a few e-folds over it.
+  vec3 bmin = vec3(C.x - hE.x, level - 0.05, C.z - hE.z);
+  vec3 bmax = vec3(C.x + hE.x, level + 5.0 * uSMHeight, C.z + hE.z);
+  vec3 r = mix(rd, vec3(1e-6), lessThan(abs(rd), vec3(1e-6)));
+  vec3 ta = (bmin - cameraPosition) / r, tb = (bmax - cameraPosition) / r;
+  vec3 tmn = min(ta, tb), tmx = max(ta, tb);
+  float t0 = max(max(max(tmn.x, tmn.y), tmn.z), 0.0);
+  float t1 = min(min(tmx.x, tmx.y), tmx.z);
+  if(t1 <= t0 + 1e-3) discard;
+  float L = t1 - t0;
+  int nSteps = int(clamp(uSMSteps, 4.0, float(MAX_STEPS)));
+  float dt = L / float(nSteps);
+  float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+  vec2 screenUV = gl_FragCoord.xy / screenResolution;
+  float gRaw = texture2D(refractionDepthTexture, screenUV).r;
+  float sceneDepth = 1e6;
+  if(gRaw < 1.0){
+    vec4 gv = inverseProjectionMatrix * vec4(screenUV * 2.0 - 1.0, gRaw * 2.0 - 1.0, 1.0);
+    sceneDepth = -gv.z / gv.w;
+  }
+  vec3 Lsun = -normalize(brightestDirectionalLightDirection);
+  float phase = mistPhase(dot(rd, Lsun));
+  vec3 sunCol = INV_PI * brightestDirectionalLight * uSunGain;
+  vec3 ambient = skyAmbientColor * uAmbient;
+  //Thin: one light for the whole chord (the scene's shadow at its middle, no sun march of its own).
+  vec3 scatter = uAlbedo * (sunCol * phase * sunShadowAt(cameraPosition + rd * (t0 + 0.5 * L)) + ambient);
+  float Tr = 1.0;
+  for(int i = 0; i < MAX_STEPS; i++){
+    if(i >= nSteps) break;
+    float along = t0 + dt * (float(i) + jitter);
+    vec3 p = cameraPosition + rd * along;
+    float dens = surfaceMistDensity(p, level, strength, vSplashB.z);
+    if(dens <= 1e-4) continue;
+    float viewDepth = vViewDepth * along / max(distX, 1e-4);
+    float sigma = dens * clamp((sceneDepth - viewDepth) / max(uSoftRange, 1e-3), 0.0, 1.0);
+    if(sigma <= 1e-5) continue;
+    Tr *= exp(-sigma * dt);
+    if(Tr < 0.01) break;
+  }
+  float alpha = (1.0 - Tr) * uSplashOpacity;
+  if(uDebugMode == 0 && alpha < 0.003) discard;
+  vec3 color = scatter;
+  #if($atmospheric_perspective_enabled)
+    if(underwaterFactor < 0.5) color = applyAtmosphericPerspective(color, cameraPosition + rd * (t0 + 0.5 * L));
+  #endif
+  gl_FragColor = linearTosRGB(vec4(aroAESFilmicToneMapping(color), alpha));
+  //$DEBUG_START$
+  if(uDebugMode == 4) gl_FragColor = vec4(0.9, 0.5, 0.1, 0.25);                                   //the surface mist boxes (orange)
+  else if(uDebugMode == 1) gl_FragColor = vec4(vec3(1.0 - Tr), 1.0);
+  //$DEBUG_END$
+  #if(!$atmospheric_perspective_enabled)
+    #include <fog_fragment>
+  #endif
+}
+
 void main(){
+  if(uSurfaceMist > 0.5){ surfaceMistMain(); return; }
   vec3 C = vCenter.xyz;
   float R = max(vCenter.w, 1e-3);
   vec3 camToX = vWorldPos - cameraPosition;
@@ -387,6 +633,11 @@ void main(){
   //The falling water left the top this long ago: uFallDelay x the middle drop's fall from its apex.
   float vr = vSplashA.x / max(vSplashC.y, 0.1);
   gFallLag = uFallDelay * vSplashC.y / GRAV * log(sqrt(1.0 + vr * vr) + vr);
+  //The foam fog: its top follows a damped, late share of the column's pulse at the middle; its middle
+  //wanders round the landing by Perlin noise.
+  gFogTop = uFogHeight * splashApex(vSplashA.x * mix(1.0, splashPulse(vec2(0.0), t - uFogLag), uFogPulse), vSplashC.y);
+  float tw = t * uFogDrift + vSplashA.w * 61.0;
+  gFogWander = vSplashA.z * uFogWander * 1.6 * vec2(perlin3(vec3(tw, vSplashA.w * 37.0, 0.5)), perlin3(vec3(tw, vSplashA.w * 37.0, 9.5)));
 
   //The splash is a low body in a wide sphere: clip the chord to the slab between the water and the
   //highest the blob ever throws, so the steps are spent where there is spray.
@@ -468,9 +719,9 @@ void main(){
   //$DEBUG_START$
   if(uDebugMode == 1) gl_FragColor = vec4(vec3(1.0 - Tr), 1.0);                                   //opacity
   else if(uDebugMode == 3) gl_FragColor = vec4(vec3(clamp(vSplashB.w / 3.0, 0.0, 1.0)), 1.0);     //strength (white at 3)
-  else if(uDebugMode == 6){                                                                       //at mid-chord: the column (red) against the falling skirt (green)
+  else if(uDebugMode == 6){                                                                       //at mid-chord: the column (red), the falling skirt (green), the foam fog (blue)
     float dm = splashDensity(mid, 1, topF);
-    gl_FragColor = vec4(dm > 0.0 ? vec2(1.0 - gFallShare, gFallShare) : vec2(0.0), 0.0, 1.0);
+    gl_FragColor = vec4(dm > 0.0 ? vec3(1.0 - gFallShare - gFogShare, gFallShare, gFogShare) : vec3(0.0), 1.0);
   }
   else if(uDebugMode == 2 || uDebugMode == 5){                                                    //the column height at mid-chord, as a fraction of the blob's highest (watch it pulse)
     splashDensity(mid, 1, topF);
