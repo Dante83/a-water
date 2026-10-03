@@ -5463,3 +5463,348 @@ Branch `add-circular-ripples-under-waterfall`. Two more foot effects, both ridin
   wide 10 m fall, 1400x600: 0.99 ms/draw fog off, 1.32 ms fog on (+33%: the fog's noise runs over its
   wide footprint). NOT checked: through the real ShaderMaterial, with AP on, or at frame rate. waterfall-splash.js was already regenerated (fog defaults
   included) when the work finished.
+
+## Waterfall impact particles, step 4: billowy clouds drifting off the foot (2026-10-02)
+
+Branch `waterfall-billow-clouds` (off ec25a3f). The last foot piece: big, thin, billowy clouds that
+break off the plume and float away. Dante's choices: discrete puffs (not a plume), drift = outflow then
+wind, bake our own noise (port A-Starry-Sky's), backport the multi-scatter light afterwards (step 4b).
+
+- **Puffs** (`luts/waterfall-cloud-puffs.js`, pure JS). Every landing line (the splash pass's
+  `_ringSegments`: levels and wetness stay live) owns 3–8 slots. A slot is STATELESS, a closed form in
+  the global time: born on the line (1.5 m downstream, 2 m up, x size), swells r0 2.5 → 9 m (x size^0.5,
+  so a 3 m fall's clouds are still big), rises 0.22 m/s, leaves along the downstream normal at 1.4 m/s
+  (e-fold 6 s), then drifts with 0.35 of `oceanGrid.windVelocity` (ramp 8 s); peak density (r0/r)^2,
+  fade in 2 s, out over the last 35% of a 22–36 s life; reborn elsewhere on the line. Per frame the
+  nearest 32 (max 64) are kept, sorted far → near (instance order = blend order).
+  ⚠ A wind change jumps every puff to where the new wind would have carried it (no state to keep).
+- **Noise** (`luts/waterfall-cloud-noise.js` + `waterfall-cloud-noise.glsl`): A-Starry-Sky's
+  cloud-noise.glsl modes 0/1, ported (credit in the header). Shape 128^3 (the plan said 64; 56 Worley
+  cells in 64 texels would alias), detail 32^3, RGBA8, linear, repeat. Baked 16 slices a frame the first
+  time a fall is up; the clouds stay hidden until it is done. ⚠ r173's WebGL3DRenderTarget drops its
+  options, so filters/wraps are set on the texture.
+- **Shader** (`waterfall-cloud.glsl`, instanced icosahedra, inscribed sphere = the puff). The sky's
+  recipe with the puff's envelope as coverage: soft ball with a flattened base, ERODED by the shape
+  (`remap(env, (1-shape)·uShapeErode, 1)`, coordinates in radii so the billows swell with the puff and
+  roll up at uRoll), then by the detail in metres (wispy d^6 low, billowy 1−d high). Light: two HG
+  lobes (0.7 / −0.2), Wrenninge's octaves (4) + diffusion floor, 3 doubling sun segments on the cheap
+  density, powder, sky occluded by one tap up, scene shadow at mid-chord, Hillaire's step. Jitter is the
+  splash's static IGN (no blue-noise texture: it comes from the sky and may be null).
+  - ⚠ First cut read as smooth blobs. The baked `.r` is ALREADY lifted by its Worley fBm; a second
+    Nubis lift (by `.gba`) pushed it to ~1 and the erosion did nothing. The sky reads `.r` straight.
+    Also a 2 m detail tile is invisible from 30 m (now 6 m).
+- **Pass** (`passes/waterfall-cloud-pass.js`): rides the splash pass (up only while it is), aliases the
+  flowing material's uniforms, the usual render state, renderOrder 7.5 (behind mist 8, surface mist 8.5,
+  splash 9). Hidden in every offscreen pass, the waterline water view and underwater (ocean-grid.js).
+- **Console:** `waterfallCloudPass` (puffOptions live, material.uniforms.u*), `cloudStats()`,
+  `hideWaterfallClouds(bool)`; uDebugMode 1 opacity, 3 peak density, 4 proxies, 5 age, 6 shape/detail/envelope.
+- **Checked:**
+  - `node tests/waterfall-mist/cloud-puffs-test.mjs`: 24 checks (birth on the line, drift outflow →
+    wind, rise, growth monotonic, thinning, fades, respawn elsewhere, stateless, finite, pick
+    cap/nearest/far→near, dry lines, distance). The splash (89) and mist hull tests still pass.
+  - Headless Chrome on the 4090 (three r173 via aframe 1.7, the real pass with a stubbed grid, materials
+    generated into scratch, not the repo): compiles, the noise bakes (debug 6 shows the texture),
+    1200x700 costs 0.12 ms (3 m fall), 0.45 ms (8 lines, 32 puffs), 0.64 ms with the camera inside
+    them. Defaults tuned there (density 2, shape 0.45 tiles/radius, erode 1.3, detail 6 m, erode 1).
+  - NOT checked: the real page (falls-lab-sky.html has the scripts now), AP on, real exposure. The bench
+    sun saturated AES at 4.5 and the shading only showed at 1.6, so expect to tune uSunGain/uAmbient/
+    uCloudDensity in the browser.
+- **NEEDS create-shader.py** (two new materials: waterfall-cloud-noise.js, waterfall-cloud.js).
+- **Step 4b (after the look is approved):** pull the HG octaves + Wrenninge + diffusion floor into a
+  shared chunk and give it to the splash, foam fog, surface mist and mist cones behind `uMultiScatter`
+  for an A/B (they use `(e^-τ + 0.4e^-0.2τ)/1.4` now).
+
+### Step 4, round 2: thin water mist off the whole line, not clouds (2026-10-02)
+
+Dante: "these are actually too powerful… rapidly fade and act like thin water mist, not actual clouds…
+emanate along the entire boundary. Instead the waterfall kind of… farts."
+
+- **The "fart"** was the emission: 3–8 slots per line, each born at a RANDOM spot as a fully formed
+  2.5 m dense puff 2 m up, so a few separate blobs popped out. Now:
+  - the line is cut into even stretches (0.8 per m, 4..32), with `perStretch` 2 puffs in each at
+    independent ages. One per stretch alternated bright and dim along the row;
+  - each slot gets a random phase (stretches fired in order would sweep);
+  - births are low (0.8 m up, 0.5 m out) and wider than their stretch (r0 2.5 x size^0.5), so neighbours
+    overlap;
+  - fade-in is 2.5 s, so a puff peaks already spread out (a dense newborn was the bright pop).
+- **Too powerful** = the sky's cumulus recipe:
+  - life 22–36 s → 6–11 s, with an e-fold thinning from birth (`fadeTau` 3.5 s); under a quarter of its
+    peak by 3/4 of its life;
+  - density 2 → 0.8;
+  - erosion 1.3 → 0.9;
+  - new `uBillowy` 0.2 (the sky's 1−d knobs mostly off: wispy d^6 strands all through);
+  - new `uEdgeSoft` 2 (envelope (1−|q|²)², no dome per puff, so the row melts into one sheet);
+  - detail tile 6 → 3 m.
+- **Overdraw:** thin puffs never reach the 1% early-out, so the camera inside 64 of them cost 5.1 ms.
+  Steps 24 → 12 (uStepFrac 0.2), sun segments 3 → 2: no visible change, inside 1.78 → 0.99 ms,
+  outside 0.87 → 0.58 ms (8 lines, 64 puffs, 1200x700, 4090). Instance cap 96, default maxPuffs 64.
+- Checked: 28 puff checks (+ whole line: each slot in its stretch, no gap over two stretches, not a
+  sweep; + fast fade). Bench renders: one continuous low band along the line thinning as it drifts.
+  NOT checked in the browser yet; regen needed again (template + glsl changed).
+
+### Step 4, round 3: the ocean spray's light profile (2026-10-02)
+
+Dante: "the mist doesn't have the same lobe profile as the clouds… grab the profile from the ocean
+waves, as those look colder."
+
+The sea's spray lights its mist with `aeratedWater` (ocean-splash.glsl, foaminess 0): sun × sunScale 0.8 ×
+(half-Lambert wrap × 0.8 + phaseGain 0.6 × a 4π-normalised HG pair, forward g 0.85 with 15% of a −0.2
+back lobe), plus a sky fill lifted ×1.8 and tinted by the cool translucent-water body (0.60, 0.74, 0.95),
+plus the teal of the sunlit water bounced up under it. The clouds' lobes (g 0.7, HALF backward) pour warm
+sun on every side, so the mist read warm.
+
+- New `uLobe` (1 = spray, the default; 0 = the cloud lobes) in waterfall-cloud.glsl:
+  - `sprayPhase` is that light in our units, π × uSpraySun × (uSprayWrap + uSprayGain × dual). The wrap
+    over a made-up normal becomes its volume mean, 0.4;
+  - the ambient is the spray's (tint + bounce, the bounce at half its underside);
+  - in spray mode the Wrenninge octaves are divided by their tau-0 sum (1.875) so thin mist matches the
+    spray instead of glowing at twice it.
+- Uniforms `uSprayG/uSprayGain/uSprayWrap/uSpraySun/uSprayAmbient/uMistTint/uWaterBounce` carry
+  OceanSplash's values; keep them in step if the spray is retuned.
+- Not ported: the spray's day/night gates (uSunElevation; the waterfall materials do not get it). At
+  night its tinted ×1.8 fill may glow. Check at dusk.
+- Bench A/B (density ×4 to see it; side, back and front sun): spray mode reads colder, blue-white bodies,
+  no warm wash; the halo only near the sun. Cost unchanged.
+
+### Step 4, round 4: the night gate for every foot volume (2026-10-02)
+
+Dante: "we likely should get our sun elevation passed into our foam shaders. I've never seen any of these
+at different times of day."
+
+- `WaterfallMistPass.solarElevation(og)`: sin of the TRUE solar elevation, from a-starry-sky's sun
+  (1 with no sky). Not the brightest light's, which is the moon at night. The grid's OceanSplash block now
+  calls it too (it had the same code inline).
+- Mist cones, splash + foam fog, surface mist and the clouds all get `uSunElevation` (set every frame by
+  their pass) and `uNightAmbient` 0.07 (OceanSplash's). The sky fill × `nightDim()` =
+  mix(0.07, 1, smoothstep(−0.08, 0.06, elevation)), the sea spray's gate. Direct light is untouched (the
+  moon still lights it). The clouds' teal water bounce also takes the spray's `dayF`
+  (smoothstep(0.04, 0.22)).
+- Daytime is unchanged (the gate is 1 above ~3.4° of sun) for the splash, foam fog, mist cones and
+  clouds. The surface mist changed slightly even in daytime: its colour now goes through the sky fill
+  term with the gate.
+- Checked: all three shaders compile, linked through three r173 in the headless bench (splash in both
+  modes, mist cones, clouds). The clouds with the sun off: blue-white by day → a dark veil at night.
+  The splash regen differs from HEAD only by the added lines.
+- Not checked: any of it at real dusk/night in the browser (never looked at).
+- NEEDS create-shader.py: waterfall-mist.js and waterfall-splash.js now change too, plus the two new
+  cloud materials.
+
+### Step 4, round 5: foam keeps its sunset colour (hue-keeping tone curve) (2026-10-02)
+
+Dante (screenshots): the waterfall foam stays pretty much white until dusk; at night some foam goes dull
+grey while foam in the pool stays weirdly bright.
+
+- **Diagnosis (no code was wrong; numbers from a-land's SkyPhotometry).** Our light uniforms are a-land's
+  metered `lux × exposure`. The exposure rises faster than the low sun fades. Display light on a sun-facing
+  surface:
+  - 45°: (2.6, 2.1, 1.7), sky (0.2, 0.27, 0.43);
+  - 5°: (14.7, 6.5, 1.3);
+  - 2°: (17.4, 4.1, 0.2), sky 1.5–1.6;
+  - −12° (moon): (0.065, 0.079, 0.093), sky 0.04.
+
+  The terrain is mostly flat, so the grazing beam barely lands on it; the vertical curtain, lit through
+  from both faces, takes all of it. That much is physical: it IS the brightest thing in the scene. The
+  per-channel AES then clips R and G to 1 and the sky adds blue, so the orange collapses to white.
+- **Night curtain grey is right:** moon + sky on an albedo-1 slab ≈ 0.30 sRGB.
+- **The pool's bright night patch does NOT fit** (foam lit the same way would be the same grey).
+  Suspect: the moon's specular glint (specBoost 7), not foam. A/B pending from Dante:
+  `oceanGrid.specBoost = 0` vs `oceanGrid.foamWhite = 0` at night.
+- **Fix: `aroFoamToneMap(color, share)`** in water-shader.glsl, copied in waterfall-sheet.glsl. The
+  brightest channel goes through AES and the others keep their ratio to it, mixed with per-channel AES
+  by share. The share is foamBlend × foamHueKeep (water, above water only) or (1 − slabTdir) ×
+  foamHueKeep (sheet bubbles; the water seen through the gaps stays per-channel).
+  - One live knob, `oceanGrid.foamHueKeep` (0.7): the sheet aliases the creek's uniform
+    (SHARED_UNIFORMS). 0 = the old look.
+  - Predicted (foam facing the sun, sRGB), old → 0.7 → 1.0:
+    - noon: 232,230,231 → 232,225,228 → 232,223,227 (no change);
+    - dusk 5°: 254,250,243 → 254,215,184 → 254,198,149;
+    - dusk 2°: 255,249,243 → 255,199,177 → 255,172,135;
+    - night: 67,71,75 → 69,72,75 (no change).
+- Checked: a standalone `<a-restless-ocean>` page (all 69 bundle files, aframe 1.7, scratch-generated
+  materials) compiles the sea, the flowing variant and the sheet with zero console errors. The regen
+  differs from HEAD only by the added lines.
+- NEEDS create-shader.py: water-shader.js and waterfall-sheet.js too now (six materials in all).
+
+### Step 4, round 6: the land's occlusion on foam, the curtain and the foot's mist (2026-10-02)
+
+Dante (night screenshot): the white foam on the fall and on the water glows at night; surf/water foam
+isn't that grey at night. Does the foam get ambient, shadows, self-shadow?
+
+**Answer.** The sky fill was the WHOLE sky everywhere. The curtain had NO terrain shadow on a-land pages:
+it reads only the scene shadow map, which a-land turns off. The pool foam had the sun's land shadow
+(WaterLightField) but an unoccluded sky. Nothing self-shadowed except the mist's short sun march. A fall at
+the back of a gorge sees a share of the sky, and at night the moon behind the wall still lit it, beside
+cliffs a-land lights with its occlusion baked in (black).
+
+- **a-faraway-land** (branch `foam-shader-additions`): `ALand.runtime.ObjectMaterial.siblingLight()`.
+  Read-only, by reference, the live bus values its objects use:
+  - horizon: skyline atlas, K, soft;
+  - ground: lightmap, A = sky visibility.
+
+  Either is null when off.
+- **`ARestlessOcean.LandLight`** (new, `field/land-light.js`):
+  - GLSL `landLightVisibility(p, L)` (a-land's horizonShadow, keep in step) and `landSkyVisibility(xz)`,
+    spliced at `//LAND_LIGHT_INJECTION_POINT` by `ARestlessOcean.spliceLandLight` (ARestlessOcean.js);
+    every build site uses it, with a stub returning 1 where the file is not loaded;
+  - `update(uniforms)`, every frame in the grid's uniform loop (after WaterLightField);
+  - the sheet and the foot volumes alias the 7 `land*` uniforms (both SHARED_UNIFORMS lists);
+  - Console: `ARestlessOcean.LandLight.enabled = false` (A/B), `.stats()`.
+- **Applied:**
+  - water foam's sky fill × sky visibility (sea and pool);
+  - curtain: sunShadow × skyline (sun and glint, so the moon behind the wall goes), sky fill ×
+    sky visibility;
+  - mist cones, splash/foam fog, surface mist: sun × skyline, sky × sky visibility at the fragment;
+  - clouds: the same at mid-chord.
+- ⚠ Both are taken at the GROUND under the point. The curtain's upper half sees a little more sky and a
+  lower skyline than its foot, so it is over-occluded up there. The texels are metres. Pool foam's sky
+  visibility is the BED's (deeper sees less), slightly dark near banks.
+- Checked:
+  - the standalone page compiles water, flowing, mist, splash, cloud and sheet both WITH land-light.js
+    and WITHOUT it (stub), zero console errors;
+  - functional, cloud bench with a fake a-land: open sky identical to no a-land; skyline above the sun
+    removes the direct light; sky visibility 0.3 dims the fill; both: a dim blue-grey.
+- NOT checked: against a real a-land bake (falls-lab-sky at night).
+- NEEDS create-shader.py (all six foot/water materials) and the a-land branch on the page.
+- Not built: self-shadow on the curtain (step 3 of the plan, if still needed after this).
+
+### Night lighting: the units are NOT the problem (measured 2026-10-02)
+
+Dante: at night the water reflects the ground green while the land in the distance is dark. "A
+difference in our lighting models and units?"
+
+- **Measured headless** (falls-lab-sky at sky-date 2022-10-15 01:00, the night driver in this session's
+  scratch: CDP Fetch rewrites the page's sky-date, park the camera off the landing line):
+  - a-land exposure 21.26 (EV100 −4.7), renderer.toneMapping 4 (three ACES filmic);
+  - budget direct (0.00145, 0.00176, 0.00207) lux, sky 0.0019 lux;
+  - our flow uniforms sun = (0.031, 0.037, 0.044), sky = 0.041, i.e. EXACTLY lux × exposure;
+  - the "sun" is the MOON at ~2° altitude (dir.y −0.035) on that date;
+  - LandLight live (horizon + ground both arriving).
+
+  ⚠ The headless frame itself was unusable (terrain patches drawn as black bands: camera inside the
+  bank or tiles unstreamed). Do not read the image, only the numbers.
+- **Tone curves differ in the darks:** ours is Narkowicz's fit, a-land's is three's RRT+ODT ACES (black
+  toe). Same input: ours 0.01 → 12/255 vs three 8; 0.04 → 49 vs 41. Ours ~20% brighter at night. A real
+  but small contributor (night foam 42 vs 34).
+- **But the metered light predicts the SSR-relit grass at ~(4, 13, 2)/255, near black.** The visible
+  green needs far more light than that, so it comes from a path not yet identified. Candidates:
+  - SSR relight (water-shader ~1185: albedo × (sun·N·L + sky), NO shadow, NO occlusion, NO 1/π
+    unlike the seabed branch);
+  - the mirror reflection RT (a-land captured in mode 3, exposure, no curve);
+  - the above-water refraction relight branch (~3030).
+- **Next:** Dante's A/B at night: debug 11 (reflection alone) vs 15 (body alone), then mode 0 with
+  `oceanGrid.ssrMaxSteps = 0`. Whichever path it is gets the land occlusion at its hit point. Then
+  consider matching three's ACES curve.
+
+### Night lighting, found: our sky term is PI x too bright (2026-10-02)
+
+- **Dante's A/B at night:**
+  - debug 11 (reflection alone) has the green;
+  - debug 15 (body) does not;
+  - `ssrMaxSteps = 0` removes it.
+
+  So it is the SSR relight. Still the biggest offender: the sea foam.
+- **The unit bug.** `skyAmbientColor` is IRRADIANCE: a-land's metered skyLux × exposure, or a-starry-sky's
+  hemisphere, calibrated against three's stock Lambert. A Lambert surface returns albedo/π of it, and
+  a-land's terrain.frag does exactly that ("Multiplying irradiance by bare albedo overshoots by PI").
+  Our shaders used bare `albedo × skyAmbientColor` everywhere, with the sun term already / π. By day the
+  sun hid it. At night, with a 2° moon, the sky is nearly all the light, so white water and the
+  reflected hills read ~3× bright. The SSR relight also lacked the sun's 1/π and had no shadow.
+- **Fix, behind `oceanGrid.ambientPiFix`** (1 physical, default; 0 the old look; shared uniform reaching
+  water, sheet and the foot volumes):
+  - sea/pool foam ambient / π;
+  - curtain sky fill / π;
+  - mist cones, splash/foam fog, surface mist and clouds ambient / π;
+  - SSR hit relight: (sun·N·L × land skyline + sky × land sky visibility) at the hit (0.5·(lo+hi)), / π.
+- Predicted at the measured night light: sea foam 42/255 → ~15 (a-land grass ~8). By day: sunlit foam
+  barely changes, shaded foam keeps ~1/3 of its sky fill.
+- ⚠ NOT changed (same bug class, wider look impact; do one at a time):
+  - the water BODY (inscatterEquilibrium = waterAlbedo × (direct + skyAmbientColor));
+  - the seabed/terrain-through-water relight's ambient;
+  - OceanSplash's spray (vAmbient = sky × 1.8);
+  - the clouds' spray mode copies those spray constants, so it now sits /π under the spray.
+- Checked: everything compiles with and without land-light.js, zero console errors. NEEDS
+  create-shader.py.
+
+### The rest of the sky terms get the 1/PI (2026-10-02)
+
+Dante: "The foam and terrain match better now! Want to give the others a go?"
+
+- **Audit.** Already right:
+  - the water body (single scatter E/(2π), R∞ multi-scatter E/π, in water-shader AND the sheet's copy);
+  - the river plume (albedo/π × (sun + sky));
+  - the CPU underwater murk ((direct + ambient)/π).
+- **Fixed, all behind the same `oceanGrid.ambientPiFix`:**
+  - **Seabed** `ambientUW`. Its comment said "a uniform sky of radiance L delivers E = π L, so the π
+    cancels", which reads the uniform as RADIANCE; it is irradiance. Now /π and × the land's sky
+    visibility; comment corrected.
+  - **Terrain seen through the water:** sky /π, × land sky visibility.
+  - **The no-sky-provider sky** (`computeStandaloneSkyRadiance`, water + sheet copy): mean radiance =
+    E/π. ⚠ This one is a big DAYTIME change on pages without a-starry-sky (islands.html etc.): their
+    synthesized sky reflection drops to 1/π.
+  - **The sheet's** SSR relight (as the water's), its below-horizon sky fallback, and the bed/terrain
+    seen behind the curtain.
+  - **OceanSplash spray:** `vAmbient` /π (drives both its mist body and its drops' sky reflection); the
+    grid passes ambientPiFix in the splash ctx. The clouds' spray mode (uSprayAmbient 1.8 copies the
+    spray's) is consistent with the spray again.
+- **⚠ Bug fixed from the previous round:** both SSR functions march in VIEW space (ssrViewMatrix), so the
+  hit point handed to the land occlusion was a view-space position. Now
+  `worldPos + normalize(marchDir) · dot(hitView − viewPos, viewReflect)`. The sheet's LAND_LIGHT marker
+  moved above its SSR function.
+- Checked: water, flowing, mist, splash, cloud, SPRAY and sheet compile with and without land-light.js,
+  zero errors. The regenerated ocean-splash.js differs from HEAD by the added lines only.
+- NEEDS create-shader.py (now seven materials incl. ocean-splash.js).
+- **Watch by day:**
+  - shaded shallows and terrain-through-water lose ~2/3 of their sky fill;
+  - spray mist and drops are /π (OceanSplash's ambientScale 1.8 was a lift for "dark grey smoke"; it
+    may need re-tuning against the now-correct units rather than reverting the fix).
+
+### Curtain vs mist at night: each part of the fall asked a different patch of ground (2026-10-02)
+
+Dante (night, at the curtain): "the foam and sheet colors still aren't matching".
+
+- **Measured from his screenshot:**
+  - curtain top at the lip: (10, 14, 20) lit blue-grey;
+  - the rest of the curtain: (4.6, 5.1, 2.7) = the cliff beside it (4.1, 5.2, 2.7). The curtain's own
+    white water contributed ~nothing; it showed the rock behind it;
+  - the mist at the base: grey-blue, brighter.
+- **Cause:** the "taken at the ground" approximation of LandLight.
+  - The lower curtain hangs over the cliff-FOOT texels: a corner that sees half the sky and a high
+    skyline.
+  - The lip sits over the open ledge top.
+  - The mist's rays exit over the open pool.
+- **Fix:** `landSkyVisibilityOpen(xz)` / `landLightVisibilityOpen(p, L)`, the most open of the point and
+  four neighbours LAND_OPEN_R = 4 m away (field/land-light.js; stubs in ARestlessOcean.js). Used by the
+  curtain (sun and sky), mist cones, splash/foam fog, surface mist and clouds. Sea/pool foam keep the plain
+  lookup: they do lie on the ground.
+- ⚠ In a gorge narrower than ~8 m a neighbour may land on the opposite wall (a max, so it can only
+  brighten). The moon at 2° still leaves the lower curtain unlit by direct light while the lip is lit;
+  that part is physical.
+- Checked: compiles with and without land-light.js, zero errors. NEEDS create-shader.py.
+
+### Night foam had no colour: a-land's sky hue went neutral after sunset (2026-10-03)
+
+- **Dante's console at night:** skyAmbientColor = (0.1476, 0.1484, 0.1484), i.e. neutral. He suspected a
+  brightness floor on the sea foam/sheet. Neither path has one (checked line by line).
+- **Cause (a-faraway-land, SkyPhotometry.skyLuxRGB).** The sky's hue is 1 − T(sun altitude), the
+  complement of the beam's transmittance. Below the horizon T ≈ 0 in every channel, so the hue is WHITE
+  from sunset to sunrise (0.99, 1.00, 1.00 at −2…−20°).
+- **Fix** (a-land branch `foam-shader-additions`):
+  - below 2° the hue blends to the clear-sky blue `[0.55, 0.75, 1.0]` (the file's own fallback),
+    fully by −4°: twilight's Chappuis blue hour, then the moonlit/starlit Rayleigh sky;
+  - colour only: both are normalised to unit luma and the magnitude is still set by luma, so exposure
+    and every brightness are unchanged;
+  - the 3° dusk test (sky loses its blue dominance) still holds.
+- **Reaches both libraries:**
+  - a-water's skyAmbientColor (metered photometry);
+  - a-land's own terrain, whose dome is scaled per channel to the same budget.
+
+  So foam and ground go blue together.
+- **Tests:** sky-photometry +6 (blue-dominant at −4…−45°, luma continuous through the blend band), 65
+  pass. The whole a-land lighting suite passes (12 suites).
+- **Still open from Dante's report:** the FALLING sheet reads differently from the foam where it lands.
+  The falling water is thin (low aeration → see-through, shows the rock), the foot is dense. If it still
+  reads wrong once the sky has colour, the knobs are the sheet's uVoidMax / uTailBoil.
+- **DEFERRED (Dante, 2026-10-03): the falling sheet vs the foam where it lands.** "The sheet white is
+  technically air bubbles as is the water, so their colors ought to mix nicely". A future iteration:
+  one bubble-albedo/lighting model shared by the curtain slab and the water foam, so the two blend
+  instead of meeting as two looks.

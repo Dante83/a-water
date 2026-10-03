@@ -270,6 +270,8 @@ uniform vec2 foamScrollVelocity;
 uniform float foamWindBias;
 //Foam look (shore pass, 2026-09-30); live on oceanGrid.foamWhite / .foamGrainFloor /
 //.foamOceanShadowK / .shoreLaceDrift. See the foam composite.
+uniform float ambientPiFix;   //1: the sky irradiance gets the Lambert 1/PI a-land and three apply (physical); 0: the old, PI x too bright sky fill. A/B, 2026-10-02
+uniform float foamHueKeep;   //0..1: how much foam keeps its lit colour through the tone curve (aroFoamToneMap)
 uniform float foamWhite;
 uniform float foamGrainFloor;
 uniform float foamOceanShadowK;
@@ -358,6 +360,10 @@ float landSunVisibilityLod(vec2 xz, float lod){
   return landSunVisibilityRaw(xz, lod);
 }
 float landSunVisibilityAt(vec2 xz){ return landSunVisibilityLod(xz, 0.0); }
+
+//The land's skyline and sky visibility (field/land-light.js, spliced by ocean-grid.js buildFragmentShader):
+//landLightVisibility(p, L), landSkyVisibility(xz). The foam's sky fill is occluded by the land round it.
+//LAND_LIGHT_INJECTION_POINT
 
 //Ocean-only cascaded shadow map — EVSM (Exponential Variance Shadow Map).
 //Each cascade's texture stores 4 warped depth moments per texel (written
@@ -969,8 +975,11 @@ vec3 computeStandaloneSkyRadiance(vec3 worldDir){
   //off water actually spends its time — a linear ramp puts all the change
   //overhead where the water never looks.
   float up = pow(clamp(worldDir.y, 0.0, 1.0), 0.55);
-  vec3 horizon = skyAmbientColor * 0.75;
-  vec3 zenith  = skyAmbientColor * 1.35;
+  //skyAmbientColor is the sky's IRRADIANCE: a uniform sky of radiance L gives E = PI L, so its mean
+  //radiance is E / PI (ambientPiFix; 2026-10-02).
+  vec3 skyMeanRadiance = skyAmbientColor * mix(1.0, 0.31830988618, ambientPiFix);
+  vec3 horizon = skyMeanRadiance * 0.75;
+  vec3 zenith  = skyMeanRadiance * 1.35;
   vec3 sky = mix(horizon, zenith, up);
   //⚠ NO SUN DISK HERE, DELIBERATELY. An earlier version added one, and it was
   //wrong twice over. The sun's reflection off this water is ALREADY produced, by
@@ -1177,7 +1186,16 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 marchDir, vec3 skyDir){
         //overlit — acceptable trade for a cheap approximation.
         vec3  hitNormal = normalize(texture2D(gBufferNormal, hitUV).rgb);
         float hitNdotL  = max(0.0, dot(hitNormal, -brightestDirectionalLightDirection));
-        vec3  hitLight  = brightestDirectionalLight * hitNdotL + skyAmbientColor;
+        //UNITS (2026-10-02): both lights are IRRADIANCE (a-land's metered lux x exposure, or a-starry-sky's,
+        //calibrated against three's stock Lambert), and a Lambert surface returns albedo/PI of it, as the
+        //terrain itself does (a-land terrain.frag). Bare albedo x E read PI x too bright: at night the low
+        //moon and sky lit the reflected hills green while the hills themselves were black. Shadowed and
+        //sky-occluded by the land at the hit, like the terrain (field/land-light.js).
+        //The march is in VIEW space: back to world along the same ray (a rotation keeps the distance).
+        vec3  hitP      = worldPos + normalize(marchDir) * dot(0.5 * (lo + hi) - viewPos, viewReflect);
+        float hitLambert = mix(1.0, 0.31830988618, ambientPiFix);
+        vec3  hitLight  = (brightestDirectionalLight * hitNdotL * landLightVisibility(hitP, -brightestDirectionalLightDirection)
+                         + skyAmbientColor * landSkyVisibility(hitP.xz)) * hitLambert;
         vec3  hitColor  = hitAlbedo * hitLight;
         return mix(skyColor, hitColor, edgeFade * silhouetteConfidence * convergenceConfidence);
       }
@@ -1214,6 +1232,21 @@ vec4 linearTosRGB(vec4 value ) {
 //look changes; only the symbol does.
 vec3 aroAESFilmicToneMapping(vec3 color) {
   return clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), 0.0, 1.0);
+}
+
+//HUE-KEEPING TONE CURVE FOR FOAM (2026-10-02). Per-channel AES clips a hot sunset-lit white to white:
+//a-land meters for the dimming sky, so a sun-facing foam at 2 deg gets ~6x its noon display light,
+//(17, 4, 0.2) of it orange; red and green both saturate and the sky's blue fill closes the gap. The
+//foam's own colour is lost, not its brightness. Here the brightest channel goes through the curve and
+//the other two keep their RATIO to it (hue and saturation kept), mixed with the per-channel result by
+//`share` (the foam's share of the pixel x foamHueKeep; 0 = the old look). Copied in waterfall-sheet.glsl
+//(keep in step).
+vec3 aroFoamToneMap(vec3 color, float share){
+  vec3 perChannel = aroAESFilmicToneMapping(color);
+  float m = max(max(color.r, color.g), color.b);
+  if(share <= 0.0 || m <= 1e-6) return perChannel;
+  vec3 hueKept = color * (aroAESFilmicToneMapping(vec3(m)).r / m);
+  return mix(perChannel, hueKept, clamp(share, 0.0, 1.0));
 }
 
 //Fresnel reflectance at air->water interface (for light entering the water from above)
@@ -2986,11 +3019,15 @@ void main(){
       causticMod = vec3(1.0) + causticDepthFade * causticIntensityMultiplier * CAUSTIC_AMP * (causticSample - vec3(CAUSTIC_TEXTURE_MEAN));
     #endif
 
-    vec3 ambientUW = skyAmbientColor * waterAlbedo;
+    //UNITS (2026-10-02): skyAmbientColor is IRRADIANCE (a-land meters it in lux; a-starry-sky calibrates its
+    //hemisphere against three's albedo/PI), so the Lambert seabed returns albedo/PI of it, like the sun below.
+    //The old note here ("a uniform sky of radiance L delivers E = PI L, so the PI cancels") read the
+    //uniform as RADIANCE, which it is not: the shallows' sky fill was PI x a-land's for the same sand.
+    //...and the land round it hides part of the sky (field/land-light.js).
+    vec3 ambientUW = skyAmbientColor * waterAlbedo * mix(1.0, 0.31830988618, ambientPiFix) * landSkyVisibility(pointXYZ.xz);
     //Lambertian seabed: L = albedo * E * NdotL / pi for the direct sun, the
-    //same units the foam plate uses (INV_PI below). The sky ambient needs no
-    ///pi: a uniform sky of radiance L_sky delivers E = pi * L_sky, so the pi
-    //cancels.
+    //same units the foam plate uses (INV_PI below); the sky's irradiance gets the
+    //same /pi in ambientUW above (2026-10-02).
     //
     //HISTORY. This used to carry no /pi on purpose ("pragmatic seabed scale",
     //2026-05-16): dividing erased the seabed against the bright inscatter in
@@ -3024,7 +3061,9 @@ void main(){
     //Lambertian direct sun (/pi), same convention as the seabed branch above and
     //the foam plate: Phase 3a tuning pass 3.
     const float TERRAIN_INV_PI = 0.31830988618;
-    refractedLight *= (TERRAIN_INV_PI * brightestDirectionalLight * NdotL_terrain * terrainShadowFactor + skyAmbientColor);
+    //The sky term is irradiance too: albedo/PI of it (ambientPiFix), occluded by the land round it.
+    refractedLight *= (TERRAIN_INV_PI * brightestDirectionalLight * NdotL_terrain * terrainShadowFactor
+                     + skyAmbientColor * mix(1.0, 0.31830988618, ambientPiFix) * landSkyVisibility(pointXYZ.xz));
   }
   //DEBUG snapshots (read by oceanShadowDebugMode 5..10 at bottom of shader).
   //dbgRawRefraction here is post-seabed-relight (since we already passed the
@@ -3357,7 +3396,12 @@ void main(){
 
     //Sky ambient: same hemisphere model as the water surface ambient above.
     float foamSkyFactor = 0.5 + 0.5 * dot(foamSurfaceNormal, vec3(0.0, 1.0, 0.0));
-    vec3 foamAmbient = skyAmbientColor * foamSkyFactor * foamAlbedo;
+    //...and by the land round it (a-land's sky visibility: foam in a gorge sees a share of the sky, not all of
+    //it; at night the full fill made it glow beside the black cliffs; Dante 2026-10-02).
+    //UNITS: skyAmbientColor is irradiance; a Lambert plate returns albedo/PI of it (foamDiffuse above already
+    //divides the sun by PI). Without it night foam, lit almost only by the sky, read PI x too bright.
+    vec3 foamAmbient = skyAmbientColor * foamSkyFactor * foamAlbedo * landSkyVisibility(worldPosition.xz)
+                     * mix(1.0, 0.31830988618, ambientPiFix);
 
     //── Field-driven foam shape (2026-05-31) ──────────────────────────────────
     //Previously this used Crest's sliding-black-point: foamAmount only moved a
@@ -3474,7 +3518,8 @@ void main(){
 
   //Keep the real shaded result around so translucent debug overlays (mode 40)
   //can blend over it instead of replacing it (debugBlend opacity).
-  vec4 finalRenderedColor = linearTosRGB(vec4(aroAESFilmicToneMapping(totalLight), 1.0));
+  //Foam keeps its lit colour through the tone curve (aroFoamToneMap): above water only.
+  vec4 finalRenderedColor = linearTosRGB(vec4(aroFoamToneMap(totalLight, (uwSide < 0.5 ? dbgFoamBlend : 0.0) * foamHueKeep), 1.0));
   gl_FragColor = finalRenderedColor;
 
   //$DEBUG_START$

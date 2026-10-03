@@ -69,8 +69,8 @@ ARestlessOcean.Passes.WaterfallSplashPass.fragmentSource = function(atm, atmGLSL
     'uniform vec4 fallRingWave;', 'uniform vec4 fallRingNoise;',
     'float fallRingsHeightAt(vec2 xz){ return 0.0; }'
   ].join('\n');
-  return ARestlessOcean.Materials.Ocean.waterfallSplashMaterial.fragmentShader(atm, atmGLSL)
-    .replace('//FALL_RINGS_INJECTION_POINT', function(){ return rings; });
+  return ARestlessOcean.spliceLandLight(ARestlessOcean.Materials.Ocean.waterfallSplashMaterial.fragmentShader(atm, atmGLSL)
+    .replace('//FALL_RINGS_INJECTION_POINT', function(){ return rings; }));
 };
 
 //How often (ms) a ring segment asks again whether there is water under it.
@@ -363,6 +363,8 @@ ARestlessOcean.Passes.WaterfallSplashPass.prototype.tick = function(ctx){
   //Up only while the sheet is up: a fall nobody is drawing does not splash either.
   this.wantVisible = this.enabled && !!sp && !!sp.mesh && sp.mesh.visible && idx !== null && idx.count > 0;
   this._tickRings(ctx.timeMs);
+  //The night gate (WaterfallMistPass.solarElevation); the surface mist shares the uniform object.
+  this.material.uniforms.uSunElevation.value = ARestlessOcean.Passes.WaterfallMistPass.solarElevation(this.oceanGrid);
   //The fog pulses with the pool's waves: hand it their wavenumber and frequency (FALL_RINGS is live).
   const DW = ARestlessOcean.DynamicWaves;
   if(DW && DW.writeFallRingUniforms) DW.writeFallRingUniforms(this.material.uniforms);

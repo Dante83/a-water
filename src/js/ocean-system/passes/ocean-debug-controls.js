@@ -965,7 +965,9 @@ ARestlessOcean.installOceanDebugControls = function(grid){
       //...and the splash bursts at the landings (uniforms u*, uFog* the foam fog, hullOptions + rebuild(),
       //ringsEnabled / ringOptions + DynamicWaves.FALL_RINGS for the waves across the pool, uDebugMode 1-6).
       //Getters: both passes are built lazily, after the first fall is traced (a plain copy here was null).
-      ['waterfallMistPass', 'waterfallSplashPass'].forEach(function(name){
+      //...and the billowy clouds drifting off the feet (puffOptions = WaterfallCloudPuffs.DEFAULTS overrides, live;
+      //material.uniforms.u*; uDebugMode 1 opacity, 3 peak density, 4 proxies, 5 age, 6 shape/detail/envelope).
+      ['waterfallMistPass', 'waterfallSplashPass', 'waterfallCloudPass'].forEach(function(name){
         Object.defineProperty(window, name, {configurable: true, get: function(){ return grid[name]; }});
       });
       //ringStats(): what the waves across the falls' pools are doing (WaterfallSplashPass.ringStats).
@@ -974,6 +976,17 @@ ARestlessOcean.installOceanDebugControls = function(grid){
       };
       //fallRings: the live look knobs, e.g. fallRings.gain = 1.5, fallRings.wavelength = 5.
       window.fallRings = ARestlessOcean.DynamicWaves ? ARestlessOcean.DynamicWaves.FALL_RINGS : null;
+      //cloudStats(): what the billowy clouds are doing (WaterfallCloudPass.stats).
+      window.cloudStats = function(){
+        return grid.waterfallCloudPass ? grid.waterfallCloudPass.stats() : 'no waterfall cloud pass yet (no fall traced)';
+      };
+      //hideWaterfallClouds(true): draw no billowy clouds (A/B).
+      window.hideWaterfallClouds = function(hide){
+        const p = grid.waterfallCloudPass;
+        if(!p || !p.material) return;
+        if(p._savedOpacity === undefined) p._savedOpacity = p.material.uniforms.uCloudOpacity.value;
+        p.material.uniforms.uCloudOpacity.value = hide ? 0.0 : p._savedOpacity;
+      };
       //hideWaterfallSplash(true): draw no splash or foam fog (the rings keep running), to see the water under it.
       window.hideWaterfallSplash = function(hide){
         const p = grid.waterfallSplashPass;

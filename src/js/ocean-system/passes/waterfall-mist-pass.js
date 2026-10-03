@@ -39,6 +39,22 @@ ARestlessOcean.Passes.WaterfallMistPass = function(oceanGrid, sheetPass){
 };
 
 ARestlessOcean.Passes.WaterfallMistPass.RENDER_ORDER = 8;
+
+//sin of the TRUE solar elevation, from the sky's sun (1 with no sky). Not the brightest light's: that is the
+//MOON at night, so it cannot tell day from night. The foot volumes (mist, splash, surface mist, clouds)
+//dim their sky fill with it at night, as the sea's spray does (uSunElevation, uNightAmbient), and the
+//grid hands it to OceanSplash.
+ARestlessOcean.Passes.WaterfallMistPass.solarElevation = function(og){
+  if(og && og.skyDirector && og.skyDirector.getAtmosphericLUTs){
+    const luts = og.skyDirector.getAtmosphericLUTs();
+    if(luts && luts.skyState && luts.skyState.sun){
+      const p = luts.skyState.sun.position;
+      const l = Math.sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
+      return l > 1e-4 ? p.y / l : p.y;
+    }
+  }
+  return 1.0;
+};
 //The flowing material's uniforms the mist aliases (see the header).
 ARestlessOcean.Passes.WaterfallMistPass.SHARED_UNIFORMS = [
   'brightestDirectionalLight', 'brightestDirectionalLightDirection', 'skyAmbientColor', 't',
@@ -47,7 +63,10 @@ ARestlessOcean.Passes.WaterfallMistPass.SHARED_UNIFORMS = [
   'atmosphereTransmittance', 'atmosphereMieInscattering', 'atmosphereRayleighInscattering',
   'atmSunPosition', 'atmMoonPosition', 'atmSunHorizonFade', 'atmMoonHorizonFade',
   'atmScatteringSunIntensity', 'atmScatteringMoonIntensity', 'atmMoonLightColor',
-  'atmCameraHeight', 'atmDistanceScale'
+  'atmCameraHeight', 'atmDistanceScale',
+  //The land's skyline and sky visibility (field/land-light.js): the cliff's shadow and the gorge's sky.
+  'landHorizonTex', 'landHorizonAtlas', 'landHorizonFrame', 'landHorizonParams', 'landGroundTex', 'landGroundFrame', 'landLightOn',
+  'ambientPiFix'
 ];
 
 ARestlessOcean.Passes.WaterfallMistPass.prototype.init = function(scene){
@@ -65,7 +84,7 @@ ARestlessOcean.Passes.WaterfallMistPass.prototype.init = function(scene){
   this.material = new THREE.ShaderMaterial({
     uniforms: uniforms,
     vertexShader: def.vertexShader,
-    fragmentShader: def.fragmentShader(false, null),
+    fragmentShader: ARestlessOcean.spliceLandLight(def.fragmentShader(false, null)),
     transparent: true,
     depthWrite: false,
     depthTest: false,
@@ -161,12 +180,13 @@ ARestlessOcean.Passes.WaterfallMistPass.prototype.tick = function(ctx){
   const idx = this.mesh.geometry.index;
   //Up only while the sheet is up: a fall nobody is drawing has no mist either.
   this.wantVisible = this.enabled && !!sp && !!sp.mesh && sp.mesh.visible && idx !== null && idx.count > 0;
-  //Atmospheric perspective, as the sheet does it: rebuild the fragment shader once it is ready.
   const og = this.oceanGrid;
+  this.material.uniforms.uSunElevation.value = ARestlessOcean.Passes.WaterfallMistPass.solarElevation(og);
+  //Atmospheric perspective, as the sheet does it: rebuild the fragment shader once it is ready.
   const atm = !!(og.atmosphericPerspectiveEnabled && og.atmosphereFunctionsGLSL);
   if(atm !== this._atmReady){
     this._atmReady = atm;
-    this.material.fragmentShader = ARestlessOcean.Materials.Ocean.waterfallMistMaterial.fragmentShader(atm, og.atmosphereFunctionsGLSL);
+    this.material.fragmentShader = ARestlessOcean.spliceLandLight(ARestlessOcean.Materials.Ocean.waterfallMistMaterial.fragmentShader(atm, og.atmosphereFunctionsGLSL));
     this.material.needsUpdate = true;
   }
 };

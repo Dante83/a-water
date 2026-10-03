@@ -38,6 +38,20 @@ ARestlessOcean = {
 //arrays of textures here (six and four). They are single sampler2DArray textures
 //now, so they are no longer Array values at all and take UniformsUtils.clone's
 //ordinary reference-share path, which is the correct handling for a texture.
+//The land's light occlusion (field/land-light.js) spliced into a shader at its
+////LAND_LIGHT_INJECTION_POINT marker: the real GLSL when that file is loaded, else a stub with the
+//same two functions returning 1, so every page compiles whether or not it loads the file.
+ARestlessOcean.spliceLandLight = function(src){
+  const LL = ARestlessOcean.LandLight;
+  const glsl = LL && LL.GLSL ? LL.GLSL : [
+    'float landLightVisibility(vec3 p, vec3 L){ return 1.0; }',
+    'float landSkyVisibility(vec2 xz){ return 1.0; }',
+    'float landLightVisibilityOpen(vec3 p, vec3 L){ return 1.0; }',
+    'float landSkyVisibilityOpen(vec2 xz){ return 1.0; }'
+  ].join('\n');
+  return src.replace('//LAND_LIGHT_INJECTION_POINT', function(){ return glsl; });
+};
+
 ARestlessOcean.cloneUniforms = function(src){
   const dst = THREE.UniformsUtils.clone(src);
   for(const name in dst){

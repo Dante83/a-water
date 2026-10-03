@@ -12,6 +12,7 @@ ARestlessOcean.Materials.Ocean.splashMaterial = {
     skyAmbientColor: {value: new THREE.Color(0.3, 0.4, 0.5)},
     uSunScale: {value: 0.8},
     uAmbientScale: {value: 1.0},
+    ambientPiFix: {value: 1.0},
     sunDir: {value: new THREE.Vector3(0.0, 1.0, 0.0)},
     uSunElevation: {value: 1.0},
     uWaterBounce: {value: 0.6},

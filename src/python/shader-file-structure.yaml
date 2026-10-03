@@ -63,3 +63,12 @@ groups:
         vertex:   'waterfall-splash-vertex.glsl'
         template: 'waterfall-splash-template.txt'
         material: 'waterfall-splash.js'
+      -
+        fragment: 'waterfall-cloud-noise.glsl'
+        template: 'waterfall-cloud-noise-template.txt'
+        material: 'waterfall-cloud-noise.js'
+      -
+        fragment: 'waterfall-cloud.glsl'
+        vertex:   'waterfall-cloud-vertex.glsl'
+        template: 'waterfall-cloud-template.txt'
+        material: 'waterfall-cloud.js'

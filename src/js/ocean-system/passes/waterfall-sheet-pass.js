@@ -80,7 +80,7 @@ ARestlessOcean.Passes.WaterfallSheetPass.WIND_RETRACE = 0.5;
 //The creek-material uniforms the sheet aliases (see the header).
 ARestlessOcean.Passes.WaterfallSheetPass.SHARED_UNIFORMS = [
   'brightestDirectionalLight', 'brightestDirectionalLightDirection', 'skyAmbientColor',
-  'waterAbsorption', 'waterScattering', 'waterSurfaceY', 'specBoost', 't',
+  'waterAbsorption', 'waterScattering', 'waterSurfaceY', 'specBoost', 'foamHueKeep', 't',
   'sunShadowMap', 'sunShadowMatrix', 'sunShadowMapSize', 'sunShadowRadius', 'sunShadowBias', 'sunShadowEnabled',
   'refractionLinearDepth', 'refractionColorTexture', 'gBufferNormal', 'refractionDepthTexture',
   'inverseProjectionMatrix', 'inverseViewMatrix', 'screenResolution',
@@ -95,7 +95,10 @@ ARestlessOcean.Passes.WaterfallSheetPass.SHARED_UNIFORMS = [
   //Ring 0's corridor objects, which _streamCorridors fills: the sheet evaluates the creek's
   //step-aside rule with the very same boxes.
   'fallCorridorA', 'fallCorridorB', 'fallCorridorCount',
-  'foamOpacityMap', 'foamNormalMap', 'flowWaveProfile', 'flowRippleScale'
+  'foamOpacityMap', 'foamNormalMap', 'flowWaveProfile', 'flowRippleScale',
+  //The land's skyline and sky visibility (field/land-light.js): the cliff's shadow and the gorge's sky.
+  'landHorizonTex', 'landHorizonAtlas', 'landHorizonFrame', 'landHorizonParams', 'landGroundTex', 'landGroundFrame', 'landLightOn',
+  'ambientPiFix'
 ];
 
 ARestlessOcean.Passes.WaterfallSheetPass.prototype.init = function(scene){
@@ -113,7 +116,7 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype.init = function(scene){
   this.material = new THREE.ShaderMaterial({
     uniforms: uniforms,
     vertexShader: def.vertexShader,
-    fragmentShader: def.fragmentShader(false, null, !!og.causticsEnabled),
+    fragmentShader: ARestlessOcean.spliceLandLight(def.fragmentShader(false, null, !!og.causticsEnabled)),
     transparent: true,
     //Writes depth: from above the lip the tongue must hide the fall behind it (one mesh,
     //drawn in row order, the fall painted over the tongue otherwise). Faded fragments discard.
@@ -258,7 +261,7 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype.tick = function(ctx){
   const atm = !!(og.atmosphericPerspectiveEnabled && og.atmosphereFunctionsGLSL);
   if(atm !== this._atmReady){
     this._atmReady = atm;
-    this.material.fragmentShader = ARestlessOcean.Materials.Ocean.waterfallSheetMaterial.fragmentShader(atm, og.atmosphereFunctionsGLSL, !!og.causticsEnabled);
+    this.material.fragmentShader = ARestlessOcean.spliceLandLight(ARestlessOcean.Materials.Ocean.waterfallSheetMaterial.fragmentShader(atm, og.atmosphereFunctionsGLSL, !!og.causticsEnabled));
     this.material.needsUpdate = true;
   }
   this._streamCorridors();

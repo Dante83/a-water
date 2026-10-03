@@ -2,11 +2,11 @@
 //--------------------------v
 //https://github.com/mrdoob/three.js/wiki/Uniforms-types
 //
-//Waterfall mist (volumetric). The SHARED block is replaced at init by the flowing-water
-//material's own uniform objects (WaterfallMistPass.init aliases them, as the sheet does), so the
-//mist is lit by exactly the sun, sky, shadow and atmosphere the fall and the creek are. The
-//defaults here only matter if the mist is ever drawn without a flowing surface.
-ARestlessOcean.Materials.Ocean.waterfallMistMaterial = {
+//The waterfall's billowy clouds (volumetric; waterfall-cloud.glsl). The SHARED block is replaced at
+//init by the flowing-water material's own uniform objects (WaterfallCloudPass.init aliases them, as
+//the mist and the splash do), so the clouds are lit by exactly the sun, sky, shadow and atmosphere the
+//fall is. The two noises are WaterfallCloudNoise's, set by the pass once they are baked.
+ARestlessOcean.Materials.Ocean.waterfallCloudMaterial = {
   uniforms: {
     //SHARED with the flowing-water material
     brightestDirectionalLight: {value: new THREE.Vector3(1.0, 1.0, 1.0)},
@@ -53,51 +53,59 @@ ARestlessOcean.Materials.Ocean.waterfallMistMaterial = {
     fogColor: {value: new THREE.Color()},
     uwSunDir: {value: new THREE.Vector3(0.0, -1.0, 0.0)},
 
-    //The mist's own. FUDGE: all look choices, none a plume model. Foam in the middle of the fall
-    //(dense, bright, round lumps with some stretch), haze toward the landing (thin, soft, big puffs).
-    uMistDensity: {value: 1.0},
-    uFoamDensity: {value: 3.0},
-    uHazeDensity: {value: 1.0},
-    uScaleRef: {value: 10.0},
-    uFoamScale: {value: 0.55},
-    uHazeScale: {value: 1.6},
-    uFoamRate: {value: 10.0},
-    uHazeRate: {value: 4.5},
-    uErodeFoam: {value: 0.38},
-    uErodeHaze: {value: 0.45},
-    uErodeSoft: {value: 0.22},
-    uRadialPow: {value: 1.3},
-    uFadeIn: {value: 0.12},
-    uFadeOutStart: {value: 0.75},
-    uFadeOutEnd: {value: 1.0},
-    uHazeStart: {value: 0.4},
-    uMinBody: {value: 0.55},
-    uAerationLo: {value: 0.15},
-    uAerationHi: {value: 0.55},
-    uGroundFade: {value: 0.4},
-    uSteps: {value: 24.0},
-    uLightSteps: {value: 3.0},
-    uLightLength: {value: 2.0},
+    //The clouds' own. FUDGE: look choices (the density and light recipe is A-Starry-Sky's clouds'). Density, shape
+    //and detail set on the headless bench 2026-10-02 (first: 0.6, 0.3, 0.85, 2 m, 0.7 read as smooth blobs; 3 read as solid cumulus, 2 is thinner).
+    //Round 2 (Dante: "too powerful, act like thin water mist, not actual clouds"): density 2 -> 0.8, erode 1.3 -> 0.9, envelope edge soft 2,
+    //detail 6 -> 3 m (the puffs are smaller), billowy knobs down to 0.2; steps 24 -> 12, sun 3 -> 2 (no visible change, half the cost).
+    uShapeNoise: {value: null},
+    uDetailNoise: {value: null},
+    uProxyScale: {value: 1.0},
+    uCloudDensity: {value: 0.8},
+    uBottomFlat: {value: 1.6},
+    uEdgeSoft: {value: 2.0},
+    uShapeFreq: {value: 0.45},
+    uShapeErode: {value: 0.9},
+    uDetailScale: {value: 3.0},
+    uDetailErode: {value: 1.0},
+    uBillowy: {value: 0.2},
+    uRoll: {value: 0.012},
+    uGroundFade: {value: 0.5},
+    uSteps: {value: 12.0},
+    uStepFrac: {value: 0.2},
+    uLightSteps: {value: 2.0},
+    uLightLength: {value: 1.2},
     uAbsorption: {value: 1.0},
     uPhaseG: {value: 0.7},
+    uPhaseBack: {value: -0.2},
+    uPhaseMix: {value: 0.5},
+    //The ocean spray's mist light (uLobe 1; ocean-splash.glsl aeratedWater). Values are OceanSplash's own
+    //(phaseG, phaseGain, sunScale, ambientScale, waterBounce, the aer-0 body); keep them in step.
+    uLobe: {value: 1.0},
+    uSprayG: {value: 0.85},
+    uSprayGain: {value: 0.6},
+    uSprayWrap: {value: 0.4},
+    uSpraySun: {value: 0.8},
+    uSprayAmbient: {value: 1.8},
+    uMistTint: {value: new THREE.Vector3(0.60, 0.74, 0.95)},
+    uWaterBounce: {value: 0.6},
+    uDiffusion: {value: 0.5},
+    uPowder: {value: 4.0},
     uAmbient: {value: 1.0},
-    //The night gate (the sea spray's): the sky fill falls to uNightAmbient of itself as the sun sets, so white
-    //water over a dark sea does not glow. uSunElevation (sin of the TRUE solar elevation) is set every frame.
+    //The night gate (the sea spray's, OceanSplash nightAmbient): the sky fill falls to uNightAmbient of itself as
+    //the sun sets, and the spray mode's teal water bounce needs a sun well up (dayF). Set every frame.
     uSunElevation: {value: 1.0},
     uNightAmbient: {value: 0.07},
+    uAmbientOcclusion: {value: 0.5},
     uSunGain: {value: 1.0},
-    uAlbedoFoam: {value: new THREE.Vector3(0.97, 0.98, 1.0)},
-    uAlbedoHaze: {value: new THREE.Vector3(0.86, 0.9, 0.97)},
-    uMaxChord: {value: 14.0},
-    uSoftRange: {value: 0.6},
-    uSheetOcclusion: {value: 0.6},
-    uMistOpacity: {value: 1.0},
+    uAlbedo: {value: new THREE.Vector3(0.97, 0.98, 1.0)},
+    uSoftRange: {value: 1.0},
+    uCloudOpacity: {value: 1.0},
     uDebugMode: {value: 0},
   },
 
   //Built like the sheet's (waterfall-sheet-template.txt): $atmospheric_perspective_enabled is
   //substituted, and with it on the atmosphere functions replace the injection marker line.
-  //WaterfallMistPass rebuilds it when atmospheric perspective becomes ready.
+  //WaterfallCloudPass rebuilds it when atmospheric perspective becomes ready.
   fragmentShader: function(atmosphericPerspectiveEnabled, atmosphereFunctionsGLSL){
     const originalGLSL = [
       {fragment_glsl}

@@ -13,6 +13,16 @@ ARestlessOcean.Materials.Ocean.waterfallSplashMaterial = {
     brightestDirectionalLightDirection: {value: new THREE.Vector3(0.0, -1.0, 0.0)},
     skyAmbientColor: {value: new THREE.Vector3(0.3, 0.4, 0.5)},
     t: {value: 0.0},
+    //The land's skyline and sky visibility (field/land-light.js LandLight.update, every frame): SHARED, aliased from the flowing material.
+    landHorizonTex: {value: null},
+    landHorizonAtlas: {value: new THREE.Vector4(1, 1, 1, 1)},
+    landHorizonFrame: {value: new THREE.Vector4(0, 0, 1, 1)},
+    landHorizonParams: {value: new THREE.Vector2(24, 0.03)},
+    landGroundTex: {value: null},
+    landGroundFrame: {value: new THREE.Vector4(0, 0, 1, 1)},
+    landLightOn: {value: new THREE.Vector2(0, 0)},
+    //SHARED: 1 = the sky irradiance gets the Lambert 1/PI (physical); 0 = the old PI x fill (oceanGrid.ambientPiFix).
+    ambientPiFix: {value: 1.0},
     sunShadowMap: {value: null},
     sunShadowMatrix: {value: new THREE.Matrix4()},
     sunShadowMapSize: {value: new THREE.Vector2(2048.0, 2048.0)},
@@ -110,6 +120,10 @@ ARestlessOcean.Materials.Ocean.waterfallSplashMaterial = {
     uAbsorption: {value: 1.0},
     uPhaseG: {value: 0.7},
     uAmbient: {value: 1.0},
+    //The night gate (the sea spray's): the sky fill falls to uNightAmbient of itself as the sun sets, so white
+    //water over a dark sea does not glow. uSunElevation (sin of the TRUE solar elevation) is set every frame.
+    uSunElevation: {value: 1.0},
+    uNightAmbient: {value: 0.07},
     uSunGain: {value: 1.0},
     uAlbedo: {value: new THREE.Vector3(0.97, 0.98, 1.0)},
     uSoftRange: {value: 0.3},

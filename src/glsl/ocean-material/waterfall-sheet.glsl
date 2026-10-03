@@ -49,6 +49,8 @@ uniform vec3 waterAbsorption;
 uniform vec3 waterScattering;
 uniform float waterSurfaceY;
 uniform float specBoost;
+uniform float ambientPiFix;   //1: the sky irradiance gets the Lambert 1/PI a-land and three apply (physical); 0: the old, PI x too bright sky fill. A/B, 2026-10-02
+uniform float foamHueKeep;   //shared with the creek: how much the bubbles keep their lit colour through the tone curve
 uniform float t;
 
 uniform sampler2D sunShadowMap;
@@ -198,8 +200,10 @@ vec3 underwaterInscatterSurface(vec3 viewDirWorld){
 //water-shader.glsl computeStandaloneSkyRadiance: the sky when no provider bound one.
 vec3 computeStandaloneSkyRadiance(vec3 worldDir){
   float up = pow(clamp(worldDir.y, 0.0, 1.0), 0.55);
-  vec3 horizon = skyAmbientColor * 0.75;
-  vec3 zenith  = skyAmbientColor * 1.35;
+  //skyAmbientColor is irradiance: the sky's mean radiance is E / PI (ambientPiFix; water-shader.glsl, keep in step).
+  vec3 skyMeanRadiance = skyAmbientColor * mix(1.0, INV_PI, ambientPiFix);
+  vec3 horizon = skyMeanRadiance * 0.75;
+  vec3 zenith  = skyMeanRadiance * 1.35;
   vec3 sky = mix(horizon, zenith, up);
   sky = mix(horizon, sky, smoothstep(-0.15, 0.02, worldDir.y));
   return sky;
@@ -312,7 +316,7 @@ vec3 skyRadiance(vec3 dir){
   #else
     vec3 sky = computeStandaloneSkyRadiance(upDir);
   #endif
-  return mix(skyAmbientColor * 0.25, sky, smoothstep(-0.3, 0.05, dir.y));
+  return mix(skyAmbientColor * mix(1.0, INV_PI, ambientPiFix) * 0.25, sky, smoothstep(-0.3, 0.05, dir.y));   //irradiance -> radiance (ambientPiFix)
 }
 
 //── Lifted verbatim from water-shader.glsl (keep in step): the creek's caustic pattern ──
@@ -366,6 +370,10 @@ vec3 skyRadiance(vec3 dir){
 //             the sky reflection only ever tracked the long swell, which reads as
 //             a reflection that barely moves while the water under it ripples.
 //Callers that want the old single-direction behaviour pass the same vector twice.
+//The land's skyline and sky visibility (field/land-light.js, spliced by WaterfallSheetPass):
+//landLightVisibility(p, L), landSkyVisibility(xz). Before the SSR, which relights its hits with them.
+//LAND_LIGHT_INJECTION_POINT
+
 vec3 screenSpaceReflection(vec3 worldPos, vec3 marchDir, vec3 skyDir){
   vec3 reflectDir  = skyDir;      //every sky lookup below reads this
   vec3 viewPos     = (ssrViewMatrix * vec4(worldPos,    1.0)).xyz;
@@ -536,7 +544,12 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 marchDir, vec3 skyDir){
         //overlit — acceptable trade for a cheap approximation.
         vec3  hitNormal = normalize(texture2D(gBufferNormal, hitUV).rgb);
         float hitNdotL  = max(0.0, dot(hitNormal, -brightestDirectionalLightDirection));
-        vec3  hitLight  = brightestDirectionalLight * hitNdotL + skyAmbientColor;
+        //UNITS + OCCLUSION as the water's SSR (water-shader.glsl, keep in step): both lights are irradiance, a
+        //Lambert hit returns albedo/PI of them, shadowed and sky-occluded by the land at the hit. The march is in
+        //VIEW space: back to world along the same ray.
+        vec3  hitP      = worldPos + normalize(marchDir) * dot(0.5 * (lo + hi) - viewPos, viewReflect);
+        vec3  hitLight  = (brightestDirectionalLight * hitNdotL * landLightVisibility(hitP, -brightestDirectionalLightDirection)
+                         + skyAmbientColor * landSkyVisibility(hitP.xz)) * mix(1.0, INV_PI, ambientPiFix);
         vec3  hitColor  = hitAlbedo * hitLight;
         return mix(skyColor, hitColor, edgeFade * silhouetteConfidence * convergenceConfidence);
       }
@@ -693,6 +706,21 @@ vec4 linearTosRGB(vec4 value){
 vec3 aroAESFilmicToneMapping(vec3 color){
   return clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), 0.0, 1.0);
 }
+
+//HUE-KEEPING TONE CURVE FOR FOAM (2026-10-02). Per-channel AES clips a hot sunset-lit white to white:
+//a-land meters for the dimming sky, so a sun-facing foam at 2 deg gets ~6x its noon display light,
+//(17, 4, 0.2) of it orange; red and green both saturate and the sky's blue fill closes the gap. The
+//foam's own colour is lost, not its brightness. Here the brightest channel goes through the curve and
+//the other two keep their RATIO to it (hue and saturation kept), mixed with the per-channel result by
+//`share` (the bubbles' share of the pixel, 1 - slabTdir, x foamHueKeep; 0 = the old look). Copied from water-shader.glsl
+//(keep in step).
+vec3 aroFoamToneMap(vec3 color, float share){
+  vec3 perChannel = aroAESFilmicToneMapping(color);
+  float m = max(max(color.r, color.g), color.b);
+  if(share <= 0.0 || m <= 1e-6) return perChannel;
+  vec3 hueKept = color * (aroAESFilmicToneMapping(vec3(m)).r / m);
+  return mix(perChannel, hueKept, clamp(share, 0.0, 1.0));
+}
 //──────────────────────────────────────────────────────────────────────────────
 
 void main(){
@@ -738,7 +766,10 @@ void main(){
   vec3 flowDir = vFlowDownDir - N0 * dot(vFlowDownDir, N0) - acrossDir * dot(vFlowDownDir, acrossDir);
   flowDir = dot(flowDir, flowDir) > 1e-6 ? normalize(flowDir) : normalize(cross(acrossDir, N0));
 
-  float sunShadow = getSunShadow(vSunShadowCoord);
+  //The scene's shadow map is off on a-land pages, so the land's own skyline is the cliff's shadow on the
+  //curtain (and on its glint): the moon behind the gorge wall no longer lights the fall (2026-10-02).
+  //(the OPEN variant: the curtain stands in the air, out from the cliff foot the ground fields describe)
+  float sunShadow = getSunShadow(vSunShadowCoord) * landLightVisibilityOpen(vWorldPos, L);
 
   //TWO LAYERS, as Dante put it (round 12): WATER underneath, with its reflection, and FOAM on
   //top of it. They have different surfaces:
@@ -801,8 +832,11 @@ void main(){
   //camera by diffuse TRANSMISSION: a back-lit fall glows.
   float NdotL = dot(Nf, L);
   vec3 sunE = INV_PI * brightestDirectionalLight * sunShadow;
-  vec3 frontE = sunE * max(NdotL, 0.0) + skyAmbientColor * (0.5 + 0.5 * Nf.y);
-  vec3 backE  = sunE * max(-NdotL, 0.0) + skyAmbientColor * (0.5 - 0.5 * Nf.y);
+  //The sky fill is the share of the sky the land round the fall leaves open (a-land's sky visibility).
+  //UNITS: irradiance, so the Lambert 1/PI the sun term above already has (ambientPiFix; a-land terrain.frag).
+  vec3 skyFill = skyAmbientColor * landSkyVisibilityOpen(vWorldPos.xz) * mix(1.0, INV_PI, ambientPiFix);
+  vec3 frontE = sunE * max(NdotL, 0.0) + skyFill * (0.5 + 0.5 * Nf.y);
+  vec3 backE  = sunE * max(-NdotL, 0.0) + skyFill * (0.5 - 0.5 * Nf.y);
   //Water absorption along the view path through the sheet; half of it applied to the
   //scattered light, which on average travels about half-way in before it turns round.
   vec3 Twater = exp(-(waterAbsorption + waterScattering) * path);
@@ -968,7 +1002,7 @@ void main(){
       float causticDepthFade = exp(-downPath / CAUSTIC_CONTRAST_DEPTH) * smoothstep(0.0, CAUSTIC_FOCUS_M, downPath);
       causticMod = vec3(1.0) + causticDepthFade * causticIntensityMultiplier * CAUSTIC_AMP * (causticSample - vec3(CAUSTIC_TEXTURE_MEAN));
     #endif
-      behind = bgAlbedo * (INV_PI * sunDown * max(0.0, dot(bgN, toSunInWater)) * causticMod * bedShadow + skyAmbientColor * waterAlbedo);
+      behind = bgAlbedo * (INV_PI * sunDown * max(0.0, dot(bgN, toSunInWater)) * causticMod * bedShadow + skyAmbientColor * waterAlbedo * mix(1.0, INV_PI, ambientPiFix));   //sky irradiance: albedo/PI, as the sun (ambientPiFix)
       //The creek's column: vertical depth plus its grazing-path proxy (HORIZONTAL_DEPTH_SCALE).
       bedColumn = (surfaceAtP - P.y) + length(vWorldPos.xz - cameraPosition.xz) * 0.008;
     }
@@ -976,7 +1010,7 @@ void main(){
       //Above the water (the cliff behind a fall): lit as the creek lights terrain it sees
       //above its surface.
       float bgShadow = getSunShadow(sunShadowMatrix * vec4(P, 1.0));
-      behind = bgAlbedo * (INV_PI * brightestDirectionalLight * max(0.0, dot(bgN, L)) * bgShadow + skyAmbientColor);
+      behind = bgAlbedo * (INV_PI * brightestDirectionalLight * max(0.0, dot(bgN, L)) * bgShadow + skyAmbientColor * mix(1.0, INV_PI, ambientPiFix));   //sky irradiance: albedo/PI, as the sun (ambientPiFix)
     }
     break;
   }
@@ -1045,7 +1079,8 @@ void main(){
     //Aerial perspective, as the creek applies it (above water only).
     if(underwaterFactor < 0.5) color = applyAtmosphericPerspective(color, vWorldPos);
   #endif
-  gl_FragColor = linearTosRGB(vec4(aroAESFilmicToneMapping(color), outAlpha));
+  //The bubbles keep their lit colour through the tone curve (aroFoamToneMap); the water through their gaps does not.
+  gl_FragColor = linearTosRGB(vec4(aroFoamToneMap(color, (1.0 - slabTdir) * foamHueKeep), outAlpha));
 
   //$DEBUG_START$
   if(uDebugMode == 1) gl_FragColor = vec4(vec3(presence), 1.0);

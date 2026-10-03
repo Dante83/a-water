@@ -1313,6 +1313,8 @@ ARestlessOcean.OceanSplash.prototype.tick = function(ctx){
   u.uAbsorb.value = this.absorb;
   //Mist ambient lift + drop sky-reflection brightness (the dim-sky / dark-rim fixes).
   u.uAmbientScale.value = this.ambientScale;
+  //The sky's units (oceanGrid.ambientPiFix; see ocean-splash-vertex.glsl vAmbient).
+  if(u.ambientPiFix) u.ambientPiFix.value = ctx.ambientPiFix !== undefined ? ctx.ambientPiFix : 1.0;
   u.uSkyBoost.value = this.skyBoost;
   //Cluster drop wobble + size distribution. uTime animates the surface wobble.
   u.uTime.value = ctx.time / 1000.0;

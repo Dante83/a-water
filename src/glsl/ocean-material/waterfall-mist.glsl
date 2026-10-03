@@ -83,6 +83,9 @@ uniform float uLightLength;      //m the sun ray reaches
 uniform float uAbsorption;       //sun-ray extinction as a multiple of the view's
 uniform float uPhaseG;           //forward lobe of the phase function
 uniform float uAmbient;          //sky fill
+uniform float ambientPiFix;   //1: the sky irradiance gets the Lambert 1/PI a-land and three apply (physical); 0: the old, PI x too bright sky fill. A/B, 2026-10-02
+uniform float uSunElevation;     //sin of the TRUE solar elevation (the moon is the brightest light at night)
+uniform float uNightAmbient;     //the sky fill's floor at night, as a share of itself (OceanSplash nightAmbient)
 uniform float uSunGain;          //sun scatter gain
 uniform vec3 uAlbedoFoam;        //single-scatter albedo of the foam
 uniform vec3 uAlbedoHaze;        //... and of the haze
@@ -299,6 +302,17 @@ float mistDensity(vec3 p, int octaves){
 
 //Dual-lobe Henyey-Greenstein, normalised so that isotropic scattering is 1 (a Lambert surface is
 //INV_PI * E, so a sample's in-scatter reads in the sheet's units).
+//The sea spray's night gate (ocean-splash.glsl aeratedWater): white water over a dark sea glows under ANY
+//sky fill, so the fill falls to uNightAmbient of itself as the sun sets (a window wide enough that twilight
+//keeps some). The direct light is left alone: a present moon still lights it.
+//The land's skyline and sky visibility (field/land-light.js, spliced by the pass): landLightVisibility(p, L),
+//landSkyVisibility(xz). White water in a gorge is shadowed and sky-occluded like the rock beside it.
+//LAND_LIGHT_INJECTION_POINT
+
+float nightDim(){
+  return mix(uNightAmbient, 1.0, smoothstep(-0.08, 0.06, uSunElevation));
+}
+
 float hgIso(float cosT, float g){
   return (1.0 - g * g) / pow(max(1.0 + g * g - 2.0 * g * cosT, 1e-4), 1.5);
 }
@@ -360,8 +374,9 @@ void main(){
   vec3 Lsun = -normalize(brightestDirectionalLightDirection);   //toward the sun
   float cosT = dot(rd, Lsun);
   float phase = mistPhase(cosT);
-  vec3 sunCol = INV_PI * brightestDirectionalLight * uSunGain;
-  vec3 ambient = skyAmbientColor * uAmbient;
+  vec3 sunCol = INV_PI * brightestDirectionalLight * uSunGain * landLightVisibilityOpen(vWorldPos, Lsun);
+  //UNITS: irradiance -> radiance, the 1/PI the sun term has (INV_PI) (ambientPiFix, 2026-10-02).
+  vec3 ambient = skyAmbientColor * uAmbient * nightDim() * landSkyVisibilityOpen(vWorldPos.xz) * mix(1.0, INV_PI, ambientPiFix);
 
   gT = T;
   vec3 across = A - T * dot(A, T);

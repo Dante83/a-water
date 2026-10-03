@@ -1,0 +1,23 @@
+//This helps
+//--------------------------v
+//https://github.com/mrdoob/three.js/wiki/Uniforms-types
+//
+//The bake of the waterfall clouds' two tileable 3D noises (ARestlessOcean.WaterfallCloudNoise draws
+//it into each slice of a WebGL3DRenderTarget). A full-screen quad: the vertex stage writes clip space.
+ARestlessOcean.Materials.Ocean.waterfallCloudNoiseMaterial = {
+  uniforms: {
+    uSlice: {value: 0.0},
+    uSize: {value: 128.0},
+    uNoiseMode: {value: 0},
+  },
+
+  fragmentShader: [
+    {fragment_glsl}
+  ].join('\n'),
+
+  vertexShader: [
+    'void main(){',
+    '  gl_Position = vec4(position.xy, 0.0, 1.0);',
+    '}'
+  ].join('\n'),
+};

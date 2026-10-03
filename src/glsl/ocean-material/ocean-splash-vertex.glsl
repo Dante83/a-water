@@ -32,6 +32,7 @@ uniform vec3 sunColor;         //brightest directional light colour * intensity
 uniform vec3 skyAmbientColor;  //a-starry-sky y-hemisphere ambient
 uniform float uSunScale;       //artistic sun contribution (FUDGE)
 uniform float uAmbientScale;   //artistic ambient contribution (FUDGE)
+uniform float ambientPiFix;    //1: the sky irradiance gets the Lambert 1/PI (physical; oceanGrid.ambientPiFix); 0: the old PI x fill
 
 //Forward-scatter (Mie) phase. Spray droplets scatter overwhelmingly forward, so the
 //mist blooms when you look THROUGH it toward the sun. uSunDir is the world-space
@@ -122,7 +123,9 @@ void main(){
   //a view-dependent forward-scatter glow added ungated (the backlit bloom, which must
   //NOT be multiplied by the wrap or it would cancel the through-light). The ambient
   //term stays smooth and unshadowed (the Ghost of Tsushima Mie-vs-ambient split).
-  vAmbient = skyAmbientColor * uAmbientScale;
+  //skyAmbientColor is IRRADIANCE: the mist's Lambert-ish body and the drops' sky reflection both want the sky's
+  //mean RADIANCE, E / PI (ambientPiFix, 2026-10-02; a-land lights its ground with albedo/PI of the same value).
+  vAmbient = skyAmbientColor * uAmbientScale * mix(1.0, 0.31830988618, ambientPiFix);
   vSunCol = sunColor * uSunScale;
   vGlow = uPhaseGain * phase;
   vSunDirView = normalize((viewMatrix * vec4(sunDir, 0.0)).xyz);

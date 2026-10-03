@@ -16,7 +16,18 @@ ARestlessOcean.Materials.Ocean.waterfallSheetMaterial = {
     waterScattering: {value: new THREE.Vector3(0.002, 0.004, 0.009)},
     waterSurfaceY: {value: 0.0},
     specBoost: {value: 7.0},
+    foamHueKeep: {value: 0.7},
     t: {value: 0.0},
+    //The land's skyline and sky visibility (field/land-light.js LandLight.update, every frame): SHARED, aliased from the flowing material.
+    landHorizonTex: {value: null},
+    landHorizonAtlas: {value: new THREE.Vector4(1, 1, 1, 1)},
+    landHorizonFrame: {value: new THREE.Vector4(0, 0, 1, 1)},
+    landHorizonParams: {value: new THREE.Vector2(24, 0.03)},
+    landGroundTex: {value: null},
+    landGroundFrame: {value: new THREE.Vector4(0, 0, 1, 1)},
+    landLightOn: {value: new THREE.Vector2(0, 0)},
+    //SHARED: 1 = the sky irradiance gets the Lambert 1/PI (physical); 0 = the old PI x fill (oceanGrid.ambientPiFix).
+    ambientPiFix: {value: 1.0},
     sunShadowMap: {value: null},
     sunShadowMatrix: {value: new THREE.Matrix4()},
     sunShadowMapSize: {value: new THREE.Vector2(2048.0, 2048.0)},

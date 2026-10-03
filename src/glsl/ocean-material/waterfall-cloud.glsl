@@ -1,0 +1,425 @@
+precision highp float;
+precision highp sampler3D;
+
+//Waterfall cloud fragment stage: the big, thin, billowy clouds that break off a fall's foot and drift
+//away. One PUFF per instance (ARestlessOcean.WaterfallCloudPuffs: born in the plume, swelling, rising,
+//thinning, carried out by the spray and then the wind), raymarched inside its sphere. The last of the
+//foot particles; the splash and the surface mist are waterfall-splash.glsl, the cones waterfall-mist.glsl.
+//
+//WHAT IT DRAWS. The material culls FRONT faces, so each fragment is a point where a view ray leaves the
+//proxy. The ray is intersected with the puff's exact sphere, clipped at the camera and at the pool's
+//still level, and integrated front to back over that chord.
+//
+//THE DENSITY is a sky cloud's (A-Starry-Sky cloud-density.glsl: Schneider's Nubis, Hillaire, takram's
+//three-clouds), with the puff's own envelope standing in for the weather map's coverage:
+//  envelope   a soft ball, (1 - |q|^2)^uEdgeSoft in the puff's frame (q in radii; above 1 the edge is soft,
+//             so the row of puffs along a landing line melts into one sheet of mist), its bottom flattened (uBottomFlat:
+//             the lower half squashed, a cloud's flat base) and lifted toward the top (0.6 + 0.4 h).
+//  shape      ERODED by the baked Perlin-Worley (WaterfallCloudNoise.shape .r, as the sky reads it):
+//             remap(env, (1 - shape) uShapeErode, 1). A remap only takes density
+//             away and takes least where the envelope is full, so the core holds and the edges billow.
+//             Its coordinates are the puff's own, in radii (uShapeFreq tiles per radius): the billows
+//             ride with the puff and SWELL with it. A seed offsets each puff into its own part of the tile,
+//             and the pattern rolls up through the puff at uRoll radii a second: rising billows.
+//  detail     the baked Worley detail (.r) erodes the edges again, in metres (uDetailScale m per tile, so
+//             the fine grain does not swell): wispy strands (d^6) low in the puff, rounded knobs (1 - d)
+//             high, by remap(2 dens, modifier uDetailErode / 2, 1) (the sky's form). uBillowy scales the
+//             knobs down: the falls' mist is thin water mist, strands all through (Dante 2026-10-02: the
+//             sky's cumulus recipe read as actual clouds).
+//  level      nothing below the pool's still level, fading in over uGroundFade m above it.
+//  strength   the puff's peak density (it thins as it swells and fades in and out with its life) x
+//             uCloudDensity, extinction per metre.
+//
+//THE LIGHT is the sky cloud's too (A-Starry-Sky cloud-march.glsl):
+//  phase      two Henyey-Greenstein lobes (forward uPhaseG, backward uPhaseBack, mixed uPhaseMix), in
+//             our units (isotropic = 1; the sun term is INV_PI x E, as everywhere in the falls); OR (uLobe 1,
+//             the default since 2026-10-02: Dante found the cloud lobes warm, the sea's spray colder and
+//             right) the OCEAN SPRAY's mist light: its tight forward halo over a dim fill, its cool-tinted sky
+//             fill and the teal bounce off the water (sprayPhase, and the ambient in main).
+//  multiple   Wrenninge's octaves (Oz, 2013; Frostbite, Nubis, takram): CLOUD_MS_OCTAVES of them, each
+//  scattering with half the energy, half the optical depth to the sun and half the anisotropy of the one
+//             before, so light soaks into the shadow side instead of it going black; and a diffusion floor
+//             (uDiffusion / (1 + 0.11 tau)) for the deep interior. The phases depend only on the angle
+//             to the sun, so they are worked out once per ray.
+//  the sun    optical depth from a sample toward the sun: uLightSteps segments, each twice the last, over
+//             uLightLength radii, on the cheap density (no detail; its mean in its place).
+//  powder     1 - 0.8 exp(-sigma uPowder): the thinnest wisps scatter less back out (Schneider), only on
+//             the fringes.
+//  the sky    skyAmbientColor x uAmbient, occluded by one cheap tap above.
+//  shadow     the scene's sun shadow at the middle of the chord (as the surface mist).
+//  the step   energy conserving (Hillaire 2016): T S (1 - exp(-sigma dt)), scattering = extinction.
+//
+//OCCLUSION, ATMOSPHERE AND FOG as the splash: no depth test, the refraction G-buffer clips the march
+//softly (uSoftRange), atmospheric perspective or the scene fog on the result.
+
+uniform vec3 brightestDirectionalLight;
+uniform vec3 brightestDirectionalLightDirection;   //from the sun TOWARD the scene
+uniform vec3 skyAmbientColor;
+uniform float t;
+
+uniform sampler2D sunShadowMap;
+uniform mat4 sunShadowMatrix;
+uniform vec2 sunShadowMapSize;
+uniform float sunShadowRadius;
+uniform float sunShadowBias;
+uniform int sunShadowEnabled;
+
+uniform sampler2D refractionDepthTexture;
+uniform mat4 inverseProjectionMatrix;
+uniform vec2 screenResolution;
+uniform float underwaterFactor;
+
+uniform sampler3D uShapeNoise;   //WaterfallCloudNoise.shape: r Perlin-Worley, gba Worley fBms
+uniform sampler3D uDetailNoise;  //WaterfallCloudNoise.detail: r Worley fBm of fBms
+
+uniform float uCloudDensity;     //1/m extinction at the core of a newborn puff
+uniform float uBottomFlat;       //how many times the lower half of the envelope is squashed (1: a ball)
+uniform float uEdgeSoft;         //the envelope is (1 - |q|^2)^this: 1 a dome (cloud), 2+ a soft edge, so neighbouring puffs melt into one mist
+uniform float uShapeFreq;        //shape-noise tiles per radius of the puff
+uniform float uShapeErode;       //0..1+: how hard the shape erodes the envelope
+uniform float uDetailScale;      //m per detail-noise tile
+uniform float uDetailErode;      //0..1+: how hard the detail erodes the edges
+uniform float uBillowy;          //0: wispy strands all through (water mist), 1: the sky's billowy knobs on the top half (cloud)
+uniform float uRoll;             //radii per second the billows roll up through the puff
+uniform float uGroundFade;       //m over the still level over which the cloud fades in
+uniform float uSteps;            //view-ray steps at most...
+uniform float uStepFrac;         //...each at least this share of the radius
+uniform float uLightSteps;       //sun-ray segments (each twice the last)
+uniform float uLightLength;      //radii the sun ray reaches
+uniform float uAbsorption;       //sun-ray extinction as a multiple of the view's
+uniform float uPhaseG;           //forward lobe
+uniform float uPhaseBack;        //backward lobe
+uniform float uPhaseMix;         //share of the backward lobe
+uniform float uLobe;             //0: the sky clouds' lobes (above); 1: the OCEAN SPRAY's mist (ocean-splash.glsl aeratedWater, foaminess 0)
+uniform float uSprayG;           //spray: forward lobe (OceanSplash phaseG)
+uniform float uSprayGain;        //spray: halo strength on the sun (OceanSplash phaseGain)
+uniform float uSprayWrap;        //spray: the half-Lambert wrap's share of the sun, its mean over a volume (0.8 x 0.5)
+uniform float uSpraySun;         //spray: sun scale (OceanSplash sunScale)
+uniform float uSprayAmbient;     //spray: sky fill scale (OceanSplash ambientScale)
+uniform vec3 uMistTint;          //spray: the cool translucent-water body the sky fill is tinted by
+uniform float uWaterBounce;      //spray: the sunlit water's teal light from below (OceanSplash waterBounce)
+uniform float uDiffusion;        //the diffusion floor's weight (0: octaves only)
+uniform float uPowder;           //m: the powder term's depth
+uniform float uAmbient;          //sky fill
+uniform float ambientPiFix;   //1: the sky irradiance gets the Lambert 1/PI a-land and three apply (physical); 0: the old, PI x too bright sky fill. A/B, 2026-10-02
+uniform float uSunElevation;     //sin of the TRUE solar elevation (the moon is the brightest light at night)
+uniform float uNightAmbient;     //the sky fill's floor at night, as a share of itself (OceanSplash nightAmbient)
+uniform float uAmbientOcclusion; //how much the cloud above darkens the sky fill
+uniform float uSunGain;          //sun scatter gain
+uniform vec3 uAlbedo;            //single-scatter albedo
+uniform float uSoftRange;        //m of depth over which the cloud fades into the ground
+uniform float uCloudOpacity;
+uniform int uDebugMode;
+
+varying vec3 vWorldPos;
+varying vec4 vPuff;      //middle, radius
+varying vec4 vPuffB;     //peak density, age, seed, level
+varying float vViewDepth;
+
+#if(!$atmospheric_perspective_enabled)
+  #include <fog_pars_fragment>
+#endif
+#if($atmospheric_perspective_enabled)
+  precision highp sampler3D;
+  uniform sampler2D atmosphereTransmittance;
+  uniform sampler3D atmosphereMieInscattering;
+  uniform sampler3D atmosphereRayleighInscattering;
+  uniform vec3 atmSunPosition;
+  uniform vec3 atmMoonPosition;
+  uniform float atmSunHorizonFade;
+  uniform float atmMoonHorizonFade;
+  uniform float atmScatteringSunIntensity;
+  uniform float atmScatteringMoonIntensity;
+  uniform vec3 atmMoonLightColor;
+  uniform float atmCameraHeight;
+  uniform float atmDistanceScale;
+
+  //ATMOSPHERE_FUNCTIONS_INJECTION_POINT
+
+  //Lifted verbatim from waterfall-sheet.glsl (keep in step). The injected functions are the LUT
+  //helpers only; the sheet and the creek each define their own applyAtmosphericPerspective on top.
+  //Atmospheric perspective for ground-level surfaces.
+  //Uses distance-based extinction with LUT-sampled multi-scattered inscattering.
+  //At the same height: S(A->B) = S(A->inf) * (1 - T(A->B))
+  vec3 applyAtmosphericPerspective(vec3 color, vec3 worldPos){
+    vec3 worldViewDir = normalize(worldPos - cameraPosition);
+    //Convert view direction from THREE.js world space to a-starry-sky's coordinate
+    //system. Sun world direction = (-sp.z, sp.y, -sp.x) from quadOffset, so the
+    //inverse transform from world to sky coords is: skyDir = (-world.z, world.y, -world.x)
+    vec3 viewDir = vec3(-worldViewDir.z, worldViewDir.y, -worldViewDir.x);
+    float dist = length(worldPos - cameraPosition) * METERS_TO_KM * atmDistanceScale;
+
+    //Distance-based extinction along the camera-to-surface path
+    vec3 extinction = exp(-(RAYLEIGH_BETA + EARTH_MIE_BETA_EXTINCTION) * dist);
+
+    //Attenuate surface color
+    color *= extinction;
+
+    //LUT coordinates for inscattering lookup
+    float viewCosZenith = max(viewDir.y, 0.0);
+    float xParam = parameterizationOfCosOfViewZenithToX(viewCosZenith);
+    float yHeight = parameterizationOfHeightToY(RADIUS_OF_EARTH + atmCameraHeight);
+
+    //Sun inscattering from 3D LUTs
+    float zSun = parameterizationOfCosOfSourceZenithToZ(max(atmSunPosition.y, 0.0));
+    vec3 uv3Sun = vec3(xParam, yHeight, zSun);
+    vec3 mieSun = texture(atmosphereMieInscattering, uv3Sun).rgb;
+    vec3 raySun = texture(atmosphereRayleighInscattering, uv3Sun).rgb;
+    float cosViewSun = dot(viewDir, atmSunPosition);
+    vec3 fogSun = pow(atmSunHorizonFade, 3.0) * atmScatteringSunIntensity
+                * (miePhaseFunction(cosViewSun) * mieSun + rayleighPhaseFunction(cosViewSun) * raySun)
+                * (1.0 - extinction);
+
+    //Moon inscattering from 3D LUTs
+    float zMoon = parameterizationOfCosOfSourceZenithToZ(max(atmMoonPosition.y, 0.0));
+    vec3 uv3Moon = vec3(xParam, yHeight, zMoon);
+    vec3 mieMoon = texture(atmosphereMieInscattering, uv3Moon).rgb;
+    vec3 rayMoon = texture(atmosphereRayleighInscattering, uv3Moon).rgb;
+    float cosViewMoon = dot(viewDir, atmMoonPosition);
+    vec3 fogMoon = pow(atmMoonHorizonFade, 3.0) * atmScatteringMoonIntensity * atmMoonLightColor
+                 * (miePhaseFunction(cosViewMoon) * mieMoon + rayleighPhaseFunction(cosViewMoon) * rayMoon)
+                 * (1.0 - extinction);
+
+    return color + fogSun + fogMoon;
+  }
+#endif
+
+//(No PI of our own: the injected atmosphere functions declare one; a second is a link error.)
+const float INV_PI = 0.31830988618;
+const int MAX_STEPS = 48;
+const int MAX_LIGHT_STEPS = 6;
+const int CLOUD_MS_OCTAVES = 4;
+//Means of the detail modifiers over the whole detail texture, pow(d, 6) and 1 - d (A-Starry-Sky
+//cloud-density.glsl, measured there): the cheap density erodes with these instead of a sample.
+const float DETAIL_MEAN_WISPY = 0.15;
+const float DETAIL_MEAN_BILLOWY = 0.3;
+
+//── Copied from waterfall-sheet.glsl (keep in step) ───────────────────────────
+//Applied to AP's output as the sheet does: the sheet and its mist then tone-map alike.
+vec4 linearTosRGB(vec4 value){
+  return vec4(mix(pow(value.rgb, vec3(0.41666)) * 1.055 - vec3(0.055), value.rgb * 12.92, vec3(lessThanEqual(value.rgb, vec3(0.0031308)))), value.a);
+}
+vec3 aroAESFilmicToneMapping(vec3 color){
+  return clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), 0.0, 1.0);
+}
+//──────────────────────────────────────────────────────────────────────────────
+
+//The scene's sun shadow at a world point: four taps, no derivatives (this runs in a loop).
+float sunShadowAt(vec3 p){
+  if(sunShadowEnabled == 0) return 1.0;
+  vec4 sp = sunShadowMatrix * vec4(p, 1.0);
+  vec3 sc = sp.xyz / sp.w;
+  if(sc.z > 1.0 || sc.z < 0.0) return 1.0;
+  vec2 edgeDist = min(sc.xy, vec2(1.0) - sc.xy);
+  float edge = min(edgeDist.x, edgeDist.y);
+  if(edge < 0.0) return 1.0;
+  float refZ = sc.z + sunShadowBias;
+  vec2 ts = (1.0 / sunShadowMapSize) * sunShadowRadius;
+  float s = 0.0;
+  s += refZ < texture2D(sunShadowMap, sc.xy + vec2(-0.5, -0.5) * ts).r ? 1.0 : 0.0;
+  s += refZ < texture2D(sunShadowMap, sc.xy + vec2( 0.5, -0.5) * ts).r ? 1.0 : 0.0;
+  s += refZ < texture2D(sunShadowMap, sc.xy + vec2(-0.5,  0.5) * ts).r ? 1.0 : 0.0;
+  s += refZ < texture2D(sunShadowMap, sc.xy + vec2( 0.5,  0.5) * ts).r ? 1.0 : 0.0;
+  return mix(1.0, 0.25 * s, smoothstep(0.0, 0.05, edge));
+}
+
+float remap(float x, float a, float b, float c, float d){
+  return c + (x - a) * (d - c) / (b - a);
+}
+
+//Henyey-Greenstein normalised so that isotropic scattering is 1 (waterfall-splash.glsl hgIso).
+//The sea spray's night gate (ocean-splash.glsl aeratedWater): white water over a dark sea glows under ANY
+//sky fill, so the fill falls to uNightAmbient of itself as the sun sets (a window wide enough that twilight
+//keeps some). The direct light is left alone: a present moon still lights it.
+//The land's skyline and sky visibility (field/land-light.js, spliced by the pass): landLightVisibility(p, L),
+//landSkyVisibility(xz). White water in a gorge is shadowed and sky-occluded like the rock beside it.
+//LAND_LIGHT_INJECTION_POINT
+
+float nightDim(){
+  return mix(uNightAmbient, 1.0, smoothstep(-0.08, 0.06, uSunElevation));
+}
+
+float hgIso(float cosT, float g){
+  return (1.0 - g * g) / pow(max(1.0 + g * g - 2.0 * g * cosT, 1e-4), 1.5);
+}
+//The ocean spray's mist lobe, in our units. The spray lights its mist with
+//  sun x uSpraySun x (wrap x 0.8 + uSprayGain x dualPhase)      (ocean-splash.glsl aeratedWater, aer 0)
+//with dualPhase a 4pi-normalised HG pair (forward uSprayG, 15% of a -0.2 back lobe) and wrap a half-Lambert
+//over a made-up sphere normal (0.5 on average over a volume: uSprayWrap). Ours is INV_PI x sun x phase,
+//so the same light is phase = PI x uSpraySun x (uSprayWrap + uSprayGain x dualPhase): a tight forward halo
+//over a dim even fill, where the clouds' lobes (half of it backward) pour warm sun on every side.
+float sprayPhase(float cosT, float attenuation){
+  float g = uSprayG * attenuation;
+  float dual = mix(hgIso(cosT, g), hgIso(cosT, -0.2 * attenuation), 0.15) * 0.0795774715;   //1/(4 pi)
+  return 3.14159265 * uSpraySun * (uSprayWrap + uSprayGain * dual);
+}
+float cloudPhase(float cosT, float attenuation){
+  float cloud = mix(hgIso(cosT, uPhaseG * attenuation), hgIso(cosT, uPhaseBack * attenuation), uPhaseMix);
+  return mix(cloud, sprayPhase(cosT, attenuation), uLobe);
+}
+
+//The puff, set once per fragment.
+vec3 gC;          //middle
+float gR;         //radius
+vec3 gShapeOff;   //where in the shape tile this puff lives, and its roll
+vec3 gDetailOff;
+
+//Extinction (1/m) at p. full: with the detail sample; otherwise its mean (the sun and sky taps).
+float cloudDensity(vec3 p, bool full){
+  vec3 q = (p - gC) / gR;
+  vec3 qe = vec3(q.x, q.y < 0.0 ? q.y * uBottomFlat : q.y, q.z);
+  float d2 = dot(qe, qe);
+  if(d2 >= 1.0) return 0.0;
+  float level = vPuffB.w;
+  float ground = clamp((p.y - level) / max(uGroundFade, 1e-3), 0.0, 1.0);
+  if(ground <= 0.0) return 0.0;
+  float h = clamp(q.y * 0.5 + 0.5, 0.0, 1.0);
+  float env = pow(1.0 - d2, uEdgeSoft) * (0.6 + 0.4 * h);
+  //Shape: the baked Perlin-Worley (already lifted by its Worley fBm in the bake), then the erosion remap.
+  float shape = texture(uShapeNoise, q * uShapeFreq + gShapeOff).r;
+  float dens = clamp(remap(env, (1.0 - shape) * uShapeErode, 1.0, 0.0, 1.0), 0.0, 1.0);
+  if(dens <= 0.0) return 0.0;
+  //Detail: wispy low, billowy high.
+  float billowy = smoothstep(0.3, 0.6, h) * uBillowy;
+  float modifier = mix(DETAIL_MEAN_WISPY, DETAIL_MEAN_BILLOWY, billowy);
+  if(full){
+    float dn = texture(uDetailNoise, (p - gC) / max(uDetailScale, 1e-3) + gDetailOff).r;
+    modifier = mix(pow(dn, 6.0), 1.0 - dn, billowy);
+  }
+  dens = clamp(remap(dens * 2.0, modifier * 0.5 * uDetailErode, 1.0, 0.0, 1.0), 0.0, 1.0);
+  return dens * ground * uCloudDensity * vPuffB.x;
+}
+
+void main(){
+  gC = vPuff.xyz;
+  gR = max(vPuff.w, 1e-3);
+  float seed = vPuffB.z;
+  vec3 camToX = vWorldPos - cameraPosition;
+  float distX = length(camToX);
+  vec3 rd = camToX / max(distX, 1e-4);
+
+  //The chord of the view ray through the puff's sphere, never behind the camera.
+  vec3 oc = cameraPosition - gC;
+  float bq = dot(oc, rd);
+  float disc = bq * bq - (dot(oc, oc) - gR * gR);
+  //$DEBUG_START$
+  if(uDebugMode == 4){ gl_FragColor = vec4(0.95, 0.4, 0.8, disc > 0.0 ? 0.3 : 0.08); return; }   //the puffs: sphere (bright), proxy (faint)
+  //$DEBUG_END$
+  if(disc <= 0.0) discard;
+  float sq = sqrt(disc);
+  float t0 = max(-bq - sq, 0.0);
+  float t1 = -bq + sq;
+  //...and above the still level.
+  float level = vPuffB.w;
+  if(abs(rd.y) > 1e-5){
+    float tl = (level - cameraPosition.y) / rd.y;
+    if(rd.y < 0.0) t1 = min(t1, tl);
+    else t0 = max(t0, tl);
+  }
+  else if(cameraPosition.y < level) discard;
+  float L = t1 - t0;
+  if(L < 1e-3) discard;
+
+  //Each puff in its own part of the tiles; the billows roll up through it.
+  gShapeOff = vec3(seed * 17.31, seed * 5.77 - uRoll * uShapeFreq * t, seed * 11.13);
+  gDetailOff = vec3(seed * 3.7, seed * 9.1 - 0.5 * uRoll * gR / max(uDetailScale, 1e-3) * t, seed * 6.3);
+
+  int nSteps = int(clamp(ceil(L / max(uStepFrac * gR, 1e-3)), 4.0, min(uSteps, float(MAX_STEPS))));
+  float dt = L / float(nSteps);
+  float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+
+  //What the ground behind says: view depth of the nearest opaque thing along this pixel.
+  vec2 screenUV = gl_FragCoord.xy / screenResolution;
+  float gRaw = texture2D(refractionDepthTexture, screenUV).r;
+  float sceneDepth = 1e6;
+  if(gRaw < 1.0){
+    vec4 gv = inverseProjectionMatrix * vec4(screenUV * 2.0 - 1.0, gRaw * 2.0 - 1.0, 1.0);
+    sceneDepth = -gv.z / gv.w;
+  }
+
+  vec3 Lsun = -normalize(brightestDirectionalLightDirection);   //toward the sun
+  float cosT = dot(rd, Lsun);
+  float phases[CLOUD_MS_OCTAVES];
+  float att = 1.0;
+  for(int i = 0; i < CLOUD_MS_OCTAVES; ++i){ phases[i] = cloudPhase(cosT, att); att *= 0.5; }
+  vec3 mid = cameraPosition + rd * (t0 + 0.5 * L);
+  vec3 sunCol = INV_PI * brightestDirectionalLight * uSunGain * sunShadowAt(mid) * landLightVisibilityOpen(mid, Lsun);
+  //The sky fill: as the clouds' (uLobe 0), or the spray's (1): lifted and tinted the cool blue of translucent
+  //water, plus the teal of the sunlit water bouncing up under it (half of its underside faces the water).
+  //Both dim at night (nightDim); the bounce, as the spray's, also needs the sun well up (dayF: a high moon
+  //is the brightest light at night and must not switch the sunlit water's teal back on).
+  float dayF = smoothstep(0.04, 0.22, uSunElevation);
+  vec3 ambient = mix(skyAmbientColor * uAmbient,
+                     skyAmbientColor * uSprayAmbient * uMistTint
+                     + vec3(0.16, 0.34, 0.40) * (brightestDirectionalLight * uSpraySun * 0.6 + skyAmbientColor * uSprayAmbient) * (uWaterBounce * dayF * 0.5 * 0.6),
+                     uLobe) * nightDim() * landSkyVisibilityOpen(mid.xz)
+                   * mix(1.0, INV_PI, ambientPiFix);   //UNITS: irradiance -> radiance, as the sun's INV_PI (2026-10-02)
+
+  //The sun ray's segments: each twice the last, uLightLength radii in all.
+  int nLight = int(clamp(uLightSteps, 1.0, float(MAX_LIGHT_STEPS)));
+  float seg0 = uLightLength * gR / (exp2(float(nLight)) - 1.0);
+
+  float Tr = 1.0;
+  vec3 acc = vec3(0.0);
+  for(int i = 0; i < MAX_STEPS; i++){
+    if(i >= nSteps) break;
+    float along = t0 + dt * (float(i) + jitter);
+    vec3 p = cameraPosition + rd * along;
+    float sigma = cloudDensity(p, true);
+    if(sigma <= 1e-5) continue;
+    //Occlusion: the ground behind (view depth along the ray is linear in distance).
+    float viewDepth = vViewDepth * along / max(distX, 1e-4);
+    sigma *= clamp((sceneDepth - viewDepth) / max(uSoftRange, 1e-3), 0.0, 1.0);
+    if(sigma <= 1e-5) continue;
+
+    //Optical depth toward the sun.
+    float tau = 0.0, s = 0.0, segL = seg0;
+    for(int k = 0; k < MAX_LIGHT_STEPS; k++){
+      if(k >= nLight) break;
+      tau += cloudDensity(p + Lsun * (s + segL * (0.5 + 0.25 * (jitter - 0.5))), false) * segL;
+      s += segL;
+      segL *= 2.0;
+    }
+    tau *= uAbsorption;
+    //Wrenninge's octaves, and the diffusion floor.
+    float ms = 0.0, a = 1.0, b = 1.0;
+    for(int o = 0; o < CLOUD_MS_OCTAVES; ++o){ ms += a * exp(-tau * b) * phases[o]; a *= 0.5; b *= 0.5; }
+    ms = max(ms, uDiffusion / (1.0 + 0.11 * tau));
+    //The spray has no octaves: in its mode they share its light out (their sum is 1.875x at tau 0), so thin
+    //mist matches the sea's spray instead of glowing at twice it.
+    ms *= mix(1.0, 1.0 / 1.875, uLobe);
+    //Sky, occluded by what lies above.
+    float above = cloudDensity(p + vec3(0.0, 0.35 * gR, 0.0), false) * 0.35 * gR;
+    vec3 radiance = uAlbedo * (sunCol * ms + ambient * exp(-uAmbientOcclusion * above));
+    radiance *= 1.0 - 0.8 * exp(-sigma * uPowder);
+
+    float stepT = exp(-sigma * dt);
+    acc += Tr * (1.0 - stepT) * radiance;
+    Tr *= stepT;
+    if(Tr < 0.01) break;
+  }
+
+  float alpha = (1.0 - Tr) * uCloudOpacity;
+  if(uDebugMode == 0 && alpha < 0.003) discard;
+  vec3 color = acc / max(1.0 - Tr, 1e-4);
+  #if($atmospheric_perspective_enabled)
+    if(underwaterFactor < 0.5) color = applyAtmosphericPerspective(color, mid);
+  #endif
+  gl_FragColor = linearTosRGB(vec4(aroAESFilmicToneMapping(color), alpha));
+
+  //$DEBUG_START$
+  if(uDebugMode == 1) gl_FragColor = vec4(vec3(1.0 - Tr), 1.0);                                   //opacity
+  else if(uDebugMode == 3) gl_FragColor = vec4(vec3(vPuffB.x), 1.0);                              //the puff's peak density (it thins as it ages)
+  else if(uDebugMode == 5) gl_FragColor = vec4(vec3(vPuffB.y), 1.0);                              //its age (share of its life)
+  else if(uDebugMode == 6){                                                                       //at mid-chord: shape (red), detail (green), envelope (blue)
+    vec3 q = (mid - gC) / gR;
+    gl_FragColor = vec4(texture(uShapeNoise, q * uShapeFreq + gShapeOff).r,
+                        texture(uDetailNoise, (mid - gC) / max(uDetailScale, 1e-3) + gDetailOff).r,
+                        clamp(1.0 - dot(q, q), 0.0, 1.0), 1.0);
+  }
+  //$DEBUG_END$
+
+  #if(!$atmospheric_perspective_enabled)
+    #include <fog_fragment>
+  #endif
+}

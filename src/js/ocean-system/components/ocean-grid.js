@@ -108,6 +108,15 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //                    (0 in the surf zone). At 1 its 60 m blotches landed on foam
   //                    alone, and over thin swash they read as shadows on the sand.
   //  shoreLaceDrift    m/s the surf-zone foam grain drifts shoreward with the bores.
+  //  foamHueKeep       0..1: how much foam keeps its lit colour through the tone curve (water-shader.glsl
+  //                    aroFoamToneMap; the waterfall sheet shares the uniform). 0 = per-channel AES, which
+  //                    turned sunset-lit foam white (2026-10-02).
+  this.foamHueKeep = 0.7;
+  //  ambientPiFix      1: our sky irradiance (skyAmbientColor: a-land's metered lux x exposure, or a-starry-sky's
+  //                    hemisphere, both calibrated against three's stock Lambert) gets the albedo/PI response
+  //                    a-land's terrain gives it, on foam, the waterfall curtain and mist, and reflected terrain.
+  //                    0: the old bare albedo x E, PI x too bright (white water glowed at night). A/B 2026-10-02.
+  this.ambientPiFix = 1.0;
   this.foamWhite = 0.8;
   this.foamGrainFloor = 0.15;
   this.foamOceanShadowK = 0.25;
@@ -1101,8 +1110,9 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //works on a creek bed 20 m up as well as on the seabed. With it off a lake and the
     //creek running into it lit their beds differently. Its foam path still reads
     //FlowFoamPass instead of the ocean's fold and shore terms (see $flowing_water).
-    return ARestlessOcean.Materials.Ocean.waterMaterial.fragmentShader(
-        self.causticsEnabled, self.foamEnabled, atmEnabled, atmFunctions)
+    //The land's light occlusion (field/land-light.js) at its marker, a stub without it.
+    return ARestlessOcean.spliceLandLight(ARestlessOcean.Materials.Ocean.waterMaterial.fragmentShader(
+        self.causticsEnabled, self.foamEnabled, atmEnabled, atmFunctions))
       .replace(/\$flowing_water/g, flowing ? '1' : '0')
       //Phase 4 step 4: the ripple profile period (m), owned by FlowSurfacePass.
       .replace(/\$flow_wave_period/g, (ARestlessOcean.Passes.FlowSurfacePass
@@ -1453,6 +1463,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.waterfallMistPass = null;
   //The splash bursts at the falls' landings, riding the same cascades (WaterfallSplashPass).
   this.waterfallSplashPass = null;
+  //The billowy clouds drifting off the falls' feet, from the splash's landing lines (WaterfallCloudPass).
+  this.waterfallCloudPass = null;
   if(ARestlessOcean.Passes && ARestlessOcean.Passes.ShoreReflectionPass && ARestlessOcean.ShoreReflection.ENABLED){
     this.shoreReflectionPass = new ARestlessOcean.Passes.ShoreReflectionPass(this);
     this.shoreReflectionPass.init();
@@ -1790,7 +1802,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     const splashMesh = self.oceanSplash ? self.oceanSplash.mesh : null;
     const mistMesh = self.waterfallMistPass ? self.waterfallMistPass.mesh : null;
     const fallSplashMesh = self.waterfallSplashPass ? self.waterfallSplashPass.mesh : null;
-    const hide = [skyMesh, sunMesh, moonMesh, splashMesh, mistMesh, fallSplashMesh];
+    const fallCloudMesh = self.waterfallCloudPass ? self.waterfallCloudPass.mesh : null;
+    const hide = [skyMesh, sunMesh, moonMesh, splashMesh, mistMesh, fallSplashMesh, fallCloudMesh];
     const vis = hide.map(function(m){ return m ? m.visible : false; });
     hide.forEach(function(m){ if(m) m.visible = false; });
     const curtain = self.underwaterCurtainMesh;
@@ -1987,6 +2000,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //The waterfall mist likewise (shown again below, main render only).
     if(self.waterfallMistPass && self.waterfallMistPass.mesh) self.waterfallMistPass.mesh.visible = false;
     if(self.waterfallSplashPass && self.waterfallSplashPass.mesh) self.waterfallSplashPass.mesh.visible = false;
+    if(self.waterfallCloudPass && self.waterfallCloudPass.mesh) self.waterfallCloudPass.mesh.visible = false;
     //The waterline overlay too (Phase 8e): main render only.
     if(self.waterlinePass) self.waterlinePass.setVisible(false);
 
@@ -2227,6 +2241,15 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       }
       if(self.waterfallSplashPass){
         self.waterfallSplashPass.tick({enabled: self.flowSurfaceEnabled && self.flowSurfacePass.enabled, timeMs: time});
+      }
+      //The clouds drift off the splash's landing lines, so they follow the splash's pass.
+      if(!self.waterfallCloudPass && self.waterfallSplashPass && ARestlessOcean.Passes.WaterfallCloudPass && ARestlessOcean.WaterfallCloudPuffs
+         && ARestlessOcean.WaterfallCloudNoise && ARestlessOcean.Materials.Ocean.waterfallCloudMaterial && ARestlessOcean.Materials.Ocean.waterfallCloudNoiseMaterial){
+        self.waterfallCloudPass = new ARestlessOcean.Passes.WaterfallCloudPass(self, self.waterfallSheetPass, self.waterfallSplashPass);
+        self.waterfallCloudPass.init(scene);
+      }
+      if(self.waterfallCloudPass){
+        self.waterfallCloudPass.tick({enabled: self.flowSurfaceEnabled && self.flowSurfacePass.enabled, timeMs: time});
       }
     }
 
@@ -2960,6 +2983,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       uniformsRef.reflectionDistanceFalloff.value = self.reflectionDistanceFalloff;
       uniformsRef.ssrMaxSteps.value = self.ssrMaxSteps;
       uniformsRef.foamWhite.value = self.foamWhite;
+      uniformsRef.foamHueKeep.value = self.foamHueKeep;
+      uniformsRef.ambientPiFix.value = self.ambientPiFix;
       uniformsRef.foamGrainFloor.value = self.foamGrainFloor;
       uniformsRef.foamOceanShadowK.value = self.foamOceanShadowK;
       uniformsRef.shoreLaceDrift.value = self.shoreLaceDrift;
@@ -3064,6 +3089,9 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
             uniformsRef.landWaterLightFrame.value.z = 0.0;
           }
         }
+        //...and a-land's skyline and sky visibility (field/land-light.js), which the foam, the curtain and the
+        //foot's mist read through the flowing material's uniforms.
+        if(ARestlessOcean.LandLight) ARestlessOcean.LandLight.update(uniformsRef);
 
       }
       else{
@@ -3234,15 +3262,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       //TRUE solar elevation (sin), independent of which light is brightest. brightestDirectionalLight
       //becomes the MOON at night, so its .y cannot tell day from night; the sky state's sun position
       //can. The splash gates its daytime sky-fill on this so a high moon never reads as daytime.
-      let _sunElev = 1.0;
-      if(self.skyDirector && self.skyDirector.getAtmosphericLUTs){
-        const _luts = self.skyDirector.getAtmosphericLUTs();
-        if(_luts && _luts.skyState && _luts.skyState.sun){
-          const _sp = _luts.skyState.sun.position;
-          const _spl = Math.sqrt(_sp.x * _sp.x + _sp.y * _sp.y + _sp.z * _sp.z);
-          _sunElev = _spl > 1e-4 ? _sp.y / _spl : _sp.y;
-        }
-      }
+      //(WaterfallMistPass.solarElevation: the falls' foot volumes gate on the same value.)
+      const _sunElev = ARestlessOcean.Passes.WaterfallMistPass.solarElevation(self);
       if(self._readSkyAmbient()){
         self._splashAmbient.setRGB(self._skyAmbientScratch.x, self._skyAmbientScratch.y, self._skyAmbientScratch.z);
       } else {
@@ -3282,6 +3303,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       sp.fallMistVolumetricActive = !!(sp.fallMistVolumetric && self.waterfallMistPass && self.waterfallMistPass.wantVisible);
       sp.tick({
         time: time,
+        ambientPiFix: self.ambientPiFix,
         camX: self.globalCameraPosition.x,
         camZ: self.globalCameraPosition.z,
         camFwdX: _fwdX,
@@ -3328,6 +3350,9 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     }
     if(self.waterfallSplashPass && self.waterfallSplashPass.mesh){
       self.waterfallSplashPass.mesh.visible = self.waterfallSplashPass.wantVisible && !self._wasUnderwater;
+    }
+    if(self.waterfallCloudPass && self.waterfallCloudPass.mesh){
+      self.waterfallCloudPass.mesh.visible = self.waterfallCloudPass.wantVisible && !self._wasUnderwater;
     }
     //Phase 8e: the waterline overlay, for the main render only (hidden for every offscreen
     //pass at the top of tick).
