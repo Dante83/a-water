@@ -419,6 +419,8 @@ ARestlessOcean.Materials.Ocean.waterfallMistMaterial = {
     "//The land's skyline and sky visibility (field/land-light.js, spliced by the pass): landLightVisibility(p, L),",
     '//landSkyVisibility(xz). White water in a gorge is shadowed and sky-occluded like the rock beside it.',
     '//LAND_LIGHT_INJECTION_POINT',
+    "//a-starry-sky's clouds (ARestlessOcean.spliceWorldLighting): starryCloudAt(p), 1 without the sky.",
+    '//STARRY_WORLD_LIGHTING_INJECTION_POINT',
 
     'float nightDim(){',
       'return mix(uNightAmbient, 1.0, smoothstep(-0.08, 0.06, uSunElevation));',
@@ -459,7 +461,7 @@ ARestlessOcean.Materials.Ocean.waterfallMistMaterial = {
     '}',
 
     "//The scene's sun shadow at a world point: four taps, no derivatives (this runs in a loop).",
-    'float sunShadowAt(vec3 p){',
+    'float sunShadowMapAt(vec3 p){',
       'if(sunShadowEnabled == 0) return 1.0;',
       'vec4 sp = sunShadowMatrix * vec4(p, 1.0);',
       'vec3 sc = sp.xyz / sp.w;',
@@ -475,6 +477,10 @@ ARestlessOcean.Materials.Ocean.waterfallMistMaterial = {
       's += refZ < texture2D(sunShadowMap, sc.xy + vec2(-0.5,  0.5) * ts).r ? 1.0 : 0.0;',
       's += refZ < texture2D(sunShadowMap, sc.xy + vec2( 0.5,  0.5) * ts).r ? 1.0 : 0.0;',
       'return mix(1.0, 0.25 * s, smoothstep(0.0, 0.05, edge));',
+    '}',
+    "//...times the clouds overhead, which shade the falls' foot like the pool round it.",
+    'float sunShadowAt(vec3 p){',
+      'return sunShadowMapAt(p) * starryCloudAt(p).x;',
     '}',
 
     'void main(){',

@@ -118,7 +118,7 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype.init = function(scene){
   this.material = new THREE.ShaderMaterial({
     uniforms: uniforms,
     vertexShader: def.vertexShader,
-    fragmentShader: ARestlessOcean.spliceLandLight(def.fragmentShader(false, null, !!og.causticsEnabled)),
+    fragmentShader: ARestlessOcean.spliceWorldLighting(ARestlessOcean.spliceLandLight(def.fragmentShader(false, null, !!og.causticsEnabled)), uniforms),
     transparent: true,
     //Writes depth: from above the lip the tongue must hide the fall behind it (one mesh,
     //drawn in row order, the fall painted over the tongue otherwise). Faded fragments discard.
@@ -263,7 +263,7 @@ ARestlessOcean.Passes.WaterfallSheetPass.prototype.tick = function(ctx){
   const atm = !!(og.atmosphericPerspectiveEnabled && og.atmosphereFunctionsGLSL);
   if(atm !== this._atmReady){
     this._atmReady = atm;
-    this.material.fragmentShader = ARestlessOcean.spliceLandLight(ARestlessOcean.Materials.Ocean.waterfallSheetMaterial.fragmentShader(atm, og.atmosphereFunctionsGLSL, !!og.causticsEnabled));
+    this.material.fragmentShader = ARestlessOcean.spliceWorldLighting(ARestlessOcean.spliceLandLight(ARestlessOcean.Materials.Ocean.waterfallSheetMaterial.fragmentShader(atm, og.atmosphereFunctionsGLSL, !!og.causticsEnabled)), this.material.uniforms);
     this.material.needsUpdate = true;
   }
   this._streamCorridors();

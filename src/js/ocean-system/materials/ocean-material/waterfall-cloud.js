@@ -318,8 +318,11 @@ ARestlessOcean.Materials.Ocean.waterfallCloudMaterial = {
     '}',
     '//──────────────────────────────────────────────────────────────────────────────',
 
+    "//a-starry-sky's clouds (ARestlessOcean.spliceWorldLighting): starryCloudAt(p), 1 without the sky.",
+    '//STARRY_WORLD_LIGHTING_INJECTION_POINT',
+
     "//The scene's sun shadow at a world point: four taps, no derivatives (this runs in a loop).",
-    'float sunShadowAt(vec3 p){',
+    'float sunShadowMapAt(vec3 p){',
       'if(sunShadowEnabled == 0) return 1.0;',
       'vec4 sp = sunShadowMatrix * vec4(p, 1.0);',
       'vec3 sc = sp.xyz / sp.w;',
@@ -335,6 +338,10 @@ ARestlessOcean.Materials.Ocean.waterfallCloudMaterial = {
       's += refZ < texture2D(sunShadowMap, sc.xy + vec2(-0.5,  0.5) * ts).r ? 1.0 : 0.0;',
       's += refZ < texture2D(sunShadowMap, sc.xy + vec2( 0.5,  0.5) * ts).r ? 1.0 : 0.0;',
       'return mix(1.0, 0.25 * s, smoothstep(0.0, 0.05, edge));',
+    '}',
+    '//...times the clouds overhead.',
+    'float sunShadowAt(vec3 p){',
+      'return sunShadowMapAt(p) * starryCloudAt(p).x;',
     '}',
 
     'float remap(float x, float a, float b, float c, float d){',

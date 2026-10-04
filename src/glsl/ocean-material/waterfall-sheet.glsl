@@ -373,8 +373,24 @@ vec3 skyRadiance(vec3 dir){
 //The land's skyline and sky visibility (field/land-light.js, spliced by WaterfallSheetPass):
 //landLightVisibility(p, L), landSkyVisibility(xz). Before the SSR, which relights its hits with them.
 //LAND_LIGHT_INJECTION_POINT
+//a-starry-sky's clouds (ARestlessOcean.spliceWorldLighting): starryCloudAt(p), 1 without the sky.
+//STARRY_WORLD_LIGHTING_INJECTION_POINT
 
-vec3 screenSpaceReflection(vec3 worldPos, vec3 marchDir, vec3 skyDir){
+//The clouds in the sheet's reflection, as on the sea (water-shader.glsl): along the rippled
+//normal only where a pixel resolves the ripples, past that along the smooth sheet and averaged
+//over the spread the ripples reflect -- the cloud map has detail the clear sky never had, and
+//a ripple normal that is noise at pixel scale made it sparkle.
+const float CLOUD_REFLECTION_RIPPLE_LENGTH = 1.0;
+const float CLOUD_REFLECTION_RIPPLE_SPREAD = 0.25;
+vec3 starryCloudySkyGlossy(vec3 cloudDir, vec3 clearSky, float blur){
+  #ifdef STARRY_WORLD_LIGHTING
+    return starryCloudySkyRadianceBlurred(cloudDir, clearSky, blur);
+  #else
+    return clearSky;
+  #endif
+}
+
+vec3 screenSpaceReflection(vec3 worldPos, vec3 marchDir, vec3 skyDir, vec3 cloudDir, float cloudBlur){
   vec3 reflectDir  = skyDir;      //every sky lookup below reads this
   vec3 viewPos     = (ssrViewMatrix * vec4(worldPos,    1.0)).xyz;
   vec3 viewReflect = normalize(mat3(ssrViewMatrix) * marchDir);
@@ -382,7 +398,7 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 marchDir, vec3 skyDir){
   //Sky fallback: use LUT-based sky radiance when atmosphere is enabled for correct horizon
   //colors; fall back to metering survey fisheye for the no-atmosphere build path.
   #if($atmospheric_perspective_enabled)
-    vec3 skyColor = computeSkyRadiance(reflectDir);
+    vec3 skyColor = starryCloudySkyGlossy(cloudDir, computeSkyRadiance(reflectDir), cloudBlur);
   #else
     //A sky provider can still be present with atmospheric perspective switched
     //off, in which case its metering survey is the better source — it is a real
@@ -772,7 +788,8 @@ void main(){
   //(NOT the falls' own shadow map: received by the sheet itself it acned in blotches, a texel of the map fitted
   //round the whole sheet mesh being tens of cm against the 0.35 m bias. Dante read it as z-fighting, 2026-10-03.
   //The pool and the foot's volumes take it; the curtain does not.)
-  float sunShadow = getSunShadow(vSunShadowCoord) * landLightVisibilityOpen(vWorldPos, L);
+  //...and the clouds overhead, as on the creek and the pool.
+  float sunShadow = getSunShadow(vSunShadowCoord) * landLightVisibilityOpen(vWorldPos, L) * starryCloudAt(vWorldPos).x;
 
   //TWO LAYERS, as Dante put it (round 12): WATER underneath, with its reflection, and FOAM on
   //top of it. They have different surfaces:
@@ -853,7 +870,9 @@ void main(){
   float F = fresnelAirToWater(NdotV);
   //The WATER layer's reflection and glint, off the water's own surface (Nw); the march on the
   //smooth sheet (N), the sky on the rippled one, the creek's split (screenSpaceReflection).
-  vec3 reflected = screenSpaceReflection(vWorldPos, reflect(-V, N), reflect(-V, Nw));
+  float rippleAveraged = smoothstep(0.1, 1.0, length(fwidth(vWorldPos)) / CLOUD_REFLECTION_RIPPLE_LENGTH);
+  vec3 cloudReflectionDir = normalize(mix(reflect(-V, Nw), reflect(-V, N), rippleAveraged));
+  vec3 reflected = screenSpaceReflection(vWorldPos, reflect(-V, N), reflect(-V, Nw), cloudReflectionDir, rippleAveraged * CLOUD_REFLECTION_RIPPLE_SPREAD);
   vec3 R = reflect(-L, Nw);
   vec3 glint = brightestDirectionalLight * pow(max(0.0, dot(R, V)), uSpecFalloff) * specBoost * sunShadow;
   vec3 inscatter = underwaterInscatterSurface(-V);
@@ -900,7 +919,7 @@ void main(){
       float sunCosZenith = max(dot(L, vec3(0.0, 1.0, 0.0)), 0.0);
       vec3 ext = waterAbsorption + waterScattering;
       vec3 sunDown = brightestDirectionalLight * (1.0 - fresnelAirToWater(sunCosZenith)) * exp(-ext * downPath);
-      float bedShadow = getSunShadow(sunShadowMatrix * vec4(P + toSunInWater * downPath, 1.0));
+      float bedShadow = getSunShadow(sunShadowMatrix * vec4(P + toSunInWater * downPath, 1.0)) * starryCloudAt(P + toSunInWater * downPath).x;
       vec3 waterAlbedo = waterScattering / max(ext, vec3(1e-4));
       //The creek's caustics on the bed, as the creek computes them (the lead-in's bed lit
       //plain beside the creek's shimmering one, round 9).
@@ -1012,7 +1031,7 @@ void main(){
     else {
       //Above the water (the cliff behind a fall): lit as the creek lights terrain it sees
       //above its surface.
-      float bgShadow = getSunShadow(sunShadowMatrix * vec4(P, 1.0));
+      float bgShadow = getSunShadow(sunShadowMatrix * vec4(P, 1.0)) * starryCloudAt(P).x;
       behind = bgAlbedo * (INV_PI * brightestDirectionalLight * max(0.0, dot(bgN, L)) * bgShadow + skyAmbientColor * mix(1.0, INV_PI, ambientPiFix));   //sky irradiance: albedo/PI, as the sun (ambientPiFix)
     }
     break;

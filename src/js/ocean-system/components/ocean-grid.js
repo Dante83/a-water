@@ -1122,7 +1122,18 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       .replace('$shore_reflection_functions', shoreReflectionGLSL)
       //Phase 8b: the dynamic-waves sampler (dynamic-waves-pass.js). Phase 8e: the
       //vertex splices it too.
-      .replace('$dynamic_waves_functions', dynamicWavesGLSL);
+      .replace('$dynamic_waves_functions', dynamicWavesGLSL)
+      //a-starry-sky's clouds on the water, once the sky has published them.
+      .replace('//STARRY_WORLD_LIGHTING_INJECTION_POINT', starryWorldLightingGLSL);
+  }
+  //a-starry-sky's world lighting (WorldLightingRenderer.js in that repo): its clouds' shadow
+  //on the ground and the sea, as a GLSL chunk and a set of live uniforms. Picked up from tick
+  //(_adoptWorldLighting), which recompiles the water with the chunk and attaches the uniforms
+  //BY REFERENCE every frame -- every tile has its own cloned uniforms, and a clone of the
+  //sky's would freeze on the frame it was taken.
+  this.worldLighting = null;
+  function starryWorldLightingGLSL(){
+    return self.worldLighting ? '#define STARRY_WORLD_LIGHTING\n#include <starry_world_lighting_pars>' : '';
   }
   function dynamicWavesGLSL(){
     return ARestlessOcean.DynamicWaves ? ARestlessOcean.DynamicWaves.consumerGLSL()
@@ -1593,6 +1604,35 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //uniform stream, the underwater side flip, the offscreen-pass hiding and the
   //atmosphere recompile — everything the clipmap rings get. A mesh flagged
   //userData.flowingWater is recompiled with the flowing variant.
+  //The sky's clouds on the water. Needs both halves the sky publishes: the uniforms and the
+  //chunk the shader #includes (an #include of a missing chunk throws at compile). Rebuilds
+  //every water fragment shader with whatever atmosphere state it has now; the AP recompile
+  //below, if it has yet to run, builds through the same buildFragmentShader and keeps it.
+  this._adoptWorldLighting = function(){
+    if(typeof StarrySky === 'undefined' || !StarrySky.worldLighting || !StarrySky.worldLighting.uniforms) return false;
+    if(typeof THREE.ShaderChunk.starry_world_lighting_pars !== 'string') return false;
+    self.worldLighting = StarrySky.worldLighting;
+    const atmOn = !!(self.atmosphericPerspectiveEnabled && self.atmosphereFunctionsGLSL);
+    const seaFrag = buildFragmentShader(atmOn, self.atmosphereFunctionsGLSL);
+    let flowFrag = null;
+    for(let j = 0; j < oceanGridInstanceKeys.length; ++j){
+      const mesh = oceanPatchGeometryInstances[oceanGridInstanceKeys[j]];
+      if(mesh.userData.flowingWater){
+        flowFrag = flowFrag || buildFragmentShader(atmOn, self.atmosphereFunctionsGLSL, true);
+        mesh.material.fragmentShader = flowFrag;
+      }
+      else{
+        mesh.material.fragmentShader = seaFrag;
+      }
+      mesh.material.needsUpdate = true;
+    }
+    self.oceanMaterial.fragmentShader = seaFrag;
+    self.oceanMaterial.needsUpdate = true;
+    //...and the underwater shafts, which go out under a cloud shadow too.
+    if(self.underwaterVolumePass) self.underwaterVolumePass.adoptWorldLighting(self.worldLighting);
+    return true;
+  };
+
   this.registerOceanMesh = function(key, mesh){
     if(oceanPatchGeometryInstances[key]) return;
     oceanPatchGeometryInstances[key] = mesh;
@@ -1984,6 +2024,9 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       if(self._discoverSkyDirector()){
         self._createHorizonSkirt();
       }
+    }
+    if(!self.worldLighting){
+      self._adoptWorldLighting();
     }
 
     //Late terrain discovery — same reasoning as sky discovery above.
@@ -2932,8 +2975,14 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //Phase 4: the square the flowing surface covers this frame, or null.
     const flowHandoffState = self._flowHandoffState = self.flowHandoffState();
 
+    const worldLightingUniforms = self.worldLighting ? self.worldLighting.uniforms : null;
     for(let i = 0, numKeys = oceanGridInstanceKeys.length; i < numKeys; ++i){
       const uniformsRef = oceanPatchGeometryInstances[oceanGridInstanceKeys[i]].material.uniforms;
+      //The sky's own uniform objects, by reference (see _adoptWorldLighting). A tile added
+      //since, or a material rebuilt, picks them up here.
+      if(worldLightingUniforms && uniformsRef.starryCloudShadowMap !== worldLightingUniforms.starryCloudShadowMap){
+        Object.assign(uniformsRef, worldLightingUniforms);
+      }
       ARestlessOcean.WaveMask.writeUniforms(uniformsRef, waveMaskParams);
       if(shoreBreakerParams) ARestlessOcean.ShoreBreaker.writeUniforms(uniformsRef, shoreBreakerParams);
       if(shoreReflectionState) ARestlessOcean.ShoreReflection.writeUniforms(uniformsRef, shoreReflectionState);

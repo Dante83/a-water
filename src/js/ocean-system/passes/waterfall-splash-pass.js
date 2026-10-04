@@ -100,7 +100,7 @@ ARestlessOcean.Passes.WaterfallSplashPass.prototype.init = function(scene){
   this.material = new THREE.ShaderMaterial({
     uniforms: uniforms,
     vertexShader: def.vertexShader,
-    fragmentShader: WS.fragmentSource(false, null),
+    fragmentShader: ARestlessOcean.spliceWorldLighting(WS.fragmentSource(false, null), uniforms),
     transparent: true,
     depthWrite: false,
     depthTest: false,
@@ -382,7 +382,9 @@ ARestlessOcean.Passes.WaterfallSplashPass.prototype.tick = function(ctx){
   const atm = !!(og.atmosphericPerspectiveEnabled && og.atmosphereFunctionsGLSL);
   if(atm !== this._atmReady){
     this._atmReady = atm;
-    this.material.fragmentShader = ARestlessOcean.Passes.WaterfallSplashPass.fragmentSource(atm, og.atmosphereFunctionsGLSL);
+    //The surface mist shares the shader, so it takes the sky's uniforms too.
+    this.material.fragmentShader = ARestlessOcean.spliceWorldLighting(ARestlessOcean.Passes.WaterfallSplashPass.fragmentSource(atm, og.atmosphereFunctionsGLSL),
+      this.material.uniforms, this.mistMaterial ? this.mistMaterial.uniforms : null);
     this.material.needsUpdate = true;
     if(this.mistMaterial){
       this.mistMaterial.fragmentShader = this.material.fragmentShader;

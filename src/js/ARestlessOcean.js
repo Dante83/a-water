@@ -41,6 +41,46 @@ ARestlessOcean = {
 //The land's light occlusion (field/land-light.js) spliced into a shader at its
 ////LAND_LIGHT_INJECTION_POINT marker: the real GLSL when that file is loaded, else a stub with the
 //same two functions returning 1, so every page compiles whether or not it loads the file.
+//a-starry-sky's clouds, for the shaders that light themselves (the waterfall passes):
+//starryCloudAt(p) at //STARRY_WORLD_LIGHTING_INJECTION_POINT, x the sky's directional light
+//through the clouds, y the sky light; and starryCloudySky(dir, clearSky), the clouds over a
+//reflected clear sky. With the sky published (StarrySky.worldLighting and its
+//chunk), the chunk is compiled in AND the sky's uniforms are attached BY REFERENCE to every
+//uniforms object passed -- always both together: a program with the chunk and no uniforms
+//draws with an unbound sampler2DArray and fails validation. Without the sky, a stub that
+//returns 1. (The ocean material has its own copy, wired by OceanGrid._adoptWorldLighting.)
+ARestlessOcean.STARRY_CLOUD_GLSL = [
+  'vec2 starryCloudAt(vec3 p){',
+  '  #ifdef STARRY_WORLD_LIGHTING',
+  '    vec3 s = starryCloudDominantShadow(p);',
+  '    return vec2(s.x, starryCloudSkyVisibilityFrom(s));',
+  '  #else',
+  '    return vec2(1.0);',
+  '  #endif',
+  '}',
+  'vec3 starryCloudySky(vec3 dir, vec3 clearSky){',
+  '  #ifdef STARRY_WORLD_LIGHTING',
+  '    return starryCloudySkyRadiance(dir, clearSky);',
+  '  #else',
+  '    return clearSky;',
+  '  #endif',
+  '}'
+].join('\n');
+ARestlessOcean.worldLightingAvailable = function(){
+  return typeof StarrySky !== 'undefined' && !!StarrySky.worldLighting && !!StarrySky.worldLighting.uniforms &&
+    typeof THREE.ShaderChunk.starry_world_lighting_pars === 'string';
+};
+ARestlessOcean.spliceWorldLighting = function(src){
+  const on = ARestlessOcean.worldLightingAvailable();
+  if(on){
+    for(let i = 1; i < arguments.length; ++i){
+      if(arguments[i]) Object.assign(arguments[i], StarrySky.worldLighting.uniforms);
+    }
+  }
+  const head = on ? '#define STARRY_WORLD_LIGHTING\n#include <starry_world_lighting_pars>\n' : '';
+  return src.replace('//STARRY_WORLD_LIGHTING_INJECTION_POINT', function(){ return head + ARestlessOcean.STARRY_CLOUD_GLSL; });
+};
+
 ARestlessOcean.spliceLandLight = function(src){
   const LL = ARestlessOcean.LandLight;
   const glsl = LL && LL.GLSL ? LL.GLSL : [

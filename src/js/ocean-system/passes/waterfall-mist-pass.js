@@ -86,7 +86,7 @@ ARestlessOcean.Passes.WaterfallMistPass.prototype.init = function(scene){
   this.material = new THREE.ShaderMaterial({
     uniforms: uniforms,
     vertexShader: def.vertexShader,
-    fragmentShader: ARestlessOcean.spliceLandLight(def.fragmentShader(false, null)),
+    fragmentShader: ARestlessOcean.spliceWorldLighting(ARestlessOcean.spliceLandLight(def.fragmentShader(false, null)), uniforms),
     transparent: true,
     depthWrite: false,
     depthTest: false,
@@ -188,7 +188,7 @@ ARestlessOcean.Passes.WaterfallMistPass.prototype.tick = function(ctx){
   const atm = !!(og.atmosphericPerspectiveEnabled && og.atmosphereFunctionsGLSL);
   if(atm !== this._atmReady){
     this._atmReady = atm;
-    this.material.fragmentShader = ARestlessOcean.spliceLandLight(ARestlessOcean.Materials.Ocean.waterfallMistMaterial.fragmentShader(atm, og.atmosphereFunctionsGLSL));
+    this.material.fragmentShader = ARestlessOcean.spliceWorldLighting(ARestlessOcean.spliceLandLight(ARestlessOcean.Materials.Ocean.waterfallMistMaterial.fragmentShader(atm, og.atmosphereFunctionsGLSL)), this.material.uniforms);
     this.material.needsUpdate = true;
   }
 };

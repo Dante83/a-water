@@ -232,6 +232,15 @@ ARestlessOcean.Passes.UnderwaterVolumePass.prototype.init = function(){
       'uniform sampler2D uCausticMap, uCausticMeanTex, uLightMap, uHistory, uOccMap;',
       'uniform mat4 uOccMatrix;',
       'uniform vec2 uOccParams;',
+      //a-starry-sky's clouds (adoptWorldLighting below); nothing until the sky publishes them.
+      '//STARRY_WORLD_LIGHTING_INJECTION_POINT',
+      'float cloudSunAt(vec2 xz, float level){',
+      '#ifdef STARRY_WORLD_LIGHTING',
+      '  return starryCloudLightVisibility(vec3(xz.x, level, xz.y));',
+      '#else',
+      '  return 1.0;',
+      '#endif',
+      '}',
       'const float PI = 3.14159265359;',
       'const float INV_4PI = 0.07957747154;',
       'float hg(float c, float g){',
@@ -313,6 +322,10 @@ ARestlessOcean.Passes.UnderwaterVolumePass.prototype.init = function(){
       '  if(uLightFrame.z > 0.0){ beam = sunlitAt(S, 1.0); glow = sunlitAt(S, uGlowRadius); }',
       '  if(uCausticShape.x > 0.0) beam *= causticPattern(S, d / cw, footM);',
       '  beam *= occluderVis(P);',
+      //The clouds over where the beam came in: the shafts go out under a cloud shadow.
+      '  float cloud = cloudSunAt(S, level);',
+      '  beam *= cloud;',
+      '  glow *= cloud;',
       //cos θ between the light's travel and the scattered ray back to the eye (−viewDir).
       '  float p = mix(INV_4PI, hg(-dot(viewDir, uSunWater), uPhase.x), uPhase.y);',
       '  vec3 single = uScattering * (uSunBeam * sunAtP * (p * beam) + uSkyDown * skyAtP / (2.0 * PI));',
@@ -404,6 +417,20 @@ ARestlessOcean.Passes.UnderwaterVolumePass.prototype.init = function(){
   this._quad.frustumCulled = false;
   this._scene.add(this._quad);
   this._camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  if(this._worldLighting) this.adoptWorldLighting(this._worldLighting);
+};
+
+//a-starry-sky's clouds on the shafts, handed over by OceanGrid._adoptWorldLighting. The sky's
+//uniform objects go in BY REFERENCE, and the chunk at the marker; safe to call before init.
+ARestlessOcean.Passes.UnderwaterVolumePass.prototype.adoptWorldLighting = function(worldLighting){
+  this._worldLighting = worldLighting;
+  const m = this.injectMaterial;
+  if(!m || m.userData.starryWorldLighting) return;
+  Object.assign(m.uniforms, worldLighting.uniforms);
+  m.fragmentShader = m.fragmentShader.replace('//STARRY_WORLD_LIGHTING_INJECTION_POINT',
+    '#define STARRY_WORLD_LIGHTING\n#include <starry_world_lighting_pars>');
+  m.userData.starryWorldLighting = true;
+  m.needsUpdate = true;
 };
 
 //The average of smoothstep(web) over the plane, measured ONCE per caustic map on the GPU (the
