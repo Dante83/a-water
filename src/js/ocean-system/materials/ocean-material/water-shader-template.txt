@@ -30,6 +30,8 @@ ARestlessOcean.Materials.Ocean.waterMaterial = {
     causticMap: {type: 't', value: null},
     causticIntensityMultiplier: {type: 'f', value: null},
     foamDiffuseMap: {type: 't', value: null},
+    //Not read by the water (its mask is foamDiffuseMap.a, packed in ocean-grid.js);
+    //kept because the waterfall sheet aliases this uniform from the creek material.
     foamOpacityMap: {type: 't', value: null},
     foamNormalMap: {type: 't', value: null},
     foamRenderMap: {type: 't', value: null},

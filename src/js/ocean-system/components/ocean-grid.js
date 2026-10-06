@@ -237,7 +237,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.anisotropy = 8;
     texture.format = THREE.RGBAFormat;
-    self.foamColorMap = texture;
+    //Not published as foamColorMap: the water reads the PACKED map below, whose
+    //alpha is the foam mask. This one's alpha is 1, which reads as foam everywhere.
   }, function(err){
     console.error(err);
   });
@@ -256,6 +257,57 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     texture.anisotropy = 8;
     texture.format = THREE.RGBAFormat;
     self.foamOpacityMap = texture;
+  }, function(err){
+    console.error(err);
+  });
+
+  //THE FOAM MASK RIDES IN THE COLOUR MAP'S ALPHA. The water program was at 33 of
+  //the 32 texture units a device guarantees once a-starry-sky's clouds came in, and
+  //a program over the limit does not link. The colour map is RGB and the mask is one
+  //channel at the same size, so they pack with nothing lost, and the water samples
+  //one map where it sampled two (water-shader.glsl foamDiffuseMap). Alpha is never
+  //sRGB-decoded, so the mask stays linear in an sRGB texture. Packed through
+  //getImageData into a DataTexture, never by drawing alpha into a canvas: a canvas
+  //stores premultiplied colour and would darken the foam where the mask is thin.
+  //foamOpacityMap stays loaded for the waterfall sheet, which still reads it.
+  Promise.all([foamColorPromise, foamOpacityPromise]).then(function(textures){
+    const colorImage = textures[0].image;
+    const maskImage = textures[1].image;
+    const width = colorImage.width;
+    const height = colorImage.height;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d', {willReadFrequently: true});
+    context.drawImage(colorImage, 0, 0);
+    const colorPixels = context.getImageData(0, 0, width, height).data;
+    context.clearRect(0, 0, width, height);
+    context.drawImage(maskImage, 0, 0, width, height);
+    const maskPixels = context.getImageData(0, 0, width, height).data;
+    //getImageData runs top row first; the loaded images were uploaded flipY, so the
+    //rows are flipped here and the packed map lies exactly where the two did.
+    const packed = new Uint8Array(width * height * 4);
+    const rowLength = width * 4;
+    for(let y = 0; y < height; ++y){
+      const src = y * rowLength;
+      const dst = (height - 1 - y) * rowLength;
+      for(let x = 0; x < rowLength; x += 4){
+        packed[dst + x] = colorPixels[src + x];
+        packed[dst + x + 1] = colorPixels[src + x + 1];
+        packed[dst + x + 2] = colorPixels[src + x + 2];
+        packed[dst + x + 3] = maskPixels[src + x];
+      }
+    }
+    const texture = new THREE.DataTexture(packed, width, height, THREE.RGBAFormat, THREE.UnsignedByteType);
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.generateMipmaps = true;
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.anisotropy = 8;
+    texture.needsUpdate = true;
+    self.foamColorMap = texture;
   }, function(err){
     console.error(err);
   });

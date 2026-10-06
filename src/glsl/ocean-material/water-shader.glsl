@@ -194,8 +194,9 @@ uniform float meteringSurveyValid;
 #if($foam_enabled)
   //Foam maps
   uniform sampler2D foamRenderMap;
+  //RGB the foam colour (sRGB), A the foam mask (linear): packed at load by
+  //ocean-grid.js to free a texture unit. There is no separate opacity map here.
   uniform sampler2D foamDiffuseMap;
-  uniform sampler2D foamOpacityMap;
   uniform sampler2D foamNormalMap;
   uniform float foamStartLevel;
 #endif
@@ -3425,8 +3426,9 @@ void main(){
     //with the first to break up the repeating brick pattern (same trick as the large normal map).
     //foamLayerMix is 0.5 on the ocean (the plain average) and the two-phase
     //flow weight on flowing water.
-    vec3  foamAlbedoTex = mix(texture2D(foamDiffuseMap, foamTextureUV).rgb, texture2D(foamDiffuseMap, foamTextureUV2).rgb, foamLayerMix);
-    float foamMask   = mix(texture2D(foamOpacityMap, foamTextureUV).r,   texture2D(foamOpacityMap, foamTextureUV2).r,   foamLayerMix);
+    vec4  foamTex       = mix(texture2D(foamDiffuseMap, foamTextureUV), texture2D(foamDiffuseMap, foamTextureUV2), foamLayerMix);
+    vec3  foamAlbedoTex = foamTex.rgb;
+    float foamMask   = foamTex.a;
     //Blend packed normals in [0,1] space, then decode once
     vec2  foamNMXZ   = 2.0 * mix(texture2D(foamNormalMap, foamTextureUV).xy, texture2D(foamNormalMap, foamTextureUV2).xy, foamLayerMix) - 1.0;
     //Shore pass (2026-09-30): the DARK RINGS round settling foam. Foam002's colour map
@@ -3522,7 +3524,7 @@ void main(){
         vec2 laceUVA = (laceBase - laceFlow * lacePhaseA * LACE_PERIOD) / 2.0;
         vec2 laceUVB = (vec2(-laceBase.y, laceBase.x) - vec2(-laceFlow.y, laceFlow.x) * lacePhaseB * LACE_PERIOD) / 3.0 + vec2(0.37, 0.61);
         float laceMix = abs(1.0 - 2.0 * lacePhaseA);
-        float laceMask = mix(texture2D(foamOpacityMap, laceUVA).r, texture2D(foamOpacityMap, laceUVB).r, laceMix);
+        float laceMask = mix(texture2D(foamDiffuseMap, laceUVA).a, texture2D(foamDiffuseMap, laceUVB).a, laceMix);
         float laceRank = pow(clamp(laceMask / 0.55, 0.0, 1.0), 0.8);
         //Round 5 (Dante: the swash "stops abruptly into the shoreline"): the lace ran at full
         //cover right to where the sheet meets the sand, so the sheet ended on a white line.
@@ -3932,7 +3934,7 @@ void main(){
     else if(sc.y < 0.0 || sc.y > 1.0)       tint = vec3(0.2, 1.0, 0.2);
     gl_FragColor = vec4(tint, 1.0);
   }
-  //Mode 31: raw foamOpacityMap value (foamMask) as grayscale. If the brightest
+  //Mode 31: raw foam mask (foamDiffuseMap.a, foamMask) as grayscale. If the brightest
   //patches don't reach white (~0.6+), the texture peak is the limiting factor
   //and even with full foamAmount the smoothstep edge eats the blend. Fix at
   //texture-load or by lowering Crest's 0.4 feather constant.
