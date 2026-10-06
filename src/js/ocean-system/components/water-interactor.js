@@ -129,6 +129,11 @@ ARestlessOcean.WaterInteraction.Interactor = function(opts){
   //Wading spray: moving through the waterline at least this fast relative to the water.
   this.wadeMinSpeed = (opts.wadeMinSpeed === undefined) ? 1.2 : opts.wadeMinSpeed;
   this.splashCooldown = (opts.splashCooldown === undefined) ? 0.15 : opts.splashCooldown;
+  //Spray while WADING (off by default). Wading is measured against the current, so a body
+  //standing still in a creek "waded" at the creek's speed and threw clumps off its legs the
+  //whole time, and a swimmer threw them every stroke (Dante, 2026-10-05: nothing when
+  //swimming or wading, nothing standing in a river). The wade is still announced (sound).
+  this.wadeSpray = opts.wadeSpray === true;
   //Entry crater: going in at speed throws the water out of the way, a hole far bigger
   //than the body's own volume, and that hole is what rings. Depth = craterK · radius ·
   //closing speed (m), capped; 0 turns it off. A foot at 3 m/s: ~10 cm.
@@ -320,7 +325,7 @@ ARestlessOcean.WaterInteraction.Interactor.prototype._step = function(s, x, y, z
       const rel = Math.sqrt(rx * rx + rz * rz);
       if(rel > this.wadeMinSpeed){
         const inv = 1.0 / rel;
-        if(this.splash) WI.impact(x + rx * inv * r, s.surfaceY, z + rz * inv * r, rel, 0.6 * rx * inv, 0.8, 0.6 * rz * inv, 0.35 * this.sprayScale, r);
+        if(this.splash && this.wadeSpray) WI.impact(x + rx * inv * r, s.surfaceY, z + rz * inv * r, rel, 0.6 * rx * inv, 0.8, 0.6 * rz * inv, 0.35 * this.sprayScale, r);
         if(this.announce) this._announce('wade', x + rx * inv * r, s.surfaceY, z + rz * inv * r, rel, frac);
         this._cool = this.splashCooldown;
       }
@@ -408,6 +413,7 @@ if(typeof AFRAME !== 'undefined' && !AFRAME.components['water-interactor']){
       announce: {type: 'boolean', default: true},
       splashMinSpeed: {type: 'number', default: 0.8},
       wadeMinSpeed: {type: 'number', default: 1.2},
+      wadeSpray: {type: 'boolean', default: false},
       craterK: {type: 'number', default: 0.5},
       rippleScale: {type: 'number', default: 1.0},
       foamK: {type: 'number', default: 1.0},
@@ -441,6 +447,7 @@ if(typeof AFRAME !== 'undefined' && !AFRAME.components['water-interactor']){
       i.announce = d.announce;
       i.splashMinSpeed = d.splashMinSpeed;
       i.wadeMinSpeed = d.wadeMinSpeed;
+      i.wadeSpray = d.wadeSpray;
       i.craterK = d.craterK;
       i.rippleScale = Math.max(0.0, d.rippleScale);
       i.foamK = Math.max(0.0, d.foamK);

@@ -16,7 +16,12 @@
 //    g  the recent HIGH WATER: max(live, last frame's − dryRate·dt). Ground under
 //       it was covered a moment ago; a-land reads it as wet sand, drying as the
 //       memory falls away below it.
-//    b  the surf's own part of r (breaker + swash), for debugging.
+//    b  the swash's TERRITORY: 1 on the water side and on sand the swash can run up
+//       to (shoreSwashEval's reach, the water shader's own rule), 0 two metres past
+//       it. a-land applies its surf rules only here. Without it, a-land's surf rule
+//       (capillary height above the live level, no distance limit) wet every low
+//       patch in the window, inland grass and all, inside a hard 128 m square
+//       (Dante, 2026-10-05). It used to hold the surf's height, for debugging.
 //    a  1 = valid.
 //
 //Not the full 9c (a world-anchored wetness ring with per-material drying in
@@ -93,7 +98,17 @@ ARestlessOcean.Passes.SwashSurfacePass.prototype.init = function(){
       '    vec4 prev = texture2D(uPrev, puv);',
       '    if(prev.a > 0.5) high = max(live, prev.g - uDryRate * uDt);',
       '  }',
-      '  gl_FragColor = vec4(live, high, eta, 1.0);',
+      //The territory (see the header): the swash's reach inland from the still shoreline.
+      '  float territory = 1.0;',
+      '  if(f.b <= 0.0){',
+      '    territory = 0.0;',
+      '    if(shoreSwashActive(f)){',
+      '      float reach; float swashFoam;',
+      '      shoreSwashEval(xz, f, shoreBreakerPhaseField(xz), shoreBreakerSmoothGrad(xz), reach, swashFoam);',
+      '      territory = 1.0 - smoothstep(reach, reach + 2.0, -f.b);',
+      '    }',
+      '  }',
+      '  gl_FragColor = vec4(live, high, territory, 1.0);',
       '}'
     ].join('\n'),
     depthTest: false,
