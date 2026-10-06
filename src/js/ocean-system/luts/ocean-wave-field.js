@@ -916,6 +916,10 @@ ARestlessOcean.ShoreBreaker.SWASH_FLOW_DRAWDOWN_W = 0.2;
 ARestlessOcean.ShoreBreaker.SURF_FLOW_FADE_W = 0.5;
 ARestlessOcean.ShoreBreaker.SWASH_UPRUSH = 0.3;      //fraction of a wave period spent running up
 ARestlessOcean.ShoreBreaker.WAVE_FACTOR_MAX = 1.155; //largest waveFactor() can return
+//The high water (shoreSwashHighWater) samples each past wave at its uprush top AND at these
+//fractions of a period after it: the wave-to-wave blend (cycle 0.8..1, here 0.25..0.45 past
+//the top) can lift the draining sheet above its own top when the next wave is bigger.
+ARestlessOcean.ShoreBreaker.SWASH_BLEND_SAMPLES = [0.28, 0.33, 0.38, 0.43];
 //The discard band is this many times the run-up reach on the PROBED slope: the
 //upper beach is often flatter than the slope 6 m offshore, and the sheet is only
 //visible where it is above the sand anyway, so a generous band costs nothing
@@ -1182,13 +1186,46 @@ ARestlessOcean.ShoreBreaker.evaluate = function(x, z, field, gradX, gradZ, p, ou
 //    bore arriving at the shoreline is what starts the uprush.
 //  * Seaward, the swash fades out by the depth that equals the largest run-up,
 //    so setup and drawdown reach just the inner surf zone.
-//evaluateSwash returns out = {eta, reach, foam, R2, slope}: reach = how far inland
+//The recent high water (m above the still level) in closed form: shoreSwashHighWater in the
+//GLSL, read its comment. Same arguments as evaluateSwash, plus dryRate (m/s).
+ARestlessOcean.ShoreBreaker.evaluateSwashHighWater = function(x, z, field, gradX, gradZ, p, dryRate, phaseField, probeField){
+  const SB = ARestlessOcean.ShoreBreaker;
+  const o = SB.evaluateSwash(x, z, field, gradX, gradZ, p, {}, phaseField, probeField);
+  if(o.reach < 0) return -1.0e6;
+  const T = 2.0 * Math.PI / p.omega;
+  const up = SB.SWASH_UPRUSH;
+  const P = o.theta / (2.0 * Math.PI) - up;
+  const J = Math.floor(P);
+  const age0 = (P - J) * T;
+  const maxPeak = o.peak * SB.WAVE_FACTOR_MAX;
+  const rate = Math.max(dryRate, 0.0);
+  let best = -1.0e6;
+  let aNext = SB.waveFactor(J + 1, x, z);
+  for(let i = 0; i < 64; i++){
+    const age = age0 + i * T;
+    if(maxPeak - rate * (age - SB.SWASH_BLEND_SAMPLES[SB.SWASH_BLEND_SAMPLES.length - 1] * T) <= best) break;
+    const a = SB.waveFactor(J - i, x, z);
+    best = Math.max(best, o.peak * a - rate * age);
+    for(const dd of SB.SWASH_BLEND_SAMPLES){
+      const ageB = age - dd * T;
+      if(ageB < 0.0) continue;
+      const xx = dd / (1.0 - up);
+      const A = a + (aNext - a) * _sbSmooth(0.8, 1.0, up + 0.25 + dd);
+      best = Math.max(best, o.low + (o.peak * A - o.low) * (1.0 - xx * xx) - rate * ageB);
+    }
+    aNext = a;
+  }
+  return best;
+};
+
+//evaluateSwash returns out = {eta, reach, foam, R2, slope, peak, theta}: reach = how far inland
 //(m, from the shoreline) the sheet can ever get at this point; foam = bore foam
-//on the uprush.
+//on the uprush; peak = the sheet top per unit wave factor (the high water reads it); theta =
+//the phase after the front delay.
 ARestlessOcean.ShoreBreaker.evaluateSwash = function(x, z, field, gradX, gradZ, p, out, phaseField, probeField){
   const SB = ARestlessOcean.ShoreBreaker;
   out = out || {};
-  out.eta = 0; out.reach = -1; out.foam = 0; out.R2 = 0; out.slope = 0;
+  out.eta = 0; out.reach = -1; out.foam = 0; out.R2 = 0; out.slope = 0; out.peak = 0; out.low = 0; out.theta = 0;
   if(!p || !p.enabled || p.Hs < 0.02) return out;
   const s = field.shoreSDF, h = Math.max(field.depth, 0.0);
   //Phase 4: not up a creek bank (GPU: field.a outside [-0.5, 1.5]). The CPU sample knows
@@ -1244,6 +1281,9 @@ ARestlessOcean.ShoreBreaker.evaluateSwash = function(x, z, field, gradX, gradZ, 
   const beachOnly = 1.0 - _sbSmooth(SB.SWASH_SLOPE_FADE_LO, SB.SWASH_SLOPE_FADE_HI, slope);
   const k = (1.0 - inland) * taper * reachFade * confidence * beachOnly * flowKeep;
   out.eta = (zMin + (zMax - zMin) * c) * k * p.heightScale;
+  out.peak = R2 * flowKeep * k * p.heightScale;   //the sheet's top per unit wave factor
+  out.low = zMin * k * p.heightScale;              //the sheet's drawdown
+  out.theta = theta;
   //Bore foam on the uprush thins to BACKWASH_FOAM at the turn (continuous), then the residue
   //drains with the sheet.
   out.foam = Math.min(1.0, (d < up ? 1.0 - (1.0 - SB.BACKWASH_FOAM) * d / up : SB.BACKWASH_FOAM * Math.pow(1.0 - (d - up) / (1.0 - up), 1.5)) * k * p.foamGain);
@@ -1405,37 +1445,63 @@ ARestlessOcean.ShoreBreaker.GLSL = (function(){
     '  if(field.b < -' + f(SB.SWASH_BAND_MAX) + ' || field.g >= shoreBreakerDepthCap * 0.98 || field.g > 3.0 * shoreBreakerHs + 1.0) return false;',
     '  return abs(field.r - shoreBreakerSeaLevel) < 2.0;',
     '}',
-    '//Returns the swash elevation (m) at xz. reach = how far inland of the shoreline the',
-    '//sheet can ever get here (m, negative = no swash); swashFoam = bore foam on the uprush.',
-    'float shoreSwashEval(vec2 xz, vec4 field, vec4 phaseField, vec4 fieldGrad, out float reach, out float swashFoam){',
+    '//The swash at xz apart from time: everything shoreSwashEval and shoreSwashHighWater share,',
+    '//so the sheet we draw and the high water a-land dries by are one model. False (reach -1)',
+    '//where there is no swash. frontDelay = the phase the travelling front loses getting here.',
+    'bool shoreSwashShape(vec2 xz, vec4 field, vec4 fieldGrad, out float R2, out float S, out float setup, out float k, out float flowKeep, out float frontDelay, out float reach){',
+    '  R2 = 0.0; S = 0.0; setup = 0.0; k = 0.0; flowKeep = 1.0; frontDelay = 0.0; reach = -1.0;',
+    '  if(!shoreSwashActive(field)) return false;',
     '  vec2 shoreGrad = fieldGrad.xy;',
-    '  reach = -1.0; swashFoam = 0.0;',
-    '  if(!shoreSwashActive(field)) return 0.0;',
     '  float inland = smoothstep(0.5, 2.0, abs(field.r - shoreBreakerSeaLevel));',
     '  const float g = ' + f(SB.G) + ';',
     '  float w = shoreBreakerOmega;',
-    '  float k0 = w * w / g;',
     '  vec2 n;',
     '  float fDir = shoreBreakerDirectionFactor(shoreGrad, n);',
     '  float H0 = shoreBreakerHs * sqrt(fDir);',
-    '  if(H0 < 0.01) return 0.0;',
+    '  if(H0 < 0.01) return false;',
     '  float L0 = 6.2831853 * g / (w * w);',
     '  vec4 probe = shoreBreakerPhaseField(xz + n * (' + f(SB.SWASH_PROBE) + ' - field.b));',
     '  float slope = clamp(probe.g / max(probe.b, 1.0), 0.005, 1.0);',
     '  float HL = sqrt(H0 * L0);',
-    '  float setup = 0.35 * slope * HL;',
+    '  setup = 0.35 * slope * HL;',
     '  float Sinc = 0.75 * slope * HL;',
     '  float Sig = 0.06 * HL;',
-    '  float S = sqrt(Sinc * Sinc + Sig * Sig);',
-    '  float R2 = min(1.1 * (setup + 0.5 * S), ' + f(SB.SWASH_RUNUP_MAX_RATIO) + ' * H0);',
+    '  S = sqrt(Sinc * Sinc + Sig * Sig);',
+    '  R2 = min(1.1 * (setup + 0.5 * S), ' + f(SB.SWASH_RUNUP_MAX_RATIO) + ' * H0);',
     '  reach = min(' + f(SB.SWASH_BAND_MAX) + ', ' + f(SB.SWASH_REACH_MARGIN * SB.WAVE_FACTOR_MAX) + ' * R2 / slope + 2.0);',
-    '  //Shoreline phase at every distance: the swash zone fills and drains as one sheet.',
-    '  float theta = w * shoreBreakerTime;',
-    '  theta += ' + f(SB.PHASE_NOISE_AMP) + ' * (shoreBreakerNoise(xz / ' + f(SB.PHASE_NOISE_SCALE) + ' + vec2(shoreBreakerTime * 0.004, shoreBreakerTime * 0.0028)) - 0.5);',
     '  //Travelling front over the dry beach (see SWASH_FRONT_K): the WHOLE phase is delayed by',
     '  //the travel time, the wave-to-wave height too, or a point behind the front switched to the',
     '  //next wave mid-uprush and the waterline leapt.',
-    '  theta -= max(-field.b, 0.0) * w / (' + f(SB.SWASH_FRONT_K) + ' * sqrt(g * max(R2, 0.05)));',
+    '  frontDelay = max(-field.b, 0.0) * w / (' + f(SB.SWASH_FRONT_K) + ' * sqrt(g * max(R2, 0.05)));',
+    '  //Phase 4 browser round 7: no drawdown under a river. Across the hand-off band the',
+    '  //flowing surface is only partly opaque, and a still surface draining below the sand',
+    '  //there opened sand inside the river and cut its mouth off from the sea. The band',
+    '  //weight reaches about half its width into the sea, so the mouth stays wet.',
+    '  //Shore pass: nor the uprush. With the mouth band (WaterFieldPass.mouthBandM) the weight',
+    '  //now reaches well into the sea at a river mouth, and the run-up there broke over the river.',
+    '  flowKeep = 1.0 - smoothstep(0.0, ' + f(SB.SURF_FLOW_FADE_W) + ', flowHandoffFieldWeightAt(xz));',
+    '  float gateDepth = min(shoreBreakerDepthCap * 0.98, 3.0 * shoreBreakerHs + 1.0) * ' + f(SB.SWASH_TAPER_GATE_FRACTION) + ';',
+    '  float taper = 1.0 - smoothstep(0.0, max(min(' + f(SB.WAVE_FACTOR_MAX) + ' * R2, gateDepth), 0.05), max(field.g, 0.0));',
+    '  float reachFade = (1.0 - smoothstep(0.75 * reach, reach, -field.b)) * (1.0 - smoothstep(0.5 * reach, reach, field.b));',
+    '  float confidence = smoothstep(' + f(SB.NORMAL_CONFIDENCE_LO) + ', ' + f(SB.NORMAL_CONFIDENCE_HI) + ', length(shoreGrad));',
+    '  float beachOnly = 1.0 - smoothstep(' + f(SB.SWASH_SLOPE_FADE_LO) + ', ' + f(SB.SWASH_SLOPE_FADE_HI) + ', slope);',
+    '  k = (1.0 - inland) * taper * reachFade * confidence * beachOnly * flowKeep;',
+    '  return true;',
+    '}',
+    '//The swash phase at xz now (radians): the shoreline phase at every distance, so the swash',
+    '//zone fills and drains as one sheet, less the travel time of the front.',
+    'float shoreSwashTheta(vec2 xz, float frontDelay){',
+    '  float theta = shoreBreakerOmega * shoreBreakerTime;',
+    '  theta += ' + f(SB.PHASE_NOISE_AMP) + ' * (shoreBreakerNoise(xz / ' + f(SB.PHASE_NOISE_SCALE) + ' + vec2(shoreBreakerTime * 0.004, shoreBreakerTime * 0.0028)) - 0.5);',
+    '  return theta - frontDelay;',
+    '}',
+    '//Returns the swash elevation (m) at xz. reach = how far inland of the shoreline the',
+    '//sheet can ever get here (m, negative = no swash); swashFoam = bore foam on the uprush.',
+    'float shoreSwashEval(vec2 xz, vec4 field, vec4 phaseField, vec4 fieldGrad, out float reach, out float swashFoam){',
+    '  swashFoam = 0.0;',
+    '  float R2; float S; float setup; float k; float flowKeep; float frontDelay;',
+    '  if(!shoreSwashShape(xz, field, fieldGrad, R2, S, setup, k, flowKeep, frontDelay, reach)) return 0.0;',
+    '  float theta = shoreSwashTheta(xz, frontDelay);',
     '  float cyc = theta / 6.2831853 + 0.25;',
     '  float m = floor(cyc);',
     '  float A = mix(shoreBreakerWaveFactor(m, xz), shoreBreakerWaveFactor(m + 1.0, xz), smoothstep(0.8, 1.0, cyc - m));',
@@ -1443,24 +1509,47 @@ ARestlessOcean.ShoreBreaker.GLSL = (function(){
     '  const float up = ' + f(SB.SWASH_UPRUSH) + ';',
     '  float x = (d - up) / (1.0 - up);',
     '  float c = d < up ? sin(1.57079633 * d / up) : 1.0 - x * x;',
-    '  float zMin = setup - 0.5 * S;',
-    '  //Phase 4 browser round 7: no drawdown under a river. Across the hand-off band the',
-    '  //flowing surface is only partly opaque, and a still surface draining below the sand',
-    '  //there opened sand inside the river and cut its mouth off from the sea. The band',
-    '  //weight reaches about half its width into the sea, so the mouth stays wet.',
-    '  float flowKeep = 1.0 - smoothstep(0.0, ' + f(SB.SURF_FLOW_FADE_W) + ', flowHandoffFieldWeightAt(xz));',
-    '  zMin *= flowKeep;',
-    '  //Shore pass: nor the uprush. With the mouth band (WaterFieldPass.mouthBandM) the weight',
-    '  //now reaches well into the sea at a river mouth, and the run-up there broke over the river.',
+    '  float zMin = (setup - 0.5 * S) * flowKeep;',
     '  float zMax = R2 * A * flowKeep;',
-    '  float gateDepth = min(shoreBreakerDepthCap * 0.98, 3.0 * shoreBreakerHs + 1.0) * ' + f(SB.SWASH_TAPER_GATE_FRACTION) + ';',
-    '  float taper = 1.0 - smoothstep(0.0, max(min(' + f(SB.WAVE_FACTOR_MAX) + ' * R2, gateDepth), 0.05), max(field.g, 0.0));',
-    '  float reachFade = (1.0 - smoothstep(0.75 * reach, reach, -field.b)) * (1.0 - smoothstep(0.5 * reach, reach, field.b));',
-    '  float confidence = smoothstep(' + f(SB.NORMAL_CONFIDENCE_LO) + ', ' + f(SB.NORMAL_CONFIDENCE_HI) + ', length(shoreGrad));',
-    '  float beachOnly = 1.0 - smoothstep(' + f(SB.SWASH_SLOPE_FADE_LO) + ', ' + f(SB.SWASH_SLOPE_FADE_HI) + ', slope);',
-    '  float k = (1.0 - inland) * taper * reachFade * confidence * beachOnly * flowKeep;',
     '  swashFoam = min(1.0, (d < up ? 1.0 - ' + f(1.0 - SB.BACKWASH_FOAM) + ' * d / up : ' + f(SB.BACKWASH_FOAM) + ' * pow(max(1.0 - x, 0.0), 1.5)) * k * shoreBreakerFoamGain);',
     '  return mix(zMin, zMax, c) * k * shoreBreakerHeightScale;',
+    '}',
+    '//The recent HIGH WATER (m above the still level): the highest the sheet has stood at xz',
+    '//lately, less what has dried since at dryRate m/s. -1e6 where there is no swash. The',
+    '//caller takes the higher of this and the live sheet (the wave running up now).',
+    '//This is the memory a ping-pong keeps (max(live, last - dryRate*dt)), in closed form. Each',
+    '//wave j peaks at the turn of its uprush (d = up, so c = 1) at zMax with A = waveFactor(j),',
+    '//and may stand higher again while it drains if the next wave is bigger (the A blend;',
+    '//SWASH_BLEND_SAMPLES). The memory is the best of those, each less its drying since. Closed',
+    '//form, any texel size, any window, a fresh camera and an edited shore all agree at once',
+    '//(SwashSurfacePass). The phase noise drifts slowly (time x 0.004), so past peaks are timed',
+    '//with the current noise. Waves older than maxPeak / dryRate seconds cannot matter; 64 caps a dryRate',
+    '//near 0 (a 10 s swell: ~11 min of memory).',
+    'float shoreSwashHighWater(vec2 xz, vec4 field, vec4 fieldGrad, float dryRate){',
+    '  float R2; float S; float setup; float k; float flowKeep; float frontDelay; float reach;',
+    '  if(!shoreSwashShape(xz, field, fieldGrad, R2, S, setup, k, flowKeep, frontDelay, reach)) return -1.0e6;',
+    '  float T = 6.2831853 / shoreBreakerOmega;',
+    '  const float up = ' + f(SB.SWASH_UPRUSH) + ';',
+    '  float P = shoreSwashTheta(xz, frontDelay) / 6.2831853 - up;',
+    '  float J = floor(P);',
+    '  float age0 = (P - J) * T;',
+    '  float peakScale = R2 * flowKeep * k * shoreBreakerHeightScale;',
+    '  float low = (setup - 0.5 * S) * flowKeep * k * shoreBreakerHeightScale;',
+    '  float maxPeak = peakScale * ' + f(SB.WAVE_FACTOR_MAX) + ';',
+    '  float rate = max(dryRate, 0.0);',
+    '  float best = -1.0e6;',
+    '  float aNext = shoreBreakerWaveFactor(J + 1.0, xz);',
+    '  for(int i = 0; i < 64; i++){',
+    '    float age = age0 + float(i) * T;',
+    '    if(maxPeak - rate * (age - ' + f(SB.SWASH_BLEND_SAMPLES[SB.SWASH_BLEND_SAMPLES.length - 1]) + ' * T) <= best) break;',
+    '    float a = shoreBreakerWaveFactor(J - float(i), xz);',
+    '    best = max(best, peakScale * a - rate * age);',
+  ].concat(SB.SWASH_BLEND_SAMPLES.map(function(dd){
+    return '    if(age >= ' + f(dd) + ' * T) best = max(best, low + (peakScale * mix(a, aNext, ' + f(_sbSmooth(0.8, 1.0, SB.SWASH_UPRUSH + 0.25 + dd)) + ') - low) * ' + f(1.0 - Math.pow(dd / (1.0 - SB.SWASH_UPRUSH), 2.0)) + ' - rate * (age - ' + f(dd) + ' * T));';
+  })).concat([
+    '    aNext = a;',
+    '  }',
+    '  return best;',
     '}',
     '//True where the swash sheet may cover a DRY field texel: the dry discard asks this.',
     'bool shoreSwashCovers(vec2 xz, vec4 field){',
@@ -1496,5 +1585,5 @@ ARestlessOcean.ShoreBreaker.GLSL = (function(){
     '  if(swashOn) eta += shoreSwashEval(xz, field, phaseField, grad, reach, swashFoam);',
     '  return fade * eta;',
     '}'
-  ].join('\n');
+  ]).join('\n');
 })();

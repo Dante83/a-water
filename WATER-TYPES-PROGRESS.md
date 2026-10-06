@@ -8,6 +8,45 @@ The architecture doc stays the plan. This file is the log.
 
 ---
 
+## Wet ground over the world (2026-10-06, branch `wet-ground-world` in a-water AND a-land)
+
+Dante's ask: the surf's wet ground should cover the world, not just a square around the camera.
+Off the open wet-band bug (memory `project-wet-band-square`): edges fade, but wet patches inside.
+
+**The decision.** Moving wetness (backwash, drying) can't go into stateful cascades: each
+would keep its own history, blurred on every camera move, and a 1–3 m band is sub-texel in a
+far cascade. Instead the swash's memory is now **closed form**: `shoreSwashHighWater`
+(ocean-wave-field.js) = the best recent wave peak, each less `dryRate` × its age, from the
+same wave sequence the sheet is drawn with. Stateless → any window, any texel size, one
+function. Splashes, wading and rain remain a-land's ring (the full 9c), not this.
+
+- **a-water `SwashSurfacePass`, stateless, two maps:** near ±512 m at 0.5 m (2048²), far
+  ±896 m at 1.75 m (1024²; stops short of field cascade 1's ±1024 m, where the swash reads
+  phase and slope). Same channels (r live, g high water, b territory). The ping-pong is gone.
+  0.25 ms/frame for both on the 4090 (headless, Vulkan ANGLE). Knobs: `dryRate`, `enabled`,
+  `farEnabled`.
+- **GLSL refactor:** `shoreSwashShape` (time-independent part) + `shoreSwashTheta` now feed both
+  `shoreSwashEval` and `shoreSwashHighWater`. GPU-checked bit-identical to HEAD's sheet.
+  The high water also samples each wave's drain (`SWASH_BLEND_SAMPLES`): the blend into a
+  bigger next wave lifts the draining sheet above its own top (≤ 3.4 cm on 1:20).
+  CPU twin `ShoreBreaker.evaluateSwashHighWater`; `evaluateSwash` now also returns
+  `peak/low/theta`.
+- **a-land:** `u_swashFarMap/u_swashFarFrame`; near owns its square, far the rest, still band
+  past both (`alandSwashWeight`). **The memory wetness is now gated by the territory (b)**:
+  before, `memWet` wasn't, so inland ground below the high-water LEVEL (a hollow behind the
+  berm) read wet: the prime suspect for the patches. Knob `swash.far`. **Debug view 14**
+  (HUD "surf"): red = territory·k, green = memory wetness, blue = far map's share.
+- **Verified:** `tests/shore/swash-high-water-test.mjs` (closed form vs a 60 Hz ping-pong:
+  worst 2 mm over 90 samples); GPU: the pass compiles and the GPU g matches the CPU twin to
+  1.5 mm; a-land `check-shader-compiles` passes (lit variant 22 samplers, was 21: ⚠ the
+  16-unit floor in test-sampler-budget/run.sh was already broken before this).
+- ⚠ Seen on the way, NOT fixed: beyond field cascade 0 (±256 m) the GPU live sheet and the
+  CPU twin `evaluateSwash` differ by up to 8 cm on a synthetic beach (HEAD too).
+- **Needs:** a-land create-shader.py (terrain.frag) — a-water needs no regen (all runtime
+  splices). Then browser: view 14 on island-sholes for the leftover wet patches.
+
+---
+
 ## Shore pass (2026-09-30, branch `fix-shoreline-waves-and-add-connectors`)
 
 Dante's report: (1) dark rings round settling foam; (2) foam puts big splotchy shadows on
