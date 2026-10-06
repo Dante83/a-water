@@ -2480,13 +2480,20 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //exact probe read the NEAREST water's level, a creek or lake up the hill, over the eye:
     //the whole frame and the sound went underwater on dry land (Dante 2026-10-05).
     let exactDry = false;
+    //For the flip log below: what each source said this tick.
+    const coarseSurfaceY = waterSurfaceY;
+    let exactSurfaceY = null;
+    let surfaceSource = 'coarse';
     if(self.heightReadbackPass && self.heightReadbackPass.exactCameraSurfaceY){
       const exactY = self.heightReadbackPass.exactCameraSurfaceY();
+      exactSurfaceY = exactY;
       if(exactY !== null && exactY <= 0.5 * ARestlessOcean.Passes.HeightReadbackPass.NO_WATER_Y){
         exactDry = true;
+        surfaceSource = 'dry';
         //Measured nowhere near the water this offset was for.
         self._exactProbeOffset = undefined;
       } else if(exactY !== null){
+        surfaceSource = 'exact';
         //Remember how far the coarse probe was from the exact one...
         self._exactProbeOffset = exactY - waterSurfaceY;
         self._exactProbeOffsetTime = time;
@@ -2496,6 +2503,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         //caught exactProbe null at the surface), keep that offset rather than dropping to the
         //coarse probe, which misses the short cascades by centimetres and flipped the frame.
         waterSurfaceY += self._exactProbeOffset;
+        surfaceSource = 'coarse+carried offset';
       }
     }
 
@@ -2546,6 +2554,32 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     const hyst = (self._waterline && self._waterline.straddle) ? WATERLINE_STRADDLE_HYSTERESIS : WATERLINE_HYSTERESIS;
     const isUnderwater = stateSubmersion < (self._wasUnderwater ? hyst : -hyst);
     self._wasWaterlineBand = waterlineBand;
+    //$DEBUG_START$
+    //FLIP LOG, for the one-frame dips under the water that correct themselves before anyone
+    //can call debugWaterline() (Dante 2026-10-05). An honest dive crosses the surface a few
+    //centimetres a frame, so a flip INTO the water with the eye well above the surface it
+    //last saw is a bad surface reading, and every input to the decision is kept here.
+    //Console: ARestlessOcean.waterlineFlipLog (the last 20 flips, suspect or not).
+    if(isUnderwater !== self._wasUnderwater){
+      const lastSurfaceY = self._waterline ? self._waterline.surfaceY : undefined;
+      const entry = {
+        time: Math.round(time), into: isUnderwater ? 'water' : 'air',
+        eyeY: self.globalCameraPosition.y, eyeX: self.globalCameraPosition.x, eyeZ: self.globalCameraPosition.z,
+        surfaceY: waterSurfaceY, lastFrameSurfaceY: lastSurfaceY, source: surfaceSource,
+        coarseY: coarseSurfaceY, exactY: exactSurfaceY, carriedOffset: self._exactProbeOffset,
+        submersion: cameraSubmersion, overDry: cameraOverDry, knownDry: self.waterKnownDryAt(self.globalCameraPosition.x, self.globalCameraPosition.z),
+        restLevel: self.waterLevelAt(self.globalCameraPosition.x, self.globalCameraPosition.z)
+      };
+      const log = ARestlessOcean.waterlineFlipLog || (ARestlessOcean.waterlineFlipLog = []);
+      log.push(entry);
+      if(log.length > 20) log.shift();
+      const jumped = lastSurfaceY !== undefined && Math.abs(waterSurfaceY - lastSurfaceY) > 0.25;
+      if(isUnderwater && (cameraSubmersion < -0.25 || jumped)){
+        console.warn('[a-restless-ocean] suspect underwater flip: the eye went under ' +
+          (-cameraSubmersion).toFixed(2) + ' m at once (' + surfaceSource + ' surface). Please send this:', JSON.stringify(entry));
+      }
+    }
+    //$DEBUG_END$
     if(isUnderwater !== self._wasUnderwater){
       self._wasUnderwater = isUnderwater;
       self._applyUnderwaterSceneState(isUnderwater);
