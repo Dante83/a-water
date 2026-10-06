@@ -43,6 +43,43 @@
 
 ARestlessOcean.WaterInteraction = {};
 
+//── Impact announcements (for sound) ─────────────────────────────────────────
+//Every place that DECIDES something hit the water (an interactor's entry or wade, a
+//float's buoyancy splash) announces it here, whether or not there is a splash system
+//to throw spray: a page with spray off still wants to hear the slap. Listeners get
+//one fresh object per impact (they may keep it):
+//   kind      'entry' (the water closing on a point: a slap, a jump, a dropped rock),
+//             'wade' (moving sideways through the waterline), 'float' (a buoyant
+//             body hitting the surface or a wave slapping it)
+//   x, y, z   on the surface, m
+//   speed     closing speed (entry, float) or speed through the water (wade), m/s
+//   radius    the body's size at the contact, m (0 if unknown)
+//   submerged volume fraction under at the moment of contact (interactors; else null)
+//   status    getWaterStateAt status at the point (interactors; else null)
+//   source    whatever the owner tagged the interactor with (the A-Frame component
+//             passes its entity), or the float's entity
+//The rate is bounded by each point's cooldown (splashCooldown, 0.15 s by default).
+ARestlessOcean.WaterInteraction._impactListeners = [];
+
+//Subscribe; returns the unsubscribe function.
+ARestlessOcean.WaterInteraction.onImpact = function(fn){
+  const L = ARestlessOcean.WaterInteraction._impactListeners;
+  if(typeof fn === 'function') L.push(fn);
+  return function(){
+    const i = L.indexOf(fn);
+    if(i >= 0) L.splice(i, 1);
+  };
+};
+
+ARestlessOcean.WaterInteraction.announceImpact = function(e){
+  const L = ARestlessOcean.WaterInteraction._impactListeners;
+  //Copy: a listener may unsubscribe itself mid-dispatch.
+  const fns = L.length > 1 ? L.slice() : L;
+  for(let i = 0; i < fns.length; ++i){
+    try { fns[i](e); } catch(err){ console.error('[a-water] impact listener threw', err); }
+  }
+};
+
 //Spray at a contact point: (x, y, z) on the surface, (nx, ny, nz) the direction
 //the water is thrown (up for an entry), speed the closing speed in m/s. countScale
 //thins it (wading sprays a little, continuously). radius (m) makes it a BODY splash
@@ -150,6 +187,10 @@ ARestlessOcean.WaterInteraction.Interactor = function(opts){
   };
   this.onEnter = opts.onEnter || null;
   this.onExit = opts.onExit || null;
+  //Announce entries and wades to WaterInteraction.onImpact listeners (sound), with or
+  //without spray. `tag` rides along as the event's `source`.
+  this.announce = opts.announce !== false;
+  this.tag = opts.tag || null;
   this._emitter = null;
   this._prev = null;
   this._cool = 0.0;
@@ -259,13 +300,16 @@ ARestlessOcean.WaterInteraction.Interactor.prototype._step = function(s, x, y, z
   this._rel2 = known ? (ux * ux + uy * uy + uz * uz) : 0.0;
   this._setSubmerged(frac, depth, x, y, z, was, calmFrac, calmDepth);
 
-  if(known && this.splash && this._cool <= 0.0 && frac > this.contactFraction){
+  if(known && (this.splash || this.announce) && this._cool <= 0.0 && frac > this.contactFraction){
     //Entry: the water closing on the point (water up, point down) while the sphere
     //still straddles the surface.
     const closing = st.waterVY - st.vy;
     if(frac < 0.98 && closing > this.splashMinSpeed){
-      WI.impact(x, s.surfaceY, z, closing, undefined, undefined, undefined, this.sprayScale, r);
-      WI.crater(x, z, r, closing, this.craterK * this.rippleScale, Math.min(1.0, this.foamK * 0.3 * closing));
+      if(this.splash){
+        WI.impact(x, s.surfaceY, z, closing, undefined, undefined, undefined, this.sprayScale, r);
+        WI.crater(x, z, r, closing, this.craterK * this.rippleScale, Math.min(1.0, this.foamK * 0.3 * closing));
+      }
+      if(this.announce) this._announce('entry', x, s.surfaceY, z, closing, frac);
       this._cool = this.splashCooldown;
     } else if(frac < 0.9){
       //Wading: through the waterline sideways, relative to the CURRENT. Not to the
@@ -276,12 +320,22 @@ ARestlessOcean.WaterInteraction.Interactor.prototype._step = function(s, x, y, z
       const rel = Math.sqrt(rx * rx + rz * rz);
       if(rel > this.wadeMinSpeed){
         const inv = 1.0 / rel;
-        WI.impact(x + rx * inv * r, s.surfaceY, z + rz * inv * r, rel, 0.6 * rx * inv, 0.8, 0.6 * rz * inv, 0.35 * this.sprayScale, r);
+        if(this.splash) WI.impact(x + rx * inv * r, s.surfaceY, z + rz * inv * r, rel, 0.6 * rx * inv, 0.8, 0.6 * rz * inv, 0.35 * this.sprayScale, r);
+        if(this.announce) this._announce('wade', x + rx * inv * r, s.surfaceY, z + rz * inv * r, rel, frac);
         this._cool = this.splashCooldown;
       }
     }
   }
   return st;
+};
+
+ARestlessOcean.WaterInteraction.Interactor.prototype._announce = function(kind, x, y, z, speed, frac){
+  const WI = ARestlessOcean.WaterInteraction;
+  if(!WI._impactListeners.length) return;
+  WI.announceImpact({
+    kind: kind, x: x, y: y, z: z, speed: speed, radius: this.radius,
+    submerged: frac, status: this.state.status, source: this.tag
+  });
 };
 
 //Submerged fraction → the enter/exit edges; the ripple-free fraction and depth
@@ -350,6 +404,8 @@ if(typeof AFRAME !== 'undefined' && !AFRAME.components['water-interactor']){
       offset: {type: 'vec3', default: {x: 0, y: 0, z: 0}},
       ripples: {type: 'boolean', default: true},
       splash: {type: 'boolean', default: true},
+      //Announce entries/wades to WaterInteraction.onImpact (sound), spray or not.
+      announce: {type: 'boolean', default: true},
       splashMinSpeed: {type: 'number', default: 0.8},
       wadeMinSpeed: {type: 'number', default: 1.2},
       craterK: {type: 'number', default: 0.5},
@@ -370,6 +426,7 @@ if(typeof AFRAME !== 'undefined' && !AFRAME.components['water-interactor']){
       this._target = null;
       this._targetEnd = null;
       this.interactor = new ARestlessOcean.WaterInteraction.Interactor({
+        tag: this.el,
         onEnter: function(i, st){ self.el.emit('water-enter', {id: self.id, state: st}, false); },
         onExit: function(i, st){ self.el.emit('water-exit', {id: self.id, state: st}, false); }
       });
@@ -381,6 +438,7 @@ if(typeof AFRAME !== 'undefined' && !AFRAME.components['water-interactor']){
       i.radius = Math.max(0.01, d.radius);
       i.ripples = d.ripples;
       i.splash = d.splash;
+      i.announce = d.announce;
       i.splashMinSpeed = d.splashMinSpeed;
       i.wadeMinSpeed = d.wadeMinSpeed;
       i.craterK = d.craterK;

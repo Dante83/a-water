@@ -448,12 +448,36 @@ AFRAME.registerComponent('buoyant', {
     this._splashCooldown = Math.max(0.0, this._splashCooldown - dt);
     const inContact = err > -this.splashContactBand;
     if(inContact && closing > this.splashMinSpeed && this._splashCooldown <= 0.0){
+      const speed = Math.min(closing, this.splashSpeedCap);
       this.el.emit('buoyancy-splash', {
-        speed: Math.min(closing, this.splashSpeedCap),
+        speed: speed,
         point: {x: obj.position.x, y: surfaceY, z: obj.position.z}
       }, true);
+      //Sound hears it even where no splash system exists to throw spray (OceanGrid's
+      //forward above only runs with one).
+      const WI = ARestlessOcean.WaterInteraction;
+      if(WI && WI.announceImpact && WI._impactListeners.length){
+        WI.announceImpact({
+          kind: 'float', x: obj.position.x, y: surfaceY, z: obj.position.z,
+          speed: speed, radius: this._splashRadius(), submerged: null, status: null,
+          source: this.el
+        });
+      }
       this._splashCooldown = this.splashCooldownTime;
     }
+  },
+
+  //Radius of the circle with the body's footprint area, m (0 if not known yet).
+  _splashRadius: function(){
+    let area = this._body ? this._body.footprintArea : 0.0;
+    if(!(area > 0.0)){
+      const ls = this._resolveLocalSize();
+      if(ls){
+        const sc = this.el.object3D.scale;
+        area = ls.x * Math.abs(sc.x) * ls.z * Math.abs(sc.z);
+      }
+    }
+    return area > 0.0 ? Math.sqrt(area / Math.PI) : 0.0;
   },
 
   //Cache mass / volume / inertia for the rigid solver. Recomputed when the
@@ -480,6 +504,7 @@ AFRAME.registerComponent('buoyant', {
                           //keeps forces/energy in honest SI units.
     const mass = Math.max(1e-3, this.data.density * RHO_W * volume);
     this._body = {
+      footprintArea: footprint,
       halfH: sy * 0.5,
       colArea: footprint / Math.max(1, nProbes),
       mass: mass,

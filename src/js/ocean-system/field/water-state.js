@@ -270,6 +270,75 @@ ARestlessOcean.WaterState.install = function(grid){
   };
 };
 
+//The camera's medium (OceanGrid.getCameraWaterState): what the last tick's submersion
+//probe found at the eye. Before the ocean is up: valid false, in air.
+ARestlessOcean.getCameraWaterState = function(out){
+  const grid = ARestlessOcean.WaterState.grid;
+  if(grid && grid.getCameraWaterState) return grid.getCameraWaterState(out);
+  out = out || {};
+  out.valid = false; out.overDry = true; out.submersion = 1.0e6; out.surfaceY = 0.0;
+  out.factor = 0.0; out.underwater = false; out.band = false; out.straddle = false;
+  out.x = 0.0; out.y = 0.0; out.z = 0.0; out.flips = 0; out.frame = 0;
+  return out;
+};
+
+//The deep-water SEA STATE, for anything that needs the waves as numbers rather than pixels
+//(echo-engine's surf: a-land says where the beaches are, this says how big the waves are that
+//reach them). The SAME formulas the spectrum is calibrated with (ShoreBreaker.paramsFrom), read
+//whether or not the shore breakers are drawn:
+//   valid     false until the ocean is up (then Hs 0: no sea to hear)
+//   Hs        significant wave height as rendered (× the composer's height multiplier), m
+//   Tp        peak period, s (2π/ω_p from the band library)
+//   dirX/Z    unit direction the waves TRAVEL (downwind)
+//   windX/Z   the wind, m/s
+//   seaLevel  the still surface, m
+ARestlessOcean.getSeaState = function(out){
+  out = out || {};
+  const grid = ARestlessOcean.WaterState.grid;
+  const lib = grid && grid.oceanHeightBandLibrary;
+  out.valid = false; out.Hs = 0.0; out.Tp = 0.0; out.dirX = 1.0; out.dirZ = 0.0;
+  out.windX = 0.0; out.windZ = 0.0; out.seaLevel = 0.0;
+  if(!grid || !lib || !grid.windVelocity) return out;
+  const g = ARestlessOcean.ShoreBreaker ? ARestlessOcean.ShoreBreaker.G : 9.81;
+  const wx = grid.windVelocity.x, wz = grid.windVelocity.y;
+  const U = Math.sqrt(wx * wx + wz * wz);
+  const gamma = lib.jonswapGamma || 3.3;
+  const composer = grid.oceanHeightComposer;
+  out.valid = true;
+  out.windX = wx; out.windZ = wz;
+  out.Hs = 0.21 * U * U / g * Math.pow(gamma, 0.3) * (composer ? composer.waveHeightMultiplier : 1.0);
+  out.Tp = lib.omega_p > 0 ? 2.0 * Math.PI / lib.omega_p : 0.0;
+  if(U > 0.01){ out.dirX = wx / U; out.dirZ = wz / U; }
+  out.seaLevel = grid.heightOffset || 0.0;
+  return out;
+};
+
+//THE BREAKER AT A BEACH POINT, for sound: the same ShoreBreaker model (and the same phase
+//clock) the shore breakers are drawn with, evaluated from geometry the CALLER supplies — the
+//water depth there, how far it is from the shoreline, and the seaward normal. The GPU field
+//those come from on the draw side is only readable by a full synchronous readback, which no
+//per-frame caller can afford; a-land knows both numbers from its own terrain. So the timing is
+//the drawn one up to how closely the caller's depth/distance match the field's.
+//   valid     false when breakers are off (or the ocean is not up): the caller makes its own
+//   breaking  0..1, the wave at this point is breaking
+//   foam      0..1, the bore's foam: spikes as the front passes, trails as it drains — the
+//             envelope of a breaker's CRASH
+//   H, eta    local wave height and surface displacement, m
+ARestlessOcean.getSurfAt = function(x, z, depth, shoreDist, nx, nz, out){
+  out = out || {};
+  out.valid = false; out.breaking = 0.0; out.foam = 0.0; out.H = 0.0; out.eta = 0.0;
+  const SB = ARestlessOcean.ShoreBreaker, grid = ARestlessOcean.WaterState.grid;
+  if(!SB || !grid) return out;
+  const p = grid._shoreBreakerParams || (grid.shoreBreakerParams ? grid.shoreBreakerParams() : null);
+  if(!p || !p.enabled) return out;
+  const f = ARestlessOcean.WaterState._surfField || (ARestlessOcean.WaterState._surfField = {});
+  f.level = p.seaLevel; f.depth = Math.max(0.0, +depth || 0.0); f.shoreSDF = Math.max(0.0, +shoreDist || 0.0);
+  f.dryMask = 0.0; f.flowWeight = 0.0;
+  const o = SB.evaluate(x, z, f, +nx || 0.0, +nz || 0.0, p, ARestlessOcean.WaterState._surfOut || (ARestlessOcean.WaterState._surfOut = {}), f);
+  out.valid = true; out.breaking = o.breaking; out.foam = o.foam; out.H = o.H; out.eta = o.eta;
+  return out;
+};
+
 //Console: ARestlessOcean.debugWaterStateAt(x, z)  — or, where the camera is,
 //ARestlessOcean.debugWaterStateAt() . Logs and returns a copy.
 //$DEBUG_START$

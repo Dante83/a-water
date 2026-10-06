@@ -762,6 +762,27 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     }
     return self.heightOffset;
   };
+  //The eye's medium, as the submersion probe found it on the last tick (no new probe):
+  //  valid       false until the first tick has run
+  //  overDry     the camera is over ground a-land KNOWS is dry (then never underwater)
+  //  submersion  eye height above the drawn, wave-displaced surface, m (<0: under;
+  //              1e6 over dry)
+  //  surfaceY    that surface's height under the eye, m
+  //  factor      0..1 smooth blend over the 1 m band the fog and caustics fade across
+  //  underwater  the hard air/water flip (hysteresis ±1 cm, ±5 cm while the lens
+  //              straddles the surface), the one the whole scene state swaps on
+  //  band        the surface is within 0.3 m of the near plane
+  //  straddle    the surface actually cuts the near plane (the lens is half under)
+  //  x, y, z     the camera position it was measured at
+  //  flips       counts every air/water flip, so a poller cannot miss a quick in-out
+  //  frame       counts ticks that filled it
+  //Copies into `out` when given (else returns a fresh copy), so a caller can keep it.
+  this.getCameraWaterState = function(out){
+    out = out || {};
+    const c = self._cameraWaterState;
+    for(const k in c) out[k] = c[k];
+    return out;
+  };
   //Water column depth (metres) at a world position; 0 means dry.
   this.waterDepthAt = function(x, z){
     if(self._terrainProvider === 'a-faraway-land' && self._landTerrainApi){
@@ -1699,6 +1720,12 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //Tracks whether the camera was submerged last frame so the ocean side-flip
   //only fires on the actual transition.
   this._wasUnderwater = false;
+  //The eye's medium, filled each tick by the submersion probe (see getCameraWaterState).
+  this._cameraWaterState = {
+    valid: false, overDry: true, submersion: 1.0e6, surfaceY: 0.0,
+    factor: 0.0, underwater: false, band: false, straddle: false,
+    x: 0.0, y: 0.0, z: 0.0, flips: 0, frame: 0
+  };
   this._wasWaterlineBand = false;   //Phase 8e: near plane within the waterline band
 
   //Flip the ocean + horizon skirt to render their underside (the "ceiling")
@@ -2456,6 +2483,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     if(isUnderwater !== self._wasUnderwater){
       self._wasUnderwater = isUnderwater;
       self._applyUnderwaterSceneState(isUnderwater);
+      self._cameraWaterState.flips++;
     }
     self._waterline = self._waterline || {};
     self._waterline.band = waterlineBand;
@@ -2468,6 +2496,21 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     self._waterline.nearTop = nearExtent.top;
     self._waterline.nearBottom = nearExtent.bottom;
     self._waterline.surfaceY = waterSurfaceY;
+    //Published for whoever else needs the eye's medium (sound): this frame's answers,
+    //read by getCameraWaterState() without probing again.
+    const cws = self._cameraWaterState;
+    cws.valid = true;
+    cws.overDry = cameraOverDry;
+    cws.submersion = cameraSubmersion;
+    cws.surfaceY = waterSurfaceY;
+    cws.factor = underwaterFactor;
+    cws.underwater = isUnderwater;
+    cws.band = waterlineBand;
+    cws.straddle = self._waterline.straddle;
+    cws.x = self.globalCameraPosition.x;
+    cws.y = self.globalCameraPosition.y;
+    cws.z = self.globalCameraPosition.z;
+    cws.frame++;
 
     //Underwater caustic projector — caustics on the directly-viewed seabed.
     if(self.causticProjectionPass){
