@@ -651,10 +651,11 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._surfaceSetup = function(){
   for(let c = 0; c < HF_N; c++){
     const m = c < maskSwizzle.length ? maskSwizzle[c] + ' * ' : '';
     const f = (c < FADE.length && FADE[c] > 0.0) ? 'smoothstep(spCascadePatch[' + c + '] * ' + FADE[c].toFixed(1) + ', 0.0, dist) * ' : '';
-    //textureLod 0, not texture: neighbouring pixels here are unrelated points, so
+    //textureLod, not texture: neighbouring pixels here are unrelated points, so
     //texture()'s derivatives picked the coarsest mip, where displacement averages
-    //to nothing. The water vertex samples level 0 (vertex shaders have no LOD).
-    sum += '  d += ' + m + f + 'textureLod(spCascadeArray, vec3((xz + spCascadeOffset[' + c + ']) / spCascadePatch[' + c + '], ' + c + '.0), 0.0).xyz;\n';
+    //to nothing. The level is the one the water vertex reads at this point
+    //(water-vertex.glsl oceanCascadeLod), so the probe stays on the drawn mesh.
+    sum += '  d += ' + m + f + 'textureLod(spCascadeArray, vec3((xz + spCascadeOffset[' + c + ']) / spCascadePatch[' + c + '], ' + c + '.0), spCascadeLod(cell, spCascadePatch[' + c + '])).xyz;\n';
   }
   const glsl = [
     'precision highp float;',
@@ -667,6 +668,18 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._surfaceSetup = function(){
     'uniform float spHeightOffset;',
     'uniform float spUseField;',
     'uniform vec3 spCamPos;',
+    //water-vertex.glsl's oceanMeshCellAt / oceanCascadeLod, copied exactly.
+    'uniform float spPatchDataSize;',
+    'uniform vec2 spMeshSpacing;',
+    'float spMeshCellAt(vec2 xz, vec2 camXZ){',
+    '  if(spMeshSpacing.x <= 0.0) return 0.0;',
+    '  if(spMeshSpacing.y <= 0.0) return spMeshSpacing.x;',
+    '  vec2 d = abs(xz - camXZ);',
+    '  return spMeshSpacing.x * max(1.0, 2.0 * max(d.x, d.y) / spMeshSpacing.y);',
+    '}',
+    'float spCascadeLod(float cell, float patchSize){',
+    '  return cell > 0.0 ? max(0.0, log2(cell * spPatchDataSize / patchSize)) : 0.0;',
+    '}',
     fieldReady ? ARestlessOcean.Passes.WaterFieldPass.SAMPLE_GLSL : '',
     fieldReady ? ARestlessOcean.WaveMask.GLSL : '',
     fieldReady ? ARestlessOcean.FlowHandoff.GLSL : 'float flowHandoffWeightAt(vec2 xz){ return 0.0; }\nfloat flowBankSink(vec4 f){ return 0.0; }',
@@ -696,6 +709,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._surfaceSetup = function(){
       '  }'
     ].join('\n') : '',
     '  float dist = distance(spCamPos, vec3(xz.x, level, xz.y));',
+    '  float cell = spMeshCellAt(xz, spCamPos.xz);',
     '  vec3 d = vec3(0.0);',
     sum,
     '  d *= spWhm;',
@@ -728,8 +742,13 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.createSurfaceUniforms = funct
     spChop: {value: 1.0},
     spHeightOffset: {value: 0.0},
     spUseField: {value: 0.0},
-    spCamPos: {value: new THREE.Vector3()}
+    spCamPos: {value: new THREE.Vector3()},
+    spPatchDataSize: {value: this.oceanGrid.oceanHeightComposer.baseTextureWidth},
+    spMeshSpacing: {value: new THREE.Vector2()}
   };
+  //(0, 0) until the clipmap exists reads mip 0, as the water's template default does.
+  const mesh = this.oceanGrid.dynamicWavesMesh;
+  if(mesh) uniforms.spMeshSpacing.value.set(mesh.cell, mesh.ring);
   if(fieldReady){
     Object.assign(uniforms, ARestlessOcean.Passes.WaterFieldPass.createSampleUniforms());
     Object.assign(uniforms, ARestlessOcean.WaveMask.createUniforms());

@@ -21,6 +21,9 @@ ARestlessOcean.Materials.Ocean.oceanShadowMaterial = {
     chop: {type: 'f', value: 1.0},
     ringIndex: {type: 'i', value: 0},
     mainCameraPosition: {type: 'v3', value: new THREE.Vector3()},
+    //Mip selection, copied from the water material each frame (oceanCascadeLod).
+    patchDataSize: {type: 'f', value: 1024.0},
+    oceanMeshSpacing: {type: 'v2', value: new THREE.Vector2(0.0, 0.0)},
     //EVSM warp constant. Larger values reduce light bleed but compress
     //precision at depth extremes; ~5 is a good float32 balance. MUST
     //match the receiver's evsmExpC exactly or the comparison breaks.

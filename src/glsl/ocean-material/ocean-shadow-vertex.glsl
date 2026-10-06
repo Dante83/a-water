@@ -30,6 +30,20 @@ uniform vec2 cascadeSpatialOffsets[6];
 uniform float waveHeightMultiplier;
 uniform float chop;
 uniform vec3 mainCameraPosition;
+//The mip each cascade is read at: water-vertex.glsl's oceanCascadeLod, copied
+//exactly and keyed off the MAIN camera like the fades. A caster read at mip 0
+//under a receiver read at its spacing's mip would sit at a different height.
+uniform float patchDataSize;
+uniform vec2 oceanMeshSpacing;
+float oceanMeshCellAt(vec2 xz, vec2 camXZ){
+  if(oceanMeshSpacing.x <= 0.0) return 0.0;
+  if(oceanMeshSpacing.y <= 0.0) return oceanMeshSpacing.x;
+  vec2 d = abs(xz - camXZ);
+  return oceanMeshSpacing.x * max(1.0, 2.0 * max(d.x, d.y) / oceanMeshSpacing.y);
+}
+float oceanCascadeLod(float cell, float patchSize){
+  return cell > 0.0 ? max(0.0, log2(cell * patchDataSize / patchSize)) : 0.0;
+}
 //Plane-relative depth: see water-vertex.glsl oceanShadowRelief. 0 = the hardware depth.
 uniform float oceanShadowRelief;
 varying float vRelZ;
@@ -109,13 +123,14 @@ void main() {
   waveMaskA *= stillKeep;
   waveMaskB *= stillKeep;
 
+  float meshCell = oceanMeshCellAt(worldXZ, mainCameraPosition.xz);
   vec3 displacement = vec3(0.0);
-  displacement += waveMaskA.x * texture(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[0]) / cascadePatchSizes[0], 0.0)).xyz;
-  displacement += waveMaskA.y * texture(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[1]) / cascadePatchSizes[1], 1.0)).xyz;
-  displacement += waveMaskA.z * smoothstep(cascadePatchSizes[2] *  50.0, 0.0, distanceToVertex) * texture(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[2]) / cascadePatchSizes[2], 2.0)).xyz;
-  displacement += waveMaskB.x * smoothstep(cascadePatchSizes[3] * 100.0, 0.0, distanceToVertex) * texture(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[3]) / cascadePatchSizes[3], 3.0)).xyz;
-  displacement += waveMaskB.y * smoothstep(cascadePatchSizes[4] * 250.0, 0.0, distanceToVertex) * texture(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[4]) / cascadePatchSizes[4], 4.0)).xyz;
-  displacement += waveMaskB.z * smoothstep(cascadePatchSizes[5] * 500.0, 0.0, distanceToVertex) * texture(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[5]) / cascadePatchSizes[5], 5.0)).xyz;
+  displacement += waveMaskA.x * textureLod(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[0]) / cascadePatchSizes[0], 0.0), oceanCascadeLod(meshCell, cascadePatchSizes[0])).xyz;
+  displacement += waveMaskA.y * textureLod(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[1]) / cascadePatchSizes[1], 1.0), oceanCascadeLod(meshCell, cascadePatchSizes[1])).xyz;
+  displacement += waveMaskA.z * smoothstep(cascadePatchSizes[2] *  50.0, 0.0, distanceToVertex) * textureLod(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[2]) / cascadePatchSizes[2], 2.0), oceanCascadeLod(meshCell, cascadePatchSizes[2])).xyz;
+  displacement += waveMaskB.x * smoothstep(cascadePatchSizes[3] * 100.0, 0.0, distanceToVertex) * textureLod(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[3]) / cascadePatchSizes[3], 3.0), oceanCascadeLod(meshCell, cascadePatchSizes[3])).xyz;
+  displacement += waveMaskB.y * smoothstep(cascadePatchSizes[4] * 250.0, 0.0, distanceToVertex) * textureLod(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[4]) / cascadePatchSizes[4], 4.0), oceanCascadeLod(meshCell, cascadePatchSizes[4])).xyz;
+  displacement += waveMaskB.z * smoothstep(cascadePatchSizes[5] * 500.0, 0.0, distanceToVertex) * textureLod(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[5]) / cascadePatchSizes[5], 5.0), oceanCascadeLod(meshCell, cascadePatchSizes[5])).xyz;
   displacement *= waveHeightMultiplier;
   displacement.x *= -chop;
   displacement.z *= -chop;

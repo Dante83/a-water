@@ -1363,6 +1363,10 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   //tiles gx -2..1 of patchSize), read by the dynamic-waves vertex height
   //(dynamic-waves-pass.js "Geometry") and the surface probes.
   this.dynamicWavesMesh = {cell: this.patchSize / numCells, ring: 2.0 * this.patchSize};
+  //The same two numbers pick the mip each cascade is read at per vertex
+  //(water-vertex.glsl oceanCascadeLod). Set on the base material before the
+  //tiles and the horizon skirt clone it, so every one of them inherits it.
+  this.oceanMaterial.uniforms.oceanMeshSpacing.value.set(this.dynamicWavesMesh.cell, this.dynamicWavesMesh.ring);
 
   //Count instances per key
   let instanceCount = {};

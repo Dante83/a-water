@@ -121,6 +121,9 @@ ARestlessOcean.Materials.Ocean.waterMaterial = {
     meteringSurveyValid: {type: 'f', value: 0.0},
     sizeOfOceanPatch: {type: 'f', value: 1.0},
     ringIndex: {type: 'i', value: 0},
+    //(finest vertex spacing, ring 0 half-width) in metres: picks each cascade's mip
+    //at a vertex (water-vertex.glsl oceanCascadeLod). (0, 0) reads mip 0.
+    oceanMeshSpacing: {type: 'v2', value: new THREE.Vector2(0.0, 0.0)},
     baseHeightOffset: {type: 'f', value: 0.0},
     //WaterField cascades (Phase 1b) — see water-shader.glsl's waterFieldLevelAt.
     //Defaults match WaterFieldPass.CASCADE_HALF_WIDTHS; textures/centers are

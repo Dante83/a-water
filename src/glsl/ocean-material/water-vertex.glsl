@@ -118,8 +118,9 @@ $shore_reflection_functions
 //chunk the fragment splices for its slope.
 $dynamic_waves_functions
 //Displacement-texture pixel resolution per side (RG=dh/dx,dh/dz storage).
-//Used here only to size the finite-difference epsilon for the per-vertex
-//normal estimate that drives normal-offset shadow bias.
+//Used here to size the finite-difference epsilon for the per-vertex normal
+//estimate that drives normal-offset shadow bias, and to pick each cascade's mip
+//(oceanCascadeLod).
 uniform float patchDataSize;
 //World-meter offset distance applied along the surface normal before
 //projecting into each cascade shadow space. Decouples receiver sc.z from
@@ -143,6 +144,32 @@ uniform mat4 oceanShadowMatrix0;
 uniform mat4 oceanShadowMatrix1;
 uniform mat4 oceanShadowMatrix2;
 uniform mat4 oceanShadowMatrix3;
+
+//WHICH MIP A VERTEX READS. A vertex shader has no screen derivatives, so texture()
+//here always reads mip 0: the composer's mip chain never reached the geometry, and
+//C4/C5 (16 m / 4 m patches, faded out only at 4 km / 2 km) were point-sampled by
+//vertices up to tens of metres apart, which draws a false, crawling long wave
+//(aliasing) instead of no wave. So every cascade is read with textureLod at the
+//level whose texel is this vertex's spacing: the box filter the dynamic waves use
+//for the same job (dynamic-waves-pass.js, "Geometry"), and the level the shore
+//reflection already picks from its grid (shore-reflection-pass.js, srCascadeLod).
+//The spacing estimate is that one too, cell(d) = cell0 * max(1, 2d / R) over the
+//Chebyshev distance from the camera: at least the real spacing, at most 2x it, and
+//CONTINUOUS, so a vertex shared by two stitched rings reads one level from both.
+//oceanMeshSpacing = (cell0, R): ring 0's vertex spacing and half-width, metres
+//(ocean-grid.js); (0, 0) reads mip 0 as before. Keep in lockstep with the CSM
+//caster (ocean-shadow-vertex.glsl) and the surface probe (height-readback-pass.js),
+//or the shadow and the swimmer part from the drawn surface.
+uniform vec2 oceanMeshSpacing;
+float oceanMeshCellAt(vec2 xz, vec2 camXZ){
+  if(oceanMeshSpacing.x <= 0.0) return 0.0;
+  if(oceanMeshSpacing.y <= 0.0) return oceanMeshSpacing.x;
+  vec2 d = abs(xz - camXZ);
+  return oceanMeshSpacing.x * max(1.0, 2.0 * max(d.x, d.y) / oceanMeshSpacing.y);
+}
+float oceanCascadeLod(float cell, float patchSize){
+  return cell > 0.0 ? max(0.0, log2(cell * patchDataSize / patchSize)) : 0.0;
+}
 
 #if(!$atmospheric_perspective_enabled)
   #include <fog_pars_vertex>
@@ -233,13 +260,15 @@ void main() {
   waveMaskA *= stillKeep;
   waveMaskB *= stillKeep;
 
+  //Each cascade at the mip that matches this vertex's spacing (oceanCascadeLod).
+  float meshCell = oceanMeshCellAt(worldXZ, cameraPosition.xz);
   vec3 displacement = vec3(0.0);
-  displacement += waveMaskA.x * texture(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[0]) / cascadePatchSizes[0], 0.0)).xyz;
-  displacement += waveMaskA.y * texture(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[1]) / cascadePatchSizes[1], 1.0)).xyz;
-  displacement += waveMaskA.z * smoothstep(cascadePatchSizes[2] *  50.0, 0.0, distanceToVertex) * texture(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[2]) / cascadePatchSizes[2], 2.0)).xyz;
-  displacement += waveMaskB.x * smoothstep(cascadePatchSizes[3] * 100.0, 0.0, distanceToVertex) * texture(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[3]) / cascadePatchSizes[3], 3.0)).xyz;
-  displacement += waveMaskB.y * smoothstep(cascadePatchSizes[4] * 250.0, 0.0, distanceToVertex) * texture(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[4]) / cascadePatchSizes[4], 4.0)).xyz;
-  displacement += waveMaskB.z * smoothstep(cascadePatchSizes[5] * 500.0, 0.0, distanceToVertex) * texture(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[5]) / cascadePatchSizes[5], 5.0)).xyz;
+  displacement += waveMaskA.x * textureLod(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[0]) / cascadePatchSizes[0], 0.0), oceanCascadeLod(meshCell, cascadePatchSizes[0])).xyz;
+  displacement += waveMaskA.y * textureLod(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[1]) / cascadePatchSizes[1], 1.0), oceanCascadeLod(meshCell, cascadePatchSizes[1])).xyz;
+  displacement += waveMaskA.z * smoothstep(cascadePatchSizes[2] *  50.0, 0.0, distanceToVertex) * textureLod(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[2]) / cascadePatchSizes[2], 2.0), oceanCascadeLod(meshCell, cascadePatchSizes[2])).xyz;
+  displacement += waveMaskB.x * smoothstep(cascadePatchSizes[3] * 100.0, 0.0, distanceToVertex) * textureLod(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[3]) / cascadePatchSizes[3], 3.0), oceanCascadeLod(meshCell, cascadePatchSizes[3])).xyz;
+  displacement += waveMaskB.y * smoothstep(cascadePatchSizes[4] * 250.0, 0.0, distanceToVertex) * textureLod(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[4]) / cascadePatchSizes[4], 4.0), oceanCascadeLod(meshCell, cascadePatchSizes[4])).xyz;
+  displacement += waveMaskB.z * smoothstep(cascadePatchSizes[5] * 500.0, 0.0, distanceToVertex) * textureLod(cascadeDisplacementArray, vec3((worldXZ + cascadeSpatialOffsets[5]) / cascadePatchSizes[5], 5.0), oceanCascadeLod(meshCell, cascadePatchSizes[5])).xyz;
   displacement *= waveHeightMultiplier;
   displacement.x *= -chop;
   displacement.z *= -chop;
@@ -311,10 +340,11 @@ void main() {
   vec2 ndUV = (worldXZ + cascadeSpatialOffsets[0]) / cascadePatchSizes[0];
   float ndEps = 1.0 / patchDataSize;
   float ndStep = cascadePatchSizes[0] / patchDataSize;
-  float hL = texture(cascadeDisplacementArray, vec3(ndUV + vec2(-ndEps, 0.0), 0.0)).y;
-  float hR = texture(cascadeDisplacementArray, vec3(ndUV + vec2( ndEps, 0.0), 0.0)).y;
-  float hB = texture(cascadeDisplacementArray, vec3(ndUV + vec2( 0.0, -ndEps), 0.0)).y;
-  float hT = texture(cascadeDisplacementArray, vec3(ndUV + vec2( 0.0,  ndEps), 0.0)).y;
+  float ndLod = oceanCascadeLod(meshCell, cascadePatchSizes[0]);
+  float hL = textureLod(cascadeDisplacementArray, vec3(ndUV + vec2(-ndEps, 0.0), 0.0), ndLod).y;
+  float hR = textureLod(cascadeDisplacementArray, vec3(ndUV + vec2( ndEps, 0.0), 0.0), ndLod).y;
+  float hB = textureLod(cascadeDisplacementArray, vec3(ndUV + vec2( 0.0, -ndEps), 0.0), ndLod).y;
+  float hT = textureLod(cascadeDisplacementArray, vec3(ndUV + vec2( 0.0,  ndEps), 0.0), ndLod).y;
   float dHdX = waveMaskA.x * (hR - hL) / (2.0 * ndStep) * waveHeightMultiplier;
   float dHdZ = waveMaskA.x * (hT - hB) / (2.0 * ndStep) * waveHeightMultiplier;
   vec3 normalOffsetN = normalize(vec3(-dHdX, 1.0, -dHdZ));

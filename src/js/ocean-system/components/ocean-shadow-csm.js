@@ -439,6 +439,10 @@ ARestlessOcean.OceanShadowCSM.prototype.render = function(renderer, mainCamera, 
     u.sizeOfOceanPatch.value = sharedOceanUniforms.sizeOfOceanPatch.value;
     u.chop.value = sharedOceanUniforms.chop.value;
     u.mainCameraPosition.value.copy(this._cameraWorldPos);
+    //The receiver's mip selection (water-vertex.glsl oceanCascadeLod), so the
+    //caster is read at the same level and sits at the same height.
+    u.patchDataSize.value = sharedOceanUniforms.patchDataSize.value;
+    u.oceanMeshSpacing.value.copy(sharedOceanUniforms.oceanMeshSpacing.value);
     u.oceanShadowRelief.value = this.supportsRelief ? Math.max(0.0, +this.relief || 0.0) : 0.0;
     //Phase 2 — see the constructor note on _shadowMatDef.
     u.baseHeightOffset.value = sharedOceanUniforms.baseHeightOffset.value;
