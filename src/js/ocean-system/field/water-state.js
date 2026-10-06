@@ -193,7 +193,8 @@ ARestlessOcean.getWaterStateAt = function(x, z, out, opts){
     const r = hrp.probeSurface(probeKey, x, z);
     const pnow = (typeof performance !== 'undefined') ? performance.now() : Date.now();
     const age = r ? (pnow - r.time) / 1000.0 : Infinity;
-    if(r && age < 0.5){
+    //A dry probe (no water drawn there) answers through the field paths below instead.
+    if(r && !r.dry && age < 0.5){
       //Carried forward from when the probe was drawn, on the water's own rise.
       out.surfaceY = r.y + r.vy * Math.min(0.3, age);
       out.ripple = r.ripple || 0.0;

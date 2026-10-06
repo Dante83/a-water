@@ -2474,9 +2474,19 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //surface culled as a ceiling over unfogged seabed while the camera sat 4 mm above the
     //water (headless 2026-09-27). The point probe evaluates every cascade, chop, breakers,
     //ripples and the bank sink, carried forward on its own rise.
+    //Dry by the drawn water's own rule (surfaceDryAt): the camera is over ground the water
+    //discards, so there is no water above or below it. The CPU answer below only knows
+    //a-land's LOD-0 tile and says 'loading' wherever that tile is not in, and there the
+    //exact probe read the NEAREST water's level, a creek or lake up the hill, over the eye:
+    //the whole frame and the sound went underwater on dry land (Dante 2026-10-05).
+    let exactDry = false;
     if(self.heightReadbackPass && self.heightReadbackPass.exactCameraSurfaceY){
       const exactY = self.heightReadbackPass.exactCameraSurfaceY();
-      if(exactY !== null){
+      if(exactY !== null && exactY <= 0.5 * ARestlessOcean.Passes.HeightReadbackPass.NO_WATER_Y){
+        exactDry = true;
+        //Measured nowhere near the water this offset was for.
+        self._exactProbeOffset = undefined;
+      } else if(exactY !== null){
         //Remember how far the coarse probe was from the exact one...
         self._exactProbeOffset = exactY - waterSurfaceY;
         self._exactProbeOffsetTime = time;
@@ -2498,7 +2508,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     //so dropping below that level inside a painted-dry basin flipped the whole
     //underwater state machine: murk, fog, caustics, the flipped ocean, with no
     //water anywhere in sight (reported 2026-09-12). Only a KNOWN dry opts out.
-    const cameraOverDry = self.waterKnownDryAt(self.globalCameraPosition.x, self.globalCameraPosition.z);
+    const cameraOverDry = exactDry || self.waterKnownDryAt(self.globalCameraPosition.x, self.globalCameraPosition.z);
     //Finite, not Infinity: cameraSubmersion is also uploaded as a uniform, and an
     //infinite float in the shader turns into NaN the moment it meets a zero.
     const cameraSubmersion = cameraOverDry ? 1.0e6 : self.globalCameraPosition.y - waterSurfaceY;

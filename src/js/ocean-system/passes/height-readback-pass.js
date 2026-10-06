@@ -583,7 +583,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.probeWaterSurfaceY = function
 //below), carried forward on its own rise over the read's age, so the air/water
 //decision is made against the water on screen and not a frame or two behind it. null
 //until it has resolved, or once it is older than CAMERA_PROBE_MAX_AGE (the caller keeps
-//probeWaterSurfaceY's answer then).
+//probeWaterSurfaceY's answer then). NO_WATER_Y where no water is drawn under the camera.
 //Oldest camera probe read still trusted (s). Headless runs at ~1 fps; raise it there.
 ARestlessOcean.Passes.HeightReadbackPass.CAMERA_PROBE_MAX_AGE = 0.3;
 ARestlessOcean.Passes.HeightReadbackPass.prototype.exactCameraSurfaceY = function(){
@@ -594,6 +594,8 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.exactCameraSurfaceY = functio
   const now = (typeof performance !== 'undefined') ? performance.now() : Date.now();
   const age = (now - r.time) / 1000.0;
   if(!(age >= 0.0) || age > ARestlessOcean.Passes.HeightReadbackPass.CAMERA_PROBE_MAX_AGE) return null;
+  //NO_WATER_Y as it came: the caller reads it as dry ground under the camera.
+  if(r.dry) return r.y;
   //Carried at most 0.1 s at most 3 m/s: vy is a finite difference between reads, and
   //carried over a long age it threw the decision tens of centimetres off (headless: 13 m).
   const vy = Math.max(-3.0, Math.min(3.0, r.vy));
@@ -627,6 +629,8 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.exactCameraSurfaceY = functio
 //The velocity (row 1) leaves them out: an interactor's own crater springing back
 //read as the water rushing up at it, a new entry, a new crater.
 ARestlessOcean.Passes.HeightReadbackPass.PROBE_MAX = 16;
+//The height a probe reads where no water is drawn (surfaceDryAt); result.dry is set too.
+ARestlessOcean.Passes.HeightReadbackPass.NO_WATER_Y = -1.0e6;
 ARestlessOcean.Passes.HeightReadbackPass.PROBE_EXPIRE_MS = 1000;
 
 //── The drawn surface as GLSL (shared) ─────────────────────────────────────
@@ -686,6 +690,19 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._surfaceSetup = function(){
     breakerReady ? ARestlessOcean.ShoreBreaker.GLSL : '',
     reflectionReady ? ARestlessOcean.ShoreReflection.GLSL : 'float shoreReflectionHeightAt(vec2 xz){ return 0.0; }',
     rippleReady ? DW.GLSL : DW ? DW.STUB_GLSL : 'float dwSurfaceLevel = -1.0e9;\nfloat dynamicWavesVertexHeightAt(vec2 xz, float cell){ return 0.0; }\nfloat dynamicWavesMeshCellAt(vec2 xz, vec2 c){ return 0.0; }',
+    //True where the drawn water DISCARDS as dry (water-shader.glsl, the Phase 2 dry
+    //discard, swash exception and all). A dry field texel carries the level of its
+    //NEAREST water, so on a hillside below a creek or a lake surfaceAt answers that
+    //water, metres over the ground, where nothing is drawn. The probes ask this first.
+    'bool surfaceDryAt(vec2 xz){',
+    fieldReady ? [
+      '  if(spUseField < 0.5) return false;',
+      '  vec4 field = waterFieldAt(xz);',
+      '  float dryTaps = flowHandoffDryAt(xz);',
+      '  if(!(dryTaps > 0.999 || (field.b < 0.0 && dryTaps > 0.0))) return false;',
+      breakerReady ? '  return !shoreSwashCovers(xz, field);' : '  return true;'
+    ].join('\n') : '  return false;',
+    '}',
     //Displacement of the rest point xz (chop applied), and its height with
     //level + breaker + reflection + dynamic ripple, exactly as the water vertex
     //builds it; .w is the ripple alone.
@@ -812,7 +829,9 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._initSurfaceProbe = function(
     'void main(){',
     '  int i = int(gl_FragCoord.x);',
     '  vec4 p = spProbe[i];',
-    '  if(gl_FragCoord.y < 1.0){',
+    '  if(gl_FragCoord.y < 1.0 && surfaceDryAt(p.xy)){',
+    '    gl_FragColor = vec4(' + ARestlessOcean.Passes.HeightReadbackPass.NO_WATER_Y.toFixed(1) + ', p.xy, 0.0);',
+    '  } else if(gl_FragCoord.y < 1.0){',
     '    vec2 p0 = p.xy;',
     '    for(int k = 0; k < 4; k++){ p0 = p.xy - surfaceAt(p0).xz; }',
     '    vec4 s0 = surfaceAt(p0);',
@@ -911,7 +930,16 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._readSurfaceProbe = function(
       const y = buf[r0];
       if(!isFinite(y)) continue;
       const ripple = isFinite(buf[r0 + 3]) ? buf[r0 + 3] : 0.0;
-      const res = p.result || (p.result = {y: 0, vx: 0, vy: 0, vz: 0, ripple: 0, time: 0});
+      const res = p.result || (p.result = {y: 0, vx: 0, vy: 0, vz: 0, ripple: 0, time: 0, dry: false});
+      //No water drawn here. No velocity either, and none across the gap: a difference
+      //against the sentinel would read as millions of m/s. The inversion restarts from
+      //the query point once the probe is back on water.
+      if(y <= 0.5 * ARestlessOcean.Passes.HeightReadbackPass.NO_WATER_Y){
+        res.y = y; res.vx = 0.0; res.vy = 0.0; res.vz = 0.0; res.ripple = 0.0; res.time = t; res.dry = true;
+        p.has0 = false; p.lastT = 0;
+        continue;
+      }
+      res.dry = false;
       //Row 1 is last read's particle, now. Last read's particle was AT last
       //read's query point, at last read's height. The difference is its path.
       if(s.hadP0 && p.lastT > 0 && t > p.lastT){
