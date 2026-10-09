@@ -76,6 +76,13 @@ ARestlessOcean.Materials.Ocean.waterMaterial = {
     landGroundTex: {value: null},
     landGroundFrame: {value: new THREE.Vector4(0, 0, 1, 1)},
     landLightOn: {value: new THREE.Vector2(0, 0)},
+    //The off-screen land the SSR's misses fall back to (passes/land-reflection-pass.js
+    //updateUniforms, every frame): a 3x2 atlas of six cube faces, G-buffer attachments.
+    landReflAlbedo: {value: null},
+    landReflNormal: {value: null},
+    landReflDepth: {value: null},
+    landReflOrigin: {value: new THREE.Vector3()},
+    landReflOn: {type: 'f', value: 0.0},
     foamWhite: {type: 'f', value: 0.8},
     foamGrainFloor: {type: 'f', value: 0.15},
     foamOceanShadowK: {type: 'f', value: 0.25},

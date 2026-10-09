@@ -61,6 +61,7 @@ JS_FILE_NAMES = [
     'ocean-system/passes/caustic-projection-pass.js',
     'ocean-system/passes/foreign-terrain-twin.js',
     'ocean-system/passes/refraction-gbuffer-pass.js',
+    'ocean-system/passes/land-reflection-pass.js',
     'ocean-system/passes/terrain-ortho-pass.js',
     'ocean-system/field/water-tile-decoder.js',
     'ocean-system/field/land-light.js',

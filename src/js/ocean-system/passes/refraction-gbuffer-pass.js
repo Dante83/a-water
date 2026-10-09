@@ -264,9 +264,14 @@ ARestlessOcean.Passes.RefractionGBufferPass.prototype._resolveMaterial = functio
 //follow, so the hide/show brackets live in OceanGrid.tick).
 //
 //ctx: {scene, camera, skipMesh}  — skipMesh is the underwater curtain.
+//     {target, viewport}           — optional: render into ANOTHER three-attachment target,
+//                                    inside a pixel viewport of it (LandReflectionPass's cube
+//                                    faces). Only that viewport is cleared (scissored).
 ARestlessOcean.Passes.RefractionGBufferPass.prototype.tick = function(ctx){
   const self = this;
   const scene = ctx.scene;
+  const target = ctx.target || this.target;
+  const viewport = ctx.target ? ctx.viewport : null;
 
   //scene.overrideMaterial can't carry per-mesh albedo, so we swap each visible
   //non-ocean mesh's material to a cached G-buffer variant that reads that source
@@ -299,6 +304,13 @@ ARestlessOcean.Passes.RefractionGBufferPass.prototype.tick = function(ctx){
         //no grass or rock in them. Fall back to the twin when the sibling
         //predates the hook.
         const capture = obj.material.userData && obj.material.userData.alandSurfaceCaptureMaterial;
+        //The twin reconstructs from gl_FragCoord over the WHOLE target, which a viewport
+        //into an atlas breaks — so in viewport mode a terrain without a capture is hidden.
+        if(!capture && viewport){
+          obj.visible = false;
+          self._hiddenMeshes.push(obj);
+          return;
+        }
         const geoMat = capture || self._geoTwins.resolve(obj.material);
         self._swappedMeshes.push({ mesh: obj, original: obj.material });
         obj.material = geoMat;
@@ -333,8 +345,8 @@ ARestlessOcean.Passes.RefractionGBufferPass.prototype.tick = function(ctx){
   //position by unprojecting gl_FragCoord, so they need the inverse projection,
   //the inverse view (to take the normal back to world space) and the target's
   //pixel size. Cheap — there are only a handful of distinct twins.
-  if(this._geoTwins){
-    this._geoTwins.updateCamera(ctx.camera, this.target.width, this.target.height);
+  if(this._geoTwins && !viewport){
+    this._geoTwins.updateCamera(ctx.camera, target.width, target.height);
   }
 
   const currentRefractionRT = this.renderer.getRenderTarget();
@@ -358,10 +370,22 @@ ARestlessOcean.Passes.RefractionGBufferPass.prototype.tick = function(ctx){
   //unconditional.
   try {
     this.renderer.setClearColor(0x000000, 0.0);
-    this.renderer.setRenderTarget(this.target);
+    if(viewport){
+      //A render target carries its OWN viewport/scissor, which setRenderTarget applies —
+      //renderer.setViewport would be scaled by the pixel ratio and land in the wrong place.
+      target.viewport.copy(viewport);
+      target.scissor.copy(viewport);
+      target.scissorTest = true;
+    }
+    this.renderer.setRenderTarget(target);
     this.renderer.clear();
     this.renderer.render(scene, ctx.camera);
   } finally {
+    if(viewport){
+      target.viewport.set(0, 0, target.width, target.height);
+      target.scissor.set(0, 0, target.width, target.height);
+      target.scissorTest = false;
+    }
     this.renderer.setRenderTarget(currentRefractionRT);
     this.renderer.setClearColor(this._clearColor, _savedClearAlpha);
     scene.background = _savedBackground;

@@ -1043,6 +1043,106 @@ vec3 computeStandaloneSkyRadiance(vec3 worldDir){
   return sky;
 }
 
+//How a reflected surface is lit, wherever the reflection found it: an on-screen SSR hit
+//(the refraction G-buffer) or an off-screen one (the land cube, below). ONE function so the
+//two cannot drift — a hill must read the same colour on either side of the screen edge.
+//UNITS (2026-10-02): both lights are IRRADIANCE (a-land's metered lux x exposure, or a-starry-sky's,
+//calibrated against three's stock Lambert), and a Lambert surface returns albedo/PI of it, as the
+//terrain itself does (a-land terrain.frag). Bare albedo x E read PI x too bright: at night the low
+//moon and sky lit the reflected hills green while the hills themselves were black. Shadowed and
+//sky-occluded by the land at the hit, like the terrain (field/land-light.js).
+vec3 reflectedSurfaceLight(vec3 albedo, vec3 N, vec3 hitP){
+  float hitNdotL   = max(0.0, dot(N, -brightestDirectionalLightDirection));
+  float hitLambert = mix(1.0, 0.31830988618, ambientPiFix);
+  vec3  hitLight   = (brightestDirectionalLight * hitNdotL * landLightVisibility(hitP, -brightestDirectionalLightDirection)
+                    + skyAmbientColor * landSkyVisibility(hitP.xz)) * hitLambert;
+  return albedo * hitLight;
+}
+
+//── The land the SSR cannot see (passes/land-reflection-pass.js) ──────────────
+//Every SSR miss used to return sky, so the hill behind the camera never showed in the lake
+//in front of it. LandReflectionPass captures the land around the camera as a G-buffer CUBE
+//(six 90-degree faces, 3x2 in one atlas: albedo+mask, world normal, linear view depth), and
+//this decides, per missed ray, whether it meets land and what that land looks like:
+//  WHERE — a-land's skyline atlas (landLightVisibility: the same field that shadows the land),
+//          asked from THIS water point along the ray. Exact per pixel for the terrain, with no
+//          parallax, which a cube captured from one point cannot give.
+//  WHAT  — the cube, looked up where the ray actually meets the land: a few steps along the
+//          cube's own depth move the lookup from the capture point's direction to ours.
+//  Objects are not in the skyline, so the cube may also claim land on its own — but only where
+//  the land it found really lies on our ray.
+//The cube is cleared to zero, so after bilinear filtering every channel is premultiplied by the
+//land mask in .a: divide it back out and a silhouette texel is land, not land half-blended
+//with nothing.
+uniform sampler2D landReflAlbedo;
+uniform sampler2D landReflNormal;
+uniform sampler2D landReflDepth;
+uniform vec3 landReflOrigin;
+uniform float landReflOn;
+const float LAND_REFL_FACE = 128.0;                        //LandReflectionPass.FACE
+const vec3  LAND_REFL_UNKNOWN_ALBEDO = vec3(0.13, 0.12, 0.10);   //land the cube did not see
+
+//The atlas texel a direction lands on, and that face's forward axis. One contract with
+//LandReflectionPass.FACES: face k at tile (k % 3, k / 3), right = F x U.
+vec2 landReflAtlasUV(vec3 d, out vec3 F){
+  vec3 a = abs(d);
+  float k;
+  vec3 U = vec3(0.0, 1.0, 0.0);
+  if(a.x >= a.y && a.x >= a.z){ k = d.x > 0.0 ? 0.0 : 1.0; F = vec3(sign(d.x), 0.0, 0.0); }
+  else if(a.z >= a.y){         k = d.z > 0.0 ? 2.0 : 3.0; F = vec3(0.0, 0.0, sign(d.z)); }
+  else {                       k = d.y > 0.0 ? 4.0 : 5.0; F = vec3(0.0, sign(d.y), 0.0);
+                               U = d.y > 0.0 ? vec3(0.0, 0.0, -1.0) : vec3(0.0, 0.0, 1.0); }
+  vec3 R = cross(F, U);
+  vec2 ndc = vec2(dot(d, R), dot(d, U)) / max(dot(d, F), 1e-4);
+  //Half a texel in from the tile's edge, so the filter never reads the neighbouring face.
+  vec2 uv = clamp(ndc * 0.5 + 0.5, vec2(0.5 / LAND_REFL_FACE), vec2(1.0 - 0.5 / LAND_REFL_FACE));
+  return (vec2(mod(k, 3.0), floor(k / 3.0)) + uv) / vec2(3.0, 2.0);
+}
+
+//What a missed reflected ray (from water point p, unit direction r) sees: `sky`, or land.
+vec3 landReflectionFallback(vec3 p, vec3 r, vec3 sky){
+  if(landReflOn < 0.5) return sky;
+  //1 where the terrain stands above this ray's altitude toward its azimuth, seen from here.
+  float skyline = 1.0 - landLightVisibility(p, r);
+
+  //Localised lookup: start along r from the capture point, then re-aim at the spot on OUR ray
+  //level with the land the cube found, twice.
+  vec3 o = landReflOrigin, d = r, F;
+  vec2 uv;
+  for(int i = 0; i < 3; i++){
+    uv = landReflAtlasUV(d, F);
+    float m = texture2D(landReflAlbedo, uv).a;
+    if(m < 0.05) break;
+    float t = (texture2D(landReflDepth, uv).r / m) / max(dot(d, F), 1e-3);
+    float s = max(dot(o + d * t - p, r), 0.0);
+    d = normalize(p + r * s - o);
+  }
+  uv = landReflAtlasUV(d, F);
+  vec4  A    = texture2D(landReflAlbedo, uv);
+  float mask = A.a;
+  float t    = (texture2D(landReflDepth, uv).r / max(mask, 1e-3)) / max(dot(d, F), 1e-3);
+  vec3  hitP = o + d * t;
+  //Does the land the cube found lie on OUR ray? Off-axis distance against distance along it.
+  vec3  toHit = hitP - p;
+  float along = dot(toHit, r);
+  float off   = length(toHit - r * along);
+  float onRay = along > 0.0 ? 1.0 - smoothstep(0.04, 0.12, off / max(along, 1.0)) : 0.0;
+  float landW = max(skyline, smoothstep(0.3, 0.7, mask) * onRay);
+  if(landW <= 0.001) return sky;
+
+  vec3 land;
+  if(mask > 0.05){
+    vec3 alb = A.rgb / mask;
+    vec3 N   = normalize(texture2D(landReflNormal, uv).rgb);
+    land = reflectedSurfaceLight(alb, N, hitP);
+  } else {
+    //The skyline says land, the cube saw none that way (it stood somewhere else): an
+    //upward-facing, unremarkable ground lit as it would be here.
+    land = reflectedSurfaceLight(LAND_REFL_UNKNOWN_ALBEDO, vec3(0.0, 1.0, 0.0), p);
+  }
+  return mix(sky, land, landW);
+}
+
 //Screen-space reflection using the refraction color+depth buffer (already rendered
 //from the main camera with water hidden — zero extra render passes).
 //Exponential stepping covers nearby geometry detail AND distant sky.
@@ -1094,7 +1194,7 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 marchDir, vec3 skyDir, vec3 cloud
 
   //Reflected ray pointing behind the camera — skip march, return sky directly.
   if(viewReflect.z > 0.0){
-    return skyColor;
+    return landReflectionFallback(worldPos, normalize(marchDir), skyColor);
   }
 
   //Exponential step: starts at 0.25m, grows 1.15x each step. Was 0.5m / 1.3x,
@@ -1132,7 +1232,7 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 marchDir, vec3 skyDir, vec3 cloud
 
     //Ray exited screen — return sky.
     if(uv.x < 0.01 || uv.x > 0.99 || uv.y < 0.01 || uv.y > 0.99){
-      return skyColor;
+      return landReflectionFallback(worldPos, normalize(marchDir), skyColor);
     }
 
     float sceneDepth = texture2D(refractionLinearDepth, uv).r;
@@ -1232,26 +1332,21 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 marchDir, vec3 skyDir, vec3 cloud
         //the hit point, so reflected-into-shadow regions will read slightly
         //overlit — acceptable trade for a cheap approximation.
         vec3  hitNormal = normalize(texture2D(gBufferNormal, hitUV).rgb);
-        float hitNdotL  = max(0.0, dot(hitNormal, -brightestDirectionalLightDirection));
-        //UNITS (2026-10-02): both lights are IRRADIANCE (a-land's metered lux x exposure, or a-starry-sky's,
-        //calibrated against three's stock Lambert), and a Lambert surface returns albedo/PI of it, as the
-        //terrain itself does (a-land terrain.frag). Bare albedo x E read PI x too bright: at night the low
-        //moon and sky lit the reflected hills green while the hills themselves were black. Shadowed and
-        //sky-occluded by the land at the hit, like the terrain (field/land-light.js).
         //The march is in VIEW space: back to world along the same ray (a rotation keeps the distance).
         vec3  hitP      = worldPos + normalize(marchDir) * dot(0.5 * (lo + hi) - viewPos, viewReflect);
-        float hitLambert = mix(1.0, 0.31830988618, ambientPiFix);
-        vec3  hitLight  = (brightestDirectionalLight * hitNdotL * landLightVisibility(hitP, -brightestDirectionalLightDirection)
-                         + skyAmbientColor * landSkyVisibility(hitP.xz)) * hitLambert;
-        vec3  hitColor  = hitAlbedo * hitLight;
-        return mix(skyColor, hitColor, edgeFade * silhouetteConfidence * convergenceConfidence);
+        vec3  hitColor  = reflectedSurfaceLight(hitAlbedo, hitNormal, hitP);
+        float hitW      = edgeFade * silhouetteConfidence * convergenceConfidence;
+        //What shows through where the hit fades (the screen edge, a silhouette): the off-screen
+        //land if there is some that way, so the reflection does not flash to sky at the frame edge.
+        vec3  behind    = hitW < 0.999 ? landReflectionFallback(worldPos, normalize(marchDir), skyColor) : skyColor;
+        return mix(behind, hitColor, hitW);
       }
       //Rejected — keep marching; a thicker surface may lie further along the ray.
     }
   }
 
-  //Max steps without hit — sky.
-  return skyColor;
+  //Max steps without hit — the land the screen could not show, or sky.
+  return landReflectionFallback(worldPos, normalize(marchDir), skyColor);
 }
 
 vec4 linearTosRGB(vec4 value ) {

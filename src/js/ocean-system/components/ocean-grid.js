@@ -348,6 +348,14 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     this.refractionGBufferPass = null;
     this.refractionGBufferTarget = null;
   }
+  //Off-screen land for the SSR's misses: a G-buffer cube of the land around the camera,
+  //rendered THROUGH the pass above (passes/land-reflection-pass.js). Idle without a-land.
+  if(this.refractionGBufferPass && ARestlessOcean.Passes.LandReflectionPass){
+    this.landReflectionPass = new ARestlessOcean.Passes.LandReflectionPass(this);
+    this.landReflectionPass.init();
+  } else {
+    this.landReflectionPass = null;
+  }
 
   //── Underwater planar reflection + above-water transmission ──────────────
   //Both submerged-only render targets, the mirror camera, the clip plane and
@@ -2221,6 +2229,17 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         skipMesh: self.underwaterCurtainMesh
       });
     }
+    //One face of the off-screen land cube, while a capture is in progress (and nothing
+    //otherwise). Still inside the hidden-ocean bracket, so the water never reflects itself.
+    //Pointless underwater (the SSR does not run there), so skipped on last frame's state.
+    if(self.landReflectionPass && !self._wasUnderwater){
+      self.landReflectionPass.tick({
+        scene: scene,
+        camera: sceneCamera,
+        time: time,
+        skipMesh: self.underwaterCurtainMesh
+      });
+    }
 
     //Underwater planar reflection — rendered from the mirror camera while the
     //ocean grid is still hidden (so water is never in its own reflection) and
@@ -3295,6 +3314,8 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         //...and a-land's skyline and sky visibility (field/land-light.js), which the foam, the curtain and the
         //foot's mist read through the flowing material's uniforms.
         if(ARestlessOcean.LandLight) ARestlessOcean.LandLight.update(uniformsRef);
+        //...and the off-screen land the SSR's misses fall back to (passes/land-reflection-pass.js).
+        if(self.landReflectionPass) self.landReflectionPass.updateUniforms(uniformsRef);
 
       }
       else{
