@@ -34,9 +34,11 @@ ARestlessOcean.Materials.Ocean.waterMaterial = {
     //kept because the waterfall sheet aliases this uniform from the creek material.
     foamOpacityMap: {type: 't', value: null},
     foamNormalMap: {type: 't', value: null},
-    foamRenderMap: {type: 't', value: null},
     foamStartLevel: {type: 'f', value: 0.0},
-    exclusionMap: {type: 't', value: null},
+    //TerrainOrthoPass's foam AND exclusion atlases in one texture (2026-10-09, texture-unit
+    //budget): .rg = the foam ortho's (world-Y, mask), .ba = the exclusion ortho's. They were
+    //foamRenderMap and exclusionMap. See terrain-ortho-pass.js, WHAT THE WATER ACTUALLY READS.
+    terrainOrthoMap: {type: 't', value: null},
     //Snapped XZ origin used when the foam/exclusion ortho cameras rendered
     //their atlas this frame. The shader MUST subtract this (not the player
     //cameraPosition) when computing atlas UVs, or the atlas pattern drifts
@@ -77,10 +79,10 @@ ARestlessOcean.Materials.Ocean.waterMaterial = {
     landGroundFrame: {value: new THREE.Vector4(0, 0, 1, 1)},
     landLightOn: {value: new THREE.Vector2(0, 0)},
     //The off-screen land the SSR's misses fall back to (passes/land-reflection-pass.js
-    //updateUniforms, every frame): a 3x2 atlas of six cube faces, G-buffer attachments.
-    landReflAlbedo: {value: null},
-    landReflNormal: {value: null},
-    landReflDepth: {value: null},
+    //updateUniforms, every frame): a 3x2 atlas of six cube faces, G-buffer attachments,
+    //packed into ONE double-height texture (albedo+mask below, normal+depth above) so the
+    //three attachments cost one texture unit, not three.
+    landReflAtlas: {value: null},
     landReflOrigin: {value: new THREE.Vector3()},
     landReflOn: {type: 'f', value: 0.0},
     foamWhite: {type: 'f', value: 0.8},
@@ -93,6 +95,9 @@ ARestlessOcean.Materials.Ocean.waterMaterial = {
     //    in the G-buffer override shader); .a = 1 where geometry exists.
     //  gBufferNormal          = attachment 1, world-space surface normal.
     //  refractionLinearDepth  = attachment 2, view-space linear depth in .r.
+    //    NOT sampled by the water any more (2026-10-09, texture-unit budget: the
+    //    water rebuilds it from refractionDepthTexture, refractionLinearDepthAt).
+    //    Kept here because the waterfall sheet aliases it from this material.
     //  refractionDepthTexture = the MRT's own depth attachment (raw NDC), kept
     //    for the unprojection that recovers world-space seabed position.
     refractionColorTexture: {type: 't', value: null},

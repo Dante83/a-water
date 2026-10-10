@@ -142,7 +142,21 @@ uniform vec2 cascadeSpatialOffsets[6];
 //σ² to an α²_GGX that clamps grazing Fresnel via the Karis split-sum form.
 uniform float cascadeRMSSlope[6];
 uniform float waveHeightMultiplier;
-uniform sampler2D exclusionMap;
+//TerrainOrthoPass's two top-down atlases, PACKED into one texture so they cost one texture
+//unit (2026-10-09: this program had reached 35 on a 32-unit GPU and stopped linking):
+//  .rg = foam ortho      (world-Y, mask)   4096 m square, read with texture2D -> bilinear
+//  .ba = exclusion ortho (world-Y, mask)    500 m square, read with texelFetch -> NEAREST,
+//        which that mask needs (see terrain-ortho-pass.js) and texelFetch gives whatever
+//        filter the texture carries. Same FloatType texels as the two atlases: bit-exact.
+//Was foamRenderMap (.ga) and exclusionMap (.ga).
+uniform sampler2D terrainOrthoMap;
+//The exclusion atlas's (world-Y, mask) at an atlas uv in [0, 1], nearest texel, exactly as
+//the old NearestFilter + clamp-to-edge sampler picked it.
+vec2 exclusionHeightAt(vec2 uv){
+  ivec2 size = textureSize(terrainOrthoMap, 0);
+  ivec2 texel = clamp(ivec2(floor(uv * vec2(size))), ivec2(0), size - 1);
+  return texelFetch(terrainOrthoMap, texel, 0).ba;
+}
 //Snapped XZ origins of the foam/exclusion ortho cameras for this frame —
 //see template comment. Used in place of cameraPosition.xz when computing
 //atlas UVs so the atlas pattern doesn't drift sub-texel as the player moves.
@@ -153,7 +167,9 @@ uniform vec2 exclusionCameraXZ;
 uniform sampler2D refractionColorTexture;   //attachment 0: linear albedo
 uniform sampler2D gBufferNormal;            //attachment 1: world-space normal
 uniform sampler2D refractionDepthTexture;   //raw NDC depth (unprojection)
-uniform sampler2D refractionLinearDepth;    //attachment 2: linear view-space depth
+//Attachment 2 (linear view-space depth) is NOT bound here any more (2026-10-09): it is the same
+//quantity as the depth attachment above, linearised, and its sampler was one of three that
+//pushed this program past a 32-unit GPU's budget. See refractionLinearDepthAt.
 uniform vec2 screenResolution;
 uniform vec2 cameraNearFar;
 uniform mat4 inverseProjectionMatrix;
@@ -192,8 +208,7 @@ uniform float meteringSurveyValid;
 #endif
 
 #if($foam_enabled)
-  //Foam maps
-  uniform sampler2D foamRenderMap;
+  //Foam maps. The foam ortho (shore height) is terrainOrthoMap.rg, declared above.
   //RGB the foam colour (sRGB), A the foam mask (linear): packed at load by
   //ocean-grid.js to free a texture unit. There is no separate opacity map here.
   uniform sampler2D foamDiffuseMap;
@@ -673,6 +688,20 @@ float linearizeDepth(float depthSample){
   return near * far / (far - depthSample * (far - near));
 }
 
+//The refraction G-buffer's linear view-space depth at uv, rebuilt from its depth attachment
+//rather than read from attachment 2: one texture unit fewer, for a 32-unit GPU. Same camera,
+//same near/far, so it is the same number -- MORE precise in fact, as a 24-bit depth linearised
+//in highp beats attachment 2's half float everywhere nearer than ~1 km and matches it beyond.
+//Two differences, both small. (1) Depth textures cannot be bilinear filtered, so this is
+//nearest where attachment 2 was linear: an SSR silhouette tap no longer reads a depth halfway
+//between an object and what is behind it. (2) None in the "nothing there" case: attachment 2
+//cleared to 0, and an untouched depth texel (1.0) returns 0 here too, so every caller's
+//empty-pixel test still works unchanged.
+float refractionLinearDepthAt(vec2 uv){
+  float raw = texture2D(refractionDepthTexture, uv).r;
+  return raw >= 1.0 ? 0.0 : linearizeDepth(raw);
+}
+
 //PCF-soft sample against the sun's shadow map. Returns 1.0 for fully lit,
 //0.0 for fully shadowed. Fragments outside the shadow frustum read as lit so
 //the map's edge doesn't produce a hard shadow seam across open ocean.
@@ -1074,9 +1103,16 @@ vec3 reflectedSurfaceLight(vec3 albedo, vec3 N, vec3 hitP){
 //The cube is cleared to zero, so after bilinear filtering every channel is premultiplied by the
 //land mask in .a: divide it back out and a silhouette texel is land, not land half-blended
 //with nothing.
-uniform sampler2D landReflAlbedo;
-uniform sampler2D landReflNormal;
-uniform sampler2D landReflDepth;
+//ONE SAMPLER (2026-10-09): the three attachments arrive PACKED into one double-height atlas
+//(LandReflectionPass._pack), because three separate samplers took this program to 35 texture
+//units and it stopped linking on 32-unit GPUs. Bottom half: albedo + mask, as attachment 0 was.
+//Top half: world normal in .rgb, linear depth in .a (attachments 1 and 2). Same half floats,
+//same texels, same filter: nothing is lost. landReflA / landReflB take the 3x2 face-atlas uv
+//landReflAtlasUV returns; its half-texel clamp keeps the filter inside a face, and so inside
+//its half.
+uniform sampler2D landReflAtlas;
+vec4 landReflA(vec2 uv){ return texture2D(landReflAtlas, vec2(uv.x, uv.y * 0.5)); }
+vec4 landReflB(vec2 uv){ return texture2D(landReflAtlas, vec2(uv.x, 0.5 + uv.y * 0.5)); }
 uniform vec3 landReflOrigin;
 uniform float landReflOn;
 const float LAND_REFL_FACE = 128.0;                        //LandReflectionPass.FACE
@@ -1111,16 +1147,18 @@ vec3 landReflectionFallback(vec3 p, vec3 r, vec3 sky){
   vec2 uv;
   for(int i = 0; i < 3; i++){
     uv = landReflAtlasUV(d, F);
-    float m = texture2D(landReflAlbedo, uv).a;
+    vec4 a = landReflA(uv);
+    float m = a.a;
     if(m < 0.05) break;
-    float t = (texture2D(landReflDepth, uv).r / m) / max(dot(d, F), 1e-3);
+    float t = (landReflB(uv).a / m) / max(dot(d, F), 1e-3);
     float s = max(dot(o + d * t - p, r), 0.0);
     d = normalize(p + r * s - o);
   }
   uv = landReflAtlasUV(d, F);
-  vec4  A    = texture2D(landReflAlbedo, uv);
+  vec4  A    = landReflA(uv);
+  vec4  B    = landReflB(uv);
   float mask = A.a;
-  float t    = (texture2D(landReflDepth, uv).r / max(mask, 1e-3)) / max(dot(d, F), 1e-3);
+  float t    = (B.a / max(mask, 1e-3)) / max(dot(d, F), 1e-3);
   vec3  hitP = o + d * t;
   //Does the land the cube found lie on OUR ray? Off-axis distance against distance along it.
   vec3  toHit = hitP - p;
@@ -1133,7 +1171,7 @@ vec3 landReflectionFallback(vec3 p, vec3 r, vec3 sky){
   vec3 land;
   if(mask > 0.05){
     vec3 alb = A.rgb / mask;
-    vec3 N   = normalize(texture2D(landReflNormal, uv).rgb);
+    vec3 N   = normalize(B.rgb);
     land = reflectedSurfaceLight(alb, N, hitP);
   } else {
     //The skyline says land, the cube saw none that way (it stood somewhere else): an
@@ -1235,7 +1273,7 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 marchDir, vec3 skyDir, vec3 cloud
       return landReflectionFallback(worldPos, normalize(marchDir), skyColor);
     }
 
-    float sceneDepth = texture2D(refractionLinearDepth, uv).r;
+    float sceneDepth = refractionLinearDepthAt(uv);
     float rayDepth   = -curPos.z;
     float depthDelta = rayDepth - sceneDepth;
     float farThreshold = cameraNearFar.y * 0.95;
@@ -1271,7 +1309,7 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 marchDir, vec3 skyDir, vec3 cloud
         vec3 mid = 0.5 * (lo + hi);
         vec4 midClip = ssrProjectionMatrix * vec4(mid, 1.0);
         vec2 midUV   = midClip.xy / midClip.w * 0.5 + 0.5;
-        float midDepth = texture2D(refractionLinearDepth, midUV).r;
+        float midDepth = refractionLinearDepthAt(midUV);
         float midDelta = -mid.z - midDepth;
         if(midDelta > 0.0){
           hi            = mid;
@@ -1290,10 +1328,10 @@ vec3 screenSpaceReflection(vec3 worldPos, vec3 marchDir, vec3 skyDir, vec3 cloud
       //delta instead of the max distinguishes the two cases and stops us
       //from rejecting the outline of every solid object.
       vec2 px = vec2(0.002);
-      float dN = abs(texture2D(refractionLinearDepth, hitUV + vec2( 0.0,  px.y)).r - hitSceneDepth);
-      float dS = abs(texture2D(refractionLinearDepth, hitUV + vec2( 0.0, -px.y)).r - hitSceneDepth);
-      float dE = abs(texture2D(refractionLinearDepth, hitUV + vec2( px.x, 0.0)).r - hitSceneDepth);
-      float dW = abs(texture2D(refractionLinearDepth, hitUV + vec2(-px.x, 0.0)).r - hitSceneDepth);
+      float dN = abs(refractionLinearDepthAt(hitUV + vec2( 0.0,  px.y)) - hitSceneDepth);
+      float dS = abs(refractionLinearDepthAt(hitUV + vec2( 0.0, -px.y)) - hitSceneDepth);
+      float dE = abs(refractionLinearDepthAt(hitUV + vec2( px.x, 0.0)) - hitSceneDepth);
+      float dW = abs(refractionLinearDepthAt(hitUV + vec2(-px.x, 0.0)) - hitSceneDepth);
       //Second-largest of four: max of (min-of-each-pair, min-of-the-two-maxes).
       float secondMax = max(max(min(dN, dS), min(dE, dW)),
                             min(max(dN, dS), max(dE, dW)));
@@ -1913,7 +1951,7 @@ void main(){
   //const at the top of this file, so it can no longer drift from
   //exclusionCamera's ortho extent. The exclusion target
   //covers only the small layer-30 mask volumes near the camera (boat
-  //interior hulls etc.), not the broad terrain — that's foamRenderMap.
+  //interior hulls etc.), not the broad terrain — that's the foam ortho (terrainOrthoMap.rg).
   vec2 exclusionPosition = 0.5 * (((worldPosition.xz - exclusionCameraXZ) / vec2(EXCLUSION_ORTHO_HALF_WIDTH)) + 1.0);
   exclusionPosition = vec2(exclusionPosition.x, 1.0 - exclusionPosition.y);
   //Exclusion-map discard. The exclusion render captures layer-30 meshes
@@ -1926,7 +1964,7 @@ void main(){
   if(uwSide < 0.5 &&
      exclusionPosition.x < 1.0 && exclusionPosition.x > 0.0 &&
      exclusionPosition.y < 1.0 && exclusionPosition.y > 0.0){
-    vec2 discardHeightData = texture2D(exclusionMap, exclusionPosition).ga;
+    vec2 discardHeightData = exclusionHeightAt(exclusionPosition);
     float discardHeight = discardHeightData.x;
     if((discardHeightData.y > 0.5) && worldPosition.y > discardHeight){
       discard;
@@ -2703,7 +2741,7 @@ void main(){
     vec2 foamPosition = 0.5 * (((worldPosition.xz - foamCameraXZ) / vec2(FOAM_ORTHO_HALF_WIDTH)) + 1.0);
     foamPosition = vec2(foamPosition.x, 1.0 - foamPosition.y);
     if(shoreBreakerEnabled < 0.5 && foamPosition.x < 1.0 && foamPosition.x > 0.0 && foamPosition.y < 1.0 && foamPosition.y > 0.0){
-      vec2 foamHeightData = texture2D(foamRenderMap, foamPosition).ga;
+      vec2 foamHeightData = texture2D(terrainOrthoMap, foamPosition).rg;
       if((foamHeightData.y > 0.5)){
         //Shore-zone foam: gated by wave action, not a static shallow-water belt.
         //shoreProximity is 1 right at terrain (water within ~0.5m above the
@@ -2810,7 +2848,7 @@ void main(){
   //linear-depth comparisons below sample the pre-linearised target — no
   //per-pixel divide here either.
   float refractionDepthRaw = texture2D(refractionDepthTexture, refractedUV).r;
-  float refractionDepthLinear = texture2D(refractionLinearDepth, refractedUV).r;
+  float refractionDepthLinear = refractionLinearDepthAt(refractedUV);
   //G-buffer clear leaves linear depth at 0 in pixels with no scene geometry;
   //fold those into the far-plane so the isFarPlane test below behaves
   //identically to the old separate linearize pass (NDC=1 → far).
@@ -2821,7 +2859,7 @@ void main(){
   if(refractionDepthLinear < surfaceDepthLinear - 0.5){
     refractedUV = screenUV;
     refractionDepthRaw = texture2D(refractionDepthTexture, refractedUV).r;
-    refractionDepthLinear = texture2D(refractionLinearDepth, refractedUV).r;
+    refractionDepthLinear = refractionLinearDepthAt(refractedUV);
     if(refractionDepthLinear < 0.0001) refractionDepthLinear = cameraNearFar.y;
   }
 
@@ -3901,13 +3939,14 @@ void main(){
   //            water simply is not breaking there (calm wind, no chop).
   //So: red at the shore → capture. Green but never cyan → drive. Cyan → the gate
   //is passing and the problem is downstream in the foam blend (modes 31-33).
-  //⚠ foamRenderMap only exists under $foam_enabled, so the body is gated with it.
+  //⚠ the foam ortho was only bound under $foam_enabled (it is terrainOrthoMap.rg now, always
+  //bound), and the body stays gated with it: the mode means nothing without foam.
   else if(oceanShadowDebugMode == 29){
   #if($foam_enabled)
     vec2 fp = 0.5 * (((worldPosition.xz - foamCameraXZ) / vec2(FOAM_ORTHO_HALF_WIDTH)) + 1.0);
     fp = vec2(fp.x, 1.0 - fp.y);
     if(fp.x < 1.0 && fp.x > 0.0 && fp.y < 1.0 && fp.y > 0.0){
-      vec2 fhd = texture2D(foamRenderMap, fp).ga;
+      vec2 fhd = texture2D(terrainOrthoMap, fp).rg;
       if(fhd.y > 0.5){
         float wat = worldPosition.y - fhd.x;
         float sFade = clamp((wat - 0.5) / 3.5, 0.0, 1.0);

@@ -160,6 +160,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   this.foamNormalMap;
   this.foamRenderMap;
   this.exclusionMap;
+  this.terrainOrthoMap;
   this.windVelocity = data.wind_velocity;
   this.atmosphericPerspectiveEnabled = data.atmospheric_perspective_enabled;
   this.atmosphericPerspectiveDistanceScale = data.atmospheric_perspective_distance_scale;
@@ -2267,9 +2268,12 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         }
       });
       //foamRenderMap / exclusionMap always point at their (persistent) textures,
-      //whether or not the pass re-rendered this frame.
+      //whether or not the pass re-rendered this frame. The water itself reads neither:
+      //it samples terrainOrthoMap, the pass's packed copy of both (one texture unit, not
+      //two; see TerrainOrthoPass's header).
       this.foamRenderMap = self.terrainOrthoPass.foamRenderTarget.texture;
       this.exclusionMap = self.terrainOrthoPass.exclusionRenderTarget.texture;
+      this.terrainOrthoMap = self.terrainOrthoPass.packedRenderTarget.texture;
     }
 
     //Re-assert the analytic twin's level provider (a wind change rebuilds the
@@ -3225,8 +3229,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       uniformsRef.foamDiffuseMap.value = self.foamColorMap;
       uniformsRef.foamOpacityMap.value = self.foamOpacityMap;
       uniformsRef.foamNormalMap.value = self.foamNormalMap;
-      uniformsRef.foamRenderMap.value = self.foamRenderMap;
-      uniformsRef.exclusionMap.value = self.exclusionMap;
+      uniformsRef.terrainOrthoMap.value = self.terrainOrthoMap;
       uniformsRef.baseHeightOffset.value = self.heightOffset;
       //WaterField cascades (Phase 1b) — see water-shader.glsl's waterFieldLevelAt.
       if(self.waterFieldPass && self.waterFieldPass.cascades.length === 3){

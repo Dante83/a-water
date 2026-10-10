@@ -32,6 +32,20 @@
 //ring straight to the seabed) or above it (under-discard -> water leaks into
 //the hull).
 //
+//WHAT THE WATER ACTUALLY READS: ONE PACKED COPY (2026-10-09)
+//The water shader only ever reads two channels of each atlas, (.g world-Y, .a mask),
+//and binding the two as separate samplers cost it a texture unit it no longer has: the
+//water program sat at 35 units on a 32-unit GPU and did not link. So whenever either
+//atlas re-renders, one 1024^2 draw copies both into `packedRenderTarget`:
+//    .rg = foam      (.g, .a)        sampled with texture()  -> bilinear, as before
+//    .ba = exclusion (.g, .a)        sampled with texelFetch -> NEAREST, as before
+//One texture, two lookups at their own UVs; each pair of channels keeps its own filter
+//because texelFetch never filters. Same FloatType, same texels: bit-exact. The two
+//atlases themselves are untouched (ocean-splash.js reads the foam one back, and
+//WaterFieldPass's standalone fill samples it), so this costs one extra 16 MB target and
+//a draw only on frames that re-rendered, never during pure rotation.
+//Both atlases MUST stay the same size: the pack copies texel (x, y) of each to (x, y).
+//
 //WHY A PER-MESH SWAP RATHER THAN scene.overrideMaterial
 //It used to be an override, and for ordinary meshes the two are identical — the
 //position pass wants one material on everything. But an override replaces the
@@ -65,6 +79,11 @@ ARestlessOcean.Passes.TerrainOrthoPass = function(oceanGrid){
 
   this.foamRenderTarget = null;
   this.exclusionRenderTarget = null;
+  //What the water samples: both atlases' (.g, .a) in one texture. See the header.
+  this.packedRenderTarget = null;
+  this._packScene = null;
+  this._packCamera = null;
+  this._packMaterial = null;
   this.foamCamera = null;
   this.exclusionCamera = null;
   this.positionPassMaterial = null;
@@ -86,6 +105,18 @@ ARestlessOcean.Passes.TerrainOrthoPass = function(oceanGrid){
 };
 
 ARestlessOcean.Passes.TerrainOrthoPass.MAX_STALE_FRAMES = 30;
+
+//The pack (see WHAT THE WATER ACTUALLY READS in the header). One contract with the water
+//shader's terrainOrthoMap lookups (water-shader.glsl): foam (.g, .a) -> .rg, exclusion
+//(.g, .a) -> .ba, texel for texel.
+ARestlessOcean.Passes.TerrainOrthoPass.PACK_FRAGMENT = [
+  'uniform sampler2D packFoam;',
+  'uniform sampler2D packExclusion;',
+  'void main(){',
+  '  ivec2 p = ivec2(gl_FragCoord.xy);',
+  '  gl_FragColor = vec4(texelFetch(packFoam, p, 0).ga, texelFetch(packExclusion, p, 0).ga);',
+  '}'
+].join('\n');
 
 //── The two ortho half-widths, in metres — SINGLE SOURCE OF TRUTH ──────────
 //These drive, in this file: both OrthographicCamera extents and both texel
@@ -137,6 +168,34 @@ ARestlessOcean.Passes.TerrainOrthoPass.prototype.init = function(){
   this.exclusionCamera.layers.disableAll();
   this.exclusionCamera.layers.set(30);
   this.scene.add(this.exclusionCamera);
+
+  //The packed copy the water samples (see the header). Linear for the foam pair; the
+  //exclusion pair is read with texelFetch, which is nearest whatever this says.
+  this.packedRenderTarget = new THREE.WebGLRenderTarget(1024, 1024, {
+    type: THREE.FloatType,
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+    depthBuffer: false,
+    stencilBuffer: false
+  });
+  this._packMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+      packFoam: {value: this.foamRenderTarget.texture},
+      packExclusion: {value: this.exclusionRenderTarget.texture}
+    },
+    //Clip-space quad: THREE.Camera has identity matrices.
+    vertexShader: 'void main(){ gl_Position = vec4(position.xy, 0.0, 1.0); }',
+    fragmentShader: ARestlessOcean.Passes.TerrainOrthoPass.PACK_FRAGMENT,
+    blending: THREE.NoBlending,
+    depthTest: false,
+    depthWrite: false,
+    toneMapped: false
+  });
+  const packQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this._packMaterial);
+  packQuad.frustumCulled = false;
+  this._packScene = new THREE.Scene();
+  this._packScene.add(packQuad);
+  this._packCamera = new THREE.Camera();
 
   //Shared override material for BOTH orthos: writes world position into RGB,
   //hence the .g channel carrying world-Y downstream.
@@ -343,6 +402,10 @@ ARestlessOcean.Passes.TerrainOrthoPass.prototype.tick = function(ctx){
     }
     this._staleFrames = 0;
     this._everRendered = true;
+    //Refresh the water's packed copy of both, now that either changed.
+    renderer.setRenderTarget(this.packedRenderTarget);
+    renderer.render(this._packScene, this._packCamera);
+    renderer.setRenderTarget(currentRenderTarget);
   }
 };
 
@@ -353,6 +416,9 @@ ARestlessOcean.Passes.TerrainOrthoPass.prototype.dispose = function(){
   if(this._geoTwins) this._geoTwins.dispose();
   if(this.foamRenderTarget) this.foamRenderTarget.dispose();
   if(this.exclusionRenderTarget) this.exclusionRenderTarget.dispose();
+  if(this.packedRenderTarget) this.packedRenderTarget.dispose();
+  if(this._packMaterial) this._packMaterial.dispose();
   this.foamRenderTarget = null;
   this.exclusionRenderTarget = null;
+  this.packedRenderTarget = null;
 };
