@@ -2178,10 +2178,17 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     sceneCamera.getWorldPosition(self.globalCameraPosition);
 
     //Ensure render targets match current drawing buffer size (A-Frame may resize after construction)
+    //`refractionScale` (default 1) renders the refraction G-buffer -- a full re-render of the
+    //scene minus the ocean -- at a fraction of the drawing buffer. The water reads it through
+    //normalized screen UVs, so any size works; what a smaller one costs is softer refraction
+    //and a softer water/ground contact line. At 4K, 0.5 measured ~3 ms of GPU off.
     self.renderer.getDrawingBufferSize(rendererSize);
+    const refrScale = (self.refractionScale > 0 && self.refractionScale < 1) ? self.refractionScale : 1;
+    const refrW = Math.max(1, Math.round(rendererSize.x * refrScale));
+    const refrH = Math.max(1, Math.round(rendererSize.y * refrScale));
     if(self.refractionGBufferTarget &&
-       (self.refractionGBufferTarget.width !== rendererSize.x || self.refractionGBufferTarget.height !== rendererSize.y)){
-      self.refractionGBufferPass.resize(rendererSize.x, rendererSize.y);
+       (self.refractionGBufferTarget.width !== refrW || self.refractionGBufferTarget.height !== refrH)){
+      self.refractionGBufferPass.resize(refrW, refrH);
       //setSize replaces the depth texture object, so refresh the alias.
       self.refractionGBufferTarget = self.refractionGBufferPass.target;
       if(self.reflectionPass) self.reflectionPass.resize(rendererSize.x, rendererSize.y);

@@ -49,6 +49,59 @@
 
 ARestlessOcean.Passes = ARestlessOcean.Passes || {};
 
+//READ BACK WITHOUT STALLING THE FRAME. three r173's readRenderTargetPixelsAsync is only async
+//after it has asked gl.getParameter(IMPLEMENTATION_COLOR_READ_TYPE) about the float target --
+//a synchronous round trip to the GPU process that waits out every pass queued so far. With
+//this pass reading back every frame, that was 62% of the main thread on the island-sholes
+//swim page at 4K: frames of 80-125 ms several times a second.
+//
+//Same contract as three's (resolves when `buf` holds the pixels), without the query: bind the
+//target (and `layer`, for an array target) the way setRenderTarget does, readPixels into a
+//pooled PIXEL_PACK buffer, fence, poll the fence off the frame, then ONE getBufferSubData per
+//buffer -- Chrome serves only the first read after a signalled fence from its shadow copy and
+//pays a full round trip for a second. And the pack buffer is unbound before this returns, so
+//unlike three's path no draw can land while it is still bound (NEARSHORE-WAVES.md § 5.7 no
+//longer applies to reads made through here).
+ARestlessOcean.readPixelsAsync = (function(){
+  const pool = {};   //byteLength -> [WebGLBuffer], per context
+  return function(renderer, rt, x, y, w, h, buf, layer){
+    const gl = renderer.getContext && renderer.getContext();
+    if(!gl || !gl.fenceSync || !gl.PIXEL_PACK_BUFFER){
+      return renderer.readRenderTargetPixelsAsync(rt, x, y, w, h, buf);
+    }
+    const type = (buf instanceof Float32Array) ? gl.FLOAT
+               : (buf instanceof Uint16Array) ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE;
+    const bytes = buf.byteLength;
+    const free = pool[bytes] || (pool[bytes] = []);
+    const pbo = free.pop() || gl.createBuffer();
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbo);
+    gl.bufferData(gl.PIXEL_PACK_BUFFER, bytes, gl.STREAM_READ);
+    const prev = renderer.getRenderTarget(), prevFace = renderer.getActiveCubeFace(),
+          prevMip = renderer.getActiveMipmapLevel();
+    renderer.setRenderTarget(rt, layer || 0);
+    gl.readPixels(x, y, w, h, gl.RGBA, type, 0);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    renderer.setRenderTarget(prev, prevFace, prevMip);
+    const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    gl.flush();
+    return new Promise(function(resolve, reject){
+      const poll = function(){
+        const st = gl.clientWaitSync(sync, 0, 0);
+        if(st === gl.TIMEOUT_EXPIRED){ setTimeout(poll, 4); return; }
+        gl.deleteSync(sync);
+        if(st === gl.WAIT_FAILED){ free.push(pbo); reject(new Error('readPixelsAsync: wait failed')); return; }
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbo);
+        gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, buf);
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+        free.push(pbo);
+        resolve(buf);
+      };
+      poll();
+    });
+  };
+})();
+
+
 ARestlessOcean.Passes.HeightReadbackPass = function(oceanGrid){
   this.oceanGrid = oceanGrid;
   this.renderer = oceanGrid.renderer;
@@ -324,7 +377,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.updateHeightField = function(
   const buf = this._hfBufs[this._hfBackIdx];
   this._hfPending = true;
   this._hfLastIssue = now;
-  this.renderer.readRenderTargetPixelsAsync(this._heightFieldRT, 0, 0, HEIGHT_FIELD_RES, HEIGHT_FIELD_RES, buf).then(function(){
+  ARestlessOcean.readPixelsAsync(this.renderer, this._heightFieldRT, 0, 0, HEIGHT_FIELD_RES, HEIGHT_FIELD_RES, buf).then(function(){
     self._hfSnapPrev = self._hfSnap; //keep the prior field so consumers can read dH/dt.
     self._hfSnap = {data: buf, originX: originX, originZ: originZ, size: HEIGHT_FIELD_SIZE, res: HEIGHT_FIELD_RES, time: now};
     self._hfBackIdx = (self._hfBackIdx + 1) % 3; //rotate; never reuse current/prev.
@@ -521,8 +574,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.probeWaterSurfaceY = function
         const px = Math.min(res - 1, Math.max(0, Math.floor(u * res)));
         const py = Math.min(res - 1, Math.max(0, Math.floor(v * res)));
         const rt = composer.cascadeDisplacementArray;
-        this.renderer.setRenderTarget(rt, c);
-        promises.push(this.renderer.readRenderTargetPixelsAsync(rt, px, py, 1, 1, bufs[c]));
+        promises.push(ARestlessOcean.readPixelsAsync(this.renderer, rt, px, py, 1, 1, bufs[c], c));
       }
       this.renderer.setRenderTarget(prevProbeTarget);
       //Phase 3a: breaker + swash at the camera, from the same GLSL as the geometry.
@@ -530,7 +582,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.probeWaterSurfaceY = function
       const breakerBuf = this._breakerProbeBuf;
       breakerBuf[0] = 0.0;
       if(breakerProbeDrawn){
-        promises.push(this.renderer.readRenderTargetPixelsAsync(this._breakerProbeRT, 0, 0, 1, 1, breakerBuf));
+        promises.push(ARestlessOcean.readPixelsAsync(this.renderer, this._breakerProbeRT, 0, 0, 1, 1, breakerBuf));
       }
       Promise.all(promises).then(function(){
         //.y (green) channel = vertical displacement, summed over both cascades,
@@ -921,7 +973,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._readSurfaceProbe = function(
   const issued = this._spIssued;
   const buf = this._spBuf;
   this._spPending = true;
-  this.renderer.readRenderTargetPixelsAsync(this._spRT, 0, 0, MAX, 2, buf).then(function(){
+  ARestlessOcean.readPixelsAsync(this.renderer, this._spRT, 0, 0, MAX, 2, buf).then(function(){
     self._spPending = false;
     const t = issued.time;
     for(let i = 0; i < issued.slots.length; i++){

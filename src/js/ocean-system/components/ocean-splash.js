@@ -789,7 +789,13 @@ ARestlessOcean.OceanSplash.prototype.requestTerrainReadback = function(renderTar
   const buf = this._terrainBuf;
   const self = this;
   this._terrainReadPending = true;
-  this.renderer.readRenderTargetPixelsAsync(renderTarget, 0, 0, w, h, buf).then(function(){
+  //Through ARestlessOcean.readPixelsAsync (height-readback-pass.js), not three's: three asks
+  //getParameter about the float target first, which stalls the frame (8% of the main thread
+  //on the island-sholes swim page, measured, every time the foam camera snapped).
+  const read = ARestlessOcean.readPixelsAsync
+    ? ARestlessOcean.readPixelsAsync(this.renderer, renderTarget, 0, 0, w, h, buf)
+    : this.renderer.readRenderTargetPixelsAsync(renderTarget, 0, 0, w, h, buf);
+  read.then(function(){
     self._terrain = buf;
     self._terrainW = w;
     self._terrainH = h;
