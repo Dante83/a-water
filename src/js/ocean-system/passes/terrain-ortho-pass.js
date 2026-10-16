@@ -98,6 +98,8 @@ ARestlessOcean.Passes.TerrainOrthoPass = function(oceanGrid){
 
   this._staleFrames = 0;
   this._everRendered = false;
+  //Re-capture the EXCLUSION atlas (only) on the next tick. See invalidateExclusion.
+  this._exclDirty = false;
   this._lastFoamSnapX = undefined;
   this._lastFoamSnapZ = undefined;
   this._lastExclSnapX = undefined;
@@ -105,6 +107,19 @@ ARestlessOcean.Passes.TerrainOrthoPass = function(oceanGrid){
 };
 
 ARestlessOcean.Passes.TerrainOrthoPass.MAX_STALE_FRAMES = 30;
+
+//Every live pass, so a sibling can reach them without holding an ocean-grid component.
+ARestlessOcean.Passes.TerrainOrthoPass._live = [];
+
+//MOVING MASKS. A layer-30 mesh riding a floating boat (a-land's ObjectWaterMask) moves every
+//frame, but the exclusion atlas only re-renders on a camera snap or every MAX_STALE_FRAMES —
+//so the hidden patch of sea trailed the boat by up to half a second. This asks every live pass
+//to re-capture the exclusion atlas on its next tick. Exclusion ONLY: it renders layer 30 alone
+//(a handful of small meshes), where invalidate() would also redo the whole-scene foam capture.
+ARestlessOcean.invalidateExclusion = function(){
+  const live = ARestlessOcean.Passes.TerrainOrthoPass._live;
+  for(let i = 0; i < live.length; ++i) live[i]._exclDirty = true;
+};
 
 //The pack (see WHAT THE WATER ACTUALLY READS in the header). One contract with the water
 //shader's terrainOrthoMap lookups (water-shader.glsl): foam (.g, .a) -> .rg, exclusion
@@ -136,6 +151,7 @@ ARestlessOcean.Passes.TerrainOrthoPass.EXCLUSION_ORTHO_HALF_WIDTH = 250.0;
 
 ARestlessOcean.Passes.TerrainOrthoPass.prototype.init = function(){
   const grid = this.oceanGrid;
+  ARestlessOcean.Passes.TerrainOrthoPass._live.push(this);
 
   //Depth camera pointing down for edge foam.
   //1024^2 RGBA FloatType = ~16 MB (was 4096^2 ~ 268 MB). The ortho still covers
@@ -312,7 +328,7 @@ ARestlessOcean.Passes.TerrainOrthoPass.prototype.tick = function(ctx){
   this._staleFrames = this._staleFrames + 1;
   const forceRefresh = !this._everRendered || this._staleFrames >= MAX_STALE_FRAMES;
   const renderFoam = forceRefresh || this._lastFoamSnapX !== foamSnapX || this._lastFoamSnapZ !== foamSnapZ;
-  const renderExcl = forceRefresh || this._lastExclSnapX !== exclSnapX || this._lastExclSnapZ !== exclSnapZ;
+  const renderExcl = forceRefresh || this._exclDirty || this._lastExclSnapX !== exclSnapX || this._lastExclSnapZ !== exclSnapZ;
 
   if(renderFoam || renderExcl){
     this._swapMaterials(scene);
@@ -389,6 +405,7 @@ ARestlessOcean.Passes.TerrainOrthoPass.prototype.tick = function(ctx){
       renderer.setRenderTarget(null);
       this._lastExclSnapX = exclSnapX;
       this._lastExclSnapZ = exclSnapZ;
+      this._exclDirty = false;
     }
     } finally {
       //Restore our original materials + clear state (captured BEFORE zeroing —
@@ -410,6 +427,8 @@ ARestlessOcean.Passes.TerrainOrthoPass.prototype.tick = function(ctx){
 };
 
 ARestlessOcean.Passes.TerrainOrthoPass.prototype.dispose = function(){
+  const live = ARestlessOcean.Passes.TerrainOrthoPass._live, at = live.indexOf(this);
+  if(at >= 0) live.splice(at, 1);
   if(this.foamCamera) this.scene.remove(this.foamCamera);
   if(this.exclusionCamera) this.scene.remove(this.exclusionCamera);
   if(this.positionPassMaterial) this.positionPassMaterial.dispose();
