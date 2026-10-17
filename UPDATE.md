@@ -1,103 +1,71 @@
 **Version 0.3.0 — "the ocean meets the land"**
 
-The release where one ocean became a whole water world. Rivers, lakes, waterfalls and
-shorelines now share the ocean's shader, and the terrain answers back. Several features
-below (marked 🏔️) read data from [a-faraway-land](https://github.com/Dante83/a-faraway-land)
-and shine brightest with it; everything still runs standalone. Highlights:
+This release turns the single ocean of 0.2.0 into a world of water: lakes, rivers,
+waterfalls and shorelines that share the ocean's shader and feed into each other, over
+terrain that answers back. Everything still runs standalone, but the water-world features
+read [a-faraway-land](https://github.com/Dante83/a-faraway-land)'s water bake and are meant
+to be used with it. Highlights:
 
-*Water types & architecture*
-
-* **Multiple bodies of water.** Ocean, lakes, rivers, creeks and falls render side by side
-  as one family (see [`WATER-TYPES.md`](./WATER-TYPES.md)).
-* **`ocean-grid.js` decomposed.** The 3497-line god file is now a slim orchestrator over
-  `ocean-system/passes/*`, each pass with an `init / resize / tick / dispose` lifecycle.
-* **Lakes are ocean.** Still water rides the clipmap with its level read from the land's
-  water field and its own calmer wave dynamics. 🏔️
-* **Flowing rivers & creeks.** A flow-aligned surface with current, ripples and
-  accumulating flow foam, driven by the land's hydrology bake. 🏔️
-* **Water-field pipeline.** Per-tile level/flow/energy PNG pyramids are decoded on the GPU
-  and streamed as nested cascades. 🏔️
-* **`getWaterStateAt(x, z)`.** One call answers depth, level, flow and turbulence anywhere
-  in the world — ocean, lake or river.
-* **Uniform cloning fixed.** `cloneUniforms()` and `forEachOceanMesh()` mean a second body
-  of water no longer shares state with the first.
-* **Sampler budget.** Wave cascades and ocean CSM moved into texture arrays so the shader
-  fits the 16-unit floor.
-
-*Shores & surf*
-
-* **Shorelines that break.** Depth-aware shoaling, breakers and a travelling swash front
-  replace the flat shoreline fade. 🏔️
-* **Lace surf foam.** Foam travels as lacy backwash with no dark rings or shadow blotches.
-* **Soft waterline.** Troughs stay above the bed and steep shores surge instead of clipping.
-* **Shore reflections.** Waves bounce off cliffs and rocks and interfere with the incoming
-  set.
-* **River mouths & plumes.** Rivers ramp down into the sea, calm it at the mouth and carry
-  silt, current and foam out in a plume. 🏔️
-* **Wet sand that follows the swash.** The live surf is published so the land's beach goes
-  dark and dries on the wave's own clock. 🏔️
-* **Wet ground over the whole world.** A closed-form swash high-water map covers near and
-  far coast with no ping-pong history. 🏔️
-* **Light from the water.** Reflected glow and caustics fall on the land from the water as a
-  light source; the land owns the caustics. 🏔️
-
-*Waterfalls*
-
-* **Waterfall sheets.** Nappe curtains with the river's texture carried right over the lip,
-  sized by the terrain. 🏔️
-* **Fall-site carving.** Rivers own their falls, stepped chutes become a sheet per step.
-  🏔️
-* **Volumetric mist.** Raymarched, flow-stretched, self-shadowing mist cones along the
-  curtain.
-* **Splash at the foot.** Impact particles, pool rings, surface mist and foam fog where the
-  water lands.
-* **Billowy clouds.** Drifting spray clouds with multiple scattering, land occlusion and
-  night lighting.
-* **Falls cast shadows** onto the pool, with clouds from a-starry-sky shading sea, seabed,
-  falls and shafts too.
-
-*Interaction & physics*
-
-* **Dynamic waves.** Objects in the water leave rings and wakes that fade, lift the surface
-  and carry foam.
-* **`water-interactor`.** Drop it on an avatar for wading, body splash, drag and capsule
-  limbs.
-* **Surface probes.** Cheap CPU/GPU readbacks of height, normal and submersion at any point.
-* **Better buoyancy.** `buoyant` follows the new wave field and breakers, with fixes for
-  overflowing probes.
-* **Drifting debris** rides the current and the swash.
-* **Hero shadow map.** Your avatar and props now shadow the water.
-
-*Underwater & the waterline*
-
-* **Crest-style meniscus.** Both sides of the surface are drawn for real, and the line
-  follows the triangles.
-* **Underwater volume pass.** Proper below-surface fog and light shafts, with or without a
-  sky provider.
-* **Camera medium tracking.** The eye knows if it is above, below or straddling the surface.
-
-*Look & performance*
-
-* **Mipmapped ocean cascades** read at the vertex spacing's mip to kill shimmer.
-* **Improved reflections.** Reflections of the land (including grass and rock) and
-  distance fading for water.
-* **Cloud shadows & cloud reflections** when paired with a-starry-sky.
-* **Async readbacks.** `readPixelsAsync` removes the `getParameter` stall: long tasks 23 → 8
-  per 10 s at 4K.
-* **`refractionScale`.** Render the refraction G-buffer at half resolution: 4.2 → 2.4 ms at
-  4K with no visible change.
-* **Texture-unit budget.** The foam mask rides in the foam colour map's alpha.
-* **Debug tooling.** A debug console, extra debug modes and a waterline flip log.
-
-*Audio*
-
-* **Sound hooks.** `onImpact`, `getCameraWaterState`, `getSeaState` and `getSurfAt` let an
-  audio engine hear splashes, the medium, sea state and breakers.
-
-*Build*
-
-* **Compile-safe pipeline.** Shaders stay in `.glsl` sources, are generated by
-  `create-shader.py`, and are verified headless on a real WebGL2 context.
+* Added **multiple bodies of water**: ocean, lakes, rivers, creeks and falls now render
+  side by side as one material family (see [`WATER-TYPES.md`](./WATER-TYPES.md)).
+* Split the 3497-line `ocean-grid.js` into a slim orchestrator over `ocean-system/passes/*`,
+  each pass with an `init / resize / tick / dispose` lifecycle.
+* Added **lakes** as ocean: still water on the clipmap with its level read from the land's
+  water field and calmer wave dynamics.
+* Added **flowing rivers and creeks** with a flow-aligned surface, current, ripples and
+  accumulating flow foam, driven by the land's hydrology bake.
+* Added a **water-field pipeline** that decodes per-tile level, flow and energy pyramids on
+  the GPU and streams them as nested cascades.
+* Added **`getWaterStateAt(x, z)`**, one call that answers surface height, depth, flow and
+  turbulence anywhere in the world, plus whether the answer is wet, dry or still loading.
+* Added `ARestlessOcean.cloneUniforms()` and `OceanGrid.forEachOceanMesh(cb)` so a second
+  body of water no longer shares uniforms with the first.
+* Moved the wave cascades and ocean CSM into **texture arrays** to fit the 16-sampler floor.
+* Reworked shorelines so waves **shoal, steepen and break** with depth, with a travelling
+  swash front climbing and draining the beach.
+* Rebuilt surf foam as **travelling lace** with backwash, with no dark rings or shadow blotches.
+* Added a soft **waterline** where troughs stay above the bed and steep shores surge.
+* Added **shore reflections** so waves bounce off cliffs and rocks and interfere with the
+  incoming set.
+* Added **river mouths** that ramp down into the sea, calm it, and carry current, silt and
+  foam out in a **plume**.
+* Published the live surf to a-faraway-land so its **wet sand** follows the swash and dries
+  between waves, now over the whole world.
+* Added **water as a light source**: reflected glow on the land, with caustics owned by the
+  land when it is present.
+* Added **waterfalls**: nappe curtains that carry the river's texture over the lip, with a
+  sheet per step on steep chutes.
+* Added **volumetric waterfall mist**, raymarched, flow-stretched and self-shadowing.
+* Added **foot-of-the-fall splashes**: impact particles, pool rings, surface mist and foam fog.
+* Added **billowing spray clouds** with multiple scattering, land occlusion and night lighting.
+* Made waterfalls **cast shadows** into their pool.
+* Took a-starry-sky's **clouds** into the ocean: shadows on the sea, seabed, waterfalls and
+  light shafts, and clouds in reflections.
+* Added **dynamic waves**: rings and wakes that fade, lift the surface and carry foam.
+* Added the **`water-interactor`** component for wading and swimming, with sphere and
+  **capsule** contacts that can follow bones.
+* Added entry and wade **splash** and **drift** for anything that touches the water, and
+  debris that rides the current.
+* Added a **hero shadow map** so your avatar and props shadow the water.
+* Added **surface probes** for cheap height, normal and submersion queries.
+* Updated **`buoyant`** to ride the new wave field, and fixed texture overflow in its probes.
+* Drew both sides of the surface with a **Crest-style meniscus** that follows the triangles.
+* Added an **underwater volume pass** with fog and light shafts that works with or without
+  a sky provider.
+* Added **camera medium tracking** so code can tell if the eye is in air, in water or
+  straddling the surface.
+* Read each ocean cascade at the **mip** that matches the vertex spacing, removing shimmer.
+* Improved **reflections**, including the land's grass and rock, and added distance fading
+  for water.
+* Replaced three's readback with **`readPixelsAsync`**, removing a GPU stall: long tasks
+  dropped from 23 to 8 per 10 s at 4K.
+* Added **`refractionScale`**, which renders the refraction G-buffer at a fraction of the
+  screen: 4.2 ms to 2.4 ms at 4K with no visible change.
+* Packed the foam mask into the foam colour map's alpha to save a texture unit.
+* Added **sound hooks**: `onImpact`, `getCameraWaterState`, `getSeaState` and `getSurfAt`.
+* Added a debug console, more debug modes and a waterline flip log.
+* Moved shader work onto `.glsl` sources generated by `create-shader.py`, with headless
+  WebGL2 compile checks.
 
 **0.3.0 groundwork notes (Phase 0)**
 
