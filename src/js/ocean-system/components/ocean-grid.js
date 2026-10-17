@@ -3189,7 +3189,9 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       //cameras rendered at, so the water shader samples the right world point.
       uniformsRef.foamCameraXZ.value.copy(self._foamCameraXZ);
       uniformsRef.exclusionCameraXZ.value.copy(self._exclusionCameraXZ);
-      uniformsRef.screenResolution.value.set(self.refractionGBufferTarget.width, self.refractionGBufferTarget.height);
+      //gl_FragCoord / screenResolution is the UV into the G-buffer, so this is the size of the
+      //framebuffer the water draws into, not of the G-buffer (smaller under refractionScale).
+      uniformsRef.screenResolution.value.copy(rendererSize);
       uniformsRef.cameraNearFar.value.set(sceneCamera.near, sceneCamera.far);
       uniformsRef.inverseProjectionMatrix.value.copy(sceneCamera.projectionMatrixInverse);
       uniformsRef.inverseViewMatrix.value.copy(sceneCamera.matrixWorld);
@@ -3559,9 +3561,10 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         sunShadowRadius: _shRadius,
         sunShadowBias: _shBias,
         skyReflectTex: _meterTex,
-        viewportHeight: self.refractionGBufferTarget.height,
-        resW: self.refractionGBufferTarget.width,
-        resH: self.refractionGBufferTarget.height,
+        //Framebuffer size, not the G-buffer's: see screenResolution above.
+        viewportHeight: rendererSize.y,
+        resW: rendererSize.x,
+        resH: rendererSize.y,
         linearDepthTexture: self.refractionGBufferTarget.textures[2],
         //Phase 4: the waterfalls FlowFoamPass found near the camera (plunge spray).
         falls: (self.flowSurfacePass && self.flowSurfacePass.enabled && self.flowSurfacePass.foamPass)
