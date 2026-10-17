@@ -10,6 +10,45 @@ for matching sky, sun and atmosphere, or runs standalone.
 > **Warning:** this is a heavy real-time renderer — it expects a reasonably powerful
 > desktop GPU. It is not intended for mobile phones.
 
+## What's new in 0.3.0
+
+0.3.0 turns one ocean into a world of water: lakes, rivers, creeks, waterfalls and
+shorelines that feed into each other and light the land around them. See
+[`UPDATE.md`](./UPDATE.md) for the full list. The headlines:
+
+* **Shorelines that break** — shoaling, breakers, a travelling swash, lacy surf foam and
+  wet sand that darkens and dries with each wave.
+* **Rivers, creeks and lakes** — flowing water with current, ripples and flow foam, plus
+  river-mouth plumes that carry silt and foam out to sea.
+* **Waterfalls** — nappe sheets, volumetric mist, foot splashes, billowing spray clouds
+  and falls that cast shadows.
+* **Interaction** — `water-interactor` for waders and swimmers, fading ripples and wakes,
+  an avatar shadow on the water, drifting debris and a refreshed `buoyant`.
+* **Underwater and the waterline** — a Crest-style meniscus, a dedicated underwater
+  volume pass and camera-medium tracking.
+* **Sound hooks** — `onImpact`, `getCameraWaterState`, `getSeaState` and `getSurfAt`.
+* **Performance** — async readbacks, an optional half-resolution refraction G-buffer
+  (`refractionScale`) and texture-array cascades.
+
+### Works best with a-faraway-land
+
+A-Restless-Ocean, [a-faraway-land](https://github.com/Dante83/a-faraway-land) and
+[a-starry-sky](https://github.com/Dante83/A-Starry-Sky) are released together, and the
+water-world features are designed around the first two. Everything runs standalone, but
+the features marked 🏔️ below read a-faraway-land's hydrology bake and terrain, so they
+only appear when both libraries are in the scene:
+
+| Feature | Standalone | With a-faraway-land |
+| --- | --- | --- |
+| Ocean, foam, caustics, underwater, buoyancy, interaction | ✅ | ✅ |
+| Lakes at their authored level 🏔️ | — | ✅ |
+| Rivers, creeks and flow foam 🏔️ | — | ✅ |
+| Waterfalls, mist and foot splashes 🏔️ | — | ✅ |
+| River-mouth plumes into the sea 🏔️ | — | ✅ |
+| Shore surf shaped by the terrain 🏔️ | ✅ (heightmap/mask) | ✅ (full) |
+| Wet sand and water-lit land 🏔️ | — | ✅ |
+| Cloud shadows and reflections | — | ✅ with a-starry-sky |
+
 ## Prerequisites
 
 Built for [A-Frame](https://aframe.io/) **1.2.0+** and a WebGL2-capable browser.
