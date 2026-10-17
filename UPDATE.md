@@ -8,26 +8,26 @@ and shine brightest with it; everything still runs standalone. Highlights:
 *Water types & architecture*
 
 * **Multiple bodies of water.** Ocean, lakes, rivers, creeks and falls render side by side
-   as one family (see [`WATER-TYPES.md`](./WATER-TYPES.md)).
+  as one family (see [`WATER-TYPES.md`](./WATER-TYPES.md)).
 * **`ocean-grid.js` decomposed.** The 3497-line god file is now a slim orchestrator over
-   `ocean-system/passes/*`, each pass with an `init / resize / tick / dispose` lifecycle.
+  `ocean-system/passes/*`, each pass with an `init / resize / tick / dispose` lifecycle.
 * **Lakes are ocean.** Still water rides the clipmap with its level read from the land's
-   water field and its own calmer wave dynamics. 🏔️
+  water field and its own calmer wave dynamics. 🏔️
 * **Flowing rivers & creeks.** A flow-aligned surface with current, ripples and
-   accumulating flow foam, driven by the land's hydrology bake. 🏔️
+  accumulating flow foam, driven by the land's hydrology bake. 🏔️
 * **Water-field pipeline.** Per-tile level/flow/energy PNG pyramids are decoded on the GPU
-   and streamed as nested cascades. 🏔️
+  and streamed as nested cascades. 🏔️
 * **`getWaterStateAt(x, z)`.** One call answers depth, level, flow and turbulence anywhere
-   in the world — ocean, lake or river.
+  in the world — ocean, lake or river.
 * **Uniform cloning fixed.** `cloneUniforms()` and `forEachOceanMesh()` mean a second body
-   of water no longer shares state with the first.
+  of water no longer shares state with the first.
 * **Sampler budget.** Wave cascades and ocean CSM moved into texture arrays so the shader
-   fits the 16-unit floor.
+  fits the 16-unit floor.
 
 *Shores & surf*
 
 * **Shorelines that break.** Depth-aware shoaling, breakers and a travelling swash front
-   replace the flat shoreline fade. 🏔️
+  replace the flat shoreline fade. 🏔️
 * **Lace surf foam.** Foam travels as lacy backwash with no dark rings or shadow blotches.
 * **Soft waterline.** Troughs stay above the bed and steep shores surge instead of clipping.
 * **Shore reflections.** Waves bounce off cliffs and rocks and interfere with the incoming
