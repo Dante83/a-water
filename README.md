@@ -577,32 +577,6 @@ All stay live-editable at runtime via `window.oceanSplash`.
 | `<ocean-splash-size-falloff>` | `7.0` | Drop size distribution exponent: higher = mostly tiny drops with rare large ones. |
 | `<ocean-splash-wind-breakup>` | `1.5` | How hard rising wind shreds large drops into fine spray at storm speeds. |
 
-### `<ocean-terrain>` — terrain provider
-
-| Value tag | Default | Description |
-|---|---|---|
-| `<ocean-terrain-provider>` | `auto` | `auto` uses a-faraway-land when an `<a-land-terrain>` element or the `ALand` global exists, otherwise standalone. `a-faraway-land` or `standalone` forces a choice. |
-
-### `<ocean-river>` — creeks and rivers
-
-Needs the a-faraway-land terrain provider. Rivers are drawn automatically wherever the
-land's water bake has flowing water.
-
-| Value tag | Default | Description |
-|---|---|---|
-| `<ocean-river-enabled>` | `true` | Draw flowing water. |
-| `<ocean-river-flow-low>` | `0.05` | Speed (m/s) below which water is treated as still. |
-| `<ocean-river-flow-high>` | `0.25` | Speed (m/s) above which water is fully flowing. Between low and high it blends from lake to river. |
-| `<ocean-river-foam-decay>` | `6.0` | Seconds foam persists on the river. |
-| `<ocean-river-foam-convergence>` | `1.5` | Foam gained where currents converge. |
-| `<ocean-river-foam-bank>` | `0.6` | Foam gained along the banks. |
-| `<ocean-river-foam-step>` | `1.2` | Foam gained at steps and rapids. |
-| `<ocean-river-foam-fall>` | `0.25` | Foam gained where water drops over a fall. |
-
-`<ocean-caustics>` also accepts `<ocean-caustics-projector>` (`auto` | `on` | `off`, default
-`auto`). `auto` stands the ocean's underwater spotlight down when a-faraway-land supplies its
-own caustics, which frees two texture units in every lit material.
-
 ## Assets
 
 The ocean ships a foam texture set and a caustic texture. They default to
@@ -643,6 +617,69 @@ fog. `<ocean-sky-provider>` (inside `<ocean-atmosphere>`) decides where that com
 * **`standalone`** — install a minimal fog scaffold and light from a plain
   `THREE.DirectionalLight` + `HemisphereLight`, with no atmosphere dependency.
 
+## Terrain integration
+
+Everything in this section needs [a-faraway-land](https://github.com/Dante83/a-faraway-land) in the scene. You author lakes, rivers and waterfalls in its editor and bake them; the ocean reads the result and draws them. Without it the ocean is a single flat sea, and `getWaterStateAt` reports `open-ocean` everywhere.
+
+### Terrain provider
+
+| Value tag | Default | Description |
+|---|---|---|
+| `<ocean-terrain-provider>` | `auto` | `auto` uses a-faraway-land when an `<a-land-terrain>` element or the `ALand` global exists, otherwise standalone. `a-faraway-land` or `standalone` forces a choice. |
+
+### Rivers and creeks — `<ocean-river>`
+
+Needs the a-faraway-land terrain provider. Rivers are drawn automatically wherever the
+land's water bake has flowing water.
+
+| Value tag | Default | Description |
+|---|---|---|
+| `<ocean-river-enabled>` | `true` | Draw flowing water. |
+| `<ocean-river-flow-low>` | `0.05` | Speed (m/s) below which water is treated as still. |
+| `<ocean-river-flow-high>` | `0.25` | Speed (m/s) above which water is fully flowing. Between low and high it blends from lake to river. |
+| `<ocean-river-foam-decay>` | `6.0` | Seconds foam persists on the river. |
+| `<ocean-river-foam-convergence>` | `1.5` | Foam gained where currents converge. |
+| `<ocean-river-foam-bank>` | `0.6` | Foam gained along the banks. |
+| `<ocean-river-foam-step>` | `1.2` | Foam gained at steps and rapids. |
+| `<ocean-river-foam-fall>` | `0.25` | Foam gained where water drops over a fall. |
+
+### What appears automatically
+
+* **Shorelines and surf** — waves shoal, steepen and break as the water gets
+  shallow, foam travels up the beach as lace and drains back, and a swash front climbs and
+  retreats on the sand. Steep shores surge, gentle ones spill. With a-faraway-land the
+  shoreline comes from the real terrain, and the land's wet sand follows the swash and dries
+  between waves, over the whole world. Tune the foam with the `<ocean-foam>` knobs.
+* **Lakes, rivers and waterfalls** — automatic with a-faraway-land: author the water in the
+  land's editor and bake it. Nothing to add to your markup besides `<a-restless-ocean>`
+  (see `<ocean-river>` above). Waterfalls appear wherever a river drops, with a curtain,
+  raymarched mist, foot splash, rings and spray clouds, and they cast shadows into the pool.
+
+The `<ocean-caustics>` group also accepts `<ocean-caustics-projector>` (`auto` | `on` | `off`, default
+`auto`). `auto` stands the ocean's underwater spotlight down when a-faraway-land supplies its
+own caustics, which frees two texture units in every lit material.
+
+### Water state
+
+One call answers "what water is here?" anywhere in the world: the ocean, a lake, a river or
+dry land.
+
+```js
+const st = ARestlessOcean.getWaterStateAt(x, z);   // reuse a state: getWaterStateAt(x, z, st)
+st.status;      // 'wet' | 'dry' | 'loading' | 'open-ocean'
+st.surfaceY;    // drawn surface height (m)
+st.level;       // still-water level (m)
+st.depth;       // water depth (m)
+st.flowX; st.flowZ;      // current (m/s)
+st.orbitalX; st.orbitalY; st.orbitalZ;   // wave particle velocity, with { velocity: true }
+
+// Options: { source: 'auto' | 'fft' | 'analytic', velocity: true, probe: 'my-swimmer' }
+// `probe` evaluates exactly what the mesh draws, for one body that must ride the water.
+```
+
+The returned object is reused if you pass one in, so read it before your next call. Treat
+`status: 'dry'` or `'loading'` as "do not float anything here".
+
 ## Feature notes
 
 * **Underwater** — move the camera below `<ocean-height-offset>` and the renderer switches to
@@ -680,15 +717,6 @@ fog. `<ocean-sky-provider>` (inside `<ocean-atmosphere>`) decides where that com
   metres) so the float samples the hull footprint rather than the bounding box corners.
   Without it, four inset bounding-box corners are used automatically.
 
-* **Shorelines and surf** — automatic. Waves shoal, steepen and break as the water gets
-  shallow, foam travels up the beach as lace and drains back, and a swash front climbs and
-  retreats on the sand. Steep shores surge, gentle ones spill. With a-faraway-land the
-  shoreline comes from the real terrain, and the land's wet sand follows the swash and dries
-  between waves, over the whole world. Tune the foam with the `<ocean-foam>` knobs.
-* **Lakes, rivers and waterfalls** — automatic with a-faraway-land: author the water in the
-  land's editor and bake it. Nothing to add to your markup besides `<a-restless-ocean>`
-  (see `<ocean-river>` above). Waterfalls appear wherever a river drops, with a curtain,
-  raymarched mist, foot splash, rings and spray clouds, and they cast shadows into the pool.
 * **Wading and swimming** — add `water-interactor` to any entity to make it push on the
   water. It makes fading ripples and wakes that lift the surface, entry and wade spray and
   foam, and a drag you can read for movement. Add several, one per bone or limb, and use
@@ -749,27 +777,6 @@ const slope = ARestlessOcean.sampleWaterSlopeFFT(x, z);
 const waterY = ARestlessOcean.sampleWaterHeightFFTExact(x, z);
 ```
 
-### Water state
-
-One call answers "what water is here?" anywhere in the world: the ocean, a lake, a river or
-dry land.
-
-```js
-const st = ARestlessOcean.getWaterStateAt(x, z);   // reuse a state: getWaterStateAt(x, z, st)
-st.status;      // 'wet' | 'dry' | 'loading' | 'open-ocean'
-st.surfaceY;    // drawn surface height (m)
-st.level;       // still-water level (m)
-st.depth;       // water depth (m)
-st.flowX; st.flowZ;      // current (m/s)
-st.orbitalX; st.orbitalY; st.orbitalZ;   // wave particle velocity, with { velocity: true }
-
-// Options: { source: 'auto' | 'fft' | 'analytic', velocity: true, probe: 'my-swimmer' }
-// `probe` evaluates exactly what the mesh draws, for one body that must ride the water.
-```
-
-The returned object is reused if you pass one in, so read it before your next call. Treat
-`status: 'dry'` or `'loading'` as "do not float anything here".
-
 ### Reading the eye, the sea and the surf (for audio)
 
 ```js
@@ -781,14 +788,11 @@ stop();   // unsubscribe
 
 ARestlessOcean.getCameraWaterState();   // { underwater, submersion, factor, straddle, flips, ... }
 ARestlessOcean.getSeaState();           // { Hs, Tp, dirX, dirZ, windX, windZ, seaLevel, valid }
-ARestlessOcean.getSurfAt(x, z, depth, shoreDist, nx, nz);   // { breaking, foam, H, eta, valid }
 ```
 
 `getCameraWaterState()` tells you whether the camera is in air, in water or straddling the
 surface. `getSeaState()` gives the wave height (Hs, m) and period (Tp, s) from the same
-spectrum the renderer uses. `getSurfAt()` evaluates the breaker at a beach point you describe
-(water depth, distance to shore, seaward normal) so a crash can be timed to the drawn wave.
-Set `announce: false` on interactors whose splashes you already cover, such as footsteps.
+spectrum the renderer uses. Set `announce: false` on interactors whose splashes you already cover, such as footsteps.
 
 ### Console handles
 
