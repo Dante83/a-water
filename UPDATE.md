@@ -1,31 +1,69 @@
-**Version 0.3.0 — in progress**
+**Version 0.3.0 — "the ocean meets the land"**
 
-Groundwork for multiple water types (rivers, lakes, waterfalls, shorelines) —
-see [`WATER-TYPES.md`](./WATER-TYPES.md) for the architecture and
-[`WATER-TYPES-PROGRESS.md`](./WATER-TYPES-PROGRESS.md) for the running log.
-
-* **Phase 0 — `ocean-grid.js` decomposed.** The 3497-line god file is down to
-  1712 lines, with its render passes extracted into eight modules under
-  `ocean-system/passes/` sharing an `init / resize / tick / dispose` lifecycle:
-  refraction G-buffer, reflection + transmission, caustic projection, terrain
-  orthos (foam + hull exclusion), height readback + submersion probe, ocean CSM
-  orchestration, the underwater fog-chunk installer, and the debug console
-  surface. A pure refactor — no visual change — but it is what makes room for
-  the six new passes the multi-water plan needs.
-* Added `OceanGrid.forEachOceanMesh(cb)` as the sanctioned way to reach the
-  water materials from outside the grid, so the clipmap instance map stays
-  private.
+* Added **multiple bodies of water**: ocean, lakes, rivers, creeks and falls now render
+  side by side as one material family (see [`WATER-TYPES.md`](./WATER-TYPES.md)).
+* Decomposed the 3497-line `ocean-grid.js` down to 1712 lines, extracting its render passes
+  into modules under `ocean-system/passes/` that share an `init / resize / tick / dispose`
+  lifecycle. A pure refactor with no visual change, but it makes room for the new passes.
+* Added **lakes** as ocean: still water on the clipmap with its level read from the land's
+  water field and calmer wave dynamics.
+* Added **flowing rivers and creeks** with a flow-aligned surface, current, ripples and
+  accumulating flow foam, driven by the land's hydrology bake.
+* Added a **water-field pipeline** that decodes per-tile level, flow and energy pyramids on
+  the GPU and streams them as nested cascades.
+* Added **`getWaterStateAt(x, z)`**, one call that answers surface height, depth, flow and
+  turbulence anywhere in the world, plus whether the answer is wet, dry or still loading.
+* Added `OceanGrid.forEachOceanMesh(cb)` as the sanctioned way to reach the water materials
+  from outside the grid.
 * Added `ARestlessOcean.cloneUniforms()`, which deep-clones the uniform arrays
-  `THREE.UniformsUtils.clone` only shallow-copies. Water materials no longer
-  share `Vector2` instances with the module-global template — a prerequisite for
-  a second body of water existing at all. `positionPassMaterial` in particular
-  was never cloned anywhere.
-* The foam (2048 m) and hull-exclusion (250 m) ortho half-widths are no longer
-  nine hand-synced literals across five files; they now come from one constant
-  and are spliced into `water-shader.glsl` as consts at material-build time.
-* Removed a pile of dead fields from `ocean-grid.js`, including a `Raycaster`
-  built on an undefined vector that had never worked.
-
+  `THREE.UniformsUtils.clone` only shallow-copies, so a second body of water no longer
+  shares `Vector2` instances with the first.
+* Replaced nine hand-synced foam (2048 m) and hull-exclusion (250 m) ortho half-width literals
+  with one constant, spliced into `water-shader.glsl` at material-build time.
+* Removed dead fields from `ocean-grid.js`, including a `Raycaster` that never worked.
+* Moved the wave cascades and ocean CSM into **texture arrays** to fit the 16-sampler floor.
+* Reworked shorelines so waves **shoal, steepen and break** with depth, with a travelling
+  swash front climbing and draining the beach.
+* Rebuilt surf foam as **travelling lace** with backwash, with no dark rings or shadow blotches.
+* Added a soft **waterline** where troughs stay above the bed and steep shores surge.
+* Added **shore reflections** so waves bounce off cliffs and rocks and interfere with the
+  incoming set.
+* Added **river mouths** that ramp down into the sea, calm it, and carry current, silt and
+  foam out in a **plume**.
+* Published the live surf to a-faraway-land so its **wet sand** follows the swash and dries
+  between waves, now over the whole world.
+* Added **water as a light source**: reflected glow on the land, with caustics owned by the
+  land when it is present.
+* Added **waterfalls**: nappe curtains that carry the river's texture over the lip, with a
+  sheet per step on steep chutes.
+* Added **volumetric waterfall mist**, raymarched, flow-stretched and self-shadowing.
+* Added **foot-of-the-fall splashes**: impact particles, pool rings, surface mist and foam fog.
+* Added **billowing spray clouds** with multiple scattering, land occlusion and night lighting.
+* Made waterfalls **cast shadows** into their pool.
+* Took a-starry-sky's **clouds** into the ocean: shadows on the sea, seabed, waterfalls and
+  light shafts, and clouds in reflections.
+* Added **dynamic waves**: rings and wakes that fade, lift the surface and carry foam.
+* Added the **`water-interactor`** component for wading and swimming, with sphere and
+  **capsule** contacts that can follow bones.
+* Added entry and wade **splash** and **drift** for anything that touches the water, and
+  debris that rides the current.
+* Added a **hero shadow map** so your avatar and props shadow the water.
+* Added **surface probes** for cheap height, normal and submersion queries.
+* Updated **`buoyant`** to ride the new wave field, and fixed texture overflow in its probes.
+* Drew both sides of the surface with a **Crest-style meniscus** that follows the triangles.
+* Added an **underwater volume pass** with fog and light shafts that works with or without
+  a sky provider.
+* Added **camera medium tracking** so code can tell if the eye is in air, in water or
+  straddling the surface.
+* Read each ocean cascade at the **mip** that matches the vertex spacing, removing shimmer.
+* Improved **reflections**, including the land's grass and rock, and added distance fading
+  for water.
+* Replaced three's readback with **`readPixelsAsync`**, removing a GPU stall: long tasks
+  dropped from 23 to 8 per 10 s at 4K.
+* Added **`refractionScale`**, which renders the refraction G-buffer at a fraction of the
+  screen: 4.2 ms to 2.4 ms at 4K with no visible change.
+* Packed the foam mask into the foam colour map's alpha to save a texture unit.
+* Added **sound hooks**: `onImpact`, `getCameraWaterState`, `getSeaState` and `getSurfAt`.
 **Version 0.2.0 — "a-restless-ocean"**
 
 This release renames the library from **a-water** to **a-restless-ocean** (the public
