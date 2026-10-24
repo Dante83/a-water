@@ -64,6 +64,7 @@
   screen: 4.2 ms to 2.4 ms at 4K with no visible change.
 * Packed the foam mask into the foam colour map's alpha to save a texture unit.
 * Added **sound hooks**: `onImpact`, `getCameraWaterState`, `getSeaState` and `getSurfAt`.
+
 **Version 0.2.0 — "a-restless-ocean"**
 
 This release renames the library from **a-water** to **a-restless-ocean** (the public
