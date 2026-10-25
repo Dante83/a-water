@@ -348,6 +348,79 @@ ARestlessOcean.installOceanDebugControls = function(grid){
           });
         });
       };
+      //── Swell arrival field (SwellArrivalPass) ───────────────────────────
+      //setSwellDebug(n) draws the displayed solve, ±1 km round its centre, in a
+      //512 px overlay (top right, north up = -z, white dot = camera), refreshed
+      //each time a new solve lands. 0 removes it.
+      //  1 crests:  bands of the breaker phase ωτ/2π, brightness = E (black = unreached)
+      //  2 E:       the direction / exposure factor
+      //  3 Hlim:    the height cap from the shallowest water on the way in, 0..2 m
+      //  4 surf:    metres travelled through breaking-depth water, 0..400 m
+      //swellStats() logs the solve's state in words.
+      let swellDebugTimer = null;
+      window.setSwellDebug = function(n){
+        const pass = grid.swellArrivalPass;
+        n = n | 0;
+        let cv = document.getElementById('swell-debug-overlay');
+        if(swellDebugTimer){ clearInterval(swellDebugTimer); swellDebugTimer = null; }
+        if(!n || !pass){
+          if(cv) cv.remove();
+          if(!pass) console.log('[swell] pass not loaded');
+          return;
+        }
+        if(!cv){
+          cv = document.createElement('canvas');
+          cv.id = 'swell-debug-overlay';
+          cv.style.cssText = 'position:fixed;top:8px;right:8px;width:384px;height:384px;z-index:99999;border:1px solid #fff;image-rendering:pixelated;pointer-events:none';
+          document.body.appendChild(cv);
+        }
+        let shown = -1;
+        const draw = function(){
+          if(pass.solveCount === shown) return;
+          const r = pass.read();
+          if(!r){ console.log('[swell] no solve yet'); return; }
+          shown = pass.solveCount;
+          const N = r.res, texel = 2.0 * r.halfWidth / N;
+          cv.width = cv.height = N;
+          const ctx2 = cv.getContext('2d');
+          const img = ctx2.createImageData(N, N);
+          for(let j = 0; j < N; j++){
+            for(let i = 0; i < N; i++){
+              const o = 4 * (i + j * N), d = r.data[o], H = r.data[o + 1], E = r.data[o + 2], s = r.data[o + 3];
+              let R = 0, G = 0, B = 0;
+              if(n === 1){
+                const x = r.centerX + (i + 0.5 - N / 2) * texel, z = r.centerZ + (j + 0.5 - N / 2) * texel;
+                const tau = d + (x * r.dirX + z * r.dirZ) / r.deepC;
+                const ph = r.omega * tau / (2.0 * Math.PI);
+                const band = 0.5 + 0.5 * Math.cos(2.0 * Math.PI * ph);
+                const lit = H > 0 ? 0.25 + 0.75 * Math.sqrt(E) : 0;
+                R = 255 * lit * band; G = 255 * lit * (0.4 + 0.6 * band); B = 255 * lit;
+              } else if(n === 2){ R = G = B = 255 * E; }
+              else if(n === 3){ R = G = B = 255 * Math.min(H / 2.0, 1.0); }
+              else { R = 255 * Math.min(s / 400.0, 1.0); G = B = 255 * (H > 0 ? 0.2 : 0); }
+              //Row j is +z; the canvas draws north (-z) up.
+              const q = 4 * (i + (N - 1 - j) * N);
+              img.data[q] = R; img.data[q + 1] = G; img.data[q + 2] = B; img.data[q + 3] = 255;
+            }
+          }
+          ctx2.putImageData(img, 0, 0);
+          const ci = (grid.globalCameraPosition.x - r.centerX) / texel + N / 2;
+          const cj = N - 1 - ((grid.globalCameraPosition.z - r.centerZ) / texel + N / 2);
+          ctx2.fillStyle = '#fff';
+          ctx2.beginPath(); ctx2.arc(ci, cj, 4, 0, 2 * Math.PI); ctx2.fill();
+        };
+        draw();
+        swellDebugTimer = setInterval(draw, 1000);
+      };
+      window.swellStats = function(){
+        const pass = grid.swellArrivalPass;
+        if(!pass){ console.log('[swell] pass not loaded'); return; }
+        const d = pass._display, s = pass._solve;
+        console.log('[swell] solves ' + pass.solveCount
+          + (d ? ' | showing centre ' + d.centerX.toFixed(0) + ', ' + d.centerZ.toFixed(0)
+               + ' dir ' + d.dirX.toFixed(2) + ', ' + d.dirZ.toFixed(2) + ' T ' + (2 * Math.PI / d.omega).toFixed(1) + ' s Hs ' + d.Hs.toFixed(2) + ' m' : ' | nothing shown yet')
+          + (s ? ' | solving ' + s.iter + '/' + ARestlessOcean.Passes.SwellArrivalPass.TOTAL_ITERS : ' | idle'));
+      };
       //Grid-scan the field around the camera and summarise it. Answers the
       //question a single probe cannot: is the depth channel actually alive, or
       //is every texel falling through to the open-ocean default because the

@@ -251,7 +251,8 @@ void main() {
     offsetPosition.y -= CULL_DROP;
   }
   #else
-  waveMaskCascades(field, waveMaskA, waveMaskB);
+  //Shelter: sea-level water the swell never reaches is fetch-limited (WaveMask SHELTER).
+  waveMaskCascadesExposed(field, shoreSwellExposure(worldXZ), waveMaskA, waveMaskB);
   //Phase 4: where the water flows, FlowSurfacePass draws it and this surface
   //discards. Flatten the still waves there first, so nothing pokes through the
   //flowing surface across the dithered hand-off band. Scaling the masks (not

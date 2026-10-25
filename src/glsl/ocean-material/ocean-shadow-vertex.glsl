@@ -117,7 +117,7 @@ void main() {
   vec4 field = waterFieldAt(worldXZ);
   vec3 waveMaskA;
   vec3 waveMaskB;
-  waveMaskCascades(field, waveMaskA, waveMaskB);
+  waveMaskCascadesExposed(field, shoreSwellExposure(worldXZ), waveMaskA, waveMaskB);
   //Phase 4 — keep in lockstep with water-vertex.glsl.
   float stillKeep = 1.0 - flowHandoffWeightAt(worldXZ);
   waveMaskA *= stillKeep;

@@ -208,7 +208,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype.init = function(){
       '  if(hfUseField > 0.5){',
       '    vec4 field = waterFieldAt(worldXZ);',
       '    level = field.r;',
-      '    waveMaskCascades(field, hfMaskA, hfMaskB);',
+      '    waveMaskCascadesExposed(field, shoreSwellExposure(worldXZ), hfMaskA, hfMaskB);',
       //Phase 4, in lockstep with water-vertex.glsl.
       '    stillKeep = 1.0 - flowHandoffWeightAt(worldXZ);',
       //Phase 8e: the bank sink both water surfaces apply (flowBankSink).
@@ -767,7 +767,7 @@ ARestlessOcean.Passes.HeightReadbackPass.prototype._surfaceSetup = function(){
       '  if(spUseField > 0.5){',
       '    vec4 field = waterFieldAt(xz);',
       '    level = field.r;',
-      '    waveMaskCascades(field, mA, mB);',
+      breakerReady ? '    waveMaskCascadesExposed(field, shoreSwellExposure(xz), mA, mB);' : '    waveMaskCascades(field, mA, mB);',
       '    float keep = 1.0 - flowHandoffWeightAt(xz);',
       '    mA *= keep; mB *= keep;',
       breakerReady ? '    extra = keep * (shoreBreakerHeightAt(xz, field, 1.0) + shoreReflectionHeightAt(xz));'

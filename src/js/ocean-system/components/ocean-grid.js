@@ -796,6 +796,14 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
   } else {
     this.waterFieldPass = null;
   }
+  //Where the shore breakers' crests come from: the swell's travel time from open deep water,
+  //through water only, on the field's cascade 1 (see the pass header).
+  if(this.waterFieldPass && ARestlessOcean.Passes.SwellArrivalPass){
+    this.swellArrivalPass = new ARestlessOcean.Passes.SwellArrivalPass(this);
+    this.swellArrivalPass.init();
+  } else {
+    this.swellArrivalPass = null;
+  }
 
   //═══════════════════════════════════════════════════════════════════════════
   // THE WATER-LEVEL SEAM
@@ -1095,6 +1103,7 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
       foamGain: self.shoreBreakerFoamGain,
       heightScale: self.shoreBreakerHeightScale
     }, self._shoreBreakerParams);
+    if(self.swellArrivalPass) self.swellArrivalPass.writeParams(self._shoreBreakerParams);
     return self._shoreBreakerParams;
   };
 
@@ -2300,6 +2309,11 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         foamCameraXZ: self.terrainOrthoPass.foamCameraXZ,
         foamHalfWidth: ARestlessOcean.Passes.TerrainOrthoPass.FOAM_ORTHO_HALF_WIDTH
       });
+      //The swell arrival field reads the cascades just refilled. Idle unless they (or the sea
+      //state) changed; a solve then runs over the next frames and swaps in when done.
+      if(self.swellArrivalPass){
+        self.swellArrivalPass.tick({params: self.shoreBreakerParams(), seaLevel: self.heightOffset});
+      }
       //Publish the same field to a sibling terrain, by reference. It is how the
       //underwater mirror pass cuts above-water ground out of its render: a-land
       //carries no clipping chunks, so renderer.clippingPlanes never reached it,

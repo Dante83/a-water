@@ -67,6 +67,7 @@ JS_FILE_NAMES = [
     'ocean-system/field/land-light.js',
     'ocean-system/passes/water-tile-decode-pass.js',
     'ocean-system/passes/water-field-pass.js',
+    'ocean-system/passes/swell-arrival-pass.js',
     'ocean-system/passes/height-readback-pass.js',
     'ocean-system/passes/waterline-pass.js',
     'ocean-system/passes/hero-shadow-pass.js',

@@ -2612,7 +2612,10 @@ void main(){
   //sea roughens so gentler folds cross the threshold, and once it exceeds
   //THRESHOLD the flat open surface itself foams (storm streaks). 0 in calm seas,
   //so the validated calm-water behaviour above is unchanged.
-  float fftFoamAmount = clamp((turbulence + foamWindBias - FOAM_TURB_THRESHOLD) * FOAM_TURB_GAIN, 0.0, 1.0);
+  //The bias is open-sea whitecapping, so it is weighed by this water's 64 m band (cascade 3):
+  //1 on open water, small over a shallow flat, a fetch-limited pond or a sheltered lee. Unweighed,
+  //it crossed THRESHOLD on every still pool in a strong wind and foamed it white (2026-10-24).
+  float fftFoamAmount = clamp((turbulence + foamWindBias * waveMask3 - FOAM_TURB_THRESHOLD) * FOAM_TURB_GAIN, 0.0, 1.0);
 
   //Crest-style surface normal from cross product of displaced tangent vectors.
   //Surface parameterization: P(u,v) = (u - chop*Dx, Dy, v - chop*Dz)

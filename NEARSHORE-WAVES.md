@@ -534,6 +534,32 @@ standard coastal-engineering form, quoted from memory, so check the constants wh
 brush is written. It should be offered alongside 3a. `surveyShore()` then confirms the
 result in numbers.
 
+### Amendment 2026-10-24: the crest phase comes from the sea (SwellArrivalPass)
+3a took its crest phase from the distance to the NEAREST shoreline (the field's jump-flooded
+`shoreSDF`). In a-water-explorer on sunken-shores that made rings round every island and rock,
+broke a narrow inlet outward from its middle onto both walls, and gave a pond at sea level full
+surf. The wind direction only dimmed the height.
+
+The phase is now θ = ω(t − τ). τ is the swell's travel time ∫ ds / c(h) from open deep water,
+through water only, solved on cascade 1 by `passes/swell-arrival-pass.js`:
+- **Seeds.** Exposed water with k0h ≥ 1.5, where "exposed" means a march upwind finds no land.
+  Upwind rim texels are seeds only when the cascade has no such water.
+- **Solver.** A Jacobi Godunov eikonal update, so a plane wave refracts by Snell's law (node test:
+  12.80° against 12.83°).
+- **Islands, channels and ponds.** Fronts wrap round islands, run up channels from the mouth, and
+  never reach enclosed water.
+- **Amplitude.** It comes from the turn the front has made (E = f(α)²), the shallowest water on
+  the way in (Hlim) and the distance through breaking-depth water (SURF_DECAY_M).
+- **Swash.** The field sizes it (E and the surf decay at the point) but does not time it: the sheet
+  keeps the shoreline's own phase. Timing it by τ at the nearest shore point split shallow flats
+  into branching fingers along every medial axis (browser round 1).
+  Behind a bar it is capped by Hlim read 6 m offshore (where that is below the probe depth's own
+  breaking cap), and its bore foam scales with the wave height (browser round 2: calm pools whose
+  beaches still ran up white).
+
+This is ray-free, first-order geometric optics. It has no real diffraction pattern and no crossing
+seas: where two arrivals meet, the breaker fades instead. Tests: `tests/shore/swell-arrival-test.mjs`.
+
 ## 9. What the spikes did not prove
 
 - ~~**Oblique incidence and 2D emitter behaviour**~~ — measured in § 5.9 (2026-09-13).

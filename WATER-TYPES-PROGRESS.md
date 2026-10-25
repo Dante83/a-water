@@ -5909,3 +5909,74 @@ Dante (night, at the curtain): "the foam and sheet colors still aren't matching"
   the other way round (a-water → a-land), fitting the existing `setOceanFog` / `setWaterField` typed
   setters on TerrainMaterial. Then revisit sheet self-shadow with a tighter map (fit the airborne part
   only, not the lead-ins) so the texel beats the bias.
+
+## Shore breakers come from the sea: SwellArrivalPass (2026-10-24, branch `update-water`, uncommitted)
+
+- **Symptom.** a-water-explorer on sunken-shores:
+  - surf rings came out of every island and rock;
+  - a narrow inlet broke from its middle out onto both walls;
+  - patches of a shallow flat broke white;
+  - a land-locked hollow got waves.
+- **Cause.** ShoreBreaker's phase was the travel time from the NEAREST shoreline, `(s/h)·I(k0h)`
+  with s = `shoreSDF`, and every wet/dry edge seeds s. The wave direction only scaled the height.
+  The "is it the sea?" test was `|level − seaLevel| < 0.5–2 m`.
+- **Fix.** New `passes/swell-arrival-pass.js`, running on cascade 1 (512² at 4 m). It solves the
+  swell's travel time τ from exposed deep water through sea-level, non-flowing water. It writes
+  `(δ, Hlim, E, surf)`, where δ = τ − dot(xz, dir)/cDeep. The breaker's phase becomes ω(t − τ):
+  - E replaces the direction factor;
+  - Hlim and the surf distance cap and decay the height;
+  - unreached water gets no breaker and no swash;
+  - the swash is sized by E and the surf decay at the point; its phase stays the shoreline's own.
+    ⚠ Browser round 1 timed the swash by τ at the nearest shoreline point. That point flips bank
+    at every medial axis and τ changes fast along slow shallow shores, so neighbouring strips sat
+    in opposite phases and shallow flats drained into branching fingers. Removed.
+  - ⚠ Browser round 2: a pool joined to the sea over a few cm of water stayed calm (the breaker reads
+    Hlim) but its beach ran up with a full swash and full foam. The swash is now capped by Hlim at
+    its probe point where that falls under the probe's own breaking cap (SWASH_BAR_RATIO_LO/HI),
+    and its foam scales with the wave height (SWASH_FOAM_H_LO/HI).
+  - ⚠ Browser round 3: an unreached sunken flat at sea level still foamed. That was not surf: WaveMask
+    gave every sea-level texel the full ocean spectrum, and `foamWindBias` (up to 0.6, over the 0.5
+    fold threshold) foamed any still water in a strong wind. Now WaveMask takes
+    `shoreSwellExposure(xz)` (E, smoothstep to SWELL_EXPOSURE_E, faded in over the solve's rim), so
+    unreached or deep-lee water is fetch-limited like a lake; and the bias is weighted by the 64 m
+    band (`waveMask3`). Water vertex, CSM caster and readback all pass exposure; ShoreReflection
+    keeps plain `waveMaskCascades`. ⚠ Needs create-shader regen (water-vertex, ocean-shadow-vertex,
+    water-shader .glsl).
+  - ⚠ Browser round 4 ("waves come up then BAM, nothing"). Two causes, found by dumping the solve
+    from the headless explorer (sunken-shores, Hs 4.1 m, T 6.1 s):
+    - the relax's built-in `tanh(k0h)` was NaN past k0h ≈ 44 under SwiftShader, and off-world water
+      decodes 1000 m deep. A NaN arrival reads as unreached, so the island's deep shadow beyond the
+      world edge was a hard-edged black block, and the shelter flattened the sea there in one step.
+      Now written out overflow-free, like `shoreBreakerTanh`.
+    - E is set from the LOCAL front direction, so it jumps across τ creases. The finished E is now
+      Gaussian-blurred, σ = 0.35 L0 clamped to 12–64 m (E_BLUR_*), through the two state targets
+      the finished relax no longer needs; unreached texels are put back to 0 after.
+- **Solving and cost.**
+  - A solve runs on a snapshot, 768 Jacobi draws at 24 per frame, and swaps in when done.
+  - It re-solves when cascade 1 has moved 64 m, on a field invalidate, or when the direction
+    (2°), ω (3%), Hs (10%) or sea level change. It is idle otherwise.
+  - Until the first solve lands, the old phase stands.
+- **Wiring.**
+  - `ShoreBreaker.createUniforms` gains `shoreSwell*`, which `writeUniforms` fills from params.
+  - `OceanGrid.shoreBreakerParams()` adds the displayed solve, so every consumer picks it up with
+    no change of its own: the water vertex and fragment, the CSM caster, the height readback and
+    the swash surface. That is +1 sampler in each.
+  - No create-shader regen: only spliced GLSL changed.
+- **Console:**
+  - `setSwellDebug(1..4)`: overlay of crests, E, Hlim or surf;
+  - `swellStats()`;
+  - `oceanGrid.swellArrivalPass.enabled = false` for an A/B.
+- **Checked.**
+  - Node: `tests/shore/swell-arrival-test.mjs` (Snell, island lee, channel, pond, bar, breaker,
+    GLSL). The existing shore tests still pass.
+  - Headless Chrome (SwiftShader), synthetic island with a pond:
+    - every pass shader compiles;
+    - E is 1.0 on the weather side and 0.003 in the lee;
+    - the pond and its beach are unreached;
+    - a breaker consumer program compiles, stays finite, and has zero surf on the pond.
+- **Not done.**
+  - `getSurfAt` (the sound hook) still uses the shore-distance phase from caller-supplied
+    geometry, so breaker sounds are not phase-locked to the drawn crests.
+  - a-land's body id is still dropped by the tile decode.
+- **Browser-pending (Dante).**
+
