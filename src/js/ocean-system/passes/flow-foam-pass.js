@@ -320,6 +320,8 @@ ARestlessOcean.Passes.FlowFoamPass.prototype._updateFalls = function(ctx){
       let dx = b[0] - t[0], dz = b[2] - t[2];
       const len = Math.sqrt(dx * dx + dz * dz);
       if(len > 1e-3){ dx /= len; dz /= len; } else { dx = 0.0; dz = 1.0; }
+      //a-land's reach normal when it has one: top → bottom is a D8 step, 8 directions only
+      if(f.normal && f.normal.length === 2){ dx = f.normal[0]; dz = f.normal[1]; }
       const drop = f.drop !== undefined ? f.drop : Math.max(t[1] - b[1], 0.0);
       consider(b[0], b[2], 0.5 * (f.width || 4.0), f.discharge || 0.0, dx, dz, drop, f);
     }

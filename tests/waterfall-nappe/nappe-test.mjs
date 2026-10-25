@@ -306,6 +306,15 @@ const fullQuads = n => {
 //     the axes; the entry's own top/bottom/width are D8's (a cell to one side, a diagonal step,
 //     4·√Q wide) and must be ignored: heading = the lip normal exactly, the seeds on one line
 //     back on the approach as wide as the wet width, no rail, and one straight sheet off the lip.
+//The creek's cross-dissolve into the sheet (the lead box's ramp) is done by the row where the spine
+//first leaves the ground: past it the sheet dips under the creek's flat level (fall 2's brink strips).
+const leadDoneByDeparture = (n, F) => {
+  const lb = n.corridors.find(b => b.lead > 0), sp = n.strands[n.spine];
+  const air = sp && sp.rows.find(r => r.air >= 0.5);
+  if(!lb || !air) return {ok: false, info: 'no lead box or no departure'};
+  const end = F.s(lb.ax, lb.az) + lb.lead, dep = F.s(air.x, air.z);
+  return {ok: end <= dep + 0.01, info: 'ramp done at s '+f2(end)+', water leaves at s '+f2(dep)};
+};
 const siteFrame = (nx, nz) => ({s: (x,z) => x * nx + z * nz, t: (x,z) => x * nz - z * nx,
                                 at: (s,t) => [s * nx + t * nz, s * nz - t * nx]});
 {
@@ -327,7 +336,9 @@ const siteFrame = (nx, nz) => ({s: (x,z) => x * nx + z * nz, t: (x,z) => x * nz 
   const seeds = job.seeds.filter(Boolean), ss = seeds.map(q => F.s(q.x, q.z)), ts = seeds.map(q => F.t(q.x, q.z));
   check('site: the seeds are one line on the approach, railed to a metre short of the lip', Math.abs(job.rail - Math.max(0, job.up - 1)) < 1e-9 && Math.max(...ss.map(v => Math.abs(v + job.up))) < 1e-9,
         'up '+f2(job.up)+' rail '+job.rail);
-  check('site: ...as wide as the wet width', Math.abs(Math.max(...ts) - Math.min(...ts) - (2 * hw - 0.5)) < 0.01 && job.W === 2 * hw && job.Q === 4.8,
+  //(the water the creek draws reaches a metre onto the bank's foot here: the curtain spans it,
+  //edge seeds half a scan step in from its last wet sample; 2026-10-25)
+  check('site: ...as wide as the water the creek draws', Math.abs(Math.max(...ts) - Math.min(...ts) - (2 * (hw + 1) - 0.25)) < 0.01 && job.W === 2 * hw && job.Q === 4.8,
         'span '+f2(Math.max(...ts) - Math.min(...ts))+' W '+job.W+' Q '+job.Q);
   const n = N.trace([fall], env), rib = N.buildRibbon(n, env);
   const falling = n.strands.filter(st => st && st.rows.some(r => r.fallFlag > 0.5));
@@ -335,6 +346,148 @@ const siteFrame = (nx, nz) => ({s: (x,z) => x * nx + z * nz, t: (x,z) => x * nz 
   check('site: every strand falls, off one straight lip', falling.length === n.strands.length && Math.max(...ls) - Math.min(...ls) < 0.1,
         'falling '+falling.length+'/'+n.strands.length+' lip s spread '+f2(Math.max(...ls) - Math.min(...ls)));
   check('site: the sheet is whole', rib.index.length / 6 >= 0.9 * fullQuads(n), 'quads '+rib.index.length/6+' of '+fullQuads(n));
+  //The approach's cross-dissolve box is the sheet's width (+ its soft edge), not the face boxes'
+  //+2 m: the creek beside the sheet faded out there with nothing in its place (fall 9, 2026-10-25).
+  const leadBox = n.corridors.find(b => b.lead > 0), half = 0.5 * (Math.max(...ts) - Math.min(...ts));
+  check('site: the lead box is as wide as the sheet', !!leadBox && leadBox.r <= half + 0.5 * job.spacing + 0.5 + 1e-6 && leadBox.r >= half,
+        leadBox ? 'lead r '+f2(leadBox.r)+' sheet half '+f2(half) : 'no lead box');
+}
+// 24. A SITE IS ONE CURTAIN DOWN TO ITS POOL (sunken-shores, Dante 2026-10-25: strips with sawtooth
+//     feet, ending in mid-air). Same site as 21, but the terrain under the fall is not loaded past
+//     1.5 m out (a trace that loses its ground mid-fall): the middle strand is carried on to
+//     plungeDepth under the pool's surface, and every strand is the same curtain, rows and all.
+{
+  const nx = Math.sin(Math.PI / 6), nz = Math.cos(Math.PI / 6), F = siteFrame(nx, nz), hw = 4;
+  //the approach a few cm rough across, the face a 1 m ramp (bilinear 1 m tiles), as real ground is
+  const ground = (x,z) => { const s = F.s(x,z), t = F.t(x,z);
+    if(s < 0) return 10 + 0.08 * Math.sin(5 * t) + (Math.abs(t) > hw + 1 ? 1 : 0);
+    return s < 1 ? 10 - 8 * s + 0.3 * Math.sin(3 * t) : (s < 1.5 ? 2 : null); };
+  const water = (x,z) => { const s = F.s(x,z), t = F.t(x,z);
+    return s < 0 && Math.abs(t) <= hw + 1 ? {level: 10.4, depth: 0.4, vx: 1.5 * nx, vz: 1.5 * nz} : null; };
+  const env = {groundAt: ground, waterAt: water};
+  const L0 = F.at(0, -hw), L1 = F.at(0, hw);
+  const fall = {top: [0, 10, 0], bottom: [0, 4, 0], width: 8, discharge: 4.8, drop: 6,
+                site: {lip: [[L0[0], 10, L0[1]], [L1[0], 10, L1[1]]], normal: [nx, nz], drop: 8, treadAbove: 10, treadBelow: 2,
+                       approach: 3, landing: 2, wetWidth: 2 * hw, depth: 0.4, discharge: 4.8,
+                       pool: {centre: [0, 4, 0], radius: 4, depth: 2.4, kind: 'dug'}, cascade: 0, step: 0, steps: 1}};
+  const n = N.trace([fall], env), rib = N.buildRibbon(n, env);
+  const S = n.strands.filter(Boolean), feet = S.map(st => st.samples[st.samples.length - 1].y);
+  check('curtain: a strand that lost its ground mid-fall still reaches the pool, under its surface', S.every(st => st.stop === 'plunge') && Math.max(...feet) <= 4 - 0.29,
+        'stops '+[...new Set(S.map(st => st.stop))].join(',')+' feet <= '+f2(Math.max(...feet)));
+  const ks = S.map(st => st.rows[0].k + ':' + st.rows[st.rows.length - 1].k);
+  check('curtain: every strand has the same rows (no sawtooth foot)', new Set(ks).size === 1, [...new Set(ks)].join(' '));
+  check('curtain: the sheet is whole', rib.index.length / 6 === fullQuads(n), 'quads '+rib.index.length/6+' of '+fullQuads(n));
+  check('curtain: the plunge runs the whole lip', n.impacts.filter(im => im.y === 4).reduce((w, im) => w + im.width, 0) >= 2 * hw - 1,
+        'plunge width '+f2(n.impacts.filter(im => im.y === 4).reduce((w, im) => w + im.width, 0)));
+}
+// 25. THE GORGE NARROWS BELOW THE LIP (sunken-shores' hourglass, Dante 2026-10-25): an 8 m lip over
+//     a slot 4 m wide. The curtain squeezes between the walls; none of it passes into the rock.
+{
+  const nx = Math.sin(Math.PI / 6), nz = Math.cos(Math.PI / 6), F = siteFrame(nx, nz), hw = 4;
+  const ground = (x,z) => { const s = F.s(x,z), t = F.t(x,z);
+    if(s < 0) return 10 + (Math.abs(t) > hw + 1 ? 1 : 0);
+    return Math.abs(t) > 2.05 && s > 0.6 ? 20 : 2; };   //(5 cm clear of t = ±2: float32 positions)
+  const water = (x,z) => { const s = F.s(x,z), t = F.t(x,z);
+    if(s < 0) return Math.abs(t) <= hw + 1 ? {level: 10.4, depth: 0.4, vx: 1.5 * nx, vz: 1.5 * nz} : null;
+    return s > 0.3 && Math.abs(t) <= 2 ? {level: 4, depth: 2, vx: 0.05 * nx, vz: 0.05 * nz} : null; };
+  const env = {groundAt: ground, waterAt: water};
+  const L0 = F.at(0, -hw), L1 = F.at(0, hw);
+  const fall = {top: [0, 10, 0], bottom: [0, 4, 0], width: 8, discharge: 4.8, drop: 6,
+                site: {lip: [[L0[0], 10, L0[1]], [L1[0], 10, L1[1]]], normal: [nx, nz], drop: 8, treadAbove: 10, treadBelow: 2,
+                       approach: 3, landing: 2, wetWidth: 2 * hw, depth: 0.4, discharge: 4.8,
+                       pool: {centre: [0, 4, 0], radius: 2, depth: 2.4, kind: 'dug'}, cascade: 0, step: 0, steps: 1}};
+  const n = N.trace([fall], env), rib = N.buildRibbon(n, env);
+  const lip = lipRow(n).map(r => F.t(r.x, r.z)), low = n.strands.filter(Boolean).map(st => st.rows[st.rows.length - 1]).map(r => F.t(r.x, r.z));
+  check('gorge: the curtain leaves the lip full width', Math.max(...lip) - Math.min(...lip) > 7, 'lip '+f2(Math.max(...lip) - Math.min(...lip))+' m');
+  check('gorge: ...and squeezes into the slot below', Math.max(...low.map(Math.abs)) <= 2.06, 'foot half-width '+f2(Math.max(...low.map(Math.abs)))+' m');
+  check('gorge: no vertex inside the walls', verticesInside(rib, ground, 0.06) === 0, verticesInside(rib, ground, 0.06)+' inside');
+}
+// 26. A CARVED SITE AS THE 1 m TILES DRAW IT (sunken-shores falls 0, 1, 9; Dante 2026-10-25): the
+//     ground is a 1 m grid read bilinearly, so a face diagonal to it is a staircase, and the
+//     level tread comes out ±0.3 m across. The curtain still goes straight down the reach (fall 0
+//     threw it sideways), and none of it is buried in the tread (falls 1 and 9).
+{
+  const nx = Math.sin(Math.PI / 6), nz = Math.cos(Math.PI / 6), F = siteFrame(nx, nz), hw = 4;
+  const exact = (x,z) => { const s = F.s(x,z), t = F.t(x,z);
+    if(s < 0) return 10 + 0.3 * Math.sin(1.7 * t) + (Math.abs(t) > hw + 1 ? 1 : 0);
+    return Math.abs(t) > hw + 2 ? 10 : 2; };
+  const ground = (x,z) => { const x0 = Math.floor(x), z0 = Math.floor(z), tx = x - x0, tz = z - z0;
+    return (exact(x0,z0) * (1-tx) + exact(x0+1,z0) * tx) * (1-tz) + (exact(x0,z0+1) * (1-tx) + exact(x0+1,z0+1) * tx) * tz; };
+  const water = (x,z) => { const s = F.s(x,z), t = F.t(x,z);
+    if(s < 0) return Math.abs(t) <= hw + 1 ? {level: ground(x,z) + 0.1, depth: 0.1, vx: 1.5 * nx, vz: 1.5 * nz} : null;
+    return s > 1 && Math.abs(t) <= hw + 2 ? {level: 4, depth: 2, vx: 0.05 * nx, vz: 0.05 * nz} : null; };
+  const env = {groundAt: ground, waterAt: water};
+  const L0 = F.at(0, -hw), L1 = F.at(0, hw);
+  const fall = {top: [0, 10, 0], bottom: [0, 4, 0], width: 8, discharge: 4.8, drop: 6,
+                site: {lip: [[L0[0], 10, L0[1]], [L1[0], 10, L1[1]]], normal: [nx, nz], drop: 8, treadAbove: 10, treadBelow: 2,
+                       approach: 3, landing: 2, wetWidth: 2 * hw, depth: 0.4, discharge: 4.8,
+                       pool: {centre: [0, 4, 0], radius: 4, depth: 2.4, kind: 'dug'}, cascade: 0, step: 0, steps: 1}};
+  const n = N.trace([fall], env), rib = N.buildRibbon(n, env);
+  const sp = n.strands[n.spine], end = sp.samples[sp.samples.length - 1], st0 = sp.samples[0];
+  const drift = Math.abs(F.t(end.x, end.z) - F.t(st0.x, st0.z));
+  check('aliased site: the curtain goes straight down the reach, not sideways', drift < 0.05, 'sideways drift '+f2(drift)+' m');
+  const att = []; for(const st of n.strands) if(st) for(const r of st.rows) if(r.air < 0.5 && F.s(r.x, r.z) < -0.5) att.push(r);
+  const buried = att.filter(r => ground(r.x, r.z) > r.y + 0.01).length;
+  check('aliased site: nothing on the approach is buried in the tread', att.length > 50 && buried === 0, buried+' of '+att.length+' rows');
+  const ts = att.map(r => F.t(r.x, r.z));
+  check('aliased site: ...nor pinched in off it (the approach keeps its width)', Math.max(...ts) - Math.min(...ts) > 7, 'span '+f2(Math.max(...ts) - Math.min(...ts))+' m');
+  { const L = leadDoneByDeparture(n, F); check('aliased site: the creek has handed over by the time the water leaves the rock', L.ok, L.info); }
+}
+// 27. A RAGGED BRINK (sunken-shores fall 2, Dante 2026-10-25: a bright wedge just under the lip). The
+//     1 m tiles leave the rock past the lip zigzagging ±0.5 m across, and just after takeoff the jet is
+//     centimetres over it: one row's copies on one side "hit a wall" and were all squeezed onto the
+//     middle strand, folding the sheet into a triangle. Rock that low is ridden over, not a wall.
+{
+  const nx = Math.sin(Math.PI / 6), nz = Math.cos(Math.PI / 6), F = siteFrame(nx, nz), hw = 4;
+  const ground = (x,z) => { const s = F.s(x,z), t = F.t(x,z);
+    if(s < 0) return 10 + (Math.abs(t) > hw + 1 ? 1 : 0);
+    //the face a 1 m ramp, and on the left, just past the brink, a rib of rock standing a couple of
+    //decimetres over the jet's path (the zigzag of the 1 m tiles along fall 2's lip)
+    //(its flanks steep but sloped, as a bilinear tile draws them)
+    const rib = 10.55 - 2.0 * Math.max(Math.abs(t + 2.0) - 1.2, 0.0) - 4.0 * Math.max(Math.abs(s - 0.225) - 0.125, 0.0);
+    return s < 1 ? Math.max(10 - 8 * s, rib) : 2; };
+  const water = (x,z) => { const s = F.s(x,z), t = F.t(x,z);
+    if(s < 0) return Math.abs(t) <= hw ? {level: 10.4, depth: 0.4, vx: 1.5 * nx, vz: 1.5 * nz} : null;
+    return s > 1.2 ? {level: 4, depth: 2, vx: 0.05 * nx, vz: 0.05 * nz} : null; };
+  const env = {groundAt: ground, waterAt: water};
+  const L0 = F.at(0, -hw), L1 = F.at(0, hw);
+  const fall = {top: [0, 10, 0], bottom: [0, 4, 0], width: 8, discharge: 4.8, drop: 6,
+                site: {lip: [[L0[0], 10, L0[1]], [L1[0], 10, L1[1]]], normal: [nx, nz], drop: 8, treadAbove: 10, treadBelow: 2,
+                       approach: 3, landing: 2, wetWidth: 2 * hw, depth: 0.4, discharge: 4.8,
+                       pool: {centre: [0, 4, 0], radius: 4, depth: 2.4, kind: 'dug'}, cascade: 0, step: 0, steps: 1}};
+  const n = N.trace([fall], env), rib = N.buildRibbon(n, env);
+  const byK = new Map();
+  for(const st of n.strands) if(st) for(const r of st.rows) if(r.air >= 0.5 && F.s(r.x, r.z) < 1.0){
+    if(!byK.has(r.k)) byK.set(r.k, []); byK.get(r.k).push(F.t(r.x, r.z)); }
+  const narrow = [...byK.values()].map(ts => Math.max(...ts) - Math.min(...ts)).reduce((m, w) => Math.min(m, w), Infinity);
+  check('ragged brink: every row under the lip keeps the curtain\'s width (no fold)', byK.size > 3 && narrow > 7, 'narrowest row '+f2(narrow)+' m over '+byK.size+' rows');
+  check('ragged brink: ...and rides over the ribs, none of it in the rock', trianglesInside(rib, ground, 0.02) === 0, trianglesInside(rib, ground, 0.02)+' triangles');
+  { const L = leadDoneByDeparture(n, F); check('ragged brink: the creek has handed over by the time the water leaves the rock', L.ok, L.info); }
+}
+// 28. A HOP BEFORE THE BRINK (sunken-shores fall 2, 2026-10-25): the 1 m tiles leave a small step a
+//     little under a metre before the lip, and the water hops off it before the fall proper. The creek
+//     must have handed over by that first departure: after it the sheet runs under the creek's flat
+//     level, which drew thin strips across the brink.
+{
+  const nx = Math.sin(Math.PI / 6), nz = Math.cos(Math.PI / 6), F = siteFrame(nx, nz), hw = 4;
+  const ground = (x,z) => { const s = F.s(x,z);
+    if(s < -0.8) return 10;
+    if(s < 0) return 9.9;
+    return s < 1 ? 9.9 - 8 * s : 2; };
+  const water = (x,z) => { const s = F.s(x,z), t = F.t(x,z);
+    if(s < 0) return Math.abs(t) <= hw ? {level: 10.4, depth: 0.4, vx: 2.5 * nx, vz: 2.5 * nz} : null;
+    return s > 1.2 ? {level: 4, depth: 2, vx: 0.05 * nx, vz: 0.05 * nz} : null; };
+  const env = {groundAt: ground, waterAt: water};
+  const L0 = F.at(0, -hw), L1 = F.at(0, hw);
+  const fall = {top: [0, 10, 0], bottom: [0, 4, 0], width: 8, discharge: 8, drop: 6,
+                site: {lip: [[L0[0], 9.8, L0[1]], [L1[0], 9.8, L1[1]]], normal: [nx, nz], drop: 8, treadAbove: 9.8, treadBelow: 2,
+                       approach: 3, landing: 2, wetWidth: 2 * hw, depth: 0.4, discharge: 8,
+                       pool: {centre: [0, 4, 0], radius: 4, depth: 2.4, kind: 'dug'}, cascade: 0, step: 0, steps: 1}};
+  const n = N.trace([fall], env);
+  const sp = n.strands[n.spine], firstAir = sp.rows.find(r => r.air >= 0.5), fallRow = sp.rows.find(r => (r.fallFlag !== undefined ? r.fallFlag : r.presence) > 0.5);
+  const hop = firstAir && fallRow && F.s(fallRow.x, fallRow.z) - F.s(firstAir.x, firstAir.z);
+  check('hop: the fixture hops before it falls', hop > 0.2, 'first air at s '+(firstAir ? f2(F.s(firstAir.x, firstAir.z)) : '-')+', fall run at s '+(fallRow ? f2(F.s(fallRow.x, fallRow.z)) : '-'));
+  { const L = leadDoneByDeparture(n, F); check('hop: the creek has handed over by the first departure', L.ok, L.info); }
 }
 // 22. a carved STAIRCASE: every step is a chain of its own (each lands in its own pool and leaves
 //     off its own approach), and each step's trace falls off ITS lip, square to it.
@@ -369,5 +522,23 @@ const siteFrame = (nx, nz) => ({s: (x,z) => x * nx + z * nz, t: (x,z) => x * nz 
     const c = N.chains(m.simulation.waterfalls);
     console.log('island-sholes chains:', c.map(ch=>ch.length+'@'+ch[0].top.map(v=>v.toFixed(0)).join(',')).join(' | '));
   }
+}
+// 23. A FALL IN A CANYON with no carved site (hand-sculpted terrain, Dante 2026-10-24): the creek
+//     runs +Z down a slot whose west wall is a cliff. The disc round the lip straddles that wall,
+//     so the ground's mean downhill swings toward +X, across the gorge. a-land's exported normal
+//     (along the reach) disagrees by more than lipNormalAgree and wins; without it the old
+//     heading documents the bug.
+{
+  const wall = x => x < -1.5 ? 30 * (-1.5 - x) : (x > 1.5 ? 0.5 * (x - 1.5) : 0);
+  const ground = (x,z) => (z < 0 ? 10 : (z < 2 ? 10 - 3 * z : 4)) + wall(x);
+  const water = (x,z) => Math.abs(x) <= 1.5 ? {level: ground(x,z) + 0.3, depth: 0.3, vx: 0, vz: 1.5} : null;
+  const env = {groundAt: ground, waterAt: water};
+  const base = {top: [0, 10, 0], bottom: [0, 4, 2], width: 3, discharge: 1.5, drop: 6};
+  const old = N.beginTrace([base], env);
+  const job = N.beginTrace([Object.assign({normal: [0, 1]}, base)], env);
+  check('canyon: without a-land\'s normal the walls swing the heading (documents the bug)', old && old.hz < Math.cos(Math.PI / 4), old && 'h '+f2(old.hx)+','+f2(old.hz));
+  check('canyon: with it the sheet heads down the creek', job && Math.abs(job.hx) < 1e-9 && Math.abs(job.hz - 1) < 1e-9, job && 'h '+f2(job.hx)+','+f2(job.hz));
+  const clean = N.beginTrace([Object.assign({normal: [0.3, 0.954]}, base)], {groundAt: (x,z) => (z < 0 ? 10 : (z < 2 ? 10 - 3 * z : 4)), waterAt: water});
+  check('canyon: on a clean edge the ground still wins (square to the lip)', clean && Math.abs(clean.hx) < 0.05 && clean.hz > 0.99, clean && 'h '+f2(clean.hx)+','+f2(clean.hz));
 }
 process.exit(fails?1:0);

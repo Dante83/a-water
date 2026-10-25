@@ -173,6 +173,7 @@ ARestlessOcean.OceanSplash = function(oceanGrid, scene, configOverrides){
   this.fallSprayEnabled = true;
   this.fallMistVolumetric = true;   //the falls' mist is the volumetric WaterfallMistPass's while it is up (false: the old puffs, type 2)
   this.fallMistVolumetricActive = false;   //set by the grid each frame: that pass is drawing
+  this.fallMistHulled = null;              //...and the nappes it has a hull for (WeakSet; null: all of them)
   this.fallSplashWithVolumetric = false;   //true: keep the old type-3 splash clumps (the white footballs) at the foot while the volumetric mist is drawing. They are due to be rebuilt, so off for now.
   this.fallSprayRate = 0.0;         //FUDGE: emitImpact countScale per (m³/s of discharge) per second.
                                     //0 since Phase 6 round 9: the impact burst throws the sea's foam
@@ -1139,6 +1140,7 @@ ARestlessOcean.OceanSplash.prototype._emitFalls = function(falls, dt, camX, camZ
     const ref = ARestlessOcean.OceanSplash.IMPACT_REF_SPEED;
     for(let n = 0; n < nappes.length; ++n){
       const nap = nappes[n];
+      const hulled = this.fallMistVolumetricActive && (!this.fallMistHulled || this.fallMistHulled.has(nap));
       for(let i = 0; i < nap.impacts.length; ++i){
         const im = nap.impacts[i];
         const dx = im.x - camX, dz = im.z - camZ;
@@ -1166,7 +1168,7 @@ ARestlessOcean.OceanSplash.prototype._emitFalls = function(falls, dt, camX, camZ
         }
         //The mist: spread across the fall's width at the impact, rolling out mostly
         //downstream and rising slowly; high drag and little gravity (coarse ≈ 0) let it hang.
-        const want = this.fallMistVolumetricActive ? 0.0 : this.fallMistRate * imQ * energy * dt;
+        const want = hulled ? 0.0 : this.fallMistRate * imQ * energy * dt;
         let count = Math.floor(want);
         if(Math.random() < want - count) ++count;
         for(let c = 0; c < count; ++c){
@@ -1182,6 +1184,9 @@ ARestlessOcean.OceanSplash.prototype._emitFalls = function(falls, dt, camX, camZ
             this.fallMistLife * (0.8 + 0.5 * Math.random()),
             2.0, 0.03 * Math.random());
         }
+        //The splash clumps stay off while the volumetric mist is up at all (not per fall like the
+        //mist puffs above): they are due to be rebuilt, and per fall they came back as footballs
+        //at every fall without a cone (Dante, 2026-10-25).
         if(!this.fallMistVolumetricActive || this.fallSplashWithVolumetric) this._emitFallSplash(im, nap, speed, energy, dt, hx, hz);
       }
     }
@@ -1201,6 +1206,8 @@ ARestlessOcean.OceanSplash.prototype._emitFalls = function(falls, dt, camX, camZ
     let hx = bot[0] - top[0], hz = bot[2] - top[2];
     const run = Math.sqrt(hx * hx + hz * hz);
     if(run > 1e-3){ hx /= run; hz /= run; } else { hx = 1.0; hz = 0.0; }
+    //a-land's reach normal when it has one: top → bottom is a D8 step, 8 directions only
+    if(f.normal && f.normal.length === 2){ hx = f.normal[0]; hz = f.normal[1]; }
     const vh = run / Math.sqrt(2.0 * drop / this.gravity);
     this.emitImpact(bot[0], bot[1] + 0.1, bot[2], 0.0, 1.0, 0.0, v,
       -hz, hx, f.width || 4.0, this.fallSprayRate * (f.discharge || 0.0) * dt,

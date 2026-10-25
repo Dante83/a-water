@@ -3549,8 +3549,11 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
         const _msr = self.skyDirector.renderers.meteringSurveyRenderer;
         _meterTex = _msr.meteringSurveyRenderer.getCurrentRenderTarget(_msr.meteringSurveyVar).texture;
       }
-      //The volumetric mist takes over the falls' mist puffs while it is up (type 3 clumps stay).
+      //The volumetric mist takes over the falls' mist puffs while it is up (type 3 clumps stay),
+      //but only for the falls it has a hull for: one fall's cone used to silence every fall's
+      //puffs, and a fall too short or broken for a cone had no mist at all (sunken-shores, 2026-10-25).
       sp.fallMistVolumetricActive = !!(sp.fallMistVolumetric && self.waterfallMistPass && self.waterfallMistPass.wantVisible);
+      sp.fallMistHulled = sp.fallMistVolumetricActive ? self.waterfallMistPass.hulledNappes : null;
       sp.tick({
         time: time,
         ambientPiFix: self.ambientPiFix,

@@ -86,7 +86,7 @@ entirely and stale files from an earlier bake are ignorable.
 ### `map.json` `simulation` block (field already reserved in a-land's schema)
 ```json
 "simulation": {
-  "version": "0.2.0",
+  "version": "0.2.1",
   "seaLevel": 12.0,
   "maxDepth": 60.0,
   "velocityRange": 8.0,
@@ -102,9 +102,17 @@ explicitly out of scope for v1. As the exporter writes it (a-land `save.js`): `t
 `bottom` are cell-centre points at **ground (bed) height**, `top` the first fall cell and
 `bottom` the first cell below the run; `drop` = ground(top) − ground(bottom) in metres;
 `width` is the hydraulic-geometry channel width (4·√Q) and `discharge` the largest Q along
-the run. No lip line and no direction. a-water's Phase 6 (`WaterfallNappe`) therefore
-re-derives the lip, the width and the flow from the terrain and the water tiles, and uses
-these entries only to find and chain the falls.
+the run. No lip line. a-water's Phase 6 (`WaterfallNappe`) therefore re-derives the lip,
+the width and the flow from the terrain and the water tiles, and uses these entries only to
+find and chain the falls.
+
+**`normal` (optional, 2026-10-24): `[nx, nz]`**, the world-XZ unit direction the water goes
+over, measured along the flow path from max(4 m, width) above `top` to as far below `bottom`
+(so not D8-quantized). a-water uses the ground's own lip normal where the two agree within
+`lipNormalAgree` (45°), and this one where they don't: in a canyon the ground disc reads the
+walls. Foam and spray fall back to it instead of `bottom − top`. Falls carrying under 0.5 m³/s
+are no longer exported (a trickle down a face is a steep creek), and falls side by side over
+one edge are merged into one entry (summed `discharge`, `width` spanning the lips).
 
 **`site` (0.2.0, optional): the carved fall site.** With `carveChannels` on, a-land carves every
 fall into one canonical shape (WaterSolve `carveChannels` stage 1c, `carveFallSites`; decided with
@@ -141,6 +149,20 @@ Each step is its own `waterfalls[]` entry, carrying:
 - `pool.centre[1]`: the pool's water level.
 - `cascade` / `step` / `steps`: the entry's place in its staircase. The steps of one `cascade` chain in
   `step` order, and their treads are longer than a-water's 6 m `chainGap`.
+
+**One entry per site (0.2.1, 2026-10-25).** A site owns its fall: every flow strand that goes
+over its lip is folded into ONE entry, written from the site, not from D8 cells:
+- `top` is the lip centre at the tread's bed height.
+- `bottom` is the pool centre at the pool's **water level** (`pool.centre`), not the pool bed.
+- `normal` is `site.normal`.
+- `width` is `wetWidth`.
+- `drop` runs from the tread down to the pool surface.
+- `discharge` is the larger of the site's and the strands' sum.
+
+Before 0.2.1, a site was handed to one strand only. Its neighbours exported bare entries, each
+traced as a sheet of its own: one lip gave several crooked sheets, with `normal` up to 24° off
+`site.normal` and the foot on the pool bed. A strand that joins another fall partway down the
+face is that fall's water and is not exported at all.
 
 Entries without `site` are falls the carve did not shape: hand-made terrain, a world baked before
 0.2.0, or a site that would have dug more than `carveFallMaxCutM` into the hill. a-water traces those as

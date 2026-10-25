@@ -95,6 +95,8 @@ ARestlessOcean.WaterfallNappe = {};
     hopDropLo: 0.25,            //m an airborne stretch must fall to start counting as a fall ...
     hopDropHi: 0.75,            //... and to count fully
     lipNormalRadius: 3.0,       //m: the disc round a lip whose mean downhill sets the heading
+    lipNormalAgree: 45,         //deg: a ground normal further than this from the exported fall normal
+                                //is reading canyon walls, not the lip, and the exported one wins
     brinkLead: 3.0,             //m the sheet leads into each takeoff ...
     fallSmooth: 0.5,            //m inside each end of a fall over which its lumps ramp in and out
     landTail: 3.0,              //... and runs on after each landing (see resample). Generous: the
@@ -120,6 +122,8 @@ ARestlessOcean.WaterfallNappe = {};
     corridorLength: 4.0,         //m of plan length per corridor box
     corridorMargin: 2.0,         //m added to the half-width: the creek's ramp runs a metre or two past the
                                  //lip span at the foot (bank slivers at hero-creek with 0.75)
+    corridorLeadMargin: 0.5,     //...and to the LEAD box's (the approach's cross-dissolve): the sheet's soft edge only
+    corridorLeadEarly: 1.0,      //m before a fall's run the dissolve may finish early, at the water's first departure
     wetScanStep: 0.25,          //m, across-flow step of the wet-width scan
     wetGap: 2.0,                //m of dry the scan steps over inside a lip (a rock in the water); the seeds on
                                 //it are skipped, so the sheet tears round the rock (beginTrace)
@@ -141,7 +145,13 @@ ARestlessOcean.WaterfallNappe = {};
     tearGroundTolerance: 0.05,  //m the ground may stand above the midpoint between two strands before the sheet tears
     impactClusterWidth: 2.5,    //m of neighbouring strands' touchdowns merged into one impact (FlowFoamPass keeps
                                 //only its nearest 16 over every fall: a 4-step cascade at 1.5 m filled it)
-    sheetDragCd: 1.0            //air drag coefficient on the airborne sheet, face-on (FUDGE: flat-plate order of magnitude)
+    sheetDragCd: 1.0,           //air drag coefficient on the airborne sheet, face-on (FUDGE: flat-plate order of magnitude)
+    siteCurtain: true,          //a carved site's sheet is ONE curtain: the middle strand traced, copied across the
+                                //wet width, and carried down to the pool's surface (stepTrace)
+    curtainLiftMax: 0.5,        //m of rock over an airborne curtain copy that it rides over; more is a wall it is
+                                //squeezed in from (shiftStrand)
+    curtainClearance: 0.1,      //m a lifted copy clears the rock by
+    curtainEase: 2.0            //m of squeeze or lift that may change per metre of path (no fold between rows)
   };
 
   function opt(o, k){ return (o && o[k] !== undefined) ? o[k] : N.DEFAULTS[k]; }
@@ -261,10 +271,15 @@ ARestlessOcean.WaterfallNappe = {};
   //Null when (x, z) itself is dry or the water is unknown. maxGap (m, optional): dry runs up
   //to this long inside the span do not end it (a rock standing in a wide lip: falls-lab C's
   //1.5 m notch cut its scan, and the curtain, to 9 of its 20 m).
-  N.wetSpan = function(env, x, z, ax, az, maxW, step, minDepth, maxGap){
+  //minOver: the water's level must also stand that far over the ground (the creek's own guard;
+  //a bank texel beside a carve keeps a depth while its level runs under the ground). Optional.
+  N.wetSpan = function(env, x, z, ax, az, maxW, step, minDepth, maxGap, minOver){
     const isWet = function(d){
-      const w = waterHere(env, x + ax * d, z + az * d);
-      return !!w && w.depth >= minDepth;
+      const px = x + ax * d, pz = z + az * d, w = waterHere(env, px, pz);
+      if(!w || !(w.depth >= minDepth)) return false;
+      if(!(minOver > 0) || w.level == null) return true;
+      const g = env.groundAt(px, pz);
+      return g == null || w.level >= g + minOver;
     };
     if(!isWet(0.0)) return null;
     const half = 0.5 * maxW, gap = maxGap || 0.0;
@@ -372,8 +387,19 @@ ARestlessOcean.WaterfallNappe = {};
     const lipN = N.lipDownhill(env, first.top[0], first.top[2], Math.min(Math.max(0.25 * W, lipR), 8.0))
               || N.lipDownhill(env, first.top[0], first.top[2], lipR);
     const w0 = env.waterAt ? env.waterAt(first.top[0], first.top[2]) : null;
-    if(lipN){
+    //a-land's `normal` (optional): the reach's direction over the lip, measured along the flow
+    //path several metres either side, so it is not D8-quantized. The ground's normal still wins
+    //where the two agree within lipNormalAgree, since the sheet leaves square to a clean edge.
+    //Where they disagree the disc is reading something other than the lip: in a canyon it
+    //straddles the walls, and the sheet fired sideways across the gorge (Dante 2026-10-24).
+    const fN = (first.normal && first.normal.length === 2 && isFinite(first.normal[0]) && isFinite(first.normal[1]))
+             ? first.normal : null;
+    if(lipN && fN && lipN[0] * fN[0] + lipN[1] * fN[1] < Math.cos(opt(o, 'lipNormalAgree') * Math.PI / 180.0)){
+      hx = fN[0]; hz = fN[1]; hl = Math.sqrt(hx * hx + hz * hz);
+    } else if(lipN){
       hx = lipN[0]; hz = lipN[1]; hl = 1.0;
+    } else if(fN){
+      hx = fN[0]; hz = fN[1]; hl = Math.sqrt(hx * hx + hz * hz);
     } else if(w0 && w0.vx != null && Math.sqrt(w0.vx * w0.vx + w0.vz * w0.vz) > 0.1){
       hx = w0.vx; hz = w0.vz; hl = Math.sqrt(hx * hx + hz * hz);
     }
@@ -459,14 +485,30 @@ ARestlessOcean.WaterfallNappe = {};
     if(env.groundAt(px, pz) == null) return null;
     //the flat bed runs the whole wet width; the edge seeds sit half a spacing in from its ends,
     //where the bank starts to rise
-    const span = Math.max(t.wetWidth - opt(o, 'strandSpacing'), opt(o, 'minWidth'));
+    let span = Math.max(t.wetWidth - opt(o, 'strandSpacing'), opt(o, 'minWidth')), spanOff = 0.0;
+    //...or out to the creek the field VISIBLY draws over the last metres before the lip, if that
+    //is wider: the 1 m tiles' bilinear banks hold drawn water a few tenths past the carve's wet
+    //width, and it ran past the curtain's sides to the lip and was cut there (the creek steps
+    //aside where its level is steep): glassy strips and square notches beside fall 9, Dante
+    //2026-10-25. Never past the shoulders.
+    const step = opt(o, 'wetScanStep'), maxW = t.wetWidth + 2.0 * (t.shoulder > 0 ? t.shoulder : 1.5);
+    let lo = 0.0, hi = 0.0;
+    for(const back of [1.0, 1.5, 2.0]){
+      if(back > up + 0.5) continue;
+      const vis = N.wetSpan(env, cx - hx * back, cz - hz * back, -hz, hx, maxW, step, opt(o, 'visibleDepth'), step, 0.03);
+      if(!vis) continue;
+      const half = 0.5 * (vis.width - step);
+      lo = Math.min(lo, vis.offset - half); hi = Math.max(hi, vis.offset + half);
+    }
+    //(the edge seeds half a scan step in from the outermost wet samples, off the bank's foot)
+    if(hi - lo - step > span){ span = hi - lo - step; spanOff = 0.5 * (lo + hi); }
     //The strands ride the approach (the rail: carried along the heading on the creek's surface)
     //to a metre short of the lip line, where the 1 m tiles' face ramp begins. Free to take off
     //anywhere, slow water (1.4 m/s on falls-lab D's lower step) left 2 m early and flew flat over
     //the last of the approach: a white slab jutting over the lip, the fall hanging behind it.
     return seedTrace(chain, env, o, {hx: hx, hz: hz, lx: lx, lz: lz, up: up, rail: Math.max(0.0, up - 1.0),
                                       px: px, pz: pz, W: t.wetWidth, Q: t.discharge > 0 ? t.discharge : Q,
-                                      span: span, spanOff: 0.0, skipDry: false, site: t});
+                                      span: span, spanOff: spanOff, skipDry: false, site: t});
   }
 
   //Seeds across the start line (both paths above): an odd count spread over `span`, each with
@@ -514,6 +556,34 @@ ARestlessOcean.WaterfallNappe = {};
 
   N.stepTrace = function(job, k){
     const nS = job.seeds.length;
+    //A CARVED SITE is one curtain. a-land cut its lip straight and level across the wet width,
+    //its face sheer and its pool at a known level, so every strand would fall the same path a
+    //seed spacing apart. Traced one by one, the 1 m bilinear terrain and the field's per-texel
+    //water sent them off at different moments, slid some down the face ramp, stopped others on
+    //it: the weave only spans rows both neighbours have, so the curtain came out in strips with
+    //sawtooth feet, ending in mid-air (sunken-shores, Dante 2026-10-25). Here the middle strand
+    //is traced once, carried down to the pool's surface if it stopped short, and copied across.
+    //A middle strand that never falls leaves the site to the skirt as before.
+    if(job.site && opt(job.o, 'siteCurtain') && !job.curtainTried && job.next === 0){
+      job.curtainTried = true;
+      let c = -1;
+      for(let d = 0; d <= job.nHalf && c < 0; ++d){
+        if(job.seeds[job.nHalf - d]) c = job.nHalf - d;
+        else if(job.seeds[job.nHalf + d]) c = job.nHalf + d;
+      }
+      const sp = c >= 0 ? N.traceStrand(job.seeds[c], job) : null;
+      if(sp && sp.takeoff){
+        reachPool(sp, job);
+        const sc = job.seeds[c], ax = -job.hz, az = job.hx;
+        for(let j = 0; j < nS; ++j){
+          const sd = job.seeds[j];
+          job.strands[j] = !sd ? null : (j === c ? sp : shiftStrand(sp, (sd.x - sc.x) * ax + (sd.z - sc.z) * az, ax, az, sd.share, job.env, job.o, job.spacing));
+        }
+        job.next = nS;
+        job.nappe = finishTrace(job);
+        return true;
+      }
+    }
     for(let n = 0; n < k && job.next < nS; ++n, ++job.next){
       const sd = job.seeds[job.next];
       job.strands[job.next] = sd ? N.traceStrand(sd, job) : null;
@@ -574,7 +644,17 @@ ARestlessOcean.WaterfallNappe = {};
     let everAirborneOrSteep = false;
     const samples = [], impacts = [];
     let plunge = null;
+    //At a carved site the water goes straight over: the lip is square to the reach, so nothing
+    //turns it. The terrain says otherwise only by aliasing: a face diagonal to the 1 m tiles is a
+    //staircase, its brink varies 1.5 m across a metre, and the parcel sliding off it was thrown
+    //sideways, the whole curtain with it (sunken-shores fall 0, Dante 2026-10-25). Held to its
+    //seed's line along the heading, sideways speed dropped.
+    const lockX = job.site ? -hz : 0.0, lockZ = job.site ? hx : 0.0;
     const pushSample = function(){
+      if(job.site){
+        const off = (px - seed.x) * lockX + (pz - seed.z) * lockZ, va = vx * lockX + vz * lockZ;
+        px -= off * lockX; pz -= off * lockZ; vx -= va * lockX; vz -= va * lockZ;
+      }
       const s = Math.sqrt(vx * vx + vy * vy + vz * vz);
       const shl = Math.sqrt(vx * vx + vz * vz);
       samples.push({x: px, y: py, z: pz, tau: tau, speed: s, h: thickness(s),
@@ -892,6 +972,122 @@ ARestlessOcean.WaterfallNappe = {};
     N.prepareStrand(strand, o);
     return strand;
   };
+
+  //A copy of strand `st` moved `a` metres across (ax, az): a curtain's strand beside the traced
+  //one. Where rock stands between it and the traced strand at its height (a gorge narrower below
+  //the lip than the lip is wide), it is pulled in to the wall: the curtain squeezes between the
+  //walls instead of passing through them (sunken-shores' hourglass, Dante 2026-10-25).
+  //On the bed (the approach, the run-out) it rides up over ground that stands higher beside the
+  //traced strand than under it: the carve's level tread comes out ±0.3 m on the 1 m tiles, and a
+  //copy at the traced strand's height was buried at the curtain's edges (falls 1 and 9).
+  //In the air, only rock standing more than curtainLiftMax over the sheet is a wall to squeeze in
+  //for; less is the 1 m tiles' zigzag (±0.5 m along a carved lip) and the copy rides over it,
+  //lifted to curtainClearance above it. Squeezing at every graze folded single rows just past the
+  //takeoff, where the jet is centimetres over the rock, into a triangle (fall 2, 2026-10-25).
+  //Both the squeeze and the lift are eased along the strand (curtainEase metres per metre of
+  //path), so neither steps between rows.
+  //It clears the highest rock between it and its neighbours (±sp, the seed spacing, across; a row
+  //either way along), not just the rock under it: the sheet between two copies is a straight
+  //chord, and a rib's shoulder stood through it.
+  function shiftStrand(st, a, ax, az, share, env, o, sp){
+    const sg = a < 0 ? -1.0 : 1.0, aa = Math.abs(a), S = st.samples, n = S.length, w = sp > 0 ? sp : 0.0;
+    const liftMax = opt(o, 'curtainLiftMax'), clr = opt(o, 'curtainClearance'), ease = opt(o, 'curtainEase');
+    const off = new Float64Array(n), lift = new Float64Array(n);
+    for(let i = 0; i < n; ++i){
+      const p = S[i];
+      if(p.air < 0.5){
+        const g0 = env.groundAt(p.x, p.z), g1 = env.groundAt(p.x + a * ax, p.z + a * az);
+        off[i] = aa;
+        lift[i] = (g0 != null && g1 != null) ? Math.max(g1 - g0, 0.0) : 0.0;
+        continue;
+      }
+      off[i] = freeAcross(env, p.x, p.y + liftMax - clr - 0.05, p.z, sg * ax, sg * az, aa);
+      let g = null;
+      const fx = p.hx || 0.0, fz = p.hz || 0.0;   //...and a row either way along the flight (rows ~0.2 m apart)
+      for(let u = -w; u <= w + 1e-6; u += Math.max(0.1, w / 5)){
+        for(let v = -0.25; v <= 0.25 + 1e-6; v += 0.25){
+          const gu = env.groundAt(p.x + (sg * off[i] + u) * ax + v * fx, p.z + (sg * off[i] + u) * az + v * fz);
+          if(gu != null && (g == null || gu > g)) g = gu;
+        }
+      }
+      lift[i] = g != null ? Math.min(Math.max(g + clr - p.y, 0.0), liftMax) : 0.0;
+    }
+    const run = function(i, j){ return Math.hypot(S[i].x - S[j].x, S[i].y - S[j].y, S[i].z - S[j].z); };
+    //(the squeeze only in the air: on the approach a copy keeps its place and drapes, as above)
+    for(let pass = 0; pass < 2; ++pass){
+      for(let i = 1; i < n; ++i){
+        const d = ease * run(i, i - 1);
+        if(S[i].air >= 0.5) off[i] = Math.min(off[i], off[i - 1] + d);
+        lift[i] = Math.max(lift[i], lift[i - 1] - d);
+      }
+      for(let i = n - 2; i >= 0; --i){
+        const d = ease * run(i, i + 1);
+        if(S[i].air >= 0.5) off[i] = Math.min(off[i], off[i + 1] + d);
+        lift[i] = Math.max(lift[i], lift[i + 1] - d);
+      }
+    }
+    const at = function(p, k, up){ return Object.assign({}, p, {x: p.x + sg * k * ax, y: p.y + up, z: p.z + sg * k * az}); };
+    const samples = S.map(function(p, i){ return at(p, off[i], lift[i]); });
+    //Impacts move with the sample nearest them (a plunge sits on the pool's surface: never lifted).
+    const near = function(q){
+      let b = 0, bd = Infinity;
+      for(let i = 0; i < n; ++i){ const d = (S[i].x - q.x) * (S[i].x - q.x) + (S[i].z - q.z) * (S[i].z - q.z); if(d < bd){ bd = d; b = i; } }
+      return b;
+    };
+    const impacts = st.impacts.map(function(q){ const i = near(q); return at(q, off[i], q === st.plunge ? 0.0 : lift[i]); });
+    const pi = st.plunge ? st.impacts.indexOf(st.plunge) : -1;
+    return Object.assign({}, st, {samples: samples, impacts: impacts, rows: [],
+                                  plunge: pi >= 0 ? impacts[pi] : null, share: share});
+  }
+
+  //How far (≤ maxA) one can go from (x, z) along (dx, dz) at height y before ground stands
+  //more than 5 cm over it.
+  function freeAcross(env, x, y, z, dx, dz, maxA){
+    const step = 0.1;
+    let d = 0.0;
+    while(d < maxA){
+      const n = Math.min(d + step, maxA), g = env.groundAt(x + dx * n, z + dz * n);
+      if(g != null && g > y + 0.05) break;
+      d = n;
+    }
+    return d;
+  }
+
+  //A site's strand that came to rest above its pool (stopped on the face's ramp, ran into a bank
+  //where the terrain does not match the carve, or stalled) falls on from where it stopped to
+  //plungeDepth under the pool's surface (site.pool.centre[1]), as a free jet with the speed it had,
+  //and plunges there. Never into ground: it ends where ground stands over it.
+  function reachPool(st, job){
+    const o = job.o, t = job.site, S = st.samples;
+    if(st.stop === 'plunge' || !t.pool || !t.pool.centre || S.length < 2) return;
+    const level = t.pool.centre[1], bottom = level - opt(o, 'plungeDepth');
+    const L = S[S.length - 1], P = S[S.length - 2];
+    if(!(L.y > bottom)) return;
+    const dt = opt(o, 'dt'), seg = Math.max(L.tau - P.tau, 1e-6);
+    let vx = (L.x - P.x) / seg, vy = Math.min((L.y - P.y) / seg, 0.0), vz = (L.z - P.z) / seg;
+    let x = L.x, y = L.y, z = L.z, tau = L.tau, A = -Math.log(Math.max(1.0 - L.aer, 1e-6));
+    const hc = st.hc;
+    let plunge = null;
+    for(let it = 0; it < 6000 && y > bottom; ++it){
+      vy -= G * dt;
+      const ox = x, oy = y, oz = z;
+      x += vx * dt; y += vy * dt; z += vz * dt; tau += dt;
+      const g = job.env.groundAt(x, z);
+      if(g != null && g > y + 0.05 && !(g < level)){ x = ox; y = oy; z = oz; break; }
+      A += Math.max(oy - y, 0.0) / st.Lb;
+      const sp = Math.sqrt(vx * vx + vy * vy + vz * vz), shl = Math.hypot(vx, vz);
+      if(!plunge && y <= level){
+        plunge = {x: x, y: level, z: z, vx: vx, vy: vy, vz: vz, nx: 0, ny: 1, nz: 0, vn: Math.max(-vy, 0.0), level: level, w: 1.0};
+        st.impacts.push(plunge);
+        A += Math.max(-vy, 0.0) / opt(o, 'impactAerationSpeed');
+      }
+      S.push({x: x, y: y, z: z, tau: tau, speed: sp, h: Math.min(Math.max(st.q / Math.max(sp, 1e-3), opt(o, 'minDepth')), 2.0 * hc),
+              air: 1.0, aer: 1.0 - Math.exp(-A), dive: 0.0, bed: 0.0,
+              hx: shl > 1e-4 ? vx / shl : L.hx, hz: shl > 1e-4 ? vz / shl : L.hz});
+    }
+    if(plunge){ st.plunge = plunge; st.stop = 'plunge'; }
+    N.prepareStrand(st, o);
+  }
 
   //The chain's result from its strands: the skirt, the spine (the middle strand that falls),
   //the corridors and the impacts.
@@ -1270,8 +1466,9 @@ ARestlessOcean.WaterfallNappe = {};
     //skirt's strands (not the old single-parcel nappe) each box is as wide as the sheet it covers.
     const S = nappe.strands, spacing = nappe.spacing || 0.0, margin = opt(o, 'corridorMargin');
     const atS = S ? S.map(rowIndexer) : null, k0Spine = rows.length ? rows[0].k : 0;
-    const boxR = function(ka, kb){
-      if(!atS) return r;
+    const boxR = function(ka, kb, mg){
+      if(mg === undefined) mg = margin;
+      if(!atS) return r - margin + mg;
       let m = 0.0;
       for(let k = Math.min(ka, kb); k <= Math.max(ka, kb); ++k){
         const b = rows[k - k0Spine];
@@ -1281,7 +1478,7 @@ ARestlessOcean.WaterfallNappe = {};
           if(a && a.presence >= 0.01) m = Math.max(m, Math.hypot(a.x - b.x, a.z - b.z));
         }
       }
-      return Math.max(m + 0.5 * spacing, 0.5 * opt(o, 'minWidth')) + margin;
+      return Math.max(m + 0.5 * spacing, 0.5 * opt(o, 'minWidth')) + mg;
     };
     const caps = [];
     const isFall = function(row){ return (row.fallFlag !== undefined ? row.fallFlag : row.presence) > 0.5; };
@@ -1294,8 +1491,16 @@ ARestlessOcean.WaterfallNappe = {};
       //is covered: past the landing the creek keeps its foamy surface (round 10).
       let j = i;
       while(j < rows.length && isFall(rows[j])) ++j;
-      let k = i;
-      while(k > 0 && rows[i].s - rows[k - 1].s <= leadLen) --k;
+      //The cross-dissolve finishes where the water first leaves the rock (the earliest airborne row
+      //within corridorLeadEarly metres before the fall's run; a hop off the brink comes first), not
+      //at the run itself: past the departure the sheet dips under the creek's flat level, which still
+      //drew at 10-20 % there over a sheet the plunge blend hides, thin strips across the brink (fall 2,
+      //2026-10-25).
+      let i0 = i;
+      for(let m = i - 1; m >= 0 && rows[i].s - rows[m].s <= opt(o, 'corridorLeadEarly'); --m) if(rows[m].air >= 0.5) i0 = m;
+      const early = rows[i].s - rows[i0].s;
+      let k = i0;
+      while(k > 0 && rows[i0].s - rows[k - 1].s <= leadLen) --k;
       //...and its LAST box runs corridorTail metres past the landing. The creek's level is a
       //1 m heightfield, so it is still ramping down from the brink onto the pool for a metre
       //or so past where the water lands; a box ending AT the landing handed that ramp back to
@@ -1312,7 +1517,7 @@ ARestlessOcean.WaterfallNappe = {};
       //turned them with the fall's drift: 9° at falls-lab A, a diagonal seam across a straight
       //lip (Dante's first shot, 2026-09-23). Square to the lip = the chain's heading (the lip
       //normal) on the first fall, the water's own plan heading at the takeoff on later ones.
-      const lead = rows[i].s - rows[k].s;
+      const lead = rows[i0].s - rows[k].s;
       if(lead > 0.05){
         const first = caps.length === 0 && nappe.hx !== undefined;
         //A carved staircase knows every lip's normal: the step's own site, nearest this takeoff.
@@ -1320,7 +1525,12 @@ ARestlessOcean.WaterfallNappe = {};
         let dx = first ? nappe.hx : (st ? st.normal[0] : rows[i].hx), dz = first ? nappe.hz : (st ? st.normal[1] : rows[i].hz);
         const dl = Math.hypot(dx, dz) || 1.0;
         dx /= dl; dz /= dl;
-        caps.push({ax: rows[i].x - dx * lead, az: rows[i].z - dz * lead, bx: rows[i].x, bz: rows[i].z, r: boxR(rows[k].k, rows[i].k), lead: lead});
+        //Only as wide as the sheet (corridorLeadMargin for the soft edge): the margin is for the
+        //face, where the creek's level drapes down the cliff beside the sheet. On the flat approach
+        //the creek beside the sheet faded out with nothing drawn in its place, a square notch of
+        //bare ground each side of the lip (sunken-shores fall 9, Dante 2026-10-25).
+        caps.push({ax: rows[i].x - dx * (lead + early), az: rows[i].z - dz * (lead + early), bx: rows[i].x, bz: rows[i].z,
+                   r: boxR(rows[k].k, rows[i].k, opt(o, 'corridorLeadMargin')), lead: lead});
       }
       let start = rows[i], plan = 0.0, prev = rows[i];
       for(let m = i; m < e; ++m){

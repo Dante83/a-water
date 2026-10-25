@@ -35,6 +35,9 @@ ARestlessOcean.Passes.WaterfallMistPass = function(oceanGrid, sheetPass){
   this.hullOptions = {};
   this._geometryVersion = -1;
   this._hulls = new WeakMap();
+  //The nappes that got a hull in the current geometry: OceanSplash keeps the old mist puffs for
+  //every other fall (a short or broken curtain builds none).
+  this.hulledNappes = new WeakSet();
   this._atmReady = false;
 };
 
@@ -120,6 +123,7 @@ ARestlessOcean.Passes.WaterfallMistPass.prototype.init = function(scene){
 ARestlessOcean.Passes.WaterfallMistPass.prototype._rebuildGeometry = function(){
   const sp = this.sheetPass;
   const hulls = [];
+  this.hulledNappes = new WeakSet();
   let nV = 0, nI = 0;
   for(let i = 0; i < sp.cascades.length; ++i){
     const rib = sp.cascades[i].ribbon;
@@ -129,8 +133,9 @@ ARestlessOcean.Passes.WaterfallMistPass.prototype._rebuildGeometry = function(){
       h = ARestlessOcean.WaterfallMistHull.build(rib, this.hullOptions);
       this._hulls.set(rib, h);
     }
-    if(!h) continue;
+    if(!h || !h.index.length) continue;
     hulls.push(h);
+    if(sp.cascades[i].nappe) this.hulledNappes.add(sp.cascades[i].nappe);
     nV += h.vertexCount; nI += h.index.length;
   }
   const position = new Float32Array(nV * 3), normal = new Float32Array(nV * 3);

@@ -102,7 +102,7 @@ ARestlessOcean.Materials.Ocean.waterfallSheetMaterial = {
     uSurfaceRough: {value: 0.35},
     uSpecFalloff: {value: 120.0},
     uEdgeFray: {value: 0.3},
-    uBreakup: {value: 0.6},
+    uBreakup: {value: 0.3},      //0.6 shredded a tall curtain into strands over its lower half (sunken-shores, 2026-10-25)
     uTailBoil: {value: 0.12},
     uRefraction: {value: 0.05},
     uSoftRange: {value: 0.08},
