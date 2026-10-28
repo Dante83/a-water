@@ -51,6 +51,11 @@ ARestlessOcean.Passes.SwashSurfacePass = function(oceanGrid){
   this.dryRate = 0.01;
 };
 
+//How far round a dry texel the field must be at sea level for it to be swash territory (m):
+//more than a field texel (1 m) plus a near-map texel, so a-land's filtering never meets a creek's
+//level inside the territory (see the seam note in the shader).
+ARestlessOcean.Passes.SwashSurfacePass.SEAM_REACH_M = 1.75;
+
 ARestlessOcean.Passes.SwashSurfacePass.WINDOWS = {
   near: {resolution: 2048, halfWidth: 512.0},
   far: {resolution: 1024, halfWidth: 896.0}
@@ -58,6 +63,7 @@ ARestlessOcean.Passes.SwashSurfacePass.WINDOWS = {
 
 ARestlessOcean.Passes.SwashSurfacePass.prototype.init = function(){
   const SP = ARestlessOcean.Passes.SwashSurfacePass;
+  const f = function(v){ return (+v).toFixed(6); };
   const canFilterFloat = !!(this.renderer.extensions && this.renderer.extensions.has('OES_texture_float_linear'));
   const filter = canFilterFloat ? THREE.LinearFilter : THREE.NearestFilter;
   const uniforms = Object.assign({
@@ -94,6 +100,18 @@ ARestlessOcean.Passes.SwashSurfacePass.prototype.init = function(){
       '      float reach; float swashFoam;',
       '      shoreSwashEval(xz, f, shoreBreakerPhaseField(xz), grad, reach, swashFoam);',
       '      territory = 1.0 - smoothstep(reach, reach + 2.0, -f.b);',
+      //Only at the SEA's level, and not beside anything else. A dry texel carries its nearest
+      //water's level, and between the sea and a creek up a dune the field's level sweeps 0 to the
+      //creek's across a texel. a-land filters this map's level and territory separately, so
+      //territory from the sea side met the creek's level in between and drew a wet line along
+      //every such seam (2026-10-27, (524, 800)). Eroded by SEAM_REACH_M: the taps round the texel
+      //must be at sea level too.
+      '      float seamDev = abs(f.r - shoreBreakerSeaLevel);',
+      '      seamDev = max(seamDev, abs(waterFieldAt(xz + vec2(' + f(SP.SEAM_REACH_M) + ', 0.0)).r - shoreBreakerSeaLevel));',
+      '      seamDev = max(seamDev, abs(waterFieldAt(xz - vec2(' + f(SP.SEAM_REACH_M) + ', 0.0)).r - shoreBreakerSeaLevel));',
+      '      seamDev = max(seamDev, abs(waterFieldAt(xz + vec2(0.0, ' + f(SP.SEAM_REACH_M) + ')).r - shoreBreakerSeaLevel));',
+      '      seamDev = max(seamDev, abs(waterFieldAt(xz - vec2(0.0, ' + f(SP.SEAM_REACH_M) + ')).r - shoreBreakerSeaLevel));',
+      '      territory *= 1.0 - smoothstep(0.02, 0.1, seamDev);',
       '    }',
       '  }',
       '  gl_FragColor = vec4(live, high, territory, 1.0);',

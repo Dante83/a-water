@@ -429,6 +429,12 @@ ARestlessOcean.OceanWaveField.prototype._masksAt = function(x, z){
 //     have ShoreBreaker spliced pass shoreSwellExposure(xz) to
 //     waveMaskCascadesExposed; without it a sunken flat at sea level got the full
 //     ocean spectrum and its whitecaps (a-water-explorer, sunken-shores).
+//     ⚠ BLEND THE AMPLITUDES, NOT THE PEAK (2026-10-27). Part-inland water is
+//     mix(open weight, fetch-limited weight, inland) per cascade. Blending k_p
+//     instead put `inland` inside exp(−0.625·k_p²/k²): with a 20 m fetch proxy,
+//     7 % shelter already took the long cascades to 0, so the ocean's big waves
+//     stopped dead in one texel where E crossed the shelter ramp (Dante, "big
+//     waves right to shallow waters", sunken-shores' lee beaches).
 //
 // Each cascade is a band of wavenumbers, and the weight is evaluated at ONE
 // representative k per cascade: the local spectral peak clamped into that band,
@@ -544,17 +550,19 @@ ARestlessOcean.WaveMask.compute = function(out, level, depth, shoreSDF, dryMask,
     (Math.abs(level - p.seaLevel) - WM.INLAND_START) / (WM.INLAND_FULL - WM.INLAND_START)));
   const inland = Math.max(t * t * (3.0 - 2.0 * t), 1.0 - Math.min(1.0, Math.max(0.0, exposed === undefined ? 1.0 : exposed)));
   const kpO = p.peakK;
-  let kpL = kpO;
+  let kpF = kpO;
   if(inland > 0.0 && p.windSpeed > 0.001){
     const fetch = Math.max(2.0 * shoreSDF, WM.MIN_FETCH);
-    const kpF = Math.max(kpO, WM.peakK(p.windSpeed, Math.min(fetch, p.oceanFetch)));
-    kpL = kpO + (kpF - kpO) * inland;
+    kpF = Math.max(kpO, WM.peakK(p.windSpeed, Math.min(fetch, p.oceanFetch)));
   }
   const wet = 1.0 - Math.min(1.0, Math.max(0.0, dryMask));
+  const one = function(c, kp){
+    const k = Math.min(p.bandKHi[c], Math.max(p.bandKLo[c], kp));
+    return Math.exp(-0.625 * (kp * kp - kpO * kpO) / (k * k)) * WM.depthAmplitude(k * h);
+  };
   for(let c = 0; c < n; ++c){
-    const k = Math.min(p.bandKHi[c], Math.max(p.bandKLo[c], kpL));
-    const fetchAmp = Math.exp(-0.625 * (kpL * kpL - kpO * kpO) / (k * k));
-    out[c] = wet * fetchAmp * WM.depthAmplitude(k * h);
+    const open = one(c, kpO);
+    out[c] = wet * (open + (one(c, kpF) - open) * inland);
   }
   return out;
 };
@@ -608,19 +616,25 @@ ARestlessOcean.WaveMask.GLSL = [
   '  if(h >= waveMaskDepthCap * ' + ARestlessOcean.WaveMask.DEPTH_CAP_FRACTION.toFixed(4) + ' || (h <= 0.0 && field.a < 0.5)) h = ' + ARestlessOcean.WaveMask.DEEP.toFixed(1) + ';',
   '  float inland = max(smoothstep(' + ARestlessOcean.WaveMask.INLAND_START.toFixed(4) + ', ' + ARestlessOcean.WaveMask.INLAND_FULL.toFixed(4) + ', abs(field.r - waveMaskSeaLevel)), 1.0 - clamp(exposed, 0.0, 1.0));',
   '  float kpO = waveMaskPeakK;',
-  '  float kpL = kpO;',
+  '  float kpF = kpO;',
   '  if(inland > 0.0 && waveMaskWindSpeed > 0.001){',
   '    float fetch = max(2.0 * field.b, ' + ARestlessOcean.WaveMask.MIN_FETCH.toFixed(4) + ');',
-  '    float kpF = max(kpO, waveMaskPeakKFor(waveMaskWindSpeed, min(fetch, waveMaskOceanFetch)));',
-  '    kpL = mix(kpO, kpF, inland);',
+  '    kpF = max(kpO, waveMaskPeakKFor(waveMaskWindSpeed, min(fetch, waveMaskOceanFetch)));',
   '  }',
   '  float wet = 1.0 - clamp(field.a, 0.0, 1.0);',
-  '  a = vec3(waveMaskOne(waveMaskBandK[0], kpL, kpO, h, wet),',
-  '           waveMaskOne(waveMaskBandK[1], kpL, kpO, h, wet),',
-  '           waveMaskOne(waveMaskBandK[2], kpL, kpO, h, wet));',
-  '  b = vec3(waveMaskOne(waveMaskBandK[3], kpL, kpO, h, wet),',
-  '           waveMaskOne(waveMaskBandK[4], kpL, kpO, h, wet),',
-  '           waveMaskOne(waveMaskBandK[5], kpL, kpO, h, wet));',
+  '  //Blend the amplitudes, not the peak (see SHELTER in ocean-wave-field.js).',
+  '  a = wet * mix(vec3(waveMaskOne(waveMaskBandK[0], kpO, kpO, h, 1.0),',
+  '                     waveMaskOne(waveMaskBandK[1], kpO, kpO, h, 1.0),',
+  '                     waveMaskOne(waveMaskBandK[2], kpO, kpO, h, 1.0)),',
+  '                vec3(waveMaskOne(waveMaskBandK[0], kpF, kpO, h, 1.0),',
+  '                     waveMaskOne(waveMaskBandK[1], kpF, kpO, h, 1.0),',
+  '                     waveMaskOne(waveMaskBandK[2], kpF, kpO, h, 1.0)), inland);',
+  '  b = wet * mix(vec3(waveMaskOne(waveMaskBandK[3], kpO, kpO, h, 1.0),',
+  '                     waveMaskOne(waveMaskBandK[4], kpO, kpO, h, 1.0),',
+  '                     waveMaskOne(waveMaskBandK[5], kpO, kpO, h, 1.0)),',
+  '                vec3(waveMaskOne(waveMaskBandK[3], kpF, kpO, h, 1.0),',
+  '                     waveMaskOne(waveMaskBandK[4], kpF, kpO, h, 1.0),',
+  '                     waveMaskOne(waveMaskBandK[5], kpF, kpO, h, 1.0)), inland);',
   '}',
   'void waveMaskCascades(vec4 field, out vec3 a, out vec3 b){ waveMaskCascadesExposed(field, 1.0, a, b); }'
 ].join('\n');
@@ -925,6 +939,20 @@ ARestlessOcean.ShoreBreaker.FOAM_RESIDUAL = 0.06;
 //inland; the actual reach per point comes from the run-up and the beach slope.
 ARestlessOcean.ShoreBreaker.SWASH_BAND_MAX = 60.0;
 ARestlessOcean.ShoreBreaker.SWASH_PROBE = 6.0;       //m offshore where the foreshore slope is read
+//Swash needs LAND behind the shore. The sheet is timed by the shoreline alone, so round an islet
+//every side ran up at once and the water stood up as a pulsing dome over it (sunken-shores,
+//2026-10-27). The shore distance is read this far inland of the shoreline: a beach is land there
+//(−SWASH_ISLAND_PROBE), an islet or a thin spit is water again. The swash fades in between
+//SWASH_ISLAND_LO and _HI of the probe distance. A bay keeps it all.
+ARestlessOcean.ShoreBreaker.SWASH_ISLAND_PROBE = 24.0;
+//The swash is the SEA's: its level must be within this of sea level (m). A dry texel carries its
+//nearest water's level, and where a creek up a dune and the sea meet under dry ground the filtered
+//level sweeps 0 → the creek's across one texel. The old 2 m allowance let the sheet stand on that
+//seam at 0.5-2 m: thin spikes and wet blotches on dunes 50 m from the sea (sunken-shores
+//(509, 803), 2026-10-27). At 0.25 m the seam's sheet stays under the sand.
+ARestlessOcean.ShoreBreaker.SWASH_LEVEL_TOL = 0.25;
+ARestlessOcean.ShoreBreaker.SWASH_ISLAND_LO = 0.25;
+ARestlessOcean.ShoreBreaker.SWASH_ISLAND_HI = 0.75;
 //Flow hand-off weight by which the swash drawdown has faded out (Phase 4, round 7).
 ARestlessOcean.ShoreBreaker.SWASH_FLOW_DRAWDOWN_W = 0.2;
 //Shore pass round 5 (Dante, 2026-09-30: at the river mouth the waves "completely vanish"
@@ -1014,18 +1042,20 @@ ARestlessOcean.ShoreBreaker.SWELL_RATIO_HI = 0.7;
 //sloping beach; this is what keeps a wide shallow flat from breaking white end to end. A look
 //choice, not a fitted dissipation model (Battjes–Janssen would be the physical one).
 ARestlessOcean.ShoreBreaker.SURF_DECAY_M = 120.0;
-//Swash behind a BAR (2026-10-24, browser round 2). The swell's Hlim at the swash probe, over the
-//breaking cap of the probe's own depth: about 1 on an ordinary beach (the limit IS the local
-//shoaling), well under 1 behind a sill shallower than the probe. Below LO the swash is sized by
-//what crossed the sill; above HI not at all. Otherwise a pool joined to the sea by a few cm of
-//water stayed calm (the breaker reads Hlim) while its beach ran up with a full ocean swash.
+//Swash behind a BAR (2026-10-24, browser round 2): the run-up is capped at SWASH_RUNUP_MAX_RATIO
+//times the swell's Hlim at the swash probe (less the surf decay), the largest wave that can stand
+//there. Otherwise a pool joined to the sea by a few cm of water stayed calm (the breaker reads
+//Hlim) while its beach ran up with a full ocean swash. On an ordinary beach Hlim is the probe's
+//own breaking cap and the cap does not bind.
+//⚠ It used to be an on/off switch on Hlim / (γ·probe depth), uncapped above 0.9. On a wide flat
+//that ratio wanders 0.3-1.0 from texel to texel (the probe and Hlim are both a few cm deep), so
+//single vertices ran up with the full ocean swash: water spikes, ridges standing off the beach,
+//and mounds round islets in a lagoon (a-water-explorer, sunken-shores, 2026-10-27). Keep it a cap.
 //WaveMask shelter (shoreSwellExposure): E at or above this is open sea (an island's flank, E
 //~0.5, keeps the ocean spectrum); below it the water turns fetch-limited, fully at E = 0. And
 //the fraction of the solve's width over which it fades in from its rim.
 ARestlessOcean.ShoreBreaker.SWELL_EXPOSURE_E = 0.3;
 ARestlessOcean.ShoreBreaker.SWELL_EXPOSURE_RIM = 0.05;
-ARestlessOcean.ShoreBreaker.SWASH_BAR_RATIO_LO = 0.7;
-ARestlessOcean.ShoreBreaker.SWASH_BAR_RATIO_HI = 0.9;
 //Bore foam grows with the wave that makes it (deep-water-equivalent height, m): a few cm of
 //swash across a pool is a wet line, not a white one.
 ARestlessOcean.ShoreBreaker.SWASH_FOAM_H_LO = 0.02;
@@ -1313,9 +1343,11 @@ ARestlessOcean.ShoreBreaker.evaluateSwashHighWater = function(x, z, field, gradX
 //on the uprush; peak = the sheet top per unit wave factor (the high water reads it); theta =
 //the phase after the front delay.
 //swell (optional, see evaluate): the solve at (x, z). Only E, surf and probeHlim (Hlim at the
-//probe point, SWASH_BAR_RATIO_LO) are read: they size the swash; its phase stays the
+//probe point, the bar cap) are read: they size the swash; its phase stays the
 //shoreline's own (see the GLSL).
-ARestlessOcean.ShoreBreaker.evaluateSwash = function(x, z, field, gradX, gradZ, p, out, phaseField, probeField, swell){
+//inlandField (optional): the field SWASH_ISLAND_PROBE m inland of the shoreline, at
+//(x, z) − n·(shoreSDF + SWASH_ISLAND_PROBE). Absent, the shore is taken to have land behind it.
+ARestlessOcean.ShoreBreaker.evaluateSwash = function(x, z, field, gradX, gradZ, p, out, phaseField, probeField, swell, inlandField){
   const SB = ARestlessOcean.ShoreBreaker;
   out = out || {};
   out.eta = 0; out.reach = -1; out.foam = 0; out.R2 = 0; out.slope = 0; out.peak = 0; out.low = 0; out.theta = 0;
@@ -1326,7 +1358,7 @@ ARestlessOcean.ShoreBreaker.evaluateSwash = function(x, z, field, gradX, gradZ, 
   if(field.flowWeight > 0.5) return out;
   if(s < -SB.SWASH_BAND_MAX || h >= p.depthCap * 0.98 || h > 3.0 * p.Hs + 1.0) return out;
   const inland = _sbSmooth(0.5, 2.0, Math.abs(field.level - p.seaLevel));
-  if(inland >= 1.0) return out;
+  if(Math.abs(field.level - p.seaLevel) >= SB.SWASH_LEVEL_TOL) return out;
   const g = SB.G, w = p.omega, k0 = w * w / g;
   const gl = Math.sqrt(gradX * gradX + gradZ * gradZ);
   const nx = gl > 1e-4 ? gradX / gl : -p.waveDirX, nz = gl > 1e-4 ? gradZ / gl : -p.waveDirZ;
@@ -1334,14 +1366,13 @@ ARestlessOcean.ShoreBreaker.evaluateSwash = function(x, z, field, gradX, gradZ, 
   const alpha = Math.acos(cosA);
   const fDir = swell ? swell.E : Math.min(1, Math.max(0, 1.0 - alpha / Math.PI + Math.sin(2.0 * alpha) / (2.0 * Math.PI)));
   const pr = probeField || phaseField || field;
-  let barCap = 1.0e4;
-  if(swell && swell.probeHlim !== undefined){
-    const bar = swell.probeHlim / (SB.GAMMA * Math.max(pr.depth, SB.MIN_DEPTH));
-    barCap = swell.probeHlim + 1.0e4 * _sbSmooth(SB.SWASH_BAR_RATIO_LO, SB.SWASH_BAR_RATIO_HI, bar);
-  }
-  const H0 = Math.min(p.Hs * Math.sqrt(fDir), barCap) * (swell ? Math.exp(-swell.surf / SB.SURF_DECAY_M) : 1.0);
-  if(H0 < 0.01) return out;
-  const foamK = _sbSmooth(SB.SWASH_FOAM_H_LO, SB.SWASH_FOAM_H_HI, H0);
+  const surfKeep = swell ? Math.exp(-swell.surf / SB.SURF_DECAY_M) : 1.0;
+  const H0 = p.Hs * Math.sqrt(fDir) * surfKeep;
+  //Behind a bar (see SWASH_BAR above): no bigger than what can stand at the probe.
+  const Hbar = (swell && swell.probeHlim !== undefined) ? swell.probeHlim * surfKeep : 1.0e4;
+  const Hrun = Math.min(H0, Hbar);
+  if(Hrun < 0.01) return out;
+  const foamK = _sbSmooth(SB.SWASH_FOAM_H_LO, SB.SWASH_FOAM_H_HI, Hrun);
   const confidence = _sbSmooth(SB.NORMAL_CONFIDENCE_LO, SB.NORMAL_CONFIDENCE_HI, gl);
   const L0 = 2.0 * Math.PI * g / (w * w);
   const slope = Math.min(1.0, Math.max(0.005, pr.depth / Math.max(pr.shoreSDF, 1.0)));
@@ -1349,7 +1380,7 @@ ARestlessOcean.ShoreBreaker.evaluateSwash = function(x, z, field, gradX, gradZ, 
   const setup = 0.35 * slope * HL;
   const Sinc = 0.75 * slope * HL, Sig = 0.06 * HL;
   const S = Math.sqrt(Sinc * Sinc + Sig * Sig);
-  const R2 = Math.min(1.1 * (setup + 0.5 * S), SB.SWASH_RUNUP_MAX_RATIO * H0);
+  const R2 = Math.min(1.1 * (setup + 0.5 * S), SB.SWASH_RUNUP_MAX_RATIO * Hrun);
   out.R2 = R2; out.slope = slope;
   out.reach = Math.min(SB.SWASH_BAND_MAX, SB.SWASH_REACH_MARGIN * SB.WAVE_FACTOR_MAX * R2 / slope + 2.0);
   //The SHORELINE phase, the same at every cross-shore distance: the swash zone
@@ -1378,7 +1409,9 @@ ARestlessOcean.ShoreBreaker.evaluateSwash = function(x, z, field, gradX, gradZ, 
   //Seaward, also by shore DISTANCE: a shallow bar far from any shore is not swash.
   const reachFade = (1.0 - _sbSmooth(0.75 * out.reach, out.reach, -s)) * (1.0 - _sbSmooth(0.5 * out.reach, out.reach, s));
   const beachOnly = 1.0 - _sbSmooth(SB.SWASH_SLOPE_FADE_LO, SB.SWASH_SLOPE_FADE_HI, slope);
-  const k = (1.0 - inland) * taper * reachFade * confidence * beachOnly * flowKeep;
+  //Land behind the shore (SWASH_ISLAND_PROBE); absent, as before.
+  const landKeep = inlandField ? _sbSmooth(SB.SWASH_ISLAND_LO, SB.SWASH_ISLAND_HI, -inlandField.shoreSDF / SB.SWASH_ISLAND_PROBE) : 1.0;
+  const k = (1.0 - inland) * taper * reachFade * confidence * beachOnly * flowKeep * landKeep;
   out.eta = (zMin + (zMax - zMin) * c) * k * p.heightScale;
   out.peak = R2 * flowKeep * k * p.heightScale;   //the sheet's top per unit wave factor
   out.low = zMin * k * p.heightScale;              //the sheet's drawdown
@@ -1589,7 +1622,7 @@ ARestlessOcean.ShoreBreaker.GLSL = (function(){
     //joins the sea and its banks become part of the shoreline the field measures.
     '  if(field.a < -0.5 || field.a > 1.5) return false;',
     '  if(field.b < -' + f(SB.SWASH_BAND_MAX) + ' || field.g >= shoreBreakerDepthCap * 0.98 || field.g > 3.0 * shoreBreakerHs + 1.0) return false;',
-    '  return abs(field.r - shoreBreakerSeaLevel) < 2.0;',
+    '  return abs(field.r - shoreBreakerSeaLevel) < ' + f(SB.SWASH_LEVEL_TOL) + ';',
     '}',
     '//The swash at xz apart from time: everything shoreSwashEval and shoreSwashHighWater share,',
     '//so the sheet we draw and the high water a-land dries by are one model. False (reach -1)',
@@ -1611,19 +1644,18 @@ ARestlessOcean.ShoreBreaker.GLSL = (function(){
     '  vec2 probeXZ = xz + n * (' + f(SB.SWASH_PROBE) + ' - field.b);',
     '  vec4 probe = shoreBreakerPhaseField(probeXZ);',
     '  float surfKeep = 1.0;',
-    '  float barCap = 1.0e4;',
+    '  float Hbar = 1.0e4;',
     '  if(shoreSwellOn > 0.5){',
     '    vec4 sw = shoreSwellAt(xz);',
     '    fDir = sw.b;',
     '    surfKeep = exp(-sw.a / ' + f(SB.SURF_DECAY_M) + ');',
-    //Behind a bar (SWASH_BAR_RATIO_LO): no bigger than what crossed it.
-    '    float hlimP = shoreSwellAt(probeXZ).g;',
-    '    float bar = hlimP / (' + f(SB.GAMMA) + ' * max(probe.g, ' + f(SB.MIN_DEPTH) + '));',
-    '    barCap = hlimP + 1.0e4 * smoothstep(' + f(SB.SWASH_BAR_RATIO_LO) + ', ' + f(SB.SWASH_BAR_RATIO_HI) + ', bar);',
+    //Behind a bar (SWASH_BAR in ocean-wave-field.js): no bigger than what can stand at the probe.
+    '    Hbar = shoreSwellAt(probeXZ).g * surfKeep;',
     '  }',
-    '  float H0 = min(shoreBreakerHs * sqrt(fDir), barCap) * surfKeep;',
-    '  if(H0 < 0.01) return false;',
-    '  foamK = smoothstep(' + f(SB.SWASH_FOAM_H_LO) + ', ' + f(SB.SWASH_FOAM_H_HI) + ', H0);',
+    '  float H0 = shoreBreakerHs * sqrt(fDir) * surfKeep;',
+    '  float Hrun = min(H0, Hbar);',
+    '  if(Hrun < 0.01) return false;',
+    '  foamK = smoothstep(' + f(SB.SWASH_FOAM_H_LO) + ', ' + f(SB.SWASH_FOAM_H_HI) + ', Hrun);',
     '  float L0 = 6.2831853 * g / (w * w);',
     '  float slope = clamp(probe.g / max(probe.b, 1.0), 0.005, 1.0);',
     '  float HL = sqrt(H0 * L0);',
@@ -1631,7 +1663,7 @@ ARestlessOcean.ShoreBreaker.GLSL = (function(){
     '  float Sinc = 0.75 * slope * HL;',
     '  float Sig = 0.06 * HL;',
     '  S = sqrt(Sinc * Sinc + Sig * Sig);',
-    '  R2 = min(1.1 * (setup + 0.5 * S), ' + f(SB.SWASH_RUNUP_MAX_RATIO) + ' * H0);',
+    '  R2 = min(1.1 * (setup + 0.5 * S), ' + f(SB.SWASH_RUNUP_MAX_RATIO) + ' * Hrun);',
     '  reach = min(' + f(SB.SWASH_BAND_MAX) + ', ' + f(SB.SWASH_REACH_MARGIN * SB.WAVE_FACTOR_MAX) + ' * R2 / slope + 2.0);',
     '  //Travelling front over the dry beach (see SWASH_FRONT_K): the WHOLE phase is delayed by',
     '  //the travel time, the wave-to-wave height too, or a point behind the front switched to the',
@@ -1649,7 +1681,9 @@ ARestlessOcean.ShoreBreaker.GLSL = (function(){
     '  float reachFade = (1.0 - smoothstep(0.75 * reach, reach, -field.b)) * (1.0 - smoothstep(0.5 * reach, reach, field.b));',
     '  float confidence = smoothstep(' + f(SB.NORMAL_CONFIDENCE_LO) + ', ' + f(SB.NORMAL_CONFIDENCE_HI) + ', length(shoreGrad));',
     '  float beachOnly = 1.0 - smoothstep(' + f(SB.SWASH_SLOPE_FADE_LO) + ', ' + f(SB.SWASH_SLOPE_FADE_HI) + ', slope);',
-    '  k = (1.0 - inland) * taper * reachFade * confidence * beachOnly * flowKeep;',
+    '  //Land behind the shore (SWASH_ISLAND_PROBE): an islet does not run up.',
+    '  float landKeep = smoothstep(' + f(SB.SWASH_ISLAND_LO) + ', ' + f(SB.SWASH_ISLAND_HI) + ', -shoreBreakerPhaseField(xz - n * (field.b + ' + f(SB.SWASH_ISLAND_PROBE) + ')).b / ' + f(SB.SWASH_ISLAND_PROBE) + ');',
+    '  k = (1.0 - inland) * taper * reachFade * confidence * beachOnly * flowKeep * landKeep;',
     '  return true;',
     '}',
     '//The swash phase at xz now (radians): the shoreline phase at every distance, so the swash',

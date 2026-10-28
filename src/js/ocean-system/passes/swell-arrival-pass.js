@@ -18,7 +18,7 @@
 //THE SOLVE (cascade 1's grid: 512² at 4 m, ±1024 m, the field the phase reads)
 //  * Static (one draw per solve, a SNAPSHOT so a refill mid-solve cannot tear it):
 //    r = depth, g = passable, b = seed, a = shoreSDF. Passable = wet, within 0.5 m
-//    of sea level and not flowing (a river is a wall; the sea does not run up it).
+//    of sea level and not flowing (a hand-off weight under MOUTH_PASSABLE_W) (a river is a wall; the sea does not run up it).
 //    Seed = passable, deep (k0h ≥ SEED_K0H, where c is within a few % of the deep
 //    speed) or on the cascade's upwind rim, AND EXPOSED: a march upwind across
 //    cascades 1 and 2 meets no dry ground. Deep water in an island's shadow is
@@ -100,6 +100,39 @@ ARestlessOcean.Passes.SwellArrivalPass.INF = 1.0e9;
 ARestlessOcean.Passes.SwellArrivalPass.E_BLUR_L0 = 0.35;
 ARestlessOcean.Passes.SwellArrivalPass.E_BLUR_MIN_M = 12.0;
 ARestlessOcean.Passes.SwellArrivalPass.E_BLUR_MAX_M = 64.0;
+//A dry texel whose nearest shore point is a creek or river (wet, not the sea), or dry ground (the
+//step overshoots where the shore curves), looks this many texels round that point for the nearest
+//reached sea texel and takes its state. The overshoot left single zero texels among reached ones:
+//a rigid chequer in the run-up on low beaches (2026-10-27, (536, 228)). Without it the
+//beach beside a creek mouth took zero, and the swash sheet (up to ~1 m tall) dropped to nothing
+//across ONE straight 4 m texel column: a water wall with a square corner on the sand
+//(a-water-explorer, sunken-shores (446, 600), 2026-10-27). The swash still fades by the flow
+//hand-off weight near the creek (SURF_FLOW_FADE_W), which is smooth.
+ARestlessOcean.Passes.SwellArrivalPass.DRY_SEA_SEARCH = 4;
+//Sea water is passable up to this flow hand-off weight. A river mouth spreads the weight ~16 m into
+//the sea (WaterFieldPass.mouthBandM) and the breaker and swash fade out smoothly across it by
+//ShoreBreaker.SURF_FLOW_FADE_W. A wall at w 0.5 (the old flowing gate) left E = 0 one 4 m texel
+//on: the run-up ended in a cliff along the band (2026-10-27, the "square" at (446, 600)).
+ARestlessOcean.Passes.SwellArrivalPass.MOUTH_PASSABLE_W = 0.99;
+//Hlim and surf are PATH quantities: two texels side by side can be reached over different sills
+//and differ several-fold (sunken-shores' flats: 0.66 vs 0.10 m in the next 4 m texel). The swash
+//cap and the breaker read them, so a texel edge drew a straight step in the run-up. They are
+//averaged over reached texels with this σ (m), short enough that a real bar still shelters its
+//lagoon. Hlim is clamped to HLIM_BLUR_CAP_HS × Hs first: open water's "never limited" 1e4 must
+//not swamp the average.
+ARestlessOcean.Passes.SwellArrivalPass.HLIM_BLUR_M = 8.0;
+//HOLLOWS BEHIND THE BEACH. The swash sheet is a flat level, so it showed in any dip lower than it,
+//however much higher sand lay between the dip and the sea: pools popping in and out 10 m up a low
+//beach (sunken-shores (536, 228), 2026-10-27). A dry texel walks to its shore in HOLLOW_STEP_M steps
+//over the terrain ortho (TerrainOrthoPass's foam atlas, ground Y at 4 m) and takes the highest ground
+//on the way; lying more than HOLLOW_LO_M under it, its swash fades to HOLLOW_KEEP_MIN by HOLLOW_HI_M
+//(as extra surf distance, see the blur). Ground that only CLIMBS from the sea is untouched. Over-wash of a low berm is given up.
+ARestlessOcean.Passes.SwellArrivalPass.HOLLOW_STEP_M = 2.0;
+ARestlessOcean.Passes.SwellArrivalPass.HOLLOW_MAX_STEPS = 32;
+ARestlessOcean.Passes.SwellArrivalPass.HOLLOW_LO_M = 0.1;
+ARestlessOcean.Passes.SwellArrivalPass.HOLLOW_HI_M = 0.3;
+ARestlessOcean.Passes.SwellArrivalPass.HOLLOW_KEEP_MIN = 0.01;
+ARestlessOcean.Passes.SwellArrivalPass.HLIM_BLUR_CAP_HS = 3.0;
 
 ARestlessOcean.Passes.SwellArrivalPass.prototype.init = function(){
   const RES = ARestlessOcean.Passes.WaterFieldPass.RESOLUTION;
@@ -189,7 +222,7 @@ ARestlessOcean.Passes.SwellArrivalPass.prototype.init = function(){
       '  vec4 a = texelFetch(uField1, p, 0);',
       '  float h = a.g;',
       //Wet, the sea's level, and not flowing (wet texels pack -flowWeight in .a).
-      '  bool passable = h > 0.0 && abs(a.r - uSeaLevel) < ' + f(SAP.SEA_LEVEL_TOL) + ' && a.a > -0.5;',
+      '  bool passable = h > 0.0 && abs(a.r - uSeaLevel) < ' + f(SAP.SEA_LEVEL_TOL) + ' && a.a > -' + f(SAP.MOUTH_PASSABLE_W) + ';',
       '  float seedKind = 0.0;',
       '  if(passable){',
       '    bool rim = (p.x == 0 && uDir.x > 0.1) || (p.x == RES - 1 && uDir.x < -0.1)',
@@ -361,41 +394,114 @@ ARestlessOcean.Passes.SwellArrivalPass.prototype.init = function(){
       '  float gl = length(grad);',
       '  if(gl < 1e-6){ oSwell = vec4(0.0); return; }',
       '  vec2 q = vec2(p) + (grad / gl) * (max(-s0.a, 0.0) / uTexel + 1.0);',
-      '  oSwell = reachedAt(ivec2(floor(q + 0.5)));',
+      '  ivec2 qi = ivec2(floor(q + 0.5));',
+      '  vec4 sq = st(qi);',
+      //Its shore point is not the sea (a creek or river, or the step overshot onto dry ground where
+      //the shore curves): the nearest reached sea texel round it (DRY_SEA_SEARCH). Unreached sea-level
+      //water (a pond) keeps its zero.
+      '  if(sq.g < 0.5){',
+      '    vec4 best = vec4(0.0);',
+      '    float bestD = 1.0e9;',
+      '    for(int dy = -' + SAP.DRY_SEA_SEARCH + '; dy <= ' + SAP.DRY_SEA_SEARCH + '; dy++){',
+      '      for(int dx = -' + SAP.DRY_SEA_SEARCH + '; dx <= ' + SAP.DRY_SEA_SEARCH + '; dx++){',
+      '        float d = float(dx * dx + dy * dy);',
+      '        if(d >= bestD) continue;',
+      '        vec4 r = reachedAt(qi + ivec2(dx, dy));',
+      '        if(r.g > 0.0){ best = r; bestD = d; }',
+      '      }',
+      '    }',
+      '    oSwell = best;',
+      '    return;',
+      '  }',
+      '  oSwell = reachedAt(qi);',
       '}'
     ].join('\n'),
     depthTest: false,
     depthWrite: false
   });
 
-  //One axis of the E blur (see E_BLUR_L0); the other channels pass through. On the second
-  //axis (uMask) unreached texels (Hlim 0) are put back to 0, so a pond near the sea stays calm.
+  //One axis of the E blur (see E_BLUR_L0) and of the shorter Hlim / surf blur over reached texels
+  //(HLIM_BLUR_M); δ passes through. On the second axis (uMask) unreached texels (Hlim 0) are put
+  //back to 0, so a pond near the sea stays calm.
   this._blurMaterial = new THREE.ShaderMaterial({
     glslVersion: THREE.GLSL3,
-    uniforms: {uSrc: {value: null}, uAxis: {value: new THREE.Vector2(1, 0)}, uSigma: {value: 4.0}, uMask: {value: 0.0}},
+    uniforms: {uSrc: {value: null}, uAxis: {value: new THREE.Vector2(1, 0)}, uSigma: {value: 4.0}, uMask: {value: 0.0},
+      uSigmaH: {value: 2.0}, uHcap: {value: 1.0e4},
+      uStatic: {value: null}, uCenter: {value: new THREE.Vector2()}, uHalfWidth: {value: 1024.0},
+      uGround: {value: null}, uGroundCenter: {value: new THREE.Vector2()}, uGroundHalf: {value: 2048.0}, uHollowOn: {value: 0.0}},
     vertexShader: vertexShader,
     fragmentShader: [
       head,
       'layout(location = 0) out vec4 oSwell;',
       'uniform sampler2D uSrc;',
       'uniform vec2 uAxis;',
-      'uniform float uSigma, uMask;',
+      'uniform float uSigma, uMask, uSigmaH, uHcap;',
+      'uniform sampler2D uStatic, uGround;',
+      'uniform vec2 uCenter, uGroundCenter;',
+      'uniform float uHalfWidth, uGroundHalf, uHollowOn;',
+      //Ground Y from the terrain ortho; .a 0 = nothing captured there.
+      'vec2 groundAt(vec2 xz){',
+      '  vec2 uv = (xz - uGroundCenter) / (2.0 * uGroundHalf) + 0.5;',
+      '  uv.y = 1.0 - uv.y;',   //the ortho looks down with +Z up the image (water-shader.glsl foamPosition)
+      '  if(any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return vec2(0.0);',
+      '  vec4 g = texture(uGround, uv);',
+      '  return vec2(g.g, g.a);',
+      '}',
+      //How far this dry texel lies under the highest ground between it and its shore (HOLLOW_*).
+      'float hollowDepth(ivec2 p){',
+      '  vec4 s0 = texelFetch(uStatic, p, 0);',
+      '  if(s0.r > 0.0 || s0.a >= 0.0) return 0.0;',
+      '  ivec2 ex = ivec2(1, 0), ez = ivec2(0, 1);',
+      '  vec2 grad = vec2(texelFetch(uStatic, clamp(p + ex, ivec2(0), ivec2(RES - 1)), 0).a - texelFetch(uStatic, clamp(p - ex, ivec2(0), ivec2(RES - 1)), 0).a,',
+      '                   texelFetch(uStatic, clamp(p + ez, ivec2(0), ivec2(RES - 1)), 0).a - texelFetch(uStatic, clamp(p - ez, ivec2(0), ivec2(RES - 1)), 0).a);',
+      '  float gl = length(grad);',
+      '  if(gl < 1e-6) return 0.0;',
+      '  vec2 n = grad / gl;',
+      '  vec2 xz = uCenter + ((vec2(p) + 0.5) / float(RES) - 0.5) * (2.0 * uHalfWidth);',
+      '  vec2 own = groundAt(xz);',
+      '  if(own.y < 0.5) return 0.0;',
+      '  float dist = -s0.a;',
+      '  float berm = -1.0e9;',
+      '  for(int i = 1; i <= ' + SAP.HOLLOW_MAX_STEPS + '; i++){',
+      '    float d = float(i) * ' + f(SAP.HOLLOW_STEP_M) + ';',
+      '    if(d >= dist) break;',
+      '    vec2 g = groundAt(xz + n * d);',
+      '    if(g.y > 0.5) berm = max(berm, g.x);',
+      '  }',
+      '  return max(berm - own.x, 0.0);',
+      '}',
       'const int MAX_R = ' + Math.ceil(3.0 * SAP.E_BLUR_MAX_M / 2.0) + ';',
       'void main(){',
       '  ivec2 p = ivec2(gl_FragCoord.xy);',
       '  vec4 own = texelFetch(uSrc, p, 0);',
       '  int r = min(int(ceil(3.0 * uSigma)), MAX_R);',
       '  ivec2 ax = ivec2(uAxis);',
-      '  float se = 0.0, sw = 0.0;',
+      '  int rh = min(int(ceil(3.0 * uSigmaH)), MAX_R);',
+      '  float se = 0.0, sw = 0.0, sh = 0.0, ss = 0.0, shw = 0.0;',
       '  for(int k = -MAX_R; k <= MAX_R; k++){',
       '    if(k < -r || k > r) continue;',
+      '    vec4 v = texelFetch(uSrc, clamp(p + ax * k, ivec2(0), ivec2(RES - 1)), 0);',
       '    float w = exp(-0.5 * float(k * k) / (uSigma * uSigma));',
-      '    se += w * texelFetch(uSrc, clamp(p + ax * k, ivec2(0), ivec2(RES - 1)), 0).b;',
+      '    se += w * v.b;',
       '    sw += w;',
+      //Hlim and surf over REACHED texels only (HLIM_BLUR_M); unreached ones stay unreached.
+      '    if(k >= -rh && k <= rh && v.g > 0.0){',
+      '      float wh = exp(-0.5 * float(k * k) / (uSigmaH * uSigmaH));',
+      '      sh += wh * min(v.g, uHcap);',
+      '      ss += wh * v.a;',
+      '      shw += wh;',
+      '    }',
       '  }',
       '  float e = se / sw;',
       '  if(uMask > 0.5 && own.g <= 0.0) e = 0.0;',
-      '  oSwell = vec4(own.r, own.g, e, own.a);',
+      //A hollow keeps its E and takes the fade as extra surf distance: the run-up scales with
+      //exp(−surf / SURF_DECAY_M) directly, while E reaches it only under a root and the bar cap,
+      //so fading E held the sheet full until E was ~0 and then cut it across one texel.
+      '  float hollowKeep = 1.0;',
+      '  if(uMask > 0.5 && uHollowOn > 0.5) hollowKeep = max(1.0 - smoothstep(' + f(SAP.HOLLOW_LO_M) + ', ' + f(SAP.HOLLOW_HI_M) + ', hollowDepth(p)), ' + f(SAP.HOLLOW_KEEP_MIN) + ');',
+      '  bool reached = own.g > 0.0 && shw > 0.0;',
+      '  float surfOut = (reached ? ss / shw : own.a) - ' + f(ARestlessOcean.ShoreBreaker.SURF_DECAY_M) + ' * log(hollowKeep);',
+      '  oSwell = vec4(own.r, reached ? sh / shw : own.g, e, surfOut);',
       '}'
     ].join('\n'),
     depthTest: false,
@@ -506,8 +612,22 @@ ARestlessOcean.Passes.SwellArrivalPass.prototype.tick = function(ctx){
       this._draw(this._finishMaterial, tmpA);
       const bu = this._blurMaterial.uniforms;
       bu.uSigma.value = SAP.blurSigmaFor(s.omega, s.texel);
+      bu.uSigmaH.value = SAP.HLIM_BLUR_M / s.texel;
+      bu.uHcap.value = SAP.HLIM_BLUR_CAP_HS * s.Hs;
       bu.uSrc.value = tmpA.texture; bu.uAxis.value.set(1, 0); bu.uMask.value = 0.0;
       this._draw(this._blurMaterial, tmpB);
+      //Hollows behind the beach (HOLLOW_*), from the terrain ortho when it has been drawn.
+      const ortho = this.oceanGrid.terrainOrthoPass;
+      const ground = ortho && ortho._everRendered && ortho.foamRenderTarget;
+      bu.uHollowOn.value = ground ? 1.0 : 0.0;
+      if(ground){
+        bu.uStatic.value = this._static.texture;
+        bu.uCenter.value.set(s.centerX, s.centerZ);
+        bu.uHalfWidth.value = s.halfWidth;
+        bu.uGround.value = ground.texture;
+        bu.uGroundCenter.value.copy(ortho.foamCameraXZ);
+        bu.uGroundHalf.value = ARestlessOcean.Passes.TerrainOrthoPass.FOAM_ORTHO_HALF_WIDTH;
+      }
       bu.uSrc.value = tmpB.texture; bu.uAxis.value.set(0, 1); bu.uMask.value = 1.0;
       this._draw(this._blurMaterial, this._displayTargets[next]);
       this._displayIndex = next;

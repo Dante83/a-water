@@ -202,7 +202,8 @@ let island;
   check('GLSL phase from τ', G.includes('theta = w * (shoreBreakerTime - shoreSwellTau(xz, sw));'));
   check('GLSL Hlim + surf decay', G.includes('min(Hsh, sw.g) * exp(-sw.a / ' + SB.SURF_DECAY_M.toFixed(6) + ')'));
   check('GLSL swash sized by surf decay', G.includes('surfKeep = exp(-sw.a / ' + SB.SURF_DECAY_M.toFixed(6) + ');'));
-  check('GLSL swash bar cap', G.includes('float hlimP = shoreSwellAt(probeXZ).g;') && G.includes('min(shoreBreakerHs * sqrt(fDir), barCap) * surfKeep'));
+  check('GLSL swash bar cap', G.includes('Hbar = shoreSwellAt(probeXZ).g * surfKeep;') && G.includes(SB.SWASH_RUNUP_MAX_RATIO.toFixed(6) + ' * Hrun);'));
+  check('GLSL swash bar cap is no switch', !G.includes('1.0e4 * smoothstep'));
   check('GLSL swash foam scales with height', G.includes('* k * foamK * shoreBreakerFoamGain'));
   check('GLSL swash phase NOT timed by τ', !G.includes('swShore') && !/frontDelay \+= /.test(G));
 }
@@ -226,6 +227,33 @@ let island;
   //Ordinary beach: the probe's Hlim is its own breaking cap (ratio 1) → unchanged.
   const beach = SB.evaluateSwash(0, 0, field, -1, 0, p, {}, field, probe, Object.assign(sw(0, 0), {probeHlim: SB.GAMMA * 1.0}));
   check('ordinary beach swash unchanged by the bar test', Math.abs(beach.R2 - a.R2) < 1e-9, 'R2 ' + beach.R2.toFixed(3));
+  //A wide flat (sunken-shores, 2026-10-27): a 4 m swell, the probe 20 cm deep, its Hlim wandering
+  //round its own breaking cap from texel to texel. The run-up follows Hlim smoothly and never
+  //exceeds the run-up ratio of it; the old on/off ratio test leapt to the full ocean swash.
+  const pBig = Object.assign({}, p, {Hs: 4.0});
+  const flat = {depth: 0.2, shoreSDF: 20.0};
+  let worst = 0, over = 0, prev = null;
+  for(let r = 0.5; r <= 1.0001; r += 0.05){
+    const hl = SB.GAMMA * 0.2 * r;
+    const o = SB.evaluateSwash(0, 0, field, -1, 0, pBig, {}, field, flat, Object.assign(sw(0, 0), {probeHlim: hl}));
+    over = Math.max(over, o.R2 / (SB.SWASH_RUNUP_MAX_RATIO * hl));
+    if(prev !== null) worst = Math.max(worst, Math.abs(o.R2 - prev));
+    prev = o.R2;
+  }
+  check('flat swash capped by Hlim', over <= 1.0 + 1e-9, 'R2 / (ratio·Hlim) up to ' + over.toFixed(3));
+  check('flat swash has no switch', worst < 0.02, 'largest step ' + worst.toFixed(3) + ' m');
+  //An islet (2026-10-27): 24 m inland of its shore is water again, so it does not run up; a beach
+  //(land there) is unchanged, and so is a caller that passes no inland sample.
+  const islet = SB.evaluateSwash(0, 0, field, -1, 0, p, {}, field, probe, sw(0, 0), {shoreSDF: 10.0});
+  const beachL = SB.evaluateSwash(0, 0, field, -1, 0, p, {}, field, probe, sw(0, 0), {shoreSDF: -SB.SWASH_ISLAND_PROBE});
+  check('islet: no run-up', islet.eta === 0 && islet.peak === 0, 'peak ' + islet.peak.toFixed(3));
+  check('beach with land behind: unchanged', beachL.eta === a.eta && beachL.peak === a.peak);
+  check('GLSL swash reads the land behind the shore', SB.GLSL.includes('float landKeep = smoothstep(') && SB.GLSL.includes('* flowKeep * landKeep;'));
+  //A seam between the sea and a creek up a dune (2026-10-27): the filtered level of a dry texel is
+  //1.5 m there. No sheet on it.
+  const seam = SB.evaluateSwash(0, 0, Object.assign({}, field, {level: 1.5}), -1, 0, p, {}, field, probe, sw(0, 0));
+  check('no swash on a sea/creek level seam', seam.reach < 0 && seam.eta === 0);
+  check('GLSL swash level tolerance', SB.GLSL.includes('abs(field.r - shoreBreakerSeaLevel) < ' + SB.SWASH_LEVEL_TOL.toFixed(6)));
   //A few cm of swash makes little foam.
   const tiny = SB.evaluateSwash(0, 0, field, -1, 0, Object.assign({}, p, {Hs: 0.03}), {}, field, probe, sw(0, 0));
   check('tiny swash: little foam', tiny.foam < 0.2 * Math.max(a.foam, 1e-3) || tiny.foam < 0.05, 'foam ' + tiny.foam.toFixed(3) + ' vs ' + a.foam.toFixed(3));
@@ -241,7 +269,16 @@ let island;
   const shut = WM.compute(new Array(6), 0, 30, 40, 0, p, 0.0);
   check('exposed water keeps the ocean spectrum', open.every((v, i) => v === openE[i]));
   check('unreached sea-level water loses its long bands', shut[1] < 0.1 * open[1] && shut[3] < open[3], 'c1 ' + open[1].toFixed(3) + ' → ' + shut[1].toFixed(3) + ', c3 ' + open[3].toFixed(3) + ' → ' + shut[3].toFixed(3));
+  //Part shelter fades the waves in proportion (2026-10-27): blending the PEAK put 7 % shelter
+  //inside exp(−k_p²), and the long cascades stopped dead at the shelter ramp.
+  const near = WM.compute(new Array(6), 0, 30, 10, 0, p, 0.93);
+  const nearOpen = WM.compute(new Array(6), 0, 30, 10, 0, p, 1.0);
+  const half = WM.compute(new Array(6), 0, 30, 10, 0, p, 0.5);
+  const nearShut = WM.compute(new Array(6), 0, 30, 10, 0, p, 0.0);
+  check('7 % shelter keeps ~93 % of the long waves', [0, 1, 2].every(c => near[c] >= 0.9 * nearOpen[c]), near.slice(0, 3).map(v => v.toFixed(3)).join('/') + ' of ' + nearOpen.slice(0, 3).map(v => v.toFixed(3)).join('/'));
+  check('shelter blends the amplitudes linearly', [0, 1, 2, 3, 4, 5].every(c => Math.abs(half[c] - 0.5 * (nearOpen[c] + nearShut[c])) < 1e-9));
   const G = WM.GLSL, S = SB.GLSL;
+  check('GLSL shelter blends the amplitudes', G.includes('a = wet * mix(') && G.includes('b = wet * mix(') && !G.includes('kpL = mix('));
   check('GLSL waveMaskCascadesExposed + plain wrapper', G.includes('void waveMaskCascadesExposed(vec4 field, float exposed') && G.includes('waveMaskCascadesExposed(field, 1.0, a, b);'));
   check('GLSL shoreSwellExposure', S.includes('float shoreSwellExposure(vec2 xz)'));
 }
