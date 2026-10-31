@@ -172,7 +172,8 @@ ARestlessOcean.Passes.RefractionGBufferPass.prototype.init = function(width, hei
   //Material.color values are already linear (THREE.Color stores linear).
   //
   //alphaTest is honoured (hair cards, foliage cards): without it the cut-out
-  //quads were captured as solid opaque cards.
+  //quads were captured as solid opaque cards. A blended (transparent) source is
+  //cut at 0.5 at least: its solid half.
   this._fragmentShader = [
     'precision highp float;',
     'layout(location = 0) out vec4 gAlbedo;',
@@ -226,7 +227,10 @@ ARestlessOcean.Passes.RefractionGBufferPass.prototype._buildMaterialFor = functi
       hasAlbedoMap: { value: hasMap ? 1 : 0 },
       decodeAlbedo: { value: (hasMap && srcMat.map.isVideoTexture &&
                               srcMat.map.colorSpace === THREE.SRGBColorSpace) ? 1 : 0 },
-      alphaCut: { value: srcMat.alphaTest > 0 ? srcMat.alphaTest : 0.0 },
+      //A BLENDED source (transparent) has no single opaque shape; in this opaque G-buffer its solid half stands
+      //for it. Cutting it only at its own alphaTest captured every faint texel solid: an avatar's soft hair
+      //fringe pass (alphaTest 0.02, a-loveable-avatar PhysicalLooks) came back as solid cards in the water.
+      alphaCut: { value: srcMat.transparent ? Math.max(srcMat.alphaTest || 0, 0.5) : (srcMat.alphaTest > 0 ? srcMat.alphaTest : 0.0) },
       baseAlpha: { value: srcMat.opacity !== undefined ? srcMat.opacity : 1.0 }
     },
     vertexShader: this._vertexShader,
