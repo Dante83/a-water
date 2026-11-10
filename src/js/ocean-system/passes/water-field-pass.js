@@ -250,7 +250,9 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.init = function(){
       uOpenOceanDepth:   {value: ARestlessOcean.Passes.WaterFieldPass.OPEN_OCEAN_DEPTH},
       uFoamMap:          {value: null},
       uFoamCameraXZ:     {value: new THREE.Vector2()},
-      uFoamHalfWidth:    {value: 2048.0}
+      uFoamHalfWidth:    {value: 2048.0},
+      //(size x, size z, 1 when a terrain provider with known bounds answers for the ground)
+      uLandWorld:        {value: new THREE.Vector3(0, 0, 0)}
     },
     vertexShader: [
       'out vec2 vUv;',
@@ -274,6 +276,7 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.init = function(){
       'uniform sampler2D uFoamMap;',
       'uniform vec2 uFoamCameraXZ;',
       'uniform float uFoamHalfWidth;',
+      'uniform vec3 uLandWorld;',
       'void main(){',
       '  vec2 worldXZ = uCascadeCenter + (vUv * 2.0 - 1.0) * uCascadeHalfWidth;',
       //Standalone: one global plane, everywhere.
@@ -289,7 +292,14 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.init = function(){
       '    vec2 terrain = texture(uFoamMap, fuv).ga;',
       //.a > 0.5 means the ortho actually captured geometry here. Where it did
       //not, we are over open water and keep the open-ocean depth.
-      '    if(terrain.y > 0.5) depth = max(0.0, level - terrain.x);',
+      //...unless a terrain provider owns the ground and this is OUTSIDE its world (2026-11-10).
+      //The capture is of the whole scene, not of terrain: anything drawn out there (a prop, a
+      //model's own base plane, a helper mesh) read as seabed at its own height, and the sea over
+      //it went shallow: calm, with a shoreline, in a block that stays put in the world while the
+      //CPU side, which asks the provider, still says open ocean. a-land has no ground past its
+      //bounds, so past them the answer is the open ocean's.
+      '    bool offWorld = uLandWorld.z > 0.5 && (worldXZ.x < 0.0 || worldXZ.y < 0.0 || worldXZ.x > uLandWorld.x || worldXZ.y > uLandWorld.y);',
+      '    if(terrain.y > 0.5 && !offWorld) depth = max(0.0, level - terrain.x);',
       '  }',
       //shoreSDF 0 (the compose pass derives it) and dryMask 0: standalone has
       //no notion of a deliberately-dry basin.
@@ -837,6 +847,11 @@ ARestlessOcean.Passes.WaterFieldPass.prototype.tick = function(ctx){
     u.uFoamMap.value = ctx.foamMap;
     u.uFoamCameraXZ.value.copy(ctx.foamCameraXZ);
     u.uFoamHalfWidth.value = ctx.foamHalfWidth;
+    {
+      const mj = terrainReady && og._landDirector.mapJson, size = mj && mj.bounds && mj.bounds.size;
+      if(size && size[0] > 0 && size[1] > 0) u.uLandWorld.value.set(size[0], size[1], 1.0);
+      else u.uLandWorld.value.set(0, 0, 0);
+    }
 
     //Into the shared scratch, not c.target — see _initShoreField's header.
     this.renderer.setRenderTarget(this._scratch);
