@@ -543,8 +543,10 @@ const siteFrame = (nx, nz) => ({s: (x,z) => x * nx + z * nz, t: (x,z) => x * nz 
 }
 // 31. A LEVEL CREEK OVER SHELVING BANKS (Dante 2026-11-10, "jutting tops"): the bed rises 0.8 m
 //     toward both banks under a creek whose surface is level, and a dry shoulder stands 0.3 m over
-//     the water either side of the lip. The curtain's copies ride the WATER: they used to rise by
-//     the difference in ground, which turned both top corners of every fall up by most of a metre.
+//     the water either side of the lip. On the approach the curtain's copies never stand over the
+//     WATER: they used to rise by the difference in ground, most of a metre at the edges.
+//     NOT covered: the last rows on the dry brink and the first in the air still rise over rock
+//     (up to curtainLiftMax). Pulling the edges in instead was tried and folded real curtains.
 {
   const nx = Math.sin(Math.PI / 6), nz = Math.cos(Math.PI / 6), F = siteFrame(nx, nz), hw = 6;
   const bed = t => 10 + 0.8 * Math.pow(Math.min(Math.abs(t) / hw, 1), 3);
@@ -562,13 +564,13 @@ const siteFrame = (nx, nz) => ({s: (x,z) => x * nx + z * nz, t: (x,z) => x * nz 
                        pool: {centre: [0, 4, 0], radius: 6, depth: 2.4, kind: 'dug'}, cascade: 0, step: 0, steps: 1}};
   const n = N.trace([fall], env);
   const sp = n.strands[n.spine], at = (st, k) => st.rows.find(r => r.k === k);
-  let worst = 0, worstAir = 0, rowsSeen = 0;
+  let worst = 0, rowsSeen = 0;
   for(const st of n.strands) if(st) for(const r of st.rows){
-    const b = at(sp, r.k); if(!b || F.s(r.x, r.z) > 0.5) continue;
-    ++rowsSeen;
-    if(r.air < 0.5) worst = Math.max(worst, Math.abs(r.y - b.y)); else worstAir = Math.max(worstAir, r.y - b.y); }
-  check('shelving banks: the approach is level across the curtain, edges and all', rowsSeen > 100 && worst < 0.05, 'worst '+f2(worst)+' m over '+rowsSeen+' rows');
-  check('shelving banks: ...and so is the top of the fall (no upturned corners)', worstAir < 0.05, 'highest '+f2(worstAir)+' m over the middle');
+    const b = at(sp, r.k); if(!b || r.air >= 0.5 || F.s(r.x, r.z) > -0.7) continue;
+    ++rowsSeen; worst = Math.max(worst, Math.abs(r.y - b.y)); }
+  check('shelving banks: over the creek the approach is level across the curtain, edges and all', rowsSeen > 100 && worst < 0.05, 'worst '+f2(worst)+' m over '+rowsSeen+' rows');
+  const under = []; for(const st of n.strands) if(st) for(const r of st.rows) if(r.air < 0.5 && F.s(r.x, r.z) < -0.7 && ground(r.x, r.z) > r.y + 0.01) under.push(r);
+  check('shelving banks: ...and none of it is under the bed', under.length === 0, under.length+' rows');
   const ts = n.strands.filter(Boolean).map(st => { const r = at(st, 0); return r ? F.t(r.x, r.z) : 0; });
   check('shelving banks: the curtain still spans the water', Math.max(...ts) - Math.min(...ts) > 2 * hw - 1.5, 'span '+f2(Math.max(...ts) - Math.min(...ts))+' m');
 }

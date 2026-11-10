@@ -151,8 +151,6 @@ ARestlessOcean.WaterfallNappe = {};
     curtainLiftMax: 0.5,        //m of rock over an airborne curtain copy that it rides over; more is a wall it is
                                 //squeezed in from (shiftStrand)
     curtainClearance: 0.1,      //m a lifted copy clears the rock by
-    curtainEdgeTaper: 0.5,      //m in from the curtain's sides over which that lift cap rises from 0: at the sides the
-                                //rock is the bank, and the curtain is pulled in from it, not lifted over it
     curtainEase: 2.0            //m of squeeze or lift that may change per metre of path (no fold between rows)
   };
 
@@ -579,13 +577,7 @@ ARestlessOcean.WaterfallNappe = {};
         const sc = job.seeds[c], ax = -job.hz, az = job.hx;
         for(let j = 0; j < nS; ++j){
           const sd = job.seeds[j];
-          if(!sd || j === c){ job.strands[j] = sd ? sp : null; continue; }
-          //how far inside the curtain's edge on its own side this copy sits (shiftStrand's lift cap)
-          let e = j;
-          if(j < c){ for(let m = 0; m < j; ++m) if(job.seeds[m]){ e = m; break; } }
-          else { for(let m = nS - 1; m > j; --m) if(job.seeds[m]){ e = m; break; } }
-          job.strands[j] = shiftStrand(sp, (sd.x - sc.x) * ax + (sd.z - sc.z) * az, ax, az, sd.share, job.env, job.o, job.spacing,
-                                       Math.abs(e - j) * job.spacing);
+          job.strands[j] = !sd ? null : (j === c ? sp : shiftStrand(sp, (sd.x - sc.x) * ax + (sd.z - sc.z) * az, ax, az, sd.share, job.env, job.o, job.spacing));
         }
         job.next = nS;
         job.nappe = finishTrace(job);
@@ -985,42 +977,40 @@ ARestlessOcean.WaterfallNappe = {};
   //one. Where rock stands between it and the traced strand at its height (a gorge narrower below
   //the lip than the lip is wide), it is pulled in to the wall: the curtain squeezes between the
   //walls instead of passing through them (sunken-shores' hourglass, Dante 2026-10-25).
-  //On the bed (the approach, the run-out) it rides the WATER where it stands: the carve's level
-  //tread comes out ±0.3 m on the 1 m tiles, and where the field's surface over the copy is higher
-  //than the traced strand's, the copy rides it. Over dry rock it stays at
-  //the traced height and the terrain hides it. It used to rise by the difference in GROUND between
-  //the two, uncapped: the bank shelves up under a level creek, so the outer three strands of every
-  //curtain stood 0.2-0.85 m over the water all the way down the approach and at the lip, upturned
-  //corners on each fall (Dante's "jutting tops", 2026-11-10).
-  //In the air, only rock standing more than the lift cap over the sheet is a wall to squeeze in
+  //On the bed (the approach, the run-out) it rides up over ground that stands higher beside the
+  //traced strand than under it: the carve's level tread comes out ±0.3 m on the 1 m tiles, and a
+  //copy at the traced strand's height was buried at the curtain's edges (falls 1 and 9).
+  //...but never above the WATER where the field has some, and by no more than curtainLiftMax over
+  //dry rock (2026-11-10). The rise was the plain difference in ground, and under a level creek
+  //the bed shelves up to the banks: the outer strands of a curtain stood 0.2-0.85 m over the
+  //water all the way down the approach and at the lip (Dante's "jutting tops"). The rise is only
+  //ever made SMALLER by this, and a copy in water never ends under the ground there.
+  //In the air, only rock standing more than curtainLiftMax over the sheet is a wall to squeeze in
   //for; less is the 1 m tiles' zigzag (±0.5 m along a carved lip) and the copy rides over it,
   //lifted to curtainClearance above it. Squeezing at every graze folded single rows just past the
   //takeoff, where the jet is centimetres over the rock, into a triangle (fall 2, 2026-10-25).
-  //The lift cap is curtainLiftMax in the middle of the curtain and tapers to nothing over its
-  //outer curtainEdgeTaper metres: at the sides the rock over the sheet is the BANK (the carve's
-  //shoulders stand a freeboard over the water), and riding over it turned the corners up. There
-  //the curtain is pulled in instead, as at any wall.
+  //(Tried 2026-11-10 and withdrawn the same day: pulling the outermost copies in from ANY rock at
+  //the sheet's height, to level the corners. On real ground the jet grazes rock all the way down
+  //a face, and the edges folded in across the sheet or missed the pool.)
   //Both the squeeze and the lift are eased along the strand (curtainEase metres per metre of
   //path), so neither steps between rows.
   //It clears the highest rock between it and its neighbours (±sp, the seed spacing, across; a row
   //either way along), not just the rock under it: the sheet between two copies is a straight
-  //chord, and a rib's shoulder stood through it. `inset` (m): how far this copy sits inside the
-  //curtain's own edge on its side; the outermost copy has no neighbour outward and does not look there.
-  function shiftStrand(st, a, ax, az, share, env, o, sp, inset){
+  //chord, and a rib's shoulder stood through it.
+  function shiftStrand(st, a, ax, az, share, env, o, sp){
     const sg = a < 0 ? -1.0 : 1.0, aa = Math.abs(a), S = st.samples, n = S.length, w = sp > 0 ? sp : 0.0;
-    const clr = opt(o, 'curtainClearance'), ease = opt(o, 'curtainEase');
-    const taper = opt(o, 'curtainEdgeTaper');
-    const liftMax = opt(o, 'curtainLiftMax') * (inset === undefined || !(taper > 0) ? 1.0 : smoothstep(0.0, taper, inset));
-    const outer = inset !== undefined && inset < 0.5 * w;
+    const liftMax = opt(o, 'curtainLiftMax'), clr = opt(o, 'curtainClearance'), ease = opt(o, 'curtainEase');
     const off = new Float64Array(n), lift = new Float64Array(n);
     for(let i = 0; i < n; ++i){
       const p = S[i];
       if(p.air < 0.5){
-        const gx = p.x + a * ax, gz = p.z + a * az, g1 = env.groundAt(gx, gz);
+        const gx = p.x + a * ax, gz = p.z + a * az;
+        const g0 = env.groundAt(p.x, p.z), g1 = env.groundAt(gx, gz);
         off[i] = aa;
-        lift[i] = 0.0;
-        if(g1 != null && waterHere(env, gx, gz)){
-          lift[i] = Math.max(g1 + attachedOffset(env, gx, gz, g1, 0.0) - p.y, 0.0);
+        lift[i] = (g0 != null && g1 != null) ? Math.max(g1 - g0, 0.0) : 0.0;
+        if(lift[i] > 0.0){
+          const cap = waterHere(env, gx, gz) ? Math.max(g1 + attachedOffset(env, gx, gz, g1, 0.0) - p.y, 0.0) : liftMax;
+          if(lift[i] > cap) lift[i] = cap;
         }
         continue;
       }
@@ -1028,7 +1018,6 @@ ARestlessOcean.WaterfallNappe = {};
       let g = null;
       const fx = p.hx || 0.0, fz = p.hz || 0.0;   //...and a row either way along the flight (rows ~0.2 m apart)
       for(let u = -w; u <= w + 1e-6; u += Math.max(0.1, w / 5)){
-        if(outer && u * sg > 1e-9) continue;
         for(let v = -0.25; v <= 0.25 + 1e-6; v += 0.25){
           const gu = env.groundAt(p.x + (sg * off[i] + u) * ax + v * fx, p.z + (sg * off[i] + u) * az + v * fz);
           if(gu != null && (g == null || gu > g)) g = gu;
