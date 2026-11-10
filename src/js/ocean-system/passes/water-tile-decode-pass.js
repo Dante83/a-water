@@ -227,9 +227,11 @@ ARestlessOcean.Passes.WaterTileDecodePass.prototype.fillCascade = function(c, la
     const span = t.span;
     const tMinX = t.originX, tMaxX = t.originX + span;
     const tMinZ = t.originZ, tMaxZ = t.originZ + span;
-    const clipMinX = Math.max(tMinX, minX), clipMaxX = Math.min(tMaxX, maxX);
-    const clipMinZ = Math.max(tMinZ, minZ), clipMaxZ = Math.min(tMaxZ, maxZ);
-    if(clipMinX >= clipMaxX || clipMinZ >= clipMaxZ) continue;   //no overlap
+    //...clipped to the cascade and to the WORLD: a coarse tile overhangs the world's edge, and
+    //what it holds out there is no answer of a-land's (WaterTileDecoder.clipToWorld).
+    const clip = decoder.clipToWorld(Math.max(tMinX, minX), Math.min(tMaxX, maxX), Math.max(tMinZ, minZ), Math.min(tMaxZ, maxZ));
+    if(!clip) continue;   //no overlap
+    const clipMinX = clip.minX, clipMaxX = clip.maxX, clipMinZ = clip.minZ, clipMaxZ = clip.maxZ;
 
     u.uForceDry.value = t.dry ? 1.0 : 0.0;
     if(!t.dry){

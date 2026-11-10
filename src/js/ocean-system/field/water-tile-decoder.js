@@ -195,6 +195,24 @@ ARestlessOcean.WaterTileDecoder.prototype.tilesIntersecting = function(minX, min
   return out;
 };
 
+//The part of a tile's footprint [minX, maxX] x [minZ, maxZ] (already clipped to whatever is
+//being filled) that lies INSIDE the world, as {minX, maxX, minZ, maxZ}, or null when none does.
+//THE WORLD'S EDGE (2026-11-10). A tile's span doubles with every LOD, so wherever the world's
+//size is not a whole number of spans the last tile on an axis overhangs the edge: a 6000 m world
+//on 256 m tiles has a LOD-4 tile from 4096 to 8192. a-land has no cells out there, so it writes
+//those texels dry (and omits the tile if nothing in it is wet), and both were drawn into the
+//field as a-land's ANSWER, "dry here": a block of known-dry ground out at sea, up to a tile
+//wide, wherever a far cascade reached past the edge. The sea went calm over it, as it does in a
+//lee, and broke on its sides as on a shore (Dante's square of lake water off the map's edge).
+//Beyond its bounds a-land has no answer to give, and the standalone ocean is the right one.
+ARestlessOcean.WaterTileDecoder.prototype.clipToWorld = function(minX, maxX, minZ, maxZ){
+  if(this.worldSizeX > 0) maxX = Math.min(maxX, this.worldSizeX);
+  if(this.worldSizeZ > 0) maxZ = Math.min(maxZ, this.worldSizeZ);
+  minX = Math.max(minX, 0.0); minZ = Math.max(minZ, 0.0);
+  if(!(minX < maxX) || !(minZ < maxZ)) return null;
+  return {minX: minX, maxX: maxX, minZ: minZ, maxZ: maxZ};
+};
+
 ARestlessOcean.WaterTileDecoder.prototype._makeDataTexture = function(data, w, h){
   const tex = new THREE.DataTexture(data, w, h, THREE.RGBAFormat, THREE.UnsignedByteType);
   tex.minFilter = THREE.NearestFilter;
