@@ -114,6 +114,10 @@ ARestlessOcean.Passes.WaterFieldPass = function(oceanGrid){
 //never runs out from under the clipmap.
 ARestlessOcean.Passes.WaterFieldPass.CASCADE_HALF_WIDTHS = [256.0, 1024.0, 4096.0];
 ARestlessOcean.Passes.WaterFieldPass.RESOLUTION = 512;
+//Two waters this far apart in height (m) across one dry texel are a fall's lip, not a sloping
+//creek and its bank: the texel takes the lower level (see THE LIP RULE in the compose pass).
+//A creek's own neighbouring texels differ by its slope times a texel, well under this.
+ARestlessOcean.Passes.WaterFieldPass.LIP_STEP_M = 1.5;
 //Depth used where we have no terrain information at all (outside the foam
 //ortho's footprint). Open ocean: deep enough that every depth-driven term
 //saturates, without being infinite.
@@ -573,6 +577,7 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
     fragmentShader: [
       'precision highp float;',
       resDefine,
+      '#define LIP_STEP_M ' + ARestlessOcean.Passes.WaterFieldPass.LIP_STEP_M.toFixed(2),
       'layout(location = 0) out vec4 gSurface;',
       'layout(location = 1) out vec4 gMotion;',
       'uniform sampler2D uFieldA, uFieldB, uSeedTex, uBand, uMouth;',
@@ -619,6 +624,28 @@ ARestlessOcean.Passes.WaterFieldPass.prototype._initShoreField = function(){
       '        if(dd < bestD){ bestD = dd; level = mouthLevel(q, w).x; nearW = bandWeight(q); }',
       '      }',
       '    }',
+      '  }',
+      //THE LIP RULE (2026-11-10). A dry texel standing between two waters more than LIP_STEP_M apart
+      //(a fall's lip: the creek above, its pool below) takes the LOWER one, not the nearest. The
+      //surface is bilinear, so a lip texel holding the creek's level raised the pool a whole drop
+      //across its last texel at the foot of the face. Both surfaces refuse a level that steep, so
+      //the pool was missing for a metre or more in front of the cliff: the curtain of a short fall
+      //came down into bare ground, a ragged gap between its foot and the water (Dante's
+      //"disconnected bottoms"). Holding the pool's level, the ramp moves to the creek's side of the
+      //lip, which the waterfall sheet's lead-in already covers (WaterfallSheetPass).
+      '  if(!(a.g > 0.0)){',
+      '    float lo = 1e20, hi = -1e20, loW = 0.0;',
+      '    for(int dy = -1; dy <= 1; dy++){',
+      '      for(int dx = -1; dx <= 1; dx++){',
+      '        ivec2 q = clamp(p + ivec2(dx, dy), ivec2(0), ivec2(RES - 1));',
+      '        vec4 w = texelFetch(uFieldA, q, 0);',
+      '        if(!(w.g > 0.0)) continue;',
+      '        float lw = mouthLevel(q, w).x;',
+      '        if(lw < lo){ lo = lw; loW = bandWeight(q); }',
+      '        hi = max(hi, lw);',
+      '      }',
+      '    }',
+      '    if(hi - lo > LIP_STEP_M){ level = lo; nearW = loW; }',
       '  }',
       '  float packed = a.g > 0.0 ? -bandWeight(p) : (a.a > 0.5 ? 1.0 + nearW : a.a);',
       '  gSurface = vec4(level, a.g > 0.0 ? lvDepth.y : a.g, side * dist, packed);',

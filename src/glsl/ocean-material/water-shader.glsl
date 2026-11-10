@@ -2120,11 +2120,19 @@ void main(){
     float flowFallOwn = flowFallW.y;
     if(flowFallCorridor > 0.0){
       const float FALL_EPS = 0.75;
-      float fxm = waterFieldAt(worldPosition.xz - vec2(FALL_EPS, 0.0)).r;
-      float fxp = waterFieldAt(worldPosition.xz + vec2(FALL_EPS, 0.0)).r;
-      float fzm = waterFieldAt(worldPosition.xz - vec2(0.0, FALL_EPS)).r;
-      float fzp = waterFieldAt(worldPosition.xz + vec2(0.0, FALL_EPS)).r;
-      float fallLevelSlope = length(vec2(fxp - fxm, fzp - fzm)) / (2.0 * FALL_EPS);
+      vec4 fxm = waterFieldAt(worldPosition.xz - vec2(FALL_EPS, 0.0));
+      vec4 fxp = waterFieldAt(worldPosition.xz + vec2(FALL_EPS, 0.0));
+      vec4 fzm = waterFieldAt(worldPosition.xz - vec2(0.0, FALL_EPS));
+      vec4 fzp = waterFieldAt(worldPosition.xz + vec2(0.0, FALL_EPS));
+      //Dry taps drop out, as in the still surface's rule below (2026-11-10): a dry texel's level is
+      //some other water's (the creek above a lip, read from the pool at its foot), and counting it
+      //stepped the pool aside for a metre in front of every face, where no sheet draws.
+      float fallC = dryTestField.r;
+      float fallSpanX = FALL_EPS * (step(fxm.a, 0.5) + step(fxp.a, 0.5));
+      float fallSpanZ = FALL_EPS * (step(fzm.a, 0.5) + step(fzp.a, 0.5));
+      float fallLevelSlope = length(vec2(
+        fallSpanX > 0.0 ? ((fxp.a > 0.5 ? fallC : fxp.r) - (fxm.a > 0.5 ? fallC : fxm.r)) / fallSpanX : 0.0,
+        fallSpanZ > 0.0 ? ((fzp.a > 0.5 ? fallC : fzp.r) - (fzm.a > 0.5 ? fallC : fzm.r)) / fallSpanZ : 0.0));
       flowFallOwn = max(flowFallOwn, flowFallCorridor * smoothstep(0.176, 0.364, fallLevelSlope));
     }
     if(flowFallOwn >= 0.998) discard;

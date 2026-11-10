@@ -541,4 +541,35 @@ const siteFrame = (nx, nz) => ({s: (x,z) => x * nx + z * nz, t: (x,z) => x * nz 
   const clean = N.beginTrace([Object.assign({normal: [0.3, 0.954]}, base)], {groundAt: (x,z) => (z < 0 ? 10 : (z < 2 ? 10 - 3 * z : 4)), waterAt: water});
   check('canyon: on a clean edge the ground still wins (square to the lip)', clean && Math.abs(clean.hx) < 0.05 && clean.hz > 0.99, clean && 'h '+f2(clean.hx)+','+f2(clean.hz));
 }
+// 31. A LEVEL CREEK OVER SHELVING BANKS (Dante 2026-11-10, "jutting tops"): the bed rises 0.8 m
+//     toward both banks under a creek whose surface is level, and a dry shoulder stands 0.3 m over
+//     the water either side of the lip. The curtain's copies ride the WATER: they used to rise by
+//     the difference in ground, which turned both top corners of every fall up by most of a metre.
+{
+  const nx = Math.sin(Math.PI / 6), nz = Math.cos(Math.PI / 6), F = siteFrame(nx, nz), hw = 6;
+  const bed = t => 10 + 0.8 * Math.pow(Math.min(Math.abs(t) / hw, 1), 3);
+  const ground = (x,z) => { const s = F.s(x,z), t = F.t(x,z);
+    if(Math.abs(t) > hw) return s < 1 ? 11.2 : 2;       //the shoulders, then the face running on past them
+    return s < 0 ? bed(t) : (s < 1 ? bed(t) - 8 * s : 2); };
+  const water = (x,z) => { const s = F.s(x,z), t = F.t(x,z);
+    if(s < 0) return Math.abs(t) <= hw ? {level: 10.9, depth: 10.9 - bed(t), vx: 1.5 * nx, vz: 1.5 * nz} : null;
+    return s > 1.2 ? {level: 4, depth: 2, vx: 0.05 * nx, vz: 0.05 * nz} : null; };
+  const env = {groundAt: ground, waterAt: water};
+  const L0 = F.at(0, -hw), L1 = F.at(0, hw);
+  const fall = {top: [0, 10, 0], bottom: [0, 4, 0], width: 2 * hw, discharge: 9, drop: 6,
+                site: {lip: [[L0[0], 10, L0[1]], [L1[0], 10, L1[1]]], normal: [nx, nz], drop: 8, treadAbove: 10, treadBelow: 2,
+                       approach: 6, landing: 2, shoulder: 3, wetWidth: 2 * hw, depth: 0.9, discharge: 9,
+                       pool: {centre: [0, 4, 0], radius: 6, depth: 2.4, kind: 'dug'}, cascade: 0, step: 0, steps: 1}};
+  const n = N.trace([fall], env);
+  const sp = n.strands[n.spine], at = (st, k) => st.rows.find(r => r.k === k);
+  let worst = 0, worstAir = 0, rowsSeen = 0;
+  for(const st of n.strands) if(st) for(const r of st.rows){
+    const b = at(sp, r.k); if(!b || F.s(r.x, r.z) > 0.5) continue;
+    ++rowsSeen;
+    if(r.air < 0.5) worst = Math.max(worst, Math.abs(r.y - b.y)); else worstAir = Math.max(worstAir, r.y - b.y); }
+  check('shelving banks: the approach is level across the curtain, edges and all', rowsSeen > 100 && worst < 0.05, 'worst '+f2(worst)+' m over '+rowsSeen+' rows');
+  check('shelving banks: ...and so is the top of the fall (no upturned corners)', worstAir < 0.05, 'highest '+f2(worstAir)+' m over the middle');
+  const ts = n.strands.filter(Boolean).map(st => { const r = at(st, 0); return r ? F.t(r.x, r.z) : 0; });
+  check('shelving banks: the curtain still spans the water', Math.max(...ts) - Math.min(...ts) > 2 * hw - 1.5, 'span '+f2(Math.max(...ts) - Math.min(...ts))+' m');
+}
 process.exit(fails?1:0);
