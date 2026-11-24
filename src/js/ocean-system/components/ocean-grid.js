@@ -28,6 +28,10 @@ ARestlessOcean.JERLOV_PRESETS = [
   { absorption: {x: 0.520, y: 0.330, z: 0.530}, scattering: {x: 0.080, y: 0.090, z: 0.090} }, // 5C
 ];
 
+//Pixel budget for the refraction G-buffer when OceanGrid.refractionScale is unset: a little over
+//1920x1080, so 1080p and smaller keep a full-size G-buffer and only bigger buffers are scaled.
+ARestlessOcean.REFRACTION_AUTO_MAX_PIXELS = 2200000;
+
 //Dedicated layer for ocean geometry (water patches + horizon skirt).
 //
 //Water meshes are taken OFF the default layer 0 and placed on this layer
@@ -2187,12 +2191,23 @@ ARestlessOcean.OceanGrid = function(scene, renderer, camera, parentComponent){
     sceneCamera.getWorldPosition(self.globalCameraPosition);
 
     //Ensure render targets match current drawing buffer size (A-Frame may resize after construction)
-    //`refractionScale` (default 1) renders the refraction G-buffer -- a full re-render of the
-    //scene minus the ocean -- at a fraction of the drawing buffer. The water reads it through
-    //normalized screen UVs, so any size works; what a smaller one costs is softer refraction
-    //and a softer water/ground contact line. At 4K, 0.5 measured ~3 ms of GPU off.
+    //`refractionScale` renders the refraction G-buffer -- a full re-render of the scene minus
+    //the ocean -- at a fraction of the drawing buffer. The water reads it through normalized
+    //screen UVs, so any size works; what a smaller one costs is softer refraction and a softer
+    //water/ground contact line.
+    //  a number in (0, 1]  that fraction, exactly (1 = full resolution)
+    //  unset (default)     auto: full resolution up to REFRACTION_AUTO_MAX_PIXELS, scaled down
+    //                      past it, so 1080p is untouched and a 4K buffer lands near 0.54. On
+    //                      sunken-shores at 4K the full-size pass cost ~17 ms of GPU, ~6 ms at 0.5.
     self.renderer.getDrawingBufferSize(rendererSize);
-    const refrScale = (self.refractionScale > 0 && self.refractionScale < 1) ? self.refractionScale : 1;
+    let refrScale;
+    if(self.refractionScale > 0 && self.refractionScale <= 1){
+      refrScale = self.refractionScale;
+    } else {
+      const px = rendererSize.x * rendererSize.y;
+      refrScale = px > ARestlessOcean.REFRACTION_AUTO_MAX_PIXELS
+        ? Math.sqrt(ARestlessOcean.REFRACTION_AUTO_MAX_PIXELS / px) : 1;
+    }
     const refrW = Math.max(1, Math.round(rendererSize.x * refrScale));
     const refrH = Math.max(1, Math.round(rendererSize.y * refrScale));
     if(self.refractionGBufferTarget &&
